@@ -1,6 +1,9 @@
 
-# Results of Executes
+# Evaluation Results 
 Results/*/*/*
+Results/*/TrainResults.png
+
+# Training Results 
 TrainResults/*/*/*/*
 
 # Settings Caches
