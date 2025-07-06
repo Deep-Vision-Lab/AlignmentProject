@@ -1,4 +1,8 @@
-wandb
-__pycache__
+
+# Results of Executes
 Results/*/*/*
 TrainResults/*/*/*/*
+
+# Settings Caches
+wandb
+__pycache__
