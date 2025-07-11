@@ -1,137 +1,303 @@
 import numpy as np
 
 
-def extract_traceback_path(matrix):
-    traceback_matrix = np.zeros_like(matrix)
-    i, j = check_max_on_axes(matrix)
-    # i, j = np.unravel_index(np.argmax(matrix), matrix.shape)
+def build_backtrace_matrix_2d(matrix):
+    path_matrix = np.zeros_like(matrix)
+    i, j = np.unravel_index(np.argmax(matrix), matrix.shape)
+    # i, j = check_max_on_axes(matrix)
     while i > 0 and j > 0:
+        
         if i != 0 and j != 0:
             direction = np.argmax(
                 np.array([0, matrix[i - 1, j], matrix[i, j - 1], matrix[i - 1, j - 1]]))
         elif i > 0 and j == 0:
-            direction = np.argmax(np.array([0, matrix[i - 1, j]]))
+            direction = 1
         elif i == 0 and j > 0:
-            direction = np.argmax(np.array([0, matrix[i, j - 1]]))
+            direction = 2
         else:
             direction = 0  # No Direction
-
-
-        if direction == 0:  # No Direction
-            traceback_matrix[i, j] = 0
+        
+        
+        if direction == 0:  # No Direction  
+            path_matrix[i, j] = 1
             if i > 0 and j > 0:
-                    i, j = i - 1, j - 1
+                i, j = i - 1, j - 1
             elif i > 0 and j < 0:
                 i = i - 1
                 # break
             elif i < 0 and j > 0:
                 j = j - 1
-            elif i < 0 and j < 0:
+            elif i <= 0 and j <= 0:
                 break
+
         elif direction == 1:  # Up
-            traceback_matrix[i, j] = 1
+            path_matrix[i, j] = 2
             if i > 0:
                 i = i - 1
+
         elif direction == 2:  # Left
-            traceback_matrix[i, j] = 1
-            if i > 0:
+            path_matrix[i, j] = 3
+            if j > 0:
                 j = j - 1
+
         elif direction == 3:  # Diagonal
-            traceback_matrix[i, j] = 1
+            path_matrix[i, j] = 1
             if i > 0 and j > 0:
                 i, j = i - 1, j - 1
 
-    return traceback_matrix
+    return path_matrix
 
+
+def build_forward_traceback_matrix_2d(matrix, path_matrix):
+    i, j = np.unravel_index(np.argmax(matrix), matrix.shape)
+    # i, j = check_max_on_axes(matrix)
+    while i < matrix.shape[0] - 1 and j < matrix.shape[1] - 1:
+        if i != matrix.shape[0] - 1 and j != matrix.shape[1] - 1:
+            direction = np.argmax(
+                np.array([0, matrix[i + 1, j], matrix[i, j + 1], matrix[i + 1, j + 1]]))
+        elif i < matrix.shape[0] - 1 and j == matrix.shape[1] - 1:
+            direction = 1
+        elif i == matrix.shape[0] - 1 and j < matrix.shape[1] - 1:
+            direction = 2
+        else:
+            direction = 0  # No Direction
+        
+        if direction == 0:  # No Direction
+            path_matrix[i, j] = 0
+            if i < matrix.shape[0] - 1 and j < matrix.shape[1] - 1:
+                i, j = i + 1, j + 1
+            elif i < matrix.shape[0] - 1 and j >= matrix.shape[1] - 1:
+                i = i + 1
+            elif i >= matrix.shape[0] - 1 and j < matrix.shape[1] - 1:
+                j = j + 1
+            elif i >= matrix.shape[0] - 1 and j >= matrix.shape[1] - 1:
+                break
+        elif direction == 1:  # Down
+            path_matrix[i, j] = 2
+            if i < matrix.shape[0] - 1:
+                i = i + 1
+        elif direction == 2:  # Right
+            path_matrix[i, j] = 3
+            if j < matrix.shape[1] - 1:
+                j = j + 1
+        elif direction == 3:  # Diagonal
+            path_matrix[i, j] = 1
+            if i < matrix.shape[0] - 1 and j < matrix.shape[1] - 1:
+                i, j = i + 1, j + 1
+
+    return path_matrix
+
+
+def extract_traceback_path(matrix):
+    path_matrix = build_backtrace_matrix_2d(matrix)
+    path_matrix = build_forward_traceback_matrix_2d(matrix, path_matrix)
+    return path_matrix
+
+
+#==================================================================================================
+
+def build_backtrace_matrix_3d(matrices):
+    path_matrix = np.zeros_like(matrices)
+    # i, j = check_max_on_axes(matrix)
+    for batch_idx, matrix in enumerate(matrices):
+        i, j = np.unravel_index(np.argmax(matrix), matrix.shape)
+        # i, j = check_max_on_axes(matrix)
+        while i > 0 and j > 0:
+            if i != 0 and j != 0:
+                direction = np.argmax(
+                    np.array([0, matrix[i - 1, j], matrix[i, j - 1], matrix[i - 1, j - 1]]))
+            elif i > 0 and j == 0:
+                direction = 1
+            elif i == 0 and j > 0:
+                direction = 2
+            else:
+                direction = 0  # No Direction
+            
+            
+            if direction == 0:  # No Direction  
+                path_matrix[batch_idx, i, j] = 0
+                if i > 0 and j > 0:
+                    i, j = i - 1, j - 1
+                elif i > 0 and j < 0:
+                    i = i - 1
+                    # break
+                elif i < 0 and j > 0:
+                    j = j - 1
+                elif i <= 0 and j <= 0:
+                    break
+
+            elif direction == 1:  # Up
+                path_matrix[batch_idx, i, j] = 2
+                if i > 0:
+                    i = i - 1
+
+            elif direction == 2:  # Left
+                path_matrix[batch_idx, i, j] = 3
+                if j > 0:
+                    j = j - 1
+
+            elif direction == 3:  # Diagonal
+                path_matrix[batch_idx, i, j] = 1
+                if i > 0 and j > 0:
+                    i, j = i - 1, j - 1
+
+    return path_matrix
+
+
+def build_forward_traceback_matrix_3d(matrices, path_matrix):
+    for batch_idx, matrix in enumerate(matrices):
+        i, j = np.unravel_index(np.argmax(matrix), matrix.shape)
+        # i, j = check_max_on_axes(matrix)
+        while i < matrix.shape[0] - 1 and j < matrix.shape[1] - 1:
+            if i != matrix.shape[0] - 1 and j != matrix.shape[1] - 1:
+                direction = np.argmax(
+                    np.array([0, matrix[i + 1, j], matrix[i, j + 1], matrix[i + 1, j + 1]]))
+            elif i < matrix.shape[0] - 1 and j == matrix.shape[1] - 1:
+                direction = 1
+            elif i == matrix.shape[0] - 1 and j < matrix.shape[1] - 1:
+                direction = 2
+            else:
+                direction = 0  # No Direction
+            
+
+            if direction == 0:  # No Direction
+                path_matrix[batch_idx, i, j] = 0
+                if i < matrix.shape[0] - 1 and j < matrix.shape[1] - 1:
+                    i, j = i + 1, j + 1
+                elif i < matrix.shape[0] - 1 and j >= matrix.shape[1] - 1:
+                    i = i + 1
+                elif i >= matrix.shape[0] - 1 and j < matrix.shape[1] - 1:
+                    j = j + 1
+                elif i >= matrix.shape[0] - 1 and j >= matrix.shape[1] - 1:
+                    break
+
+            elif direction == 1:  # Down
+                path_matrix[batch_idx, i, j] = 2
+                if i < matrix.shape[0] - 1:
+                    i = i + 1
+
+            elif direction == 2:  # Right
+                path_matrix[batch_idx, i, j] = 3
+                if j < matrix.shape[1] - 1:
+                    j = j + 1
+
+            elif direction == 3:  # Diagonal
+                path_matrix[batch_idx, i, j] = 1
+                if i < matrix.shape[0] - 1 and j < matrix.shape[1] - 1:
+                    i, j = i + 1, j + 1
+
+    return path_matrix
 
 
 def makeTracerouteMatrix(matrices):
-    matrices = matrices.detach().cpu().numpy()
-    traceback_matrix = np.zeros_like(matrices)
+    path_matrix = build_backtrace_matrix_3d(matrices)
+    path_matrix = build_forward_traceback_matrix_3d(matrices, path_matrix)
+    return path_matrix
+
+
+#==================================================================================================
+
+
+def build_backtrace_matrix_Binary_3d(matrices):
+    path_matrix = np.zeros_like(matrices)
     for batch_idx, matrix in enumerate(matrices):
-        i, j = check_max_on_axes(matrix)  
-        # i, j = np.unravel_index(np.argmax(matrix), matrix.shape)
-        while i > 0 and j > 0:
-            if i != 0 and j != 0:
+        i, j = np.unravel_index(np.argmax(matrix), matrix.shape)
+        # i, j = check_max_on_axes(matrix)
+        while i >= 0 or j >= 0:
+            if i > 0 and j > 0:
                 direction = np.argmax(
                     np.array([0, matrix[i - 1, j], matrix[i, j - 1], matrix[i - 1, j - 1]]))
             elif i > 0 and j == 0:
-                direction = np.argmax(np.array([0, matrix[i - 1, j]]))
+                direction = 1
             elif i == 0 and j > 0:
-                direction = np.argmax(np.array([0, matrix[i, j - 1]]))
+                direction = 2
             else:
                 direction = 0  # No Direction
-
-
-            if direction == 0:  # No Direction
-                traceback_matrix[batch_idx, i, j] = 1
+            
+            
+            path_matrix[batch_idx, i, j] = 1
+            
+            if direction == 0:  # No Direction  
                 if i > 0 and j > 0:
                     i, j = i - 1, j - 1
-                elif i > 0 and j < 0:
+                elif i > 0 and j <= 0:
                     i = i - 1
-                    # break
-                elif i < 0 and j > 0:
+                elif i <= 0 and j > 0:
                     j = j - 1
-                elif i < 0 and j < 0:
+                elif i <= 0 and j <= 0:
                     break
+
             elif direction == 1:  # Up
-                traceback_matrix[batch_idx, i, j] = 2
                 if i > 0:
                     i = i - 1
+
             elif direction == 2:  # Left
-                traceback_matrix[batch_idx, i, j] = 3
                 if j > 0:
                     j = j - 1
+
             elif direction == 3:  # Diagonal
-                traceback_matrix[batch_idx, i, j] = 1
                 if i > 0 and j > 0:
                     i, j = i - 1, j - 1
 
-    return traceback_matrix
+    return path_matrix
+
+
+def build_forward_traceback_matrix_Binary_3d(matrices, path_matrix):
+    for batch_idx, matrix in enumerate(matrices):
+        i, j = np.unravel_index(np.argmax(matrix), matrix.shape)
+        # i, j = check_max_on_axes(matrix)
+        while i <= matrix.shape[0] - 1 or j <= matrix.shape[1] - 1:
+            if i != matrix.shape[0] - 1 and j != matrix.shape[1] - 1:
+                direction = np.argmax(
+                    np.array([0, matrix[i + 1, j], matrix[i, j + 1], matrix[i + 1, j + 1]]))
+            elif i < matrix.shape[0] - 1 and j == matrix.shape[1] - 1:
+                direction = 1
+            elif i == matrix.shape[0] - 1 and j < matrix.shape[1] - 1:
+                direction = 2
+            else:
+                direction = 0  # No Direction
+            
+
+            if direction == 0:  # No Direction
+                path_matrix[batch_idx, i, j] = 1
+                if i < matrix.shape[0] - 1 and j < matrix.shape[1] - 1:
+                    i, j = i + 1, j + 1
+                elif i < matrix.shape[0] - 1 and j >= matrix.shape[1] - 1:
+                    i = i + 1
+                elif i >= matrix.shape[0] - 1 and j < matrix.shape[1] - 1:
+                    j = j + 1
+                elif i >= matrix.shape[0] - 1 and j >= matrix.shape[1] - 1:
+                    break
+
+            elif direction == 1:  # Down
+                path_matrix[batch_idx, i, j] = 1
+                if i < matrix.shape[0] - 1:
+                    i = i + 1
+
+            elif direction == 2:  # Right
+                path_matrix[batch_idx, i, j] = 1
+                if j < matrix.shape[1] - 1:
+                    j = j + 1
+
+            elif direction == 3:  # Diagonal
+                path_matrix[batch_idx, i, j] = 1
+                if i < matrix.shape[0] - 1 and j < matrix.shape[1] - 1:
+                    i, j = i + 1, j + 1
+
+    return path_matrix
 
 
 def makeTracerouteMatrixBinary(matrices):
-    traceback_matrix = np.zeros_like(matrices)
-    for batch_idx, matrix in enumerate(matrices):
-        i, j = check_max_on_axes(matrix)
-        # i, j = np.unravel_index(np.argmax(matrix), matrix.shape)
-        while i > 0 and j > 0:
-            if i != 0 and j != 0:
-                direction = np.argmax(
-                    np.array([0, matrix[i - 1, j], matrix[i, j - 1], matrix[i - 1, j - 1]]))
-            elif i > 0 and j == 0:
-                direction = np.argmax(np.array([0, matrix[i - 1, j]]))
-            elif i == 0 and j > 0:
-                direction = np.argmax(np.array([0, matrix[i, j - 1]]))
-            else:
-                direction = 0
+    """
+    matrices: should be a PyTorch tensor (not numpy array)
+    """
+    path_matrix = build_backtrace_matrix_Binary_3d(matrices)
+    # Always pass the original PyTorch tensor as the first argument
+    path_matrix = build_forward_traceback_matrix_Binary_3d(matrices, path_matrix)
+    return path_matrix
 
-            # print(f'i: {i}, j: {j}, direction: {direction}')
-            if direction == 0:  # No Direction
-                traceback_matrix[batch_idx, i, j] = 1
-                if i > 0 and j > 0:
-                    i, j = i - 1, j - 1
-                elif i > 0 and j < 0:
-                    i = i - 1
-                    # break
-                elif i < 0 and j > 0:
-                    j = j - 1
-                elif i < 0 and j < 0:
-                    break
-            elif direction == 1:  # Up
-                traceback_matrix[batch_idx, i, j] = 1
-                # if i > 0:
-                i = i - 1
-            elif direction == 2:  # Left
-                traceback_matrix[batch_idx, i, j] = 1
-                # if j > 0:
-                j = j - 1
-            elif direction == 3:  # Diagonal
-                traceback_matrix[batch_idx, i, j] = 1
-                # if i > 0 and j > 0:
-                i, j = i - 1, j - 1
 
-    return traceback_matrix
+#==================================================================================================
 
 
 def check_max_on_axes(matrix_2d):

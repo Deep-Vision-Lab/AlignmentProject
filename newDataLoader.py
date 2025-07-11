@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 from newDataSet import TextLineModern, window_size
 
-batch_size = 4
+batch_size = 8
 
 # Define paths for NewDataSet
 new_dataset = {
