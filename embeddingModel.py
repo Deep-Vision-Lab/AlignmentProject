@@ -55,12 +55,12 @@ class PositionalEncoding(nn.Module):
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = x + self.pe[:x.size(0), :]
+        x = x + self.pe[:x.size(0), :]  
         return self.dropout(x)
 
 
 class EmbeddingModel(nn.Module):
-    def __init__(self, window_size=128, stride=64, vector_size=512, model_arch='CNN-Transformer'):
+    def __init__(self, window_size=128, stride=64, vector_size=512, model_arch='CNN-Transformer', device='cuda'):
         super(EmbeddingModel, self).__init__()
         
         # self.channel_reducer = nn.Conv2d(3, 1, kernel_size=1, stride=1, padding=0, bias=False)

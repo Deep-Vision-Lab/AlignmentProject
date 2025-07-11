@@ -19,8 +19,9 @@ import wandb
 
 warnings.filterwarnings("ignore")
 
-def saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, cloned_alignment_output_for_viz, cloned_processed_smith_for_viz, smith_matrix_for_char_level_viz,
-                      matrices_epoch_dir, original_text1_batch, original_text2_batch):
+def saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, 
+                    cloned_alignment_output_for_viz, cloned_processed_smith_for_viz, smith_matrix_for_char_level_viz,
+                    matrices_epoch_dir, original_text1_batch, original_text2_batch):
     for i in range(image_a.size(0)): # Iterate through items in the current batch
         # Save token vectors
         # tokens_a and tokens_b are already flipped and on the correct device
@@ -46,9 +47,10 @@ def saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_
             patches_x=patches_x_heatmap.detach().cpu()
         )
 
-        # New visualization: Raw Smith-Waterman matrix (before interpolation)
-        # with original character sequences as axes. seq1 on X, seq2 on Y.
+        # Only run the following if smith_matrix_for_char_level_viz is not None
         if smith_matrix_for_char_level_viz is not None:
+            # New visualization: Raw Smith-Waterman matrix (before interpolation)
+            # with original character sequences as axes. seq1 on X, seq2 on Y.
             current_smith_original_item = smith_matrix_for_char_level_viz[i] # Shape [H_orig, W_orig]
             current_original_text1 = original_text1_batch[i] # string for seq1
             current_original_text2 = original_text2_batch[i] # string for seq2
@@ -80,6 +82,7 @@ def saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_
 
 
 def Train(model, alignment_model, trainLoader, criterion, loss_type, device, normalize_type, epochs=100, learning_rate=1e-4):
+    model.to(device)
     model.train()
     loss_lst = []
 
@@ -88,12 +91,15 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
     
     print("Train DataLoader length:", len(trainLoader))
     for epoch in range(epochs):
+        # Set default values for epoch directories
+        vectors_epoch_dir = None
+        matrices_epoch_dir = None
         # Create directories for this epoch's outputs
-        if epoch % 10 == 9:
-            vectors_epoch_dir = f'TrainResults/{loss_type}/VectorsPerEpoch/{model.model_arch}/epoch_{epoch+1}'
-            matrices_epoch_dir = f'TrainResults/{loss_type}/ScoreMatricesPerEpoch/{model.model_arch}/epoch_{epoch+1}'
-            os.makedirs(vectors_epoch_dir, exist_ok=True)
-            os.makedirs(matrices_epoch_dir, exist_ok=True)
+        # if epoch % 10 == 9:
+        vectors_epoch_dir = f'TrainResults/{loss_type}/VectorsPerEpoch/{model.model_arch}/epoch_{epoch+1}'
+        matrices_epoch_dir = f'TrainResults/{loss_type}/ScoreMatricesPerEpoch/{model.model_arch}/epoch_{epoch+1}'
+        os.makedirs(vectors_epoch_dir, exist_ok=True)
+        os.makedirs(matrices_epoch_dir, exist_ok=True)
 
         epoch_loss = 0
         total_correct = 0
@@ -184,13 +190,11 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
             
             # interpolated_smith_matrix is processed into its final target form (smoothed path)
             processed_smith_matrix_for_loss = smooth_path(smith_path) * smith_path
-            del smith_path
             
             # alignment_output (which was already scaled) is masked by its own extracted path
             alignment_output = alignment_output * alignment_path
-            del alignment_path
 
-            if batch_idx == len(trainLoader) - 1 and epoch % 10 == 9:
+            if batch_idx == len(trainLoader) - 1:
                 # Save token vectors and score matrices for every batch
                 print(f"Epoch {epoch+1}, Batch {batch_idx}: Saving data...")
 
@@ -203,7 +207,16 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
                 saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, cloned_alignment_output_for_viz, 
                                 cloned_processed_smith_for_viz, smith_matrix_for_char_level_viz, matrices_epoch_dir, original_text1_batch, 
                                 original_text2_batch)
+                
+                # Path Visualization testing
+                # cloned_alignment_output_for_viz = alignment_path.clone().detach()
+                # cloned_processed_smith_for_viz = smith_path.clone().detach()
+                # saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, cloned_alignment_output_for_viz, 
+                #                 cloned_processed_smith_for_viz, smith_matrix_for_char_level_viz, matrices_epoch_dir, original_text1_batch, 
+                #                 original_text2_batch)
             
+            del smith_path
+            del alignment_path
             ###################################################################################
 
             # Compute loss
@@ -260,7 +273,7 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
         wandb.log({"Loss": epoch_loss, "Accuracy": epoch_accuracy}, step=epoch, commit=True)
 
         if epoch % 10 == 9:
-            torch.save(cnn_transformer_model.state_dict(), f'Weights/{loss_type}/model_epoch_{epoch+1}.pth')
+            torch.save(cnn_transformer_model.state_dict(), f'Weights/{loss_type}/{model.model_arch}/model_epoch_{epoch+1}.pth')
             print(f"Model saved at epoch {epoch + 1}.") # Changed from "New best model" as there's no best model tracking here
 
     print('Training complete!')
@@ -274,7 +287,7 @@ if __name__ == '__main__':
     vector_size = 16
     normalize_type = 'mean_std' # ['min_max', 'mean_std']
     epochs = 300
-    learning_rate = 1e-4
+    learning_rate = 1e-3
 
     wandb.init(
         # set the wandb project where this run will be logged
@@ -294,7 +307,8 @@ if __name__ == '__main__':
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cnn_transformer_model = EmbeddingModel(window_size=window_size, stride=window_size//2, 
-                                           vector_size=vector_size,model_arch=model_arch).to(device)
+                                           vector_size=vector_size,model_arch=model_arch).to(device)# In Train.py
+                                           
     alignment_model = Alignment(match_score=2, miss_score=-3).to(device)
    
     if loss_type == 'HeightDiff':
