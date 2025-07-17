@@ -60,7 +60,8 @@ class PositionalEncoding(nn.Module):
 
 
 class EmbeddingModel(nn.Module):
-    def __init__(self, window_size=128, stride=64, vector_size=512, model_arch='CNN-Transformer', device='cuda'):
+    def __init__(self, window_size=128, stride=64, vector_size=512, model_arch='CNN-Transformer',
+                  device='cuda'):
         super(EmbeddingModel, self).__init__()
         
         # self.channel_reducer = nn.Conv2d(3, 1, kernel_size=1, stride=1, padding=0, bias=False)
@@ -73,7 +74,7 @@ class EmbeddingModel(nn.Module):
 
         if model_arch == 'CNN-Transformer' or model_arch == 'Transformer':
             self.transformer_encoder = TransformerEncoder(d_model=vector_size, nhead=8, num_layers=6)
-        
+
         self.window_size = window_size
         self.stride = stride
         self.vector_size = vector_size
@@ -87,10 +88,17 @@ class EmbeddingModel(nn.Module):
         if show_dims: print(f"Patches_a shape: {patches_a.shape}, Patches_b shape: {patches_b.shape}")
         
         batches_num, windows_num, Channels, H, W = patches_a.shape
+        
+        # Reshape patches to [batch_size, windows_num, Channels, H, W]
+        if self.model_arch == 'CNN-Transformer' or self.model_arch == 'CNN':        
+            patches_a = patches_a.reshape(batches_num * windows_num, Channels, H, W)
+            patches_b = patches_b.reshape(batches_num * windows_num, Channels, H, W)
+            if show_dims: print(f"Patches_a shape after reshaping: {patches_a.shape}, Patches_b shape after reshaping: {patches_b.shape}")
 
-        patches_a = patches_a.reshape(batches_num * windows_num, Channels, H, W)
-        patches_b = patches_b.reshape(batches_num * windows_num, Channels, H, W)
-        if show_dims: print(f"Patches_a shape after reshaping: {patches_a.shape}, Patches_b shape after reshaping: {patches_b.shape}")
+        # # Compute mean over width (W) for each row
+        # patches_a = self.channel_reducer(patches_a)  # [batch_size, windows_num, 1, H, W]
+        # patches_b = self.channel_reducer(patches_b)  # [batch_size, windows_num, 1, H, W]
+        # if show_dims: print(f"Patches_a shape after channel reduction: {patches_a.shape}, Patches_b shape after channel reduction: {patches_b.shape}")
 
 
         if self.model_arch == 'CNN-Transformer' or self.model_arch == 'CNN':
@@ -100,22 +108,36 @@ class EmbeddingModel(nn.Module):
 
 
         if self.model_arch == 'Transformer':
-            convert_to_vectors = nn.Sequential(
-                nn.AdaptiveAvgPool2d((1, 1)),
-                nn.Flatten(),
-                nn.Linear(in_features=Channels, out_features=self.vector_size)
-            ).to(patches_a.device) 
+            # Compute mean over width (W) for each row
+            mean_a = patches_a.mean(dim=2)  # [batch_size, windows_num, H, W]
+            mean_b = patches_b.mean(dim=2)  # [batch_size, windows_num, H, W]
+            if show_dims: print(f"mean_a shape: {mean_a.shape}, mean_b shape: {mean_b.shape}")
 
-            tokens_a = convert_to_vectors(patches_a)
-            tokens_b = convert_to_vectors(patches_b)
+            # Compute mean over width (W) for each row
+            mean_a = mean_a.mean(dim=-1)  # [batch_size, windows_num, 1, H, W]
+            mean_b = mean_b.mean(dim=-1)  # [batch_size, windows_num, 1, H, W]
+            if show_dims: print(f"mean_a shape: {mean_a.shape}, mean_b shape: {mean_b.shape}")
+            
+            # Reshape for transformer: [batch_size * windows_num, Channels*H]
+            tokens_a = mean_a.reshape(-1, mean_a.shape[-1])
+            tokens_b = mean_b.reshape(-1, mean_b.shape[-1])
+            if show_dims: print(f"Tokens_a shape: {tokens_a.shape}, Tokens_b shape: {tokens_b.shape}")
+            
+            # Convert to vectors
+            convert_to_vectors = nn.Sequential(
+                nn.Linear(in_features=tokens_a.shape[-1], out_features=self.vector_size)
+            ).to(patches_a.device) 
+            tokens_a = convert_to_vectors(tokens_a)
+            tokens_b = convert_to_vectors(tokens_b)
             if show_dims: print(f"Tokens_a shape: {tokens_a.shape}, Tokens_b shape: {tokens_b.shape}")
 
-            
+        
         if self.model_arch == 'CNN-Transformer' or self.model_arch == 'Transformer':
             tokens_a = self.transformer_encoder(tokens_a)
             tokens_b = self.transformer_encoder(tokens_b)
             if show_dims: print(f"Tokens_a shape after permuting: {tokens_a.shape}, Tokens_b shape after permuting: {tokens_b.shape}")
         
+
         tokens_a = tokens_a.view(batches_num, windows_num, self.vector_size)
         tokens_b = tokens_b.view(batches_num, windows_num, self.vector_size)
         if show_dims: print(f"Tokens_a shape after reshaping: {tokens_a.shape}, Tokens_b shape after reshaping: {tokens_b.shape}")
@@ -131,12 +153,11 @@ if __name__ == "__main__":
     
     # Instantiate the alignment model
     model = EmbeddingModel(window_size=64, stride=32, vector_size=64,
-                            model_arch='CNN-Transformer') # ['CNN-Transformer','CNN','Transformer']
+                            model_arch='CNN') # ['CNN-Transformer','CNN','Transformer']
     
     # Forward pass: get token sequences for both images
     tokens_a, tokens_b = model(image_a, image_b,  show_dims=True)
     
     # Output token shapes
-    # print(f"Tokens A shape: {tokens_a.shape}")
-    # print(f"Tokens B shape: {tokens_b.shape}") 
-                          
+    print(f"Tokens A shape: {tokens_a.shape}")
+    print(f"Tokens B shape: {tokens_b.shape}")
