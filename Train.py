@@ -130,10 +130,6 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
             batch_correct = 0
             batch_total = 0
 
-            # Store a clone of the original smith_matrix (before interpolation) for character-level visualization
-            smith_matrix_for_char_level_viz = None
-            if batch_idx == len(trainLoader) - 1 and epoch % 10 == 9: # Or any other condition for visualization
-                smith_matrix_for_char_level_viz = current_smith_matrix.clone().detach()
 
             ###################################################################################
             # 1. Interpolate smith_matrix_loaded to match alignment_output_raw's dimensions
@@ -189,10 +185,13 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
             # Smooth paths and apply path masks
             
             # interpolated_smith_matrix is processed into its final target form (smoothed path)
-            processed_smith_matrix_for_loss = smooth_path(smith_path) * smith_path
+            processed_smith_matrix_for_loss = smooth_path(smith_path)
+            del smith_path
             
             # alignment_output (which was already scaled) is masked by its own extracted path
             alignment_output = alignment_output * alignment_path
+            del alignment_path
+            
 
             if batch_idx == len(trainLoader) - 1:
                 # Save token vectors and score matrices for every batch
@@ -204,6 +203,7 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
                 # Use processed_smith_matrix_for_loss for the existing heatmap.
                 cloned_alignment_output_for_viz = alignment_output.clone().detach()
                 cloned_processed_smith_for_viz = processed_smith_matrix_for_loss.clone().detach()
+                smith_matrix_for_char_level_viz = current_smith_matrix.clone().detach()
                 saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, cloned_alignment_output_for_viz, 
                                 cloned_processed_smith_for_viz, smith_matrix_for_char_level_viz, matrices_epoch_dir, original_text1_batch, 
                                 original_text2_batch)
@@ -215,8 +215,6 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
                 #                 cloned_processed_smith_for_viz, smith_matrix_for_char_level_viz, matrices_epoch_dir, original_text1_batch, 
                 #                 original_text2_batch)
             
-            del smith_path
-            del alignment_path
             ###################################################################################
 
             # Compute loss
@@ -282,9 +280,9 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
 
 if __name__ == '__main__':
     loss_type = 'HeightDiff' # ['HeightDiff', 'MSE']
-    model_arch = 'CNN' # ['CNN-Transformer','CNN','Transformer']
+    model_arch = 'Transformer' # ['CNN-Transformer','CNN','Transformer']
     window_size = 32
-    vector_size = 16
+    vector_size = 64
     normalize_type = 'mean_std' # ['min_max', 'mean_std']
     epochs = 300
     learning_rate = 1e-3
