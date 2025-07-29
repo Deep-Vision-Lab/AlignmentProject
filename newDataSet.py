@@ -9,6 +9,8 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 def textual_sliding_window(text, window_size, step_size):
     output = []
     for i in range(0, len(text) - window_size + 1, step_size):
@@ -89,7 +91,7 @@ class TextLineModern(Dataset):
                 img1 = self.transform(img1)
                 img2 = self.transform(img2)
 
-            score_matrix = torch.tensor(score_matrix, dtype=torch.float32,requires_grad=True)
+            score_matrix = torch.tensor(score_matrix, dtype=torch.float32,requires_grad=True).to(device)
 
             # read text files
             # Tokenize words from images

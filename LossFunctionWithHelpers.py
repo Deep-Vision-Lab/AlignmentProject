@@ -32,7 +32,7 @@ def smooth_path(mask, kernel_size=5, sigma=1):
     return smoothed_mask.squeeze(1)
 
 
-def compute_path_loss(inputs, targets):
+def HeightDiff_loss(inputs, targets, lamda=0.5):
     """
     Compute the path-based loss using weighted column summation.
 
@@ -44,9 +44,33 @@ def compute_path_loss(inputs, targets):
         torch.Tensor: Scalar loss value.
     """
     B, H, W = targets.shape  # Get height and width
-    height_weights = torch.arange(1, H + 1, device=targets.device).unsqueeze(1).repeat(1, W)  # Column height weights
-    height_weights = height_weights.unsqueeze(0).repeat(B, 1, 1)
 
+
+    # Vertical column-wise weighted summation
+    height_weights = torch.arange(0, H, device=targets.device).unsqueeze(1).repeat(1, W)  # Column height weights
+    height_weights = height_weights.unsqueeze(0).repeat(B, 1, 1)
+    height_weights = height_weights.flip(dims=[1])  # Flip to match the original orientation
+    # print(f'height_weights: {height_weights}')
+    # Ensure tensors require gradients
+    targets = targets.requires_grad_(True)
+    inputs = inputs.requires_grad_(True)
+
+    # Compute column-wise weighted sum
+    weighted_HS = (targets * height_weights).sum(dim=1)  # Sum over colums (height-weighted)
+    weighted_HA = (inputs * height_weights).sum(dim=1)
+    # print(f'Vertical weighted_HS: {weighted_HS.shape}')
+    # print(f'Vertical weighted_HA: {weighted_HA.shape}')
+
+    # Compute absolute column-wise difference
+    vertical_loss = torch.abs(weighted_HS - weighted_HA).mean()
+
+    #######################################################################################################################
+    #Horizontal column-wise weighted summation
+
+    height_weights = torch.arange(0, W, device=targets.device).unsqueeze(1).repeat(1, H).T  # Column height weights
+    height_weights = height_weights.unsqueeze(0).repeat(B, 1, 1)
+    # print(f'Horizontal height_weights: {height_weights.shape}')
+    # print(f'height_weights: {height_weights}')
     # Ensure tensors require gradients
     targets = targets.requires_grad_(True)
     inputs = inputs.requires_grad_(True)
@@ -54,8 +78,14 @@ def compute_path_loss(inputs, targets):
     # Compute column-wise weighted sum
     weighted_HS = (targets * height_weights).sum(dim=2)  # Sum over rows (height-weighted)
     weighted_HA = (inputs * height_weights).sum(dim=2)
-    # print(f'weighted_HS: {weighted_HS.shape}')
-    # print(f'weighted_HA: {weighted_HA.shape}')
+    # print(f'Horizontal weighted_HS: {weighted_HS.shape}')
+    # print(f'Horizontal weighted_HA: {weighted_HA.shape}')
+
+    # Compute absolute column-wise difference
+    horizontal_loss = torch.abs(weighted_HS - weighted_HA).mean()
+
+    loss = lamda * vertical_loss + (1 - lamda) * horizontal_loss
+    return loss
     ################################################################################
     # if plot_vectors:
     #     save_Vectors_plot(weighted_HA.cpu().detach().numpy(), weighted_HS.cpu().detach().numpy(),
@@ -70,7 +100,87 @@ def compute_path_loss(inputs, targets):
     #         f.write(f'vectors {batch_idx}_{i} similarity: {cosine_sim}\n')
     ################################################################################
 
-    # Compute absolute column-wise difference
-    loss = torch.abs(weighted_HS - weighted_HA).mean()
 
+def guided_attention_loss(pred, target, g=0.2, alpha=1.0):
+    """
+    Guided Attention Loss for sequence alignment tasks.
+    Penalizes attention away from the diagonal and encourages prediction to match the ground truth path.
+
+    Args:
+        pred (torch.Tensor): Predicted attention/alignment map of shape [B, H, W].
+        target (torch.Tensor): Ground truth path mask of shape [B, H, W].
+        g (float): Gaussian spread parameter (controls width of diagonal band).
+        alpha (float): Weight for the guided attention regularization term.
+
+    Returns:
+        torch.Tensor: Scalar loss value.
+    """
+    B, H, W = pred.shape
+    device = pred.device
+    # Create normalized position indices
+    i = torch.arange(H, device=device).unsqueeze(1) / H  # [H, 1]
+    j = torch.arange(W, device=device).unsqueeze(0) / W  # [1, W]
+    # Compute Gaussian mask centered on diagonal
+    guided_mask = 1.0 - torch.exp(-((i - j) ** 2) / (2 * g * g))  # [H, W]
+    guided_mask = guided_mask.unsqueeze(0).expand(B, -1, -1)  # [B, H, W]
+    # Main loss: encourage prediction to match ground truth path
+    main_loss = F.mse_loss(pred, target)
+    # Regularization: penalize attention away from diagonal
+    reg_loss = (pred * guided_mask).mean()
+    return main_loss + alpha * reg_loss
+
+
+
+def dice_loss(pred, target, eps=1e-8):
+    """
+    Dice Loss for binary segmentation/alignment tasks.
+    Args:
+        pred (torch.Tensor): Predicted mask [B, H, W] or [B, 1, H, W].
+        target (torch.Tensor): Ground truth mask [B, H, W] or [B, 1, H, W].
+        eps (float): Smoothing term to avoid division by zero.
+    Returns:
+        torch.Tensor: Scalar loss value.
+    """
+    # Flatten if needed
+    if pred.dim() == 4:
+        pred = pred.squeeze(1)
+    if target.dim() == 4:
+        target = target.squeeze(1)
+    pred = pred.contiguous().view(pred.size(0), -1)
+    target = target.contiguous().view(target.size(0), -1)
+    intersection = (pred * target).sum(dim=1)
+    union = pred.sum(dim=1) + target.sum(dim=1)
+    dice = (2. * intersection + eps) / (union + eps)
+    loss = 1 - dice.mean()
     return loss
+
+
+
+def multi_label_loss(pred, target, eps=1e-8):
+    print(f'pred: {pred.shape}')
+    print(f'target: {target.shape}')
+    # Use softmax on logits, then KL divergence
+    log_probs = torch.nn.functional.log_softmax(pred, dim=1)
+    #normalize target to ensure it sums to 1
+    target = target / (target.sum(dim=1, keepdim=True) + eps)
+    # Compute KL divergence loss
+    loss = torch.nn.functional.kl_div(log_probs, target, reduction='batchmean')
+    print(f'multi_label_loss: {loss}')
+    loss = loss.mean()  # Average over batch
+    print(f'final multi_label_loss: {loss}')
+    return loss
+
+
+if __name__ == "__main__":
+    # Example usage
+    inputs = torch.randn(2, 10, 15)  # Simulated input tensor
+    targets = torch.randn(2, 10, 15)  # Simulated target tensor
+
+    # Apply smoothing
+    smoothed_inputs = smooth_path(inputs)
+    smoothed_targets = smooth_path(targets)
+
+    # Compute loss
+    loss = compute_path_loss(smoothed_inputs, smoothed_targets)
+    print(f"Computed loss: {loss.item()}")
+
