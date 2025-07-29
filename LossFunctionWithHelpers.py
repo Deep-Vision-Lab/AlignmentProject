@@ -157,17 +157,17 @@ def dice_loss(pred, target, eps=1e-8):
 
 
 def multi_label_loss(pred, target, eps=1e-8):
-    print(f'pred: {pred.shape}')
-    print(f'target: {target.shape}')
+    # print(f'pred: {pred.shape}')
+    # print(f'target: {target.shape}')
     # Use softmax on logits, then KL divergence
     log_probs = torch.nn.functional.log_softmax(pred, dim=1)
     #normalize target to ensure it sums to 1
     target = target / (target.sum(dim=1, keepdim=True) + eps)
     # Compute KL divergence loss
     loss = torch.nn.functional.kl_div(log_probs, target, reduction='batchmean')
-    print(f'multi_label_loss: {loss}')
+    # print(f'multi_label_loss: {loss}')
     loss = loss.mean()  # Average over batch
-    print(f'final multi_label_loss: {loss}')
+    # print(f'final multi_label_loss: {loss}')
     return loss
 
 
