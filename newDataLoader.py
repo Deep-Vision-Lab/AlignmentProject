@@ -6,6 +6,9 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 from newDataSet import TextLineModern, window_size
 
+from AlignmentAlgo import Alignment
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 batch_size = 8
 
 # Define paths for NewDataSet
@@ -106,6 +109,9 @@ def custom_collate_fn(batch):
     # Pad and stack smith matrices
     # Smoothing can be enabled here if desired, e.g., pad_matrices(smith_matrices, smooth=True)
     smith_matrices = pad_matrices(smith_matrices, smooth=False) # Defaulting to no smoothing for now
+    alignment_model = Alignment(match_score=6, miss_score=-6).to(device)
+    smith_matrices = alignment_model(calc_output=smith_matrices,
+                                                calc_cosine=False).to(device)
     # smith_matrices = torch.flip(smith_matrices, dims=[0, 1])
     
     # Keep sequences as a list of lists

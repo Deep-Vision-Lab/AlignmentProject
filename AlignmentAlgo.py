@@ -4,6 +4,8 @@ import jax
 import jax.dlpack
 from matplotlib import pyplot as plt
 import jax.numpy as jnp 
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 # A generic mechanism for turning a JAX function into a PyTorch function.
@@ -58,7 +60,11 @@ def sw_with_gap(batch=True, unroll=2, gap_penalty=-1):
         a, b = x.shape
         ar, br = jnp.arange(a)[::-1, None], jnp.arange(b)[None, :]
         i, j = (br - ar) + (a - 1), (ar + br) // 2
+        # jax.debug.print("{x}", x=i)
+        # jax.debug.print("{x}", x=j)
         n, m = (a + b - 1), (a + b) // 2
+        # print(f'n: {n}')
+        # print(f'm: {m}')
         zero = jnp.zeros([n, m])
         if mask is None: mask = 1.0
         output = {
@@ -66,6 +72,8 @@ def sw_with_gap(batch=True, unroll=2, gap_penalty=-1):
             "m": zero.at[i, j].set(mask),  # Set mask values
             "o": (jnp.arange(n) + a % 2) % 2  # For alternating row shifts
         }
+        # print(f'output: {output["x"].shape}')
+        # jax.debug.print("{x}",x=output['m'])
         prev = (jnp.zeros(m), jnp.zeros(m))  # Initial previous values
         return output, prev, (i, j)
 
@@ -238,29 +246,59 @@ class Alignment(nn.Module):
         self.sw_fn_torch = jax2torch(jax.jit(sw_with_gap())) 
         
         # self.sw_fn_torch = jax2torch(jax.jit(sw_simple()))
-    def forward(self, x1, x2):      
-        self.output = self.cosine_similarity_layer(x1, x2)  
-        new_output = torch.squeeze(self.output, dim=0)
-        self.align = self.sw_fn_torch(new_output)
+    def forward(self, x1=None, x2=None, calc_output=None, calc_cosine=True):
+        if calc_cosine:
+            self.output = self.cosine_similarity_layer(x1, x2)  
+            new_output = torch.squeeze(self.output, dim=0)
+            # visualize_heatmap_with_values(new_output[0], title="Cosine Similarity Heatmap")
+            self.align = self.sw_fn_torch(new_output)
+            # visualize_heatmap_with_values(self.align[0], title="Alignment Heatmap")
+        else:
+            self.align = self.sw_fn_torch(calc_output)
         return self.align
 
 ###########################################################################
 # Test
+def visualize_heatmap_with_values(tensor, title="Heatmap", cmap="viridis"):
+    arr = tensor.detach().cpu().numpy()
+    plt.figure(figsize=(30, 20))
+    plt.imshow(arr, cmap=cmap, aspect='auto')
+    plt.title(title)
+    plt.colorbar()
+    # Show values in each cell
+    for (i, j), val in np.ndenumerate(arr):
+        plt.text(j, i, f"{val:.2f}", ha='center', va='center', color='white', fontsize=8)
+    plt.xlabel('Columns')
+    plt.ylabel('Rows')
+    plt.tight_layout()
+    plt.savefig(f"{title.replace(' ', '_')}.png")
+    plt.close()
+
 
 if __name__ == '__main__':
     # Example usage - output CNN or transformer
-    x1 = torch.rand(8, 20, 512, requires_grad=True)  # Random tensor for the first input
-    x2 = torch.rand(8, 20, 512, requires_grad=True)  # Random tensor for the second input
+    # Create tensors with 4 consecutive nonzero elements, rest zeros
+    x1 = torch.ones(2, 20, 512)
+    x2 = torch.ones(2, 20, 512)
+    # Set elements 8-11 to random values for both x1 and x2
+    x1[:, 8:12, :] = torch.rand(2, 4, 512)
+    x2[:, 8:12, :] = torch.rand(2, 4, 512)
+    x1.requires_grad = True
+    x2.requires_grad = True
     # x1.data *= 2 
     # x2.data *= 0.5
     # Create the Cosine Similarity layer
-    cosine_similarity_layer = CosineSimilarityLayer(matchscore=3, missscore=-3)
+    alignment = Alignment(match_score=7, miss_score=-7)
     # Get the cosine similarity output
-    output = cosine_similarity_layer(x1, x2)
-    y = output.sum()
-    y.backward()
-    # print(output)
-    print(f'x1 gradient: {x1.grad.sum().item()}')
-    print(f'x2 gradient: {x2.grad.sum().item()}')
+    output = alignment(x1, x2)
+    # y = output.sum()
+    # y.backward()
+    # # print(output)
+    # print(f'x1 gradient: {x1.grad.sum().item()}')
+    # print(f'x2 gradient: {x2.grad.sum().item()}')
+     # Visualize heatmap for output[0]
+    # print("Output[0] shape:", output[0])
+    # visualize_heatmap_with_values(output[0], title="Cosine Similarity Heatmap (output[0])")
+    # print("Saved heatmap as Cosine_Similarity_Heatmap_(output[0]).png")
     
     exit(0)

@@ -17,6 +17,8 @@ import sys
 
 import wandb
 
+
+from AlignmentAlgo import visualize_heatmap_with_values
 warnings.filterwarnings("ignore")
 
 def saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, 
@@ -81,21 +83,61 @@ def saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_
             )
 
 
+def interpolate_smith_matrix(current_smith_matrix, target_shape):
+    """
+    Interpolates the smith matrix to match the target shape (usually alignment output shape).
+    Args:
+        current_smith_matrix (torch.Tensor): Smith matrix, shape [B, H, W] or [H, W]
+        target_shape (tuple): Target (H, W) shape
+    Returns:
+        torch.Tensor: Interpolated smith matrix, shape [B, H_new, W_new]
+    """
+    if current_smith_matrix.dim() == 2:
+        interpolated = current_smith_matrix.unsqueeze(0).unsqueeze(0)
+    elif current_smith_matrix.dim() == 3:
+        interpolated = current_smith_matrix.unsqueeze(1)
+    else:
+        raise ValueError(f"Unexpected smith matrix shape: {current_smith_matrix.shape}")
+    interpolated = F.interpolate(interpolated, size=target_shape, mode='bilinear')
+    interpolated = interpolated.squeeze(1)
+    return interpolated
+
+
+
+def smooth_and_normalize_matrix(matrix, normalize_type):
+    """
+    Optionally smooth and normalize the alignment output tensor.
+    Args:
+        matrix (torch.Tensor): The alignment output tensor.
+        interpolated_smith_matrix (torch.Tensor): The smith matrix after interpolation (for scaling).
+        normalize_type (str): Normalization type: 'min_max', 'mean_std', or ''.
+    Returns:
+        torch.Tensor: Smoothed and normalized alignment output.
+    """
+    matrix = smooth_path(matrix)
+    if normalize_type == 'min_max':
+        alignment_min = matrix.min()
+        alignment_max = matrix.max()
+        matrix = 2 * (matrix - alignment_min) / (alignment_max - alignment_min + 1e-8) - 1
+    elif normalize_type == 'mean_std':
+        alignment_mean = matrix.mean(dim=(1, 2), keepdim=True)
+        alignment_std = matrix.std(dim=(1, 2), keepdim=True)
+        matrix = (matrix - alignment_mean) / (alignment_std + 1e-8)
+    return matrix
+
+
+
+
 def Train(model, alignment_model, trainLoader, criterion, loss_type, device, normalize_type, epochs=100, learning_rate=1e-4):
     model.to(device)
     model.train()
-    loss_lst = []
-
-    print(f"Using device: {device}")
     optimizer = optim.Adam(list(model.parameters()), lr=learning_rate)
-    
+    loss_lst = []
+    print(f"Using device: {device}")
     print("Train DataLoader length:", len(trainLoader))
+
     for epoch in range(epochs):
-        # Set default values for epoch directories
-        vectors_epoch_dir = None
-        matrices_epoch_dir = None
-        # Create directories for this epoch's outputs
-        # if epoch % 10 == 9:
+        # Prepare output directories
         vectors_epoch_dir = f'TrainResults/{loss_type}/VectorsPerEpoch/{model.model_arch}/epoch_{epoch+1}'
         matrices_epoch_dir = f'TrainResults/{loss_type}/ScoreMatricesPerEpoch/{model.model_arch}/epoch_{epoch+1}'
         os.makedirs(vectors_epoch_dir, exist_ok=True)
@@ -104,186 +146,107 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
         epoch_loss = 0
         total_correct = 0
         total_elements = 0
-        for batch_idx, (image_a, image_b, smith_matrix_original_batch, seq1_tokenized, seq2_tokenized, original_text1_batch, original_text2_batch) in enumerate(trainLoader):            
+
+        for batch_idx, (image_a, image_b, smith_matrix_original_batch, seq1_tokenized, seq2_tokenized, original_text1_batch, original_text2_batch) in enumerate(trainLoader):
             optimizer.zero_grad()
 
+            # Move data to device
             image_a = image_a.to(device)
-            image_a.retain_grad()
+            image_a.requires_grad_(True)
             image_b = image_b.to(device)
-            image_b.retain_grad()
-            
-            # smith_matrix_original_batch is already on device if dataloader sends it there, or needs .to(device)
-            current_smith_matrix = smith_matrix_original_batch.to(device) 
-            current_smith_matrix.retain_grad()
-            
+            image_b.requires_grad_(True)
+            current_smith_matrix = smith_matrix_original_batch.to(device)
+
+            # Forward pass
             tokens_a, tokens_b = model(image_a, image_b)
-            tokens_a, tokens_b = tokens_a.to(device), tokens_b.to(device)
-            
-            tokens_a = torch.flip(tokens_a, dims=[1])
-            tokens_b = torch.flip(tokens_b, dims=[1])
-            
-            tokens_a.retain_grad()
-            tokens_b.retain_grad()
-            
-            alignment_output = alignment_model(tokens_a, tokens_b).to(device)
+            tokens_a = torch.flip(tokens_a.to(device), dims=[1])
+            tokens_b = torch.flip(tokens_b.to(device), dims=[1])
+            alignment_output = alignment_model(x1=tokens_a, x2=tokens_b).to(device)
 
-            batch_correct = 0
-            batch_total = 0
+            # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
 
-
-            ###################################################################################
-            # 1. Interpolate smith_matrix_loaded to match alignment_output_raw's dimensions
-            # Use current_smith_matrix for interpolation
-            if current_smith_matrix.dim() == 2: # Should not happen with batching
-                # [H, W] -> [1, 1, H, W]
-                interpolated_smith_matrix = current_smith_matrix.unsqueeze(0).unsqueeze(0)
-            elif current_smith_matrix.dim() == 3: # Batch of matrices [B, H, W]
-                # [C, H, W] -> [1, C, H, W]
-                interpolated_smith_matrix = current_smith_matrix.unsqueeze(1) # [B, 1, H, W]
-            
+            # Interpolate smith matrix to match alignment output shape
             new_size = alignment_output.shape[-2:]
-            # The 'linear' mode for interpolate is for 3D tensors. For 4D tensors (B, C, H, W),
-            # 'bilinear' should be used. align_corners=False is recommended to avoid warnings.
-            interpolated_smith_matrix = F.interpolate(interpolated_smith_matrix, size=new_size, mode='bilinear')
-            interpolated_smith_matrix = interpolated_smith_matrix.squeeze(1) # [B, H_new, W_new]
-            
+            interpolated_smith_matrix = interpolate_smith_matrix(current_smith_matrix, new_size)
             assert interpolated_smith_matrix.shape == alignment_output.shape, \
                 f"Shapes after interpolation do not match! alignment_output: {alignment_output.shape}, interpolated_smith_matrix: {interpolated_smith_matrix.shape}"
-            ###################################################################################
 
-            # 3a. Normalize alignment_output
-            if normalize_type == 'min_max':
-                alignment_min = alignment_output.min()
-                alignment_max = alignment_output.max()
-                alignment_output = 2 * (alignment_output - alignment_min) / (alignment_max - alignment_min + 1e-8) - 1
-                
-                # Scale normalized tensor to match smith_matrix's max value
-                # At this point, interpolated_smith_matrix is the one to compare against for scaling
-                smith_max = interpolated_smith_matrix.max() # Max of the interpolated version
-                alignment_output = alignment_output * smith_max
-                del alignment_min, alignment_max, smith_max
-            
-            elif normalize_type == 'mean_std':
-                alignment_mean = alignment_output.mean(dim=(1, 2), keepdim=True)
-                alignment_std = alignment_output.std(dim=(1, 2), keepdim=True)
-                alignment_output = (alignment_output - alignment_mean) / (alignment_std + 1e-8)
-                
-                del alignment_mean, alignment_std
+            # Optionally smooth and normalize alignment output
+            # alignment_output = smooth_and_normalize_matrix(alignment_output, normalize_type)
+            # interpolated_smith_matrix = smooth_and_normalize_matrix(interpolated_smith_matrix, normalize_type)
 
-            ###################################################################################
-            # Extract traceback paths
-            
-            # Path is extracted from the scaled alignment_output
+            # visualize_heatmap_with_values(current_smith_matrix[0], title=f"Smith Matrix_batch_{batch_idx}")
+            # Extract paths
+            # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
+
             alignment_np = alignment_output.detach().cpu().numpy()
             alignment_path = torch.tensor(makeTracerouteMatrixBinary(alignment_np), dtype=torch.float32, device=device)
-            
-            # Path is extracted from the interpolated smith_matrix
+            alignment_output = alignment_output * alignment_path
             smith_np = interpolated_smith_matrix.detach().cpu().numpy()
             smith_path = torch.tensor(makeTracerouteMatrixBinary(smith_np), dtype=torch.float32, device=device)
-            
-            ###################################################################################
-            # Smooth paths and apply path masks
-            
-            # interpolated_smith_matrix is processed into its final target form (smoothed path)
-            processed_smith_matrix_for_loss = smooth_path(smith_path)
-            del smith_path
-            
-            # alignment_output (which was already scaled) is masked by its own extracted path
-            alignment_output = alignment_output * alignment_path
-            del alignment_path
-            
 
+            # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
+
+            # Save heatmaps for last batch
             if batch_idx == len(trainLoader) - 1:
-                # Save token vectors and score matrices for every batch
                 print(f"Epoch {epoch+1}, Batch {batch_idx}: Saving data...")
-
-                # Clone the relevant tensors for visualization.
-                # alignment_output is path-masked.
-                # smith_matrix is the smoothed path version.
-                # Use processed_smith_matrix_for_loss for the existing heatmap.
-                cloned_alignment_output_for_viz = alignment_output.clone().detach()
-                cloned_processed_smith_for_viz = processed_smith_matrix_for_loss.clone().detach()
+                cloned_alignment_output_for_viz = alignment_path.clone().detach()
+                cloned_processed_smith_for_viz = smith_path.clone().detach()
                 smith_matrix_for_char_level_viz = current_smith_matrix.clone().detach()
                 saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, cloned_alignment_output_for_viz, 
                                 cloned_processed_smith_for_viz, smith_matrix_for_char_level_viz, matrices_epoch_dir, original_text1_batch, 
                                 original_text2_batch)
-                
-                # Path Visualization testing
-                # cloned_alignment_output_for_viz = alignment_path.clone().detach()
-                # cloned_processed_smith_for_viz = smith_path.clone().detach()
-                # saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, cloned_alignment_output_for_viz, 
-                #                 cloned_processed_smith_for_viz, smith_matrix_for_char_level_viz, matrices_epoch_dir, original_text1_batch, 
-                #                 original_text2_batch)
-            
-            ###################################################################################
 
-            # Compute loss
-            path_loss = criterion(alignment_output, processed_smith_matrix_for_loss)
+            # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
 
-            # Accuracy Calculation
-            correct = (torch.abs(alignment_output - processed_smith_matrix_for_loss) < 0.1).float()
-            batch_correct += correct.sum().item()
-            # Make sure smith_matrix for numel is the one used in loss
-            batch_total += processed_smith_matrix_for_loss.numel() 
-            
-            del alignment_output, processed_smith_matrix_for_loss, interpolated_smith_matrix, current_smith_matrix
+            # Compute loss and accuracy
+            path_loss = criterion(alignment_output, smith_path)
+            correct = (torch.abs(alignment_path - smith_path) < 0.1).float()
+            batch_correct = correct.sum().item()
+            batch_total = smith_path.numel()
 
             epoch_loss += path_loss.item()
-             
+            total_correct += batch_correct
+            total_elements += batch_total
+
             # Backpropagation
             path_loss.backward()
             optimizer.step()
 
-            # print(f'image A gradient: {image_a.grad.sum()}')
-            # print(f'image B gradient: {image_b.grad.sum()}')
-
-
-            batch_accuracy = (batch_correct / batch_total) if batch_total > 0 else 0
-            total_correct += batch_correct
-            total_elements += batch_total
-
-            # Print stats every 10 batches
             if batch_idx % 10 == 0:
-                print(f'Epoch {epoch+1}, Batch {batch_idx}, Loss: {path_loss.item()}, Accuracy: {batch_accuracy * 100:.2f}%')
-            
-            del path_loss
-        
-            # gradient_a = image_a.grad.sum()
-            # gradient_b = image_b.grad.sum()
-            # print(f'image_a gradient: {gradient_a}')
-            # print(f'image_b gradient: {gradient_b}')
+                batch_accuracy = (batch_correct / batch_total) * 100 if batch_total > 0 else 0
+                print(f'Epoch {epoch+1}, Batch {batch_idx}, Loss: {path_loss.item()}, Accuracy: {batch_accuracy:.2f}%')
 
-            # wandb.log({"Image A Gradient": torch.abs(gradient_a),
-            #             "Image B Gradient": torch.abs(gradient_b)})
 
-            # Delete tensors from the last batch of the epoch
-            del image_a, image_b, tokens_a, tokens_b 
-            torch.cuda.empty_cache()  # Release unused memory from GPU cache
-        
-        
-        # Compute epoch accuracy
+            #print gradients for debugging
+            print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
+
+            # Free memory
+            del path_loss, image_a, image_b, tokens_a, tokens_b, alignment_output, interpolated_smith_matrix, current_smith_matrix, smith_path, alignment_path
+            torch.cuda.empty_cache()
+
+        # Epoch summary
         epoch_accuracy = (total_correct / total_elements) * 100 if total_elements > 0 else 0
-        epoch_loss = epoch_loss/len(trainLoader)
-
+        epoch_loss = epoch_loss / len(trainLoader)
         print(f'Epoch {epoch+1} - Loss: {epoch_loss:.4f}, Accuracy: {epoch_accuracy:.2f}%')
-
         loss_lst.append(epoch_loss)
         wandb.log({"Loss": epoch_loss, "Accuracy": epoch_accuracy}, step=epoch, commit=True)
 
+        # Save model every 10 epochs
         if epoch % 10 == 9:
-            torch.save(cnn_transformer_model.state_dict(), f'Weights/{loss_type}/{model.model_arch}/model_epoch_{epoch+1}.pth')
-            print(f"Model saved at epoch {epoch + 1}.") # Changed from "New best model" as there's no best model tracking here
+            torch.save(model.state_dict(), f'Weights/{loss_type}/{model.model_arch}/model_epoch_{epoch+1}.pth')
+            print(f"Model saved at epoch {epoch + 1}.")
 
     print('Training complete!')
     return loss_lst
 
 
 if __name__ == '__main__':
-    loss_type = 'HeightDiff' # ['HeightDiff', 'MSE']
+    loss_type = 'CrossEntropy' # ['HeightDiff', 'MSE', 'GuidedAttention', 'CrossEntropy', 'Dice']
     model_arch = 'Transformer' # ['CNN-Transformer','CNN','Transformer']
     window_size = 32
     vector_size = 64
-    normalize_type = 'mean_std' # ['min_max', 'mean_std']
+    normalize_type = '' # ['min_max', 'mean_std']
     epochs = 300
     learning_rate = 1e-3
 
@@ -307,13 +270,18 @@ if __name__ == '__main__':
     cnn_transformer_model = EmbeddingModel(window_size=window_size, stride=window_size//2, 
                                            vector_size=vector_size,model_arch=model_arch).to(device)# In Train.py
                                            
-    alignment_model = Alignment(match_score=2, miss_score=-3).to(device)
+    alignment_model = Alignment(match_score=6, miss_score=-6).to(device)
    
     if loss_type == 'HeightDiff':
-        criterion = compute_path_loss
+        criterion = HeightDiff_loss
     elif loss_type == 'MSE':
         criterion = nn.MSELoss()
-
+    elif loss_type == 'GuidedAttention':
+        criterion = guided_attention_loss
+    elif loss_type == 'CrossEntropy':
+        criterion = multi_label_loss
+    elif loss_type == 'Dice':
+        criterion = dice_loss
 
     loss_lst = Train(cnn_transformer_model, alignment_model, train_dataloader,
                       criterion, loss_type, device, normalize_type,epochs,learning_rate)
