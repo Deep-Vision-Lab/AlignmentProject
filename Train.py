@@ -152,32 +152,41 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
 
             # Move data to device
             image_a = image_a.to(device)
-            image_a.requires_grad_(True)
+            image_a.retain_grad()
             image_b = image_b.to(device)
-            image_b.requires_grad_(True)
-            current_smith_matrix = smith_matrix_original_batch.to(device)
+            image_b.retain_grad()
+            current_smith_matrix = smith_matrix_original_batch.to(device) 
+            current_smith_matrix.retain_grad()
 
             # Forward pass
             tokens_a, tokens_b = model(image_a, image_b)
-            tokens_a = torch.flip(tokens_a.to(device), dims=[1])
-            tokens_b = torch.flip(tokens_b.to(device), dims=[1])
-            alignment_output = alignment_model(x1=tokens_a, x2=tokens_b).to(device)
+            tokens_a = torch.flip(tokens_a, dims=[1])
+            tokens_b = torch.flip(tokens_b, dims=[1])
+            alignment_output = alignment_model(x1=tokens_a, x2=tokens_b)
 
-            # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
-
+            ######################################################################################################################################
             # Interpolate smith matrix to match alignment output shape
+
+             # Interpolate smith matrix to match alignment output shape
             new_size = alignment_output.shape[-2:]
             interpolated_smith_matrix = interpolate_smith_matrix(current_smith_matrix, new_size)
             assert interpolated_smith_matrix.shape == alignment_output.shape, \
                 f"Shapes after interpolation do not match! alignment_output: {alignment_output.shape}, interpolated_smith_matrix: {interpolated_smith_matrix.shape}"
 
+            ######################################################################################################################################
+
             # Optionally smooth and normalize alignment output
+            
             # alignment_output = smooth_and_normalize_matrix(alignment_output, normalize_type)
             # interpolated_smith_matrix = smooth_and_normalize_matrix(interpolated_smith_matrix, normalize_type)
+
+            ######################################################################################################################################
 
             # visualize_heatmap_with_values(current_smith_matrix[0], title=f"Smith Matrix_batch_{batch_idx}")
             # Extract paths
             # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
+
+            ######################################################################################################################################
 
             alignment_np = alignment_output.detach().cpu().numpy()
             alignment_path = torch.tensor(makeTracerouteMatrixBinary(alignment_np), dtype=torch.float32, device=device)
@@ -185,7 +194,7 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
             smith_np = interpolated_smith_matrix.detach().cpu().numpy()
             smith_path = torch.tensor(makeTracerouteMatrixBinary(smith_np), dtype=torch.float32, device=device)
 
-            # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
+            ######################################################################################################################################
 
             # Save heatmaps for last batch
             if batch_idx == len(trainLoader) - 1:
@@ -197,9 +206,9 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
                                 cloned_processed_smith_for_viz, smith_matrix_for_char_level_viz, matrices_epoch_dir, original_text1_batch, 
                                 original_text2_batch)
 
-            # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
-
+            ######################################################################################################################################
             # Compute loss and accuracy
+
             path_loss = criterion(alignment_output, smith_path)
             correct = (torch.abs(alignment_path - smith_path) < 0.1).float()
             batch_correct = correct.sum().item()
@@ -219,7 +228,7 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
 
 
             #print gradients for debugging
-            print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
+            # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
 
             # Free memory
             del path_loss, image_a, image_b, tokens_a, tokens_b, alignment_output, interpolated_smith_matrix, current_smith_matrix, smith_path, alignment_path
