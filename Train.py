@@ -129,7 +129,6 @@ def smooth_and_normalize_matrix(matrix, normalize_type):
 
 
 def Train(model, alignment_model, trainLoader, criterion, loss_type, device, normalize_type, epochs=100, learning_rate=1e-4):
-    model.to(device)
     model.train()
     optimizer = optim.Adam(list(model.parameters()), lr=learning_rate)
     loss_lst = []
@@ -147,16 +146,13 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
         total_correct = 0
         total_elements = 0
 
-        for batch_idx, (image_a, image_b, smith_matrix_original_batch, seq1_tokenized, seq2_tokenized, original_text1_batch, original_text2_batch) in enumerate(trainLoader):
+        for batch_idx, (image_a, image_b, smith_matrix, seq1_tokenized, seq2_tokenized, original_text1_batch, original_text2_batch) in enumerate(trainLoader):
             optimizer.zero_grad()
 
             # Move data to device
-            image_a = image_a.to(device)
-            image_a.retain_grad()
-            image_b = image_b.to(device)
-            image_b.retain_grad()
-            current_smith_matrix = smith_matrix_original_batch.to(device) 
-            current_smith_matrix.retain_grad()
+            # image_a.retain_grad()
+            # image_b.retain_grad()
+            # smith_matrix.retain_grad()
 
             # Forward pass
             tokens_a, tokens_b = model(image_a, image_b)
@@ -169,7 +165,7 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
 
              # Interpolate smith matrix to match alignment output shape
             new_size = alignment_output.shape[-2:]
-            interpolated_smith_matrix = interpolate_smith_matrix(current_smith_matrix, new_size)
+            interpolated_smith_matrix = interpolate_smith_matrix(smith_matrix, new_size)
             assert interpolated_smith_matrix.shape == alignment_output.shape, \
                 f"Shapes after interpolation do not match! alignment_output: {alignment_output.shape}, interpolated_smith_matrix: {interpolated_smith_matrix.shape}"
 
@@ -190,7 +186,7 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
 
             alignment_np = alignment_output.detach().cpu().numpy()
             alignment_path = torch.tensor(makeTracerouteMatrixBinary(alignment_np), dtype=torch.float32, device=device)
-            alignment_output = alignment_output * alignment_path
+            # alignment_output = alignment_output * alignment_path
             smith_np = interpolated_smith_matrix.detach().cpu().numpy()
             smith_path = torch.tensor(makeTracerouteMatrixBinary(smith_np), dtype=torch.float32, device=device)
 
@@ -201,7 +197,7 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
                 print(f"Epoch {epoch+1}, Batch {batch_idx}: Saving data...")
                 cloned_alignment_output_for_viz = alignment_path.clone().detach()
                 cloned_processed_smith_for_viz = smith_path.clone().detach()
-                smith_matrix_for_char_level_viz = current_smith_matrix.clone().detach()
+                smith_matrix_for_char_level_viz = smith_matrix.clone().detach()
                 saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, cloned_alignment_output_for_viz, 
                                 cloned_processed_smith_for_viz, smith_matrix_for_char_level_viz, matrices_epoch_dir, original_text1_batch, 
                                 original_text2_batch)
@@ -231,7 +227,7 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
             # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
 
             # Free memory
-            del path_loss, image_a, image_b, tokens_a, tokens_b, alignment_output, interpolated_smith_matrix, current_smith_matrix, smith_path, alignment_path
+            del path_loss, image_a, image_b, tokens_a, tokens_b, alignment_output, interpolated_smith_matrix, smith_path, alignment_path
             torch.cuda.empty_cache()
 
         # Epoch summary
@@ -258,7 +254,8 @@ if __name__ == '__main__':
     normalize_type = '' # ['min_max', 'mean_std']
     epochs = 300
     learning_rate = 1e-3
-
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     wandb.init(
         # set the wandb project where this run will be logged
         project="AlignmentCNN-TransformerProject",
@@ -274,8 +271,6 @@ if __name__ == '__main__':
             "slicing_window_width": window_size,
             "normalizing method ": normalize_type
         })
-    
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cnn_transformer_model = EmbeddingModel(window_size=window_size, stride=window_size//2, 
                                            vector_size=vector_size,model_arch=model_arch).to(device)# In Train.py
                                            
@@ -288,7 +283,7 @@ if __name__ == '__main__':
     elif loss_type == 'GuidedAttention':
         criterion = guided_attention_loss
     elif loss_type == 'CrossEntropy':
-        criterion = multi_label_loss
+        criterion = kl_divergence_loss
     elif loss_type == 'Dice':
         criterion = dice_loss
 
