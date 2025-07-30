@@ -157,30 +157,52 @@ def dice_loss(pred, target, eps=1e-8):
 
 
 def multi_label_loss(pred, target, eps=1e-8):
-    # print(f'pred: {pred.shape}')
-    # print(f'target: {target.shape}')
-    # Use softmax on logits, then KL divergence
+    #normalize predictions to ensure they sum to 1
     log_probs = torch.nn.functional.log_softmax(pred, dim=1)
+    #print the first column of log_probs
+    # print(f'log_probs: {log_probs[:, 0, :]}')
     #normalize target to ensure it sums to 1
     target = target / (target.sum(dim=1, keepdim=True) + eps)
     # Compute KL divergence loss
     loss = torch.nn.functional.kl_div(log_probs, target, reduction='batchmean')
-    # print(f'multi_label_loss: {loss}')
-    loss = loss.mean()  # Average over batch
-    # print(f'final multi_label_loss: {loss}')
+    # loss = loss.mean()  # Average over batch
+    # print(f'loss: {loss}')
+    return loss
+
+
+def kl_divergence_loss(pred, target, eps=1e-8):
+    """
+    KL-divergence loss for multi-label classification.
+    Args:
+        pred (torch.Tensor): Logits or unnormalized predictions, shape [B, C, ...].
+        target (torch.Tensor): Target probabilities, shape [B, C, ...].
+        eps (float): Small value to avoid division by zero.
+    Returns:
+        torch.Tensor: Scalar KL-divergence loss.
+    """
+    # Convert predictions to log-probabilities
+    log_probs = torch.nn.functional.log_softmax(pred, dim=1)
+    # print(f'log_probs: {log_probs[:, 0, :]}')  # Print the first column of log_probs
+    # Normalize target to ensure it sums to 1 along classes
+    target = target / (target.sum(dim=1, keepdim=True) + eps)
+    # Clamp target to avoid log(0) issues
+    target = torch.clamp(target, min=eps)
+    # Compute KL divergence loss
+    loss = torch.nn.functional.kl_div(log_probs, target, reduction='batchmean')
     return loss
 
 
 if __name__ == "__main__":
     # Example usage
-    inputs = torch.randn(2, 10, 15)  # Simulated input tensor
-    targets = torch.randn(2, 10, 15)  # Simulated target tensor
+    inputs = torch.rand(8, 10, 32)  # Simulated input tensor (positive)
+    targets = torch.rand(8, 10, 32)  # Simulated target tensor (positive)
 
     # Apply smoothing
-    smoothed_inputs = smooth_path(inputs)
-    smoothed_targets = smooth_path(targets)
+    # smoothed_inputs = smooth_path(inputs)
+    # smoothed_targets = smooth_path(targets)
 
     # Compute loss
-    loss = compute_path_loss(smoothed_inputs, smoothed_targets)
+    loss = kl_divergence_loss(inputs, targets)
     print(f"Computed loss: {loss.item()}")
+
 

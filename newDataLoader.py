@@ -100,11 +100,15 @@ def custom_collate_fn(batch):
     """
     Custom collate function to handle the batching of the dataset.
     """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     images_a, images_b, smith_matrices, seq1_list, seq2_list, original_texts1, original_texts2 = zip(*batch)
     
     # Stack image tensors
-    images_a = torch.stack(images_a, dim=0).requires_grad_()
-    images_b = torch.stack(images_b, dim=0).requires_grad_()
+    images_a = torch.stack(images_a, dim=0).to(device)
+    images_a.retain_grad()
+    images_b = torch.stack(images_b, dim=0).to(device)
+    images_b.retain_grad()
     
     # Pad and stack smith matrices
     # Smoothing can be enabled here if desired, e.g., pad_matrices(smith_matrices, smooth=True)
@@ -118,7 +122,15 @@ def custom_collate_fn(batch):
     seq1_list = list(seq1_list)
     seq2_list = list(seq2_list)
 
-    return images_a, images_b, smith_matrices, seq1_list, seq2_list, list(original_texts1), list(original_texts2)
+    return (
+        images_a,
+        images_b,
+        smith_matrices,
+        seq1_list,
+        seq2_list,
+        list(original_texts1),
+        list(original_texts2)
+    )
 
 
 # Create DataLoaders for training and testing
