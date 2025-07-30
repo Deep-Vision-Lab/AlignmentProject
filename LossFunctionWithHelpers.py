@@ -156,20 +156,6 @@ def dice_loss(pred, target, eps=1e-8):
 
 
 
-def multi_label_loss(pred, target, eps=1e-8):
-    #normalize predictions to ensure they sum to 1
-    log_probs = torch.nn.functional.log_softmax(pred, dim=1)
-    #print the first column of log_probs
-    # print(f'log_probs: {log_probs[:, 0, :]}')
-    #normalize target to ensure it sums to 1
-    target = target / (target.sum(dim=1, keepdim=True) + eps)
-    # Compute KL divergence loss
-    loss = torch.nn.functional.kl_div(log_probs, target, reduction='batchmean')
-    # loss = loss.mean()  # Average over batch
-    # print(f'loss: {loss}')
-    return loss
-
-
 def kl_divergence_loss(pred, target, eps=1e-8):
     """
     KL-divergence loss for multi-label classification.
@@ -182,14 +168,16 @@ def kl_divergence_loss(pred, target, eps=1e-8):
     """
     # Convert predictions to log-probabilities
     log_probs = torch.nn.functional.log_softmax(pred, dim=1)
-    # print(f'log_probs: {log_probs[:, 0, :]}')  # Print the first column of log_probs
+    
     # Normalize target to ensure it sums to 1 along classes
+    target = F.softmax(target, dim=1)
     target = target / (target.sum(dim=1, keepdim=True) + eps)
-    # Clamp target to avoid log(0) issues
-    target = torch.clamp(target, min=eps)
+    
     # Compute KL divergence loss
-    loss = torch.nn.functional.kl_div(log_probs, target, reduction='batchmean')
+    kl = torch.nn.functional.kl_div(log_probs, target, reduction='none')
+    loss = kl.sum(dim=1).mean()
     return loss
+
 
 
 if __name__ == "__main__":
