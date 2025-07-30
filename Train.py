@@ -50,37 +50,37 @@ def saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_
         )
 
         # Only run the following if smith_matrix_for_char_level_viz is not None
-        if smith_matrix_for_char_level_viz is not None:
-            # New visualization: Raw Smith-Waterman matrix (before interpolation)
-            # with original character sequences as axes. seq1 on X, seq2 on Y.
-            current_smith_original_item = smith_matrix_for_char_level_viz[i] # Shape [H_orig, W_orig]
-            current_original_text1 = original_text1_batch[i] # string for seq1
-            current_original_text2 = original_text2_batch[i] # string for seq2
+        # if smith_matrix_for_char_level_viz is not None:
+        #     # New visualization: Raw Smith-Waterman matrix (before interpolation)
+        #     # with original character sequences as axes. seq1 on X, seq2 on Y.
+        #     current_smith_original_item = smith_matrix_for_char_level_viz[i] # Shape [H_orig, W_orig]
+        #     current_original_text1 = original_text1_batch[i] # string for seq1
+        #     current_original_text2 = original_text2_batch[i] # string for seq2
 
-            # Extract the traceback path from the original Smith-Waterman matrix
-            smith_original_scores_np = current_smith_original_item.cpu().numpy()
+        #     # Extract the traceback path from the original Smith-Waterman matrix
+        #     smith_original_scores_np = current_smith_original_item.cpu().numpy()
 
-            # makeTracerouteMatrixBinary expects a batch, so add a dimension and remove it
-            smith_original_path_np = makeTracerouteMatrixBinary(np.expand_dims(smith_original_scores_np, axis=0))[0]
+        #     # makeTracerouteMatrixBinary expects a batch, so add a dimension and remove it
+        #     smith_original_path_np = makeTracerouteMatrixBinary(np.expand_dims(smith_original_scores_np, axis=0))[0]
 
-            # SW matrix has text1 along rows, text2 along columns.
-            # To put text1 (seq1) on X-axis and text2 (seq2) on Y-axis, we need to transpose.
-            scores_matrix_to_plot = current_smith_original_item.T 
-            path_matrix_to_plot = torch.tensor(smith_original_path_np).T
+        #     # SW matrix has text1 along rows, text2 along columns.
+        #     # To put text1 (seq1) on X-axis and text2 (seq2) on Y-axis, we need to transpose.
+        #     scores_matrix_to_plot = current_smith_original_item.T 
+        #     path_matrix_to_plot = torch.tensor(smith_original_path_np).T
 
-            # Labels for axes: X-axis for seq1 (original_text1), Y-axis for seq2 (original_text2)
-            x_char_labels = ['ø'] + list(current_original_text1.replace(" ", "")) # 'ø' for the initial empty string state
-            y_char_labels = ['ø'] + list(current_original_text2.replace(" ", ""))
-            filename_char_level_smith_dual = f"{matrices_epoch_dir}/raw_char_smith_scores_path_epoch_{epoch+1}_batch_{batch_idx}_item_{i}.png"
-            visualize_dual_char_heatmaps(
-                scores_matrix_to_plot.cpu(),
-                path_matrix_to_plot.cpu(),
-                x_labels=x_char_labels,
-                y_labels=y_char_labels,
-                image_path=filename_char_level_smith_dual,
-                title1=f"Raw SW Scores (Seq1 vs Seq2) - Item {i}",
-                title2=f"Raw SW Path (Seq1 vs Seq2) - Item {i}"
-            )
+        #     # Labels for axes: X-axis for seq1 (original_text1), Y-axis for seq2 (original_text2)
+        #     x_char_labels = ['ø'] + list(current_original_text1.replace(" ", "")) # 'ø' for the initial empty string state
+        #     y_char_labels = ['ø'] + list(current_original_text2.replace(" ", ""))
+        #     filename_char_level_smith_dual = f"{matrices_epoch_dir}/raw_char_smith_scores_path_epoch_{epoch+1}_batch_{batch_idx}_item_{i}.png"
+        #     visualize_dual_char_heatmaps(
+        #         scores_matrix_to_plot.cpu(),
+        #         path_matrix_to_plot.cpu(),
+        #         x_labels=x_char_labels,
+        #         y_labels=y_char_labels,
+        #         image_path=filename_char_level_smith_dual,
+        #         title1=f"Raw SW Scores (Seq1 vs Seq2) - Item {i}",
+        #         title2=f"Raw SW Path (Seq1 vs Seq2) - Item {i}"
+        #     )
 
 
 def interpolate_smith_matrix(current_smith_matrix, target_shape):
@@ -149,11 +149,6 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
         for batch_idx, (image_a, image_b, smith_matrix, seq1_tokenized, seq2_tokenized, original_text1_batch, original_text2_batch) in enumerate(trainLoader):
             optimizer.zero_grad()
 
-            # Move data to device
-            # image_a.retain_grad()
-            # image_b.retain_grad()
-            # smith_matrix.retain_grad()
-
             # Forward pass
             tokens_a, tokens_b = model(image_a, image_b)
             tokens_a = torch.flip(tokens_a, dims=[1])
@@ -161,9 +156,8 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
             alignment_output = alignment_model(x1=tokens_a, x2=tokens_b)
 
             ######################################################################################################################################
+            
             # Interpolate smith matrix to match alignment output shape
-
-             # Interpolate smith matrix to match alignment output shape
             new_size = alignment_output.shape[-2:]
             interpolated_smith_matrix = interpolate_smith_matrix(smith_matrix, new_size)
             assert interpolated_smith_matrix.shape == alignment_output.shape, \
@@ -172,7 +166,6 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
             ######################################################################################################################################
 
             # Optionally smooth and normalize alignment output
-            
             # alignment_output = smooth_and_normalize_matrix(alignment_output, normalize_type)
             # interpolated_smith_matrix = smooth_and_normalize_matrix(interpolated_smith_matrix, normalize_type)
 
@@ -186,7 +179,7 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
 
             alignment_np = alignment_output.detach().cpu().numpy()
             alignment_path = torch.tensor(makeTracerouteMatrixBinary(alignment_np), dtype=torch.float32, device=device)
-            # alignment_output = alignment_output * alignment_path
+            alignment_output = alignment_output * alignment_path
             smith_np = interpolated_smith_matrix.detach().cpu().numpy()
             smith_path = torch.tensor(makeTracerouteMatrixBinary(smith_np), dtype=torch.float32, device=device)
 
