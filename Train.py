@@ -128,7 +128,7 @@ def smooth_and_normalize_matrix(matrix, normalize_type):
 
 
 
-def Train(model, alignment_model, trainLoader, criterion, loss_type, device, normalize_type, epochs=100, learning_rate=1e-4):
+def Train(model, alignment_model, trainLoader, criterion, loss_type, device, normalize_type, epochs=100, learning_rate=1e-4, debug=False):
     model.train()
     optimizer = optim.Adam(list(model.parameters()), lr=learning_rate)
     loss_lst = []
@@ -137,10 +137,17 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
 
     for epoch in range(epochs):
         # Prepare output directories
-        vectors_epoch_dir = f'TrainResults/{loss_type}/VectorsPerEpoch/{model.model_arch}/epoch_{epoch+1}'
-        matrices_epoch_dir = f'TrainResults/{loss_type}/ScoreMatricesPerEpoch/{model.model_arch}/epoch_{epoch+1}'
+        TrainingResultsDir = f'TrainResults/{loss_type}'
+        weights_dir = f'Weights/{loss_type}/{model.model_arch}'
+        vectors_epoch_dir = f'{TrainingResultsDir}/VectorsPerEpoch/{model.model_arch}/epoch_{epoch+1}'
+        matrices_epoch_dir = f'{TrainingResultsDir}/ScoreMatricesPerEpoch/{model.model_arch}/epoch_{epoch+1}'
+        os.makedirs(TrainingResultsDir, exist_ok=True)
+        os.makedirs(weights_dir, exist_ok=True)
         os.makedirs(vectors_epoch_dir, exist_ok=True)
         os.makedirs(matrices_epoch_dir, exist_ok=True)
+        debug_dir = f'TrainResults/{loss_type}/Debug'
+        if debug:
+            os.makedirs(debug_dir, exist_ok=True)
 
         epoch_loss = 0
         total_correct = 0
@@ -148,9 +155,9 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
 
         for batch_idx, (image_a, image_b, smith_matrix, seq1_tokenized, seq2_tokenized, original_text1_batch, original_text2_batch) in enumerate(trainLoader):
             optimizer.zero_grad()
-
+            
             # Forward pass
-            tokens_a, tokens_b = model(image_a, image_b)
+            tokens_a, tokens_b = model(image_a, image_b, show_dims=False, debug=debug, save_dir=debug_dir)
             tokens_a = torch.flip(tokens_a, dims=[1])
             tokens_b = torch.flip(tokens_b, dims=[1])
             alignment_output = alignment_model(x1=tokens_a, x2=tokens_b)
@@ -166,8 +173,8 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
             ######################################################################################################################################
 
             # Optionally smooth and normalize alignment output
-            # alignment_output = smooth_and_normalize_matrix(alignment_output, normalize_type)
-            # interpolated_smith_matrix = smooth_and_normalize_matrix(interpolated_smith_matrix, normalize_type)
+            alignment_output = smooth_and_normalize_matrix(alignment_output, normalize_type)
+            interpolated_smith_matrix = smooth_and_normalize_matrix(interpolated_smith_matrix, normalize_type)
 
             ######################################################################################################################################
 
@@ -196,8 +203,8 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
                                 original_text2_batch)
 
             ######################################################################################################################################
+            
             # Compute loss and accuracy
-
             path_loss = criterion(alignment_output, smith_path)
             correct = (torch.abs(alignment_path - smith_path) < 0.1).float()
             batch_correct = correct.sum().item()
@@ -240,7 +247,7 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
 
 
 if __name__ == '__main__':
-    loss_type = 'CrossEntropy' # ['HeightDiff', 'MSE', 'GuidedAttention', 'CrossEntropy', 'Dice']
+    loss_type = 'Wasserstein' # ['HeightDiff', 'MSE', 'GuidedAttention', 'CrossEntropy', 'Dice', 'Wasserstein]
     model_arch = 'Transformer' # ['CNN-Transformer','CNN','Transformer']
     window_size = 32
     vector_size = 64
@@ -248,6 +255,7 @@ if __name__ == '__main__':
     epochs = 300
     learning_rate = 1e-3
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    debug = False # Set to True to save patches and heatmaps for debugging
     
     wandb.init(
         # set the wandb project where this run will be logged
@@ -265,7 +273,7 @@ if __name__ == '__main__':
             "normalizing method ": normalize_type
         })
     cnn_transformer_model = EmbeddingModel(window_size=window_size, stride=window_size//2, 
-                                           vector_size=vector_size,model_arch=model_arch).to(device)# In Train.py
+                                           vector_size=vector_size, model_arch=model_arch).to(device)# In Train.py
                                            
     alignment_model = Alignment(match_score=6, miss_score=-6).to(device)
    
@@ -279,9 +287,13 @@ if __name__ == '__main__':
         criterion = kl_divergence_loss
     elif loss_type == 'Dice':
         criterion = dice_loss
+    elif loss_type == 'Wasserstein':
+        criterion = wasserstein_distance
+    else:
+        raise ValueError(f"Unknown loss type: {loss_type}")
 
     loss_lst = Train(cnn_transformer_model, alignment_model, train_dataloader,
-                      criterion, loss_type, device, normalize_type,epochs,learning_rate)
+                      criterion, loss_type, device, normalize_type,epochs,learning_rate,debug)
     wandb.finish()
     
     # epochs = range(1, len(loss_lst) + 1)

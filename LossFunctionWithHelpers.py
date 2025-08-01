@@ -179,6 +179,31 @@ def kl_divergence_loss(pred, target, eps=1e-8):
     return loss
 
 
+def wasserstein_distance(pred, target, p=1):
+    """
+    Compute the Wasserstein (Earth Mover's) distance between two distributions using PyTorch.
+    Args:
+        pred (torch.Tensor): Predicted distribution, shape [B, C, ...]. Should sum to 1 over C.
+        target (torch.Tensor): Target distribution, shape [B, C, ...]. Should sum to 1 over C.
+        p (int): The norm degree (default 1 for classic Wasserstein).
+    Returns:
+        torch.Tensor: Scalar Wasserstein distance.
+    """
+    # Flatten distributions along class/channel dimension
+    pred_flat = pred.view(pred.size(0), -1)
+    target_flat = target.view(target.size(0), -1)
+    # Ensure distributions are normalized
+    pred_flat = pred_flat / (pred_flat.sum(dim=1, keepdim=True) + 1e-8)
+    target_flat = target_flat / (target_flat.sum(dim=1, keepdim=True) + 1e-8)
+    # Compute cumulative distributions
+    pred_cdf = torch.cumsum(pred_flat, dim=1)
+    target_cdf = torch.cumsum(target_flat, dim=1)
+    # Wasserstein distance is the mean Lp distance between CDFs
+    wass = torch.mean(torch.abs(pred_cdf - target_cdf) ** p)
+    return wass
+
+
+
 
 if __name__ == "__main__":
     # Example usage
@@ -190,7 +215,7 @@ if __name__ == "__main__":
     # smoothed_targets = smooth_path(targets)
 
     # Compute loss
-    loss = kl_divergence_loss(inputs, targets)
+    loss = wasserstein_distance(inputs, targets)
     print(f"Computed loss: {loss.item()}")
 
 

@@ -291,14 +291,4 @@ if __name__ == '__main__':
     alignment = Alignment(match_score=7, miss_score=-7)
     # Get the cosine similarity output
     output = alignment(x1, x2)
-    # y = output.sum()
-    # y.backward()
-    # # print(output)
-    # print(f'x1 gradient: {x1.grad.sum().item()}')
-    # print(f'x2 gradient: {x2.grad.sum().item()}')
-     # Visualize heatmap for output[0]
-    # print("Output[0] shape:", output[0])
-    # visualize_heatmap_with_values(output[0], title="Cosine Similarity Heatmap (output[0])")
-    # print("Saved heatmap as Cosine_Similarity_Heatmap_(output[0]).png")
     
-    exit(0)

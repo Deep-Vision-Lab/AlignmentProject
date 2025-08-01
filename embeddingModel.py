@@ -9,7 +9,7 @@ import numpy as np
 
 
 # Sliding window function to divide image into patches (subwindows)
-def sliding_window(image, window_size, stride):
+def sliding_window(image, window_size, stride, debug_mode=False, save_dir=False):
     patches = []
     # Unfolding the image into patches of size window_size
     for i  in range(image.shape[0]):
@@ -17,8 +17,9 @@ def sliding_window(image, window_size, stride):
         for j in range(0, image.shape[3] - window_size + 1, stride):
             image_i = image[i, :, :, j:j + window_size]
             image_windows.append(image_i)
+            if debug_mode:
+                torchvision.utils.save_image(image_i, f"{save_dir}/patch_b{i}_w{j}.png")
         patches.append(torch.stack(image_windows, dim=0))
-        
     return torch.stack(patches, dim=0)
 
 
@@ -80,11 +81,15 @@ class EmbeddingModel(nn.Module):
         self.vector_size = vector_size
         self.model_arch = model_arch
     
-    def forward(self, image_a, image_b, show_dims=False):
+    def forward(self, image_a, image_b, show_dims=False, debug=False, save_dir=None):
        
         #################################################################################
-        patches_a = sliding_window(image_a, self.window_size, self.stride)
-        patches_b = sliding_window(image_b, self.window_size, self.stride)
+        if debug:
+            os.makedirs(f'{save_dir}/A', exist_ok=True)
+            os.makedirs(f'{save_dir}/B', exist_ok=True)
+
+        patches_a = sliding_window(image_a, self.window_size, self.stride, debug_mode=debug, save_dir=f'{save_dir}/A/')
+        patches_b = sliding_window(image_b, self.window_size, self.stride, debug_mode=debug, save_dir=f'{save_dir}/B/')
         if show_dims: print(f"Patches_a shape: {patches_a.shape}, Patches_b shape: {patches_b.shape}")
         
         batches_num, windows_num, Channels, H, W = patches_a.shape
