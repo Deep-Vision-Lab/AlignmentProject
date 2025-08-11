@@ -96,6 +96,7 @@ def sw_with_gap(batch=True, unroll=2, gap_penalty=-1):
             delete = h1_T + gap_penalty  # Deletion (moving horizontally)
 
             # Take the maximum of alignment, insert, and delete
+            # jax.debug.print("align: {align}")
             h0 = sm["m"] * jax.nn.logsumexp(jnp.stack([align, insert, delete]), 0)
             return (h1, h0), h0
 
@@ -291,4 +292,4 @@ if __name__ == '__main__':
     alignment = Alignment(match_score=7, miss_score=-7)
     # Get the cosine similarity output
     output = alignment(x1, x2)
-    
+    print(output.shape)

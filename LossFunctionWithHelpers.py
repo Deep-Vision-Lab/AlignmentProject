@@ -170,7 +170,7 @@ def kl_divergence_loss(pred, target, eps=1e-8):
     log_probs = torch.nn.functional.log_softmax(pred, dim=1)
     
     # Normalize target to ensure it sums to 1 along classes
-    target = F.softmax(target, dim=1)
+    # target = F.softmax(target, dim=1)
     target = target / (target.sum(dim=1, keepdim=True) + eps)
     
     # Compute KL divergence loss

@@ -50,37 +50,37 @@ def saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_
         )
 
         # Only run the following if smith_matrix_for_char_level_viz is not None
-        # if smith_matrix_for_char_level_viz is not None:
-        #     # New visualization: Raw Smith-Waterman matrix (before interpolation)
-        #     # with original character sequences as axes. seq1 on X, seq2 on Y.
-        #     current_smith_original_item = smith_matrix_for_char_level_viz[i] # Shape [H_orig, W_orig]
-        #     current_original_text1 = original_text1_batch[i] # string for seq1
-        #     current_original_text2 = original_text2_batch[i] # string for seq2
+        if smith_matrix_for_char_level_viz is not None:
+            # New visualization: Raw Smith-Waterman matrix (before interpolation)
+            # with original character sequences as axes. seq1 on X, seq2 on Y.
+            current_smith_original_item = smith_matrix_for_char_level_viz[i] # Shape [H_orig, W_orig]
+            current_original_text1 = original_text1_batch[i] # string for seq1
+            current_original_text2 = original_text2_batch[i] # string for seq2
 
-        #     # Extract the traceback path from the original Smith-Waterman matrix
-        #     smith_original_scores_np = current_smith_original_item.cpu().numpy()
+            # Extract the traceback path from the original Smith-Waterman matrix
+            smith_original_scores_np = current_smith_original_item.cpu().numpy()
 
-        #     # makeTracerouteMatrixBinary expects a batch, so add a dimension and remove it
-        #     smith_original_path_np = makeTracerouteMatrixBinary(np.expand_dims(smith_original_scores_np, axis=0))[0]
+            # makeTracerouteMatrixBinary expects a batch, so add a dimension and remove it
+            smith_original_path_np = makeTracerouteMatrixBinary(np.expand_dims(smith_original_scores_np, axis=0))[0]
 
-        #     # SW matrix has text1 along rows, text2 along columns.
-        #     # To put text1 (seq1) on X-axis and text2 (seq2) on Y-axis, we need to transpose.
-        #     scores_matrix_to_plot = current_smith_original_item.T 
-        #     path_matrix_to_plot = torch.tensor(smith_original_path_np).T
+            # SW matrix has text1 along rows, text2 along columns.
+            # To put text1 (seq1) on X-axis and text2 (seq2) on Y-axis, we need to transpose.
+            scores_matrix_to_plot = current_smith_original_item.T 
+            path_matrix_to_plot = torch.tensor(smith_original_path_np).T
 
-        #     # Labels for axes: X-axis for seq1 (original_text1), Y-axis for seq2 (original_text2)
-        #     x_char_labels = ['ø'] + list(current_original_text1.replace(" ", "")) # 'ø' for the initial empty string state
-        #     y_char_labels = ['ø'] + list(current_original_text2.replace(" ", ""))
-        #     filename_char_level_smith_dual = f"{matrices_epoch_dir}/raw_char_smith_scores_path_epoch_{epoch+1}_batch_{batch_idx}_item_{i}.png"
-        #     visualize_dual_char_heatmaps(
-        #         scores_matrix_to_plot.cpu(),
-        #         path_matrix_to_plot.cpu(),
-        #         x_labels=x_char_labels,
-        #         y_labels=y_char_labels,
-        #         image_path=filename_char_level_smith_dual,
-        #         title1=f"Raw SW Scores (Seq1 vs Seq2) - Item {i}",
-        #         title2=f"Raw SW Path (Seq1 vs Seq2) - Item {i}"
-        #     )
+            # Labels for axes: X-axis for seq1 (original_text1), Y-axis for seq2 (original_text2)
+            x_char_labels = ['ø'] + list(current_original_text1.replace(" ", "")) # 'ø' for the initial empty string state
+            y_char_labels = ['ø'] + list(current_original_text2.replace(" ", ""))
+            filename_char_level_smith_dual = f"{matrices_epoch_dir}/raw_char_smith_scores_path_epoch_{epoch+1}_batch_{batch_idx}_item_{i}.png"
+            visualize_dual_char_heatmaps(
+                scores_matrix_to_plot.cpu(),
+                path_matrix_to_plot.cpu(),
+                x_labels=x_char_labels,
+                y_labels=y_char_labels,
+                image_path=filename_char_level_smith_dual,
+                title1=f"Raw SW Scores (Seq1 vs Seq2) - Item {i}",
+                title2=f"Raw SW Path (Seq1 vs Seq2) - Item {i}"
+            )
 
 
 def interpolate_smith_matrix(current_smith_matrix, target_shape):
@@ -98,7 +98,7 @@ def interpolate_smith_matrix(current_smith_matrix, target_shape):
         interpolated = current_smith_matrix.unsqueeze(1)
     else:
         raise ValueError(f"Unexpected smith matrix shape: {current_smith_matrix.shape}")
-    interpolated = F.interpolate(interpolated, size=target_shape, mode='bilinear')
+    interpolated = F.interpolate(interpolated, size=target_shape, mode='bicubic')
     interpolated = interpolated.squeeze(1)
     return interpolated
 
@@ -137,14 +137,15 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
 
     for epoch in range(epochs):
         # Prepare output directories
-        TrainingResultsDir = f'TrainResults/{loss_type}'
         weights_dir = f'Weights/{loss_type}/{model.model_arch}'
-        vectors_epoch_dir = f'{TrainingResultsDir}/VectorsPerEpoch/{model.model_arch}/epoch_{epoch+1}'
-        matrices_epoch_dir = f'{TrainingResultsDir}/ScoreMatricesPerEpoch/{model.model_arch}/epoch_{epoch+1}'
-        os.makedirs(TrainingResultsDir, exist_ok=True)
         os.makedirs(weights_dir, exist_ok=True)
-        os.makedirs(vectors_epoch_dir, exist_ok=True)
-        os.makedirs(matrices_epoch_dir, exist_ok=True)
+        TrainingResultsDir = f'TrainResults/{loss_type}'
+        os.makedirs(TrainingResultsDir, exist_ok=True)
+        if epoch % 5 == 4:
+            vectors_epoch_dir = f'{TrainingResultsDir}/VectorsPerEpoch/{model.model_arch}/epoch_{epoch+1}'
+            os.makedirs(vectors_epoch_dir, exist_ok=True)
+            matrices_epoch_dir = f'{TrainingResultsDir}/ScoreMatricesPerEpoch/{model.model_arch}/epoch_{epoch+1}'
+            os.makedirs(matrices_epoch_dir, exist_ok=True)
         debug_dir = f'TrainResults/{loss_type}/Debug'
         if debug:
             os.makedirs(debug_dir, exist_ok=True)
@@ -193,7 +194,7 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
             ######################################################################################################################################
 
             # Save heatmaps for last batch
-            if batch_idx == len(trainLoader) - 1:
+            if batch_idx == len(trainLoader) - 1 and epoch % 5 == 4:
                 print(f"Epoch {epoch+1}, Batch {batch_idx}: Saving data...")
                 cloned_alignment_output_for_viz = alignment_path.clone().detach()
                 cloned_processed_smith_for_viz = smith_path.clone().detach()
@@ -247,9 +248,9 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
 
 
 if __name__ == '__main__':
-    loss_type = 'Wasserstein' # ['HeightDiff', 'MSE', 'GuidedAttention', 'CrossEntropy', 'Dice', 'Wasserstein]
-    model_arch = 'Transformer' # ['CNN-Transformer','CNN','Transformer']
-    window_size = 32
+    loss_type = 'CrossEntropy' # ['HeightDiff', 'MSE', 'GuidedAttention', 'CrossEntropy', 'Dice', 'Wasserstein]
+    model_arch = 'CNN' # ['CNN-Transformer','CNN','Transformer']
+    window_size = 16
     vector_size = 64
     normalize_type = '' # ['min_max', 'mean_std']
     epochs = 300

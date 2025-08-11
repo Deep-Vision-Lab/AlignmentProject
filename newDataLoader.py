@@ -11,11 +11,12 @@ from AlignmentAlgo import Alignment
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 batch_size = 8
 
+data_dir = "DataSet/NewSynthetic"  # Directory for the new dataset
 # Define paths for NewDataSet
 new_dataset = {
-    "images": os.path.join("DataSet/NewSynthetic", "images"),
-    "scoreMatrix": os.path.join("DataSet/NewSynthetic", "matrices"),
-    "texts":  os.path.join("DataSet/NewSynthetic", "texts")
+    "images": os.path.join(data_dir, "images"),
+    "scoreMatrix": os.path.join(data_dir, "matrices"),
+    "texts":  os.path.join(data_dir, "texts")
 }
 
 class ToTensorWithGrad:
