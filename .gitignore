@@ -18,3 +18,7 @@ Weights
 # Settings Caches
 wandb
 __pycache__
+
+
+# png files
+*.png
