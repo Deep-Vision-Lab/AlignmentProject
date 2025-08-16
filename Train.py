@@ -139,26 +139,14 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
         # Prepare output directories
         weights_dir = f'Weights/{loss_type}/{model.model_arch}'
         os.makedirs(weights_dir, exist_ok=True)
-        TrainingResultsDir = f'TrainResults/{loss_type}'
-        os.makedirs(TrainingResultsDir, exist_ok=True)
-        if epoch % 5 == 4:
-            vectors_epoch_dir = f'{TrainingResultsDir}/VectorsPerEpoch/{model.model_arch}/epoch_{epoch+1}'
-            os.makedirs(vectors_epoch_dir, exist_ok=True)
-            matrices_epoch_dir = f'{TrainingResultsDir}/ScoreMatricesPerEpoch/{model.model_arch}/epoch_{epoch+1}'
-            os.makedirs(matrices_epoch_dir, exist_ok=True)
-        debug_dir = f'TrainResults/{loss_type}/Debug'
-        if debug:
-            os.makedirs(debug_dir, exist_ok=True)
 
         epoch_loss = 0
-        total_correct = 0
-        total_elements = 0
 
-        for batch_idx, (image_a, image_b, smith_matrix, seq1_tokenized, seq2_tokenized, original_text1_batch, original_text2_batch) in enumerate(trainLoader):
+        for batch_idx, (image_a, image_b, smith_matrix) in enumerate(trainLoader):
             optimizer.zero_grad()
             
             # Forward pass
-            tokens_a, tokens_b = model(image_a, image_b, show_dims=False, debug=debug, save_dir=debug_dir)
+            tokens_a, tokens_b = model(image_a, image_b, show_dims=False, debug=debug)
             tokens_a = torch.flip(tokens_a, dims=[1])
             tokens_b = torch.flip(tokens_b, dims=[1])
             alignment_output = alignment_model(x1=tokens_a, x2=tokens_b)
@@ -178,65 +166,27 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
             interpolated_smith_matrix = smooth_and_normalize_matrix(interpolated_smith_matrix, normalize_type)
 
             ######################################################################################################################################
-
-            # visualize_heatmap_with_values(current_smith_matrix[0], title=f"Smith Matrix_batch_{batch_idx}")
-            # Extract paths
-            # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
-
-            ######################################################################################################################################
-
-            alignment_np = alignment_output.detach().cpu().numpy()
-            alignment_path = torch.tensor(makeTracerouteMatrixBinary(alignment_np), dtype=torch.float32, device=device)
-            alignment_output = alignment_output * alignment_path
-            smith_np = interpolated_smith_matrix.detach().cpu().numpy()
-            smith_path = torch.tensor(makeTracerouteMatrixBinary(smith_np), dtype=torch.float32, device=device)
-
-            ######################################################################################################################################
-
-            # Save heatmaps for last batch
-            if batch_idx == len(trainLoader) - 1 and epoch % 5 == 4:
-                print(f"Epoch {epoch+1}, Batch {batch_idx}: Saving data...")
-                cloned_alignment_output_for_viz = alignment_path.clone().detach()
-                cloned_processed_smith_for_viz = smith_path.clone().detach()
-                smith_matrix_for_char_level_viz = smith_matrix.clone().detach()
-                saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, cloned_alignment_output_for_viz, 
-                                cloned_processed_smith_for_viz, smith_matrix_for_char_level_viz, matrices_epoch_dir, original_text1_batch, 
-                                original_text2_batch)
-
-            ######################################################################################################################################
-            
             # Compute loss and accuracy
-            path_loss = criterion(alignment_output, smith_path)
-            correct = (torch.abs(alignment_path - smith_path) < 0.1).float()
-            batch_correct = correct.sum().item()
-            batch_total = smith_path.numel()
+            path_loss = criterion(alignment_output, interpolated_smith_matrix)
 
             epoch_loss += path_loss.item()
-            total_correct += batch_correct
-            total_elements += batch_total
 
             # Backpropagation
             path_loss.backward()
             optimizer.step()
 
-            if batch_idx % 10 == 0:
-                batch_accuracy = (batch_correct / batch_total) * 100 if batch_total > 0 else 0
-                print(f'Epoch {epoch+1}, Batch {batch_idx}, Loss: {path_loss.item()}, Accuracy: {batch_accuracy:.2f}%')
-
-
             #print gradients for debugging
             # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
 
             # Free memory
-            del path_loss, image_a, image_b, tokens_a, tokens_b, alignment_output, interpolated_smith_matrix, smith_path, alignment_path
+            del path_loss, image_a, image_b, tokens_a, tokens_b, alignment_output, interpolated_smith_matrix
             torch.cuda.empty_cache()
 
         # Epoch summary
-        epoch_accuracy = (total_correct / total_elements) * 100 if total_elements > 0 else 0
         epoch_loss = epoch_loss / len(trainLoader)
-        print(f'Epoch {epoch+1} - Loss: {epoch_loss:.4f}, Accuracy: {epoch_accuracy:.2f}%')
+        print(f'Epoch {epoch+1} - Loss: {epoch_loss:.4f}')
         loss_lst.append(epoch_loss)
-        wandb.log({"Loss": epoch_loss, "Accuracy": epoch_accuracy}, step=epoch, commit=True)
+        wandb.log({"Loss": epoch_loss}, step=epoch, commit=True)
 
         # Save model every 10 epochs
         if epoch % 10 == 9:
@@ -248,7 +198,7 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
 
 
 if __name__ == '__main__':
-    loss_type = 'CrossEntropy' # ['HeightDiff', 'MSE', 'GuidedAttention', 'CrossEntropy', 'Dice', 'Wasserstein]
+    loss_type = 'MSE' # ['HeightDiff', 'MSE', 'GuidedAttention', 'CrossEntropy', 'Dice', 'Wasserstein]
     model_arch = 'CNN' # ['CNN-Transformer','CNN','Transformer']
     window_size = 16
     vector_size = 64

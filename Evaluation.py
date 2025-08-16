@@ -1,6 +1,7 @@
 import warnings
 import torch.nn as nn
 import torch.nn.functional as F
+from SmithWaterman import SmithWaterman
 from saveDATA import *
 from Visualization import *
 from embeddingModel import EmbeddingModel
@@ -38,10 +39,7 @@ def Evaluate(model, alignment_model, dataloader, criterion, window_size,loss_typ
             tokens_a = torch.flip(tokens_a, dims=[1])
             tokens_b = torch.flip(tokens_b, dims=[1])
 
-            alignment_output = alignment_model(tokens_a, tokens_b).to(device)
-
-            batch_correct = 0
-            batch_total = 0
+            alignment_output = alignment_model(tokens_a, tokens_b)
 
             ###################################################################################
             # Interpolation
@@ -63,63 +61,12 @@ def Evaluate(model, alignment_model, dataloader, criterion, window_size,loss_typ
                                                         \nsmith_cuda shape: {smith_matrix.shape}"
 
             ###################################################################################
-            # Amplifying
-            
-            if normalize_type == 'min_max':
-                alignment_min = alignment_output.min()
-                alignment_max = alignment_output.max()
-                alignment_output = 2 * (alignment_output - alignment_min) / (alignment_max - alignment_min + 1e-8) - 1
-                
-                # Scale normalized tensor to match smith_matrix's max value
-                # At this point, smith_matrix is the interpolated version.
-                smith_max = smith_matrix.max()
-                alignment_output = alignment_output * smith_max
-                del alignment_min, alignment_max, smith_max
-            
-            elif normalize_type == 'mean_std':
-                alignment_mean = alignment_output.mean(dim=(1, 2), keepdim=True)
-                alignment_std = alignment_output.std(dim=(1, 2), keepdim=True)
-                # print(f'alignment_mean: {alignment_mean}, alignment_std: {alignment_std}')
-                alignment_output = (alignment_output - alignment_mean) / (alignment_std + 1e-8)
-                del alignment_mean, alignment_std
-
-            ###################################################################################
-            # Extract traceback paths
-            
-            alignment_np = alignment_output.detach().cpu().numpy()
-            smith_np = smith_matrix.detach().cpu().numpy()
-
-            alignment_path = torch.tensor(makeTracerouteMatrixBinary(alignment_np), dtype=torch.float32, device=device)
-            smith_path = torch.tensor(makeTracerouteMatrixBinary(smith_np), dtype=torch.float32, device=device)
-            
-            ###################################################################################
-            # Smooth paths
-            
-            # alignment_path_smoothed = smooth_path(alignment_path)
-            smith_matrix = smooth_path(smith_path) * smith_path
-            alignment_output = alignment_output * alignment_path 
-
-            del alignment_path, smith_path
-            ###################################################################################
                
             # Compute loss
-            if criterion is not None:
-                path_loss = criterion(alignment_output, smith_matrix)
-            else:
-                path_loss = compute_path_loss(smith_matrix, alignment_output, 
-                                            plot_vectors=True, file_path=vectors_similarity_file_path)
-
+            path_loss = criterion(alignment_output, smith_matrix)
 
             routes = makeTracerouteMatrix(alignment_output)
-            for i, _ in enumerate(alignment_output): 
-                print_elements(tokens_a[i],
-                                f'Results/{loss_type}/Elements_Vectors/tensor_outputA_{batch_idx}_{i}.xlsx')
-                print_elements(tokens_b[i], 
-                                f'Results/{loss_type}/Elements_Vectors/tensor_outputB_{batch_idx}_{i}.xlsx')
-                vectors_similarity(tokens_a[i], tokens_b[i],
-                                f'Results/{loss_type}/Vectors_similarity/vector_similarity_{batch_idx}_{i}', 
-                                batch_idx, i)
-                
+            for i, _ in enumerate(alignment_output):            
                 # Generate patches for visualization
                 # Ensure model has window_size and stride attributes, or pass them explicitly
                 # Assuming model is an instance of EmbeddingModel and has these attributes
@@ -147,32 +94,19 @@ def Evaluate(model, alignment_model, dataloader, criterion, window_size,loss_typ
                 buildAlignedImages(image_a[i], image_b[i], routes[i], window_size,
                                 f'Results/{loss_type}/Lines_plots/lines_{batch_idx}_{i}')
             
-            
-            # Accuracy Calculation
-            correct = (torch.abs(alignment_output - smith_matrix) < 0.1).float()
-            batch_correct += correct.sum().item()
-            batch_total += smith_matrix.numel()
-
-            batch_accuracy = batch_correct / batch_total
-            total_correct += batch_correct
-            total_elements += batch_total
             del alignment_output
             del image_a, image_b, smith_matrix, tokens_a, tokens_b  # Delete the tensors
-
             torch.cuda.empty_cache()
+
             # Print stats every 10 batches
             if batch_idx % 10 == 0:
-                print(
-                    f'Batch {batch_idx}, Loss: {path_loss.item()}, Accuracy: {batch_accuracy * 100:.2f}%')
-
+                print(f'Batch {batch_idx}, Loss: {path_loss.item()}')
             test_loss += path_loss.item()
-
             del path_loss
 
-            # Compute epoch accuracy
-        test_accuracy = (total_correct / total_elements) * 100 if total_elements > 0 else 0
+        # Compute epoch accuracy
         test_loss = test_loss / len(dataloader)
-        print(f'Loss: {test_loss:.4f}, Accuracy: {test_accuracy:.2f}%')
+        print(f'Loss: {test_loss:.4f}')
 
 
 from PIL import Image
@@ -180,23 +114,31 @@ from torchvision import transforms
 
 if __name__ == '__main__':
     normalize_type = 'mean_std' # ['min_max', 'mean_std']
-    loss_type = 'HeightDiff'  # ['HeightDiff', 'MSE']
+    loss_type = 'MSE'  # ['HeightDiff', 'MSE']
     model_arch = 'CNN' # ['CNN-Transformer','CNN','Transformer']
     window_size = 64
     vector_size = 128
 
+    criterion = None
     if loss_type == 'HeightDiff':
-        criterion = compute_path_loss
+        criterion = HeightDiff_loss
     elif loss_type == 'MSE':
         criterion = nn.MSELoss()
+    elif loss_type == 'GuidedAttention':
+        criterion = guided_attention_loss
+    elif loss_type == 'CrossEntropy':
+        criterion = kl_divergence_loss
+    elif loss_type == 'Dice':
+        criterion = dice_loss
+    elif loss_type == 'Wasserstein':
+        criterion = wasserstein_distance
         
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cnn_transformer_model = EmbeddingModel(window_size=window_size, stride=window_size, 
                                            vector_size=vector_size,model_arch=model_arch).to(device)
     cnn_transformer_model.load_state_dict(torch.load(f"Weights/{loss_type}/model_epoch_100.pth",
                                                       map_location=device))
-    alignment_model = Alignment(match_score=2, miss_score=-3).to(device)
-    
+    sw = SmithWaterman(match_score=3, mismatch_penalty=-1, gap_penalty=-2).to(device)
 
-    Evaluate(cnn_transformer_model, alignment_model, test_dataloader, 
+    Evaluate(cnn_transformer_model, sw, test_dataloader, 
              criterion, window_size, loss_type, device, normalize_type)

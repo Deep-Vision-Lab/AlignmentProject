@@ -76,7 +76,7 @@ class TextLineModern(Dataset):
             img1 = Image.open(img1_path).convert("RGB")
             img2 = Image.open(img2_path).convert("RGB")
 
-            score_matrix = np.load(matrix_path)
+            similar_matrix = np.load(matrix_path)
 
             with (open(text1_path, "r") as file):
                 text1 = file.read()
@@ -91,14 +91,15 @@ class TextLineModern(Dataset):
                 img1 = self.transform(img1)
                 img2 = self.transform(img2)
 
-            score_matrix = torch.tensor(score_matrix, dtype=torch.float32,requires_grad=True).to(device)
+            similar_matrix = torch.tensor(similar_matrix, dtype=torch.float32,requires_grad=True).to(device)
+
 
             # read text files
             # Tokenize words from images
             seq1 = tokenize_based_on_non_connecting_letters(text1)
             seq2 = tokenize_based_on_non_connecting_letters(text2)
             
-            return img1, img2, score_matrix, seq1, seq2, text1, text2
+            return img1, img2, similar_matrix, seq1, seq2, text1, text2
         else:
             raise NotImplementedError("Handling for non-NewDataSet is not included.")
 

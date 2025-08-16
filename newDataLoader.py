@@ -113,9 +113,9 @@ def custom_collate_fn(batch):
     
     # Pad and stack smith matrices
     # Smoothing can be enabled here if desired, e.g., pad_matrices(smith_matrices, smooth=True)
-    smith_matrices = pad_matrices(smith_matrices, smooth=False) # Defaulting to no smoothing for now
+    similar_matrix = pad_matrices(smith_matrices, smooth=False) # Defaulting to no smoothing for now
     alignment_model = Alignment(match_score=6, miss_score=-6).to(device)
-    smith_matrices = alignment_model(calc_output=smith_matrices,
+    smith_matrices = alignment_model(calc_output=similar_matrix,
                                                 calc_cosine=False).to(device)
     # smith_matrices = torch.flip(smith_matrices, dims=[0, 1])
     
