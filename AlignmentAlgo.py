@@ -278,12 +278,19 @@ def visualize_heatmap_with_values(tensor, title="Heatmap", cmap="viridis"):
 
 if __name__ == '__main__':
     # Example usage - output CNN or transformer
-    # Create tensors with 4 consecutive nonzero elements, rest zeros
+    # # Create tensors with 4 consecutive nonzero elements, rest zeros
     x1 = torch.ones(2, 20, 512)
     x2 = torch.ones(2, 20, 512)
-    # Set elements 8-11 to random values for both x1 and x2
-    x1[:, 8:12, :] = torch.rand(2, 4, 512)
-    x2[:, 8:12, :] = torch.rand(2, 4, 512)
+    # # Set elements 8-11 to random values for both x1 and x2
+    # x1[:, 0:2, :] = torch.rand(2, 2, 512)
+    # x2[:, 0:2, :] = torch.rand(2, 2, 512)
+    # # Set elements 8-11 to random values for both x1 and x2
+    # x1[:, 7:9, :] = torch.rand(2, 2, 512)
+    # x2[:, 6:10, :] = torch.rand(2, 4, 512)
+    # # Set elements 8-11 to random values for both x1 and x2
+    # x1[:, 16:18, :] = torch.rand(2, 2, 512)
+    # x2[:, 17:19, :] = torch.rand(2, 2, 512)
+    x2[:, 0:18, :] = torch.zeros(2, 18, 512)
     x1.requires_grad = True
     x2.requires_grad = True
     # x1.data *= 2 
@@ -293,3 +300,63 @@ if __name__ == '__main__':
     # Get the cosine similarity output
     output = alignment(x1, x2)
     print(output.shape)
+    
+    # Visualize the output as a heatmap
+    output_np = output.detach().cpu().numpy()
+
+
+    # Function to compute traceback path
+    def compute_traceback_path(matrix):
+        """Compute the optimal alignment path using traceback"""
+        # Find the maximum score position as starting point
+        i, j = np.unravel_index(np.argmax(matrix), matrix.shape)
+        path = []
+        
+        while i > 0 and j > 0 and matrix[i, j] > 0:
+            path.append((i, j))
+            
+            # Check diagonal, up, and left moves
+            diag_score = matrix[i-1, j-1] if i > 0 and j > 0 else -np.inf
+            up_score = matrix[i-1, j] if i > 0 else -np.inf
+            left_score = matrix[i, j-1] if j > 0 else -np.inf
+            
+            # Find the maximum score
+            max_score = max(up_score, left_score, diag_score)
+            
+            # Priority: up -> right (left) -> diagonal when scores are equal
+            if up_score == max_score:
+                i -= 1
+            elif left_score == max_score:
+                j -= 1
+            elif diag_score == max_score:
+                i -= 1
+                j -= 1
+                
+        return path[::-1]  # Reverse to get path from start to end
+    
+    for batch_idx in range(output_np.shape[0]):
+        plt.figure(figsize=(12, 8))
+        plt.imshow(output_np[batch_idx], cmap='viridis', aspect='auto')
+        plt.colorbar(label='Alignment Score')
+        plt.title(f'Alignment Output Heatmap with Traceback Path - Batch {batch_idx}')
+        plt.xlabel('Sequence 2 Position')
+        plt.ylabel('Sequence 1 Position')
+        
+        # Compute and plot the traceback path
+        path = compute_traceback_path(output_np[batch_idx])
+        if path:
+            path_y = [p[0] for p in path]  # Row indices
+            path_x = [p[1] for p in path]  # Column indices
+            plt.plot(path_x, path_y, color='red', linewidth=3, marker='o', 
+                    markersize=6, alpha=0.8, label='Optimal Alignment Path')
+            plt.legend()
+        
+        # Add values to each cell for better readability (skip for large matrices)
+        if output_np[batch_idx].shape[0] <= 20 and output_np[batch_idx].shape[1] <= 20:
+            for (i, j), val in np.ndenumerate(output_np[batch_idx]):
+                plt.text(j, i, f"{val:.4f}", ha='center', va='center', 
+                        color='white' if val < output_np[batch_idx].mean() else 'black', fontsize=8)
+        
+        plt.tight_layout()
+        plt.savefig(f'alignment_output_heatmap_with_path_batch_{batch_idx}.png', dpi=150)
+        plt.close() 

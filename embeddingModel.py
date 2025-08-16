@@ -2,6 +2,7 @@ from matplotlib import patches
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision
 from torchvision.models import resnet34, ResNet34_Weights, vit_b_16, ViT_B_16_Weights
 import cv2
 import matplotlib.pyplot as plt  
@@ -81,15 +82,12 @@ class EmbeddingModel(nn.Module):
         self.vector_size = vector_size
         self.model_arch = model_arch
     
-    def forward(self, image_a, image_b, show_dims=False, debug=False, save_dir=None):
+    def forward(self, image_a, image_b, show_dims=False, debug=False):
        
         #################################################################################
-        if debug:
-            os.makedirs(f'{save_dir}/A', exist_ok=True)
-            os.makedirs(f'{save_dir}/B', exist_ok=True)
 
-        patches_a = sliding_window(image_a, self.window_size, self.stride, debug_mode=debug, save_dir=f'{save_dir}/A/')
-        patches_b = sliding_window(image_b, self.window_size, self.stride, debug_mode=debug, save_dir=f'{save_dir}/B/')
+        patches_a = sliding_window(image_a, self.window_size, self.stride, debug_mode=debug)
+        patches_b = sliding_window(image_b, self.window_size, self.stride, debug_mode=debug)
         if show_dims: print(f"Patches_a shape: {patches_a.shape}, Patches_b shape: {patches_b.shape}")
         
         batches_num, windows_num, Channels, H, W = patches_a.shape
