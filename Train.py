@@ -175,7 +175,9 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
             path_loss.backward()
             optimizer.step()
 
-            #print gradients for debugging
+            print(f"Epoch {epoch+1}, Batch {batch_idx+1}/{len(trainLoader)}, Loss: {path_loss.item():.4f}")
+            
+            # print gradients for debugging
             # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
 
             # Free memory
@@ -195,6 +197,7 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
 
     print('Training complete!')
     return loss_lst
+
 
 
 if __name__ == '__main__':
@@ -261,4 +264,4 @@ if __name__ == '__main__':
     # print('')
     
     # Example of how you might call Evaluate for validation after training
-    Evaluate(cnn_transformer_model, alignment_model, valid_dataloader, criterion, window_size, loss_type, device, normalize_type)
+    # Evaluate(cnn_transformer_model, alignment_model, valid_dataloader, criterion, window_size, loss_type, device, normalize_type)

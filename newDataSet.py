@@ -92,14 +92,8 @@ class TextLineModern(Dataset):
                 img2 = self.transform(img2)
 
             similar_matrix = torch.tensor(similar_matrix, dtype=torch.float32,requires_grad=True).to(device)
-
-
-            # read text files
-            # Tokenize words from images
-            seq1 = tokenize_based_on_non_connecting_letters(text1)
-            seq2 = tokenize_based_on_non_connecting_letters(text2)
             
-            return img1, img2, similar_matrix, seq1, seq2, text1, text2
+            return img1, img2, similar_matrix
         else:
             raise NotImplementedError("Handling for non-NewDataSet is not included.")
 
