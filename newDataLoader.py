@@ -103,7 +103,7 @@ def custom_collate_fn(batch):
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    images_a, images_b, smith_matrices, seq1_list, seq2_list, original_texts1, original_texts2 = zip(*batch)
+    images_a, images_b, smith_matrices = zip(*batch)
     
     # Stack image tensors
     images_a = torch.stack(images_a, dim=0).to(device)
@@ -117,20 +117,11 @@ def custom_collate_fn(batch):
     alignment_model = Alignment(match_score=6, miss_score=-6).to(device)
     smith_matrices = alignment_model(calc_output=similar_matrix,
                                                 calc_cosine=False).to(device)
-    # smith_matrices = torch.flip(smith_matrices, dims=[0, 1])
-    
-    # Keep sequences as a list of lists
-    seq1_list = list(seq1_list)
-    seq2_list = list(seq2_list)
 
     return (
         images_a,
         images_b,
-        smith_matrices,
-        seq1_list,
-        seq2_list,
-        list(original_texts1),
-        list(original_texts2)
+        smith_matrices
     )
 
 
