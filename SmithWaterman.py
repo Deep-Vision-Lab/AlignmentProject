@@ -183,11 +183,24 @@ class SmithWatermanVisualization:
                         alpha=0.8, label='Optimal Alignment Path')
                 plt.legend()
         
-        # Add values to cells for small matrices
-        if matrix.shape[0] <= 20 and matrix.shape[1] <= 20:
+        # Add values to cells for matrices
+        if matrix.shape[0] <= 30 and matrix.shape[1] <= 30:
+            # Determine font size based on matrix size
+            if matrix.shape[0] <= 10 and matrix.shape[1] <= 10:
+                fontsize = 10
+                decimal_places = 2
+            elif matrix.shape[0] <= 20 and matrix.shape[1] <= 20:
+                fontsize = 8
+                decimal_places = 1
+            else:
+                fontsize = 6
+                decimal_places = 1
+            
             for (i, j), val in np.ndenumerate(matrix):
-                plt.text(j, i, f"{val:.1f}", ha='center', va='center',
-                        color='white' if val < matrix.mean() else 'black', fontsize=8)
+                # Choose text color based on background intensity
+                text_color = 'white' if val < matrix.mean() else 'black'
+                plt.text(j, i, f"{val:.{decimal_places}f}", ha='center', va='center',
+                        color=text_color, fontsize=fontsize, weight='bold')
         
         plt.tight_layout()
         
@@ -205,17 +218,25 @@ if __name__ == "__main__":
     batch_size = 2
     seq1_len, seq2_len = 10, 8
     feature_dim = 64
-    
+
+    seq1 = torch.ones(2, 20, 512)
+    seq2 = torch.ones(2, 20, 512)
+    seq2[:, 0:3, :] = torch.zeros(2, 3, 512)
+    seq2[:, 8:10, :] = torch.zeros(2, 2, 512)
+    seq2[:, 15:17, :] = torch.zeros(2, 2, 512)
+    seq2[:, 19:20, :] = torch.zeros(2, 1, 512)
+    seq1.requires_grad = True
+    seq2.requires_grad = True
     # Generate random sequence embeddings
-    seq1 = torch.randn(batch_size, seq1_len, feature_dim)
-    seq2 = torch.randn(batch_size, seq2_len, feature_dim)
+    # seq1 = torch.randn(batch_size, seq1_len, feature_dim)
+    # seq2 = torch.randn(batch_size, seq2_len, feature_dim)
     
     # Make some positions similar for demonstration
-    seq1[:, 2:4, :] = seq2[:, 3:5, :] + 0.1 * torch.randn_like(seq2[:, 3:5, :])
-    seq1[:, 6:8, :] = seq2[:, 1:3, :] + 0.1 * torch.randn_like(seq2[:, 1:3, :])
+    # seq1[:, 2:4, :] = seq2[:, 3:5, :] + 0.1 * torch.randn_like(seq2[:, 3:5, :])
+    # seq1[:, 6:8, :] = seq2[:, 1:3, :] + 0.1 * torch.randn_like(seq2[:, 1:3, :])
     
     # Initialize Smith-Waterman
-    sw = SmithWaterman(match_score=3, mismatch_penalty=-1, gap_penalty=-2)
+    sw = SmithWaterman(match_score=7, mismatch_penalty=-3, gap_penalty=-1)
     
     # Compute alignment
     score_matrix = sw(seq1, seq2)

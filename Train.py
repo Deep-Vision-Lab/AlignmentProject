@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from embeddingModel import EmbeddingModel
-from AlignmentAlgo import Alignment
+from DiffSWAlgo import *
 from newDataLoader import train_dataloader, valid_dataloader, batch_size
 from pathExtractor import *
 from saveDATA import *
@@ -18,7 +18,7 @@ import sys
 import wandb
 
 
-from AlignmentAlgo import visualize_heatmap_with_values
+from DiffSWAlgo import visualize_heatmap_with_values
 warnings.filterwarnings("ignore")
 
 def saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, 
@@ -83,7 +83,7 @@ def saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_
             )
 
 
-def interpolate_smith_matrix(current_smith_matrix, target_shape):
+def interpolate_SW_matrix(SW_matrix, target_shape):
     """
     Interpolates the smith matrix to match the target shape (usually alignment output shape).
     Args:
@@ -92,13 +92,13 @@ def interpolate_smith_matrix(current_smith_matrix, target_shape):
     Returns:
         torch.Tensor: Interpolated smith matrix, shape [B, H_new, W_new]
     """
-    if current_smith_matrix.dim() == 2:
-        interpolated = current_smith_matrix.unsqueeze(0).unsqueeze(0)
-    elif current_smith_matrix.dim() == 3:
-        interpolated = current_smith_matrix.unsqueeze(1)
+    if SW_matrix.dim() == 2:
+        interpolated = SW_matrix.unsqueeze(0).unsqueeze(0)
+    elif SW_matrix.dim() == 3:
+        interpolated = SW_matrix.unsqueeze(1)
     else:
-        raise ValueError(f"Unexpected smith matrix shape: {current_smith_matrix.shape}")
-    interpolated = F.interpolate(interpolated, size=target_shape, mode='bicubic')
+        raise ValueError(f"Unexpected smith matrix shape: {SW_matrix.shape}")
+    interpolated = F.interpolate(interpolated, size=target_shape, mode='bilinear')
     interpolated = interpolated.squeeze(1)
     return interpolated
 
@@ -128,7 +128,7 @@ def smooth_and_normalize_matrix(matrix, normalize_type):
 
 
 
-def Train(model, alignment_model, trainLoader, criterion, loss_type, device, normalize_type, epochs=100, learning_rate=1e-4, debug=False):
+def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_type, epochs=100, learning_rate=1e-4, debug=False):
     model.train()
     optimizer = optim.Adam(list(model.parameters()), lr=learning_rate)
     loss_lst = []
@@ -142,33 +142,81 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
 
         epoch_loss = 0
 
-        for batch_idx, (image_a, image_b, smith_matrix) in enumerate(trainLoader):
+        for batch_idx, (image_a, image_b, diffSWText, textSimilar) in enumerate(trainLoader):
             optimizer.zero_grad()
             
             # Forward pass
             tokens_a, tokens_b = model(image_a, image_b, show_dims=False, debug=debug)
             tokens_a = torch.flip(tokens_a, dims=[1])
             tokens_b = torch.flip(tokens_b, dims=[1])
-            alignment_output = alignment_model(x1=tokens_a, x2=tokens_b)
+            diffSWimage = DiffSW(x1=tokens_a, x2=tokens_b)
 
             ######################################################################################################################################
             
             # Interpolate smith matrix to match alignment output shape
-            new_size = alignment_output.shape[-2:]
-            interpolated_smith_matrix = interpolate_smith_matrix(smith_matrix, new_size)
-            assert interpolated_smith_matrix.shape == alignment_output.shape, \
-                f"Shapes after interpolation do not match! alignment_output: {alignment_output.shape}, interpolated_smith_matrix: {interpolated_smith_matrix.shape}"
+            new_size = diffSWText.shape[-2:]
+            diffSWimage = interpolate_SW_matrix(diffSWimage,
+                                                   new_size)
+            DiffSW.cosine_similarity = interpolate_SW_matrix(DiffSW.cosine_similarity,
+                                                                    new_size)
+            assert diffSWText.shape == diffSWimage.shape == DiffSW.cosine_similarity.shape, \
+                f"Shapes after interpolation do not match! diffSWimage: {diffSWimage.shape}, diffSWText: {diffSWText.shape}, cosine_similarity: {DiffSW.cosine_similarity.shape}"
+
+            ######################################################################################################################################
+            # Extracting the path
+            
+            textSWpath, text_startPoints = diff_SW_Path(diffSWText,
+                                                   textSimilar,match_score=7,
+                                                   miss_score=-3, gap_penalty=-1)
+            diffSWText = diffSWText * textSWpath
+
+            imageSWpath, _ = diff_SW_Path(diffSWimage,
+                                                   DiffSW.cosine_similarity,match_score=7,
+                                                   miss_score=-3, gap_penalty=-1, position=text_startPoints)
+            diffSWimage = diffSWimage * imageSWpath
 
             ######################################################################################################################################
 
             # Optionally smooth and normalize alignment output
-            alignment_output = smooth_and_normalize_matrix(alignment_output, normalize_type)
-            interpolated_smith_matrix = smooth_and_normalize_matrix(interpolated_smith_matrix, normalize_type)
+            # alignment_output = smooth_and_normalize_matrix(alignment_output, normalize_type)
+            # interpolated_smith_matrix = smooth_and_normalize_matrix(interpolated_smith_matrix, normalize_type)
 
-            ######################################################################################################################################
+            ####################################################################################################################################
+
+            if debug and batch_idx % 10 == 9: # Save visualizations every 10 batches if in debug mode
+                # Prepare directories for saving visualizations
+                vectors_epoch_dir = f'Visualizations/{loss_type}/{model.model_arch}/Vectors/Epoch_{epoch+1}'
+                matrices_epoch_dir = f'Visualizations/{loss_type}/{model.model_arch}/Matrices/Epoch_{epoch+1}'
+                os.makedirs(vectors_epoch_dir, exist_ok=True)
+                os.makedirs(matrices_epoch_dir, exist_ok=True)
+
+                # Clone tensors for visualization to avoid affecting gradients
+                cloned_alignment_output_for_viz = diffSWimage.clone().detach()
+                cloned_processed_smith_for_viz = diffSWText.clone().detach()
+
+                # smith_matrix_for_char_level_viz is only available during training if calc_cosine=False in Alignment
+                if hasattr(DiffSW, 'similarity_matrix'):
+                    smith_matrix_for_char_level_viz = DiffSW.similarity_matrix.clone().detach()
+                else:
+                    smith_matrix_for_char_level_viz = None
+
+                # original_text1_batch and original_text2_batch are only available during training if calc_cosine=False in Alignment
+                if hasattr(DiffSW, 'original_text1_batch') and hasattr(DiffSW, 'original_text2_batch'):
+                    original_text1_batch = DiffSW.original_text1_batch
+                    original_text2_batch = DiffSW.original_text2_batch
+                else:
+                    original_text1_batch = None
+                    original_text2_batch = None
+
+                # Save heatmap visualizations
+                saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx,
+                                cloned_alignment_output_for_viz, cloned_processed_smith_for_viz, smith_matrix_for_char_level_viz,
+                                matrices_epoch_dir, original_text1_batch, original_text2_batch)
+
+            ####################################################################################################################################
             # Compute loss and accuracy
-            path_loss = criterion(alignment_output, interpolated_smith_matrix)
-
+            
+            path_loss = criterion(diffSWText, diffSWimage)
             epoch_loss += path_loss.item()
 
             # Backpropagation
@@ -180,9 +228,34 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
             # print gradients for debugging
             # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
 
+            ######################################################################################################################################
             # Free memory
-            del path_loss, image_a, image_b, tokens_a, tokens_b, alignment_output, interpolated_smith_matrix
+
+            variables_to_delete = [
+                'image_a', 'image_b', 'tokens_a', 'tokens_b', 
+                'diffSWText', 'diffSWimage', 'textSWpath', 
+                'imageSWpath', 'path_loss', 'textSimilar', 
+                'new_size', 'text_startPoints'
+            ]
+            
+            # Add debug variables if they exist
+            if debug and batch_idx % 10 == 9:
+                debug_vars = [
+                    'cloned_alignment_output_for_viz', 'cloned_processed_smith_for_viz',
+                    'smith_matrix_for_char_level_viz', 'vectors_epoch_dir', 'matrices_epoch_dir'
+                ]
+                variables_to_delete.extend(debug_vars)
+            
+            # Delete all variables that exist in local scope
+            for var_name in variables_to_delete:
+                if var_name in locals():
+                    del locals()[var_name]
+            
+            if hasattr(DiffSW, 'cosine_similarity'):
+                del DiffSW.cosine_similarity
             torch.cuda.empty_cache()
+
+            ######################################################################################################################################
 
         # Epoch summary
         epoch_loss = epoch_loss / len(trainLoader)
@@ -201,11 +274,11 @@ def Train(model, alignment_model, trainLoader, criterion, loss_type, device, nor
 
 
 if __name__ == '__main__':
-    loss_type = 'MSE' # ['HeightDiff', 'MSE', 'GuidedAttention', 'CrossEntropy', 'Dice', 'Wasserstein]
+    loss_type = 'MSE' # ['HeightDiff', 'MSE', 'GuidedAttention', 'KL-Divergence', 'Dice', 'Wasserstein]
     model_arch = 'CNN' # ['CNN-Transformer','CNN','Transformer']
     window_size = 16
     vector_size = 64
-    normalize_type = '' # ['min_max', 'mean_std']
+    normalize_type = 'mean_std' # ['min_max', 'mean_std']
     epochs = 300
     learning_rate = 1e-3
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -228,16 +301,16 @@ if __name__ == '__main__':
         })
     cnn_transformer_model = EmbeddingModel(window_size=window_size, stride=window_size//2, 
                                            vector_size=vector_size, model_arch=model_arch).to(device)# In Train.py
-                                           
-    alignment_model = Alignment(match_score=6, miss_score=-6).to(device)
-   
+
+    DiffSW = DiffSWAlgo(match_score=7, miss_score=-3, gap=-1).to(device)
+
     if loss_type == 'HeightDiff':
         criterion = HeightDiff_loss
     elif loss_type == 'MSE':
         criterion = nn.MSELoss()
     elif loss_type == 'GuidedAttention':
         criterion = guided_attention_loss
-    elif loss_type == 'CrossEntropy':
+    elif loss_type == 'KL-Divergence':
         criterion = kl_divergence_loss
     elif loss_type == 'Dice':
         criterion = dice_loss
@@ -246,7 +319,7 @@ if __name__ == '__main__':
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
 
-    loss_lst = Train(cnn_transformer_model, alignment_model, train_dataloader,
+    loss_lst = Train(cnn_transformer_model, DiffSW, train_dataloader,
                       criterion, loss_type, device, normalize_type,epochs,learning_rate,debug)
     wandb.finish()
     

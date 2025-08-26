@@ -5,7 +5,7 @@ from SmithWaterman import SmithWaterman
 from saveDATA import *
 from Visualization import *
 from embeddingModel import EmbeddingModel
-from AlignmentAlgo import Alignment # Assuming sliding_window is not here
+from DiffSWAlgo import * # Assuming sliding_window is not here
 from newDataLoader import test_dataloader
 from pathExtractor import *
 from LossFunctionWithHelpers import *

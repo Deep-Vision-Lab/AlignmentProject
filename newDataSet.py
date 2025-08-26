@@ -54,7 +54,7 @@ class TextLineModern(Dataset):
             # Preload file mappings for NewDataSet
             self.image_pairs = [
                 (f"img1_{i}.png", f"img2_{i}.png", f"scoreMatrix_{i}.npy", f"text1_{i}.txt", f"text2_{i}.txt") for i in
-                range(1, 10001)]
+                range(1, 5001)]
                 # range(1, 3001)]
 
     def __len__(self):
@@ -90,7 +90,7 @@ class TextLineModern(Dataset):
             if self.transform:
                 img1 = self.transform(img1)
                 img2 = self.transform(img2)
-
+            
             similar_matrix = torch.tensor(similar_matrix, dtype=torch.float32,requires_grad=True).to(device)
             
             return img1, img2, similar_matrix
