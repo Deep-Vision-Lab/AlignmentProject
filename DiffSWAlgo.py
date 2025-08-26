@@ -6,6 +6,7 @@ from matplotlib import pyplot as plt
 import jax.numpy as jnp 
 import matplotlib.pyplot as plt
 import numpy as np
+from typing import Optional
 
 
 # A generic mechanism for turning a JAX function into a PyTorch function.
@@ -121,7 +122,7 @@ def j2t(x_jax):
 
 def t2j(x_torch):
     x_torch = x_torch.contiguous()  # Ensure tensor is contiguous for conversion
-    return jax.dlpack.from_dlpack(torch.utils.dlpack.to_dlpack(x_torch))
+    return jax.dlpack.from_dlpack(torch.utils.dlpack.to_dlpack(x_torch)) # type: ignore
 
 def jax2torch(fun):
   class JaxFun(torch.autograd.Function):
@@ -131,7 +132,7 @@ def jax2torch(fun):
       return j2t(y_)
 
     @staticmethod
-    def backward(ctx, grad_y):
+    def backward(ctx, grad_y): # type: ignore
       grad_x_, = ctx.fun_vjp(t2j(grad_y))
       return j2t(grad_x_),
 
@@ -183,49 +184,11 @@ class CosineSimilarityLayer(nn.Module):
         denominator = magnitude_x1 * magnitude_x2.transpose(1, 2) + 1e-8
         cosine_similarity = dot_product / denominator  # shape (batch_size, N, M)
 
-        # Compute L2 distance
-        # x1.unsqueeze(2): [B, N, 1, D]
-        # x2.unsqueeze(1): [B, 1, M, D]
-        # diff: [B, N, M, D] (broadcasted difference between each vector pair)
-        diff = x1.unsqueeze(2) - x2.unsqueeze(1)
-        # l2_distance: Euclidean distance for each pair, shape [B, N, M]
-        l2_distance = torch.norm(diff, dim=3)
-
-        # Normalize L2 distance to roughly [0, 1]
-        # l2_distance.max() is a scalar tensor. Gradient flows through this.
-        l2_distance_max = l2_distance.max() 
-        normalized_distance = l2_distance / (l2_distance_max + 1e-10) # Avoid division by zero
-
-        # Invert normalized distance to create length similarity
-        length_contribution = 1 - normalized_distance
-
-        # Combine cosine similarity with length contribution
-        weight_cosine = 1
-        weight_length = 0
-        combined_similarity = weight_cosine * cosine_similarity + weight_length * length_contribution
-  
-        # Transform similarity to a probability (ensuring it's in [0,1] range)
-        # Cosine sim: [-1, 1], Length contrib: [0, 1] (approx)
-        # Combined: (0.7*[-1,1]) + (0.3*[0,1]) = [-0.7, 0.7] + [0, 0.3] = [-0.7, 1.0]
-        # (combined_similarity + 1) / 2 maps [-0.7, 1.0] to [0.15, 1.0], which is a valid prob range.
-        similarity_prob = (combined_similarity + 1) / 2
-
-        # Calculate dissimilarity as the complement of similarity
-        dissimilarity_prob = 1 - similarity_prob
-
-        # Stack similarity and dissimilarity probabilities for softmax
-        scores = torch.stack([similarity_prob, dissimilarity_prob], dim=-1) # shape (B, N, M, 2)
-
-        # Apply softmax along the last dimension
-        softmax_scores = F.softmax(scores, dim=-1)
-
-        # Extract similarity and dissimilarity from softmax results
-        similarity_softmaxed = softmax_scores[..., 0]
-        dissimilarity_softmaxed = softmax_scores[..., 1]
+        comp_cosine_similarity = 1 - cosine_similarity
 
         # Multiply by matchscore and missscore
-        match_score_contribution = similarity_softmaxed * self.matchscore
-        miss_score_contribution = dissimilarity_softmaxed * self.missscore # missscore is typically negative
+        match_score_contribution = cosine_similarity * self.matchscore
+        miss_score_contribution = comp_cosine_similarity * self.missscore # missscore is typically negative
 
         # Sum match and miss scores to get the final score
         final_score = match_score_contribution + miss_score_contribution
@@ -235,27 +198,34 @@ class CosineSimilarityLayer(nn.Module):
 
 
 ###########################################################################
-# Alignment Algorithm
+# Differentiable Smith-Waterman Algorithm
 
-class Alignment(nn.Module):
-    def __init__(self, match_score, miss_score):
-        super(Alignment, self).__init__()
+class DiffSWAlgo(nn.Module):
+    def __init__(self, match_score, miss_score,gap=-1):
+        super(DiffSWAlgo, self).__init__()
         self.match_score = match_score
         self.miss_score = miss_score
-        self.cosine_similarity_layer = CosineSimilarityLayer(matchscore= self.match_score,
-                                                             missscore=self.miss_score )
-        self.sw_fn_torch = jax2torch(jax.jit(sw_with_gap())) 
-        
+        self.cosine_similarity_layer = CosineSimilarityLayer(matchscore= match_score,
+                                                             missscore=miss_score)
+        # self.cosine_similarity_layer = nn.CosineSimilarity(dim=1, eps=1e-6)
+        self.sw_fn_torch = jax2torch(jax.jit(sw_with_gap(gap_penalty=gap)))
+
         # self.sw_fn_torch = jax2torch(jax.jit(sw_simple()))
-    def forward(self, x1=None, x2=None, calc_output=None, calc_cosine=True):
+    def forward(self, 
+                x1: Optional[torch.Tensor] = None, 
+                x2: Optional[torch.Tensor] = None, 
+                similarity_matrix = None, 
+                calc_cosine = True):
         if calc_cosine:
-            self.output = self.cosine_similarity_layer(x1, x2)  
-            new_output = torch.squeeze(self.output, dim=0)
+            self.cosine_similarity = self.cosine_similarity_layer(x1, x2)
+            # print(f'cosine_similarity shape: {self.cosine_similarity.shape}')
+            new_output = torch.squeeze(self.cosine_similarity, dim=0)
             # visualize_heatmap_with_values(new_output[0], title="Cosine Similarity Heatmap")
             self.align = self.sw_fn_torch(new_output)
             # visualize_heatmap_with_values(self.align[0], title="Alignment Heatmap")
         else:
-            self.align = self.sw_fn_torch(calc_output)
+            self.cosine_similarity = similarity_matrix
+            self.align = self.sw_fn_torch(self.cosine_similarity)
         return self.align
 
 ###########################################################################
@@ -278,25 +248,25 @@ def visualize_heatmap_with_values(tensor, title="Heatmap", cmap="viridis"):
 
 if __name__ == '__main__':
     # Example usage - output CNN or transformer
-    # # Create tensors with 4 consecutive nonzero elements, rest zeros
+    # Create tensors with 4 consecutive nonzero elements, rest zeros
     x1 = torch.ones(2, 20, 512)
     x2 = torch.ones(2, 20, 512)
-    # # Set elements 8-11 to random values for both x1 and x2
-    # x1[:, 0:2, :] = torch.rand(2, 2, 512)
-    # x2[:, 0:2, :] = torch.rand(2, 2, 512)
-    # # Set elements 8-11 to random values for both x1 and x2
-    # x1[:, 7:9, :] = torch.rand(2, 2, 512)
-    # x2[:, 6:10, :] = torch.rand(2, 4, 512)
-    # # Set elements 8-11 to random values for both x1 and x2
-    # x1[:, 16:18, :] = torch.rand(2, 2, 512)
-    # x2[:, 17:19, :] = torch.rand(2, 2, 512)
-    x2[:, 0:18, :] = torch.zeros(2, 18, 512)
+    # x2[:, 0:3, :] = torch.zeros(2, 3, 512)
+    x2[:, 8:10, :] = torch.zeros(2, 2, 512)
+    x2[:, 15:17, :] = torch.zeros(2, 2, 512)
+    x2[:, 19:20, :] = torch.zeros(2, 1, 512)
     x1.requires_grad = True
     x2.requires_grad = True
-    # x1.data *= 2 
-    # x2.data *= 0.5
     # Create the Cosine Similarity layer
-    alignment = Alignment(match_score=7, miss_score=-7)
+    # cosin_layer = CosineSimilarityLayer(matchscore=1, missscore=-1)
+    # # Get the cosine similarity output
+    # output = cosin_layer(x1, x2)
+    # print(output.shape)
+    # # Visualize the output as a heatmap
+    # # output_np = output.detach().cpu().numpy()
+    # visualize_heatmap_with_values(output[0], title="Cosine Similarity Heatmap")
+    # Create the Alignment layer
+    alignment = DiffSWAlgo(match_score=7, miss_score=-3, gap=-1)
     # Get the cosine similarity output
     output = alignment(x1, x2)
     print(output.shape)
@@ -306,32 +276,33 @@ if __name__ == '__main__':
 
 
     # Function to compute traceback path
-    def compute_traceback_path(matrix):
+    def compute_traceback_path(matrix, similarity_matrix, match_score=1, miss_score=-1, gap_penalty=-1, position=None):
         """Compute the optimal alignment path using traceback"""
         # Find the maximum score position as starting point
-        i, j = np.unravel_index(np.argmax(matrix), matrix.shape)
+        i, j = np.unravel_index(np.argmax(matrix), matrix.shape) if position is None else position
         path = []
         
-        while i > 0 and j > 0 and matrix[i, j] > 0:
+        while i >= 0 and j >= -1 and matrix[i, j] > 0:
             path.append((i, j))
-            
+            aij = similarity_matrix[i, j]
             # Check diagonal, up, and left moves
-            diag_score = matrix[i-1, j-1] if i > 0 and j > 0 else -np.inf
-            up_score = matrix[i-1, j] if i > 0 else -np.inf
-            left_score = matrix[i, j-1] if j > 0 else -np.inf
+            diag_score = matrix[i-1, j-1] + aij if i > 0 and j > 0 else 0
+            up_score = matrix[i-1, j] + gap_penalty if i > 0 else 0 
+            left_score = matrix[i, j-1] + gap_penalty if j > 0 else 0 
             
-            # Find the maximum score
-            max_score = max(up_score, left_score, diag_score)
-            
-            # Priority: up -> right (left) -> diagonal when scores are equal
-            if up_score == max_score:
-                i -= 1
-            elif left_score == max_score:
-                j -= 1
-            elif diag_score == max_score:
+            # Find the maximum score using simple max
+            max_score_idx = (torch.exp(torch.tensor([diag_score, up_score, left_score]))
+                            / torch.exp(torch.tensor([diag_score, up_score, left_score])).sum()).argmax().item()
+
+            # Priority: diagonal -> up -> left when scores are equal (standard Smith-Waterman)
+            if max_score_idx == 0:
                 i -= 1
                 j -= 1
-                
+            elif max_score_idx == 1:
+                i -= 1
+            elif max_score_idx == 2:
+                j -= 1
+
         return path[::-1]  # Reverse to get path from start to end
     
     for batch_idx in range(output_np.shape[0]):
@@ -343,7 +314,30 @@ if __name__ == '__main__':
         plt.ylabel('Sequence 1 Position')
         
         # Compute and plot the traceback path
-        path = compute_traceback_path(output_np[batch_idx])
+        # We need to get the similarity matrix from the alignment output
+        # For simplicity, we'll use the cosine similarity as a proxy
+        similarity_matrix = alignment.output[batch_idx].detach().cpu().numpy()
+        
+        # Visualize the similarity matrix
+        plt.figure(figsize=(12, 8))
+        plt.imshow(similarity_matrix, cmap='coolwarm', aspect='auto')
+        plt.colorbar(label='Cosine Similarity Score')
+        plt.title(f'Cosine Similarity Matrix - Batch {batch_idx}')
+        plt.xlabel('Sequence 2 Position')
+        plt.ylabel('Sequence 1 Position')
+        
+        # Add values to each cell for better readability (skip for large matrices)
+        if similarity_matrix.shape[0] <= 20 and similarity_matrix.shape[1] <= 20:
+            for (i, j), val in np.ndenumerate(similarity_matrix):
+                plt.text(j, i, f"{val:.3f}", ha='center', va='center', 
+                        color='white' if abs(val) < 0.1 else 'black', fontsize=8)
+        
+        plt.tight_layout()
+        plt.savefig(f'similarity_matrix_batch_{batch_idx}.png', dpi=150)
+        plt.close()
+        
+        path = compute_traceback_path(output_np[batch_idx], similarity_matrix,
+                                      match_score=7, miss_score=-3, gap_penalty=-1,position=(13,17))
         if path:
             path_y = [p[0] for p in path]  # Row indices
             path_x = [p[1] for p in path]  # Column indices
