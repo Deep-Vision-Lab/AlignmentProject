@@ -222,6 +222,7 @@ class DiffSWAlgo(nn.Module):
             new_output = torch.squeeze(self.cosine_similarity, dim=0)
             # visualize_heatmap_with_values(new_output[0], title="Cosine Similarity Heatmap")
             self.align = self.sw_fn_torch(new_output)
+            del new_output
             # visualize_heatmap_with_values(self.align[0], title="Alignment Heatmap")
         else:
             self.cosine_similarity = similarity_matrix
