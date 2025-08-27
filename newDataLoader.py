@@ -120,8 +120,10 @@ def custom_collate_fn(batch):
     # Stack image tensors
     images_a = torch.stack(images_a, dim=0).to(device)
     images_a.retain_grad()
+    print(f'images_a.shape: {images_a.shape}')
     images_b = torch.stack(images_b, dim=0).to(device)
     images_b.retain_grad()
+    print(f'images_b.shape: {images_b.shape}')
     
     # Pad and stack smith matrices
     # Smoothing can be enabled here if desired, e.g., pad_matrices(smith_matrices, smooth=True)
@@ -130,6 +132,9 @@ def custom_collate_fn(batch):
                                                 gap=-1).to(device)
     SW_matrices = alignment_model(similarity_matrix=similar_matrix,
                                                 calc_cosine=False).to(device)
+    
+    print(f'SW_matrices.shape: {SW_matrices.shape}')
+    print(f'similar_matrix.shape: {similar_matrix.shape}')
 
     return (
         images_a,
@@ -151,3 +156,15 @@ valid_dataloader = DataLoader(
 test_dataloader = DataLoader(
     test_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn
 )
+
+
+
+if __name__ == "__main__":
+    # Test the DataLoader
+    for batch in train_dataloader:
+        images_a, images_b, SW_matrices, similar_matrix = batch
+        print(f'Batch images_a shape: {images_a.shape}')
+        print(f'Batch images_b shape: {images_b.shape}')
+        print(f'Batch SW_matrices shape: {SW_matrices.shape}')
+        print(f'Batch similar_matrix shape: {similar_matrix.shape}')
+        break  # Just test one batch

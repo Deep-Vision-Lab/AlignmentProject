@@ -54,7 +54,7 @@ class TextLineModern(Dataset):
             # Preload file mappings for NewDataSet
             self.image_pairs = [
                 (f"img1_{i}.png", f"img2_{i}.png", f"scoreMatrix_{i}.npy", f"text1_{i}.txt", f"text2_{i}.txt") for i in
-                range(1, 5001)]
+                range(1, 3001)]
                 # range(1, 3001)]
 
     def __len__(self):

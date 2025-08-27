@@ -1,24 +1,22 @@
-import warnings
 import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
 
-from embeddingModel import EmbeddingModel
+from embeddingModel import *
 from DiffSWAlgo import *
-from newDataLoader import train_dataloader, valid_dataloader, batch_size
+from newDataLoader import *
 from pathExtractor import *
 from saveDATA import *
 from LossFunctionWithHelpers import *
-from Evaluation import Evaluate
-from Visualization import visualize_heatmaps, visualize_single_heatmap_with_text_labels, visualize_dual_char_heatmaps
-from embeddingModel import sliding_window # For generating patches for visualization
-import os # For creating directories
-import sys
+from Evaluation import *
+from Visualization import *
+from embeddingModel import *
 
+import os
 import wandb
+import warnings
 
 
-from DiffSWAlgo import visualize_heatmap_with_values
 warnings.filterwarnings("ignore")
 
 def saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, 
@@ -93,14 +91,17 @@ def interpolate_SW_matrix(SW_matrix, target_shape):
         torch.Tensor: Interpolated smith matrix, shape [B, H_new, W_new]
     """
     if SW_matrix.dim() == 2:
-        interpolated = SW_matrix.unsqueeze(0).unsqueeze(0)
+        squeezed_SW_matrix = SW_matrix.unsqueeze(0).unsqueeze(0)
     elif SW_matrix.dim() == 3:
-        interpolated = SW_matrix.unsqueeze(1)
+        squeezed_SW_matrix = SW_matrix.unsqueeze(1)
     else:
         raise ValueError(f"Unexpected smith matrix shape: {SW_matrix.shape}")
-    interpolated = F.interpolate(interpolated, size=target_shape, mode='bilinear')
-    interpolated = interpolated.squeeze(1)
-    return interpolated
+    interpolated_SW_matrix = F.interpolate(squeezed_SW_matrix, size=target_shape, mode='bilinear')
+    squeezed_interpolated_SW_matrix = interpolated_SW_matrix.squeeze(1)
+    
+    del SW_matrix, squeezed_SW_matrix, interpolated_SW_matrix
+    
+    return squeezed_interpolated_SW_matrix
 
 
 
@@ -123,10 +124,13 @@ def smooth_and_normalize_matrix(matrix, normalize_type):
         alignment_mean = matrix.mean(dim=(1, 2), keepdim=True)
         alignment_std = matrix.std(dim=(1, 2), keepdim=True)
         matrix = (matrix - alignment_mean) / (alignment_std + 1e-8)
+        del alignment_mean, alignment_std
     return matrix
 
 
 
+import gc
+import torch
 
 def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_type, epochs=100, learning_rate=1e-4, debug=False):
     model.train()
@@ -147,9 +151,11 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
             
             # Forward pass
             tokens_a, tokens_b = model(image_a, image_b, show_dims=False, debug=debug)
-            tokens_a = torch.flip(tokens_a, dims=[1])
-            tokens_b = torch.flip(tokens_b, dims=[1])
-            diffSWimage = DiffSW(x1=tokens_a, x2=tokens_b)
+            flip_tokens_a = torch.flip(tokens_a, dims=[1])
+            flip_tokens_b = torch.flip(tokens_b, dims=[1])
+            diffSWimage = DiffSW(x1=flip_tokens_a, x2=flip_tokens_b)
+
+            del flip_tokens_a, flip_tokens_b
 
             ######################################################################################################################################
             
@@ -160,7 +166,8 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
             DiffSW.cosine_similarity = interpolate_SW_matrix(DiffSW.cosine_similarity,
                                                                     new_size)
             assert diffSWText.shape == diffSWimage.shape == DiffSW.cosine_similarity.shape, \
-                f"Shapes after interpolation do not match! diffSWimage: {diffSWimage.shape}, diffSWText: {diffSWText.shape}, cosine_similarity: {DiffSW.cosine_similarity.shape}"
+                f"Shapes after interpolation do not match! diffSWimage: {diffSWimage.shape}, \
+                diffSWText: {diffSWText.shape}, cosine_similarity: {DiffSW.cosine_similarity.shape}"
 
             ######################################################################################################################################
             # Extracting the path
@@ -169,12 +176,13 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
                                                    textSimilar,match_score=7,
                                                    miss_score=-3, gap_penalty=-1)
             diffSWText = diffSWText * textSWpath
+            del textSWpath, textSimilar
 
             imageSWpath, _ = diff_SW_Path(diffSWimage,
                                                    DiffSW.cosine_similarity,match_score=7,
                                                    miss_score=-3, gap_penalty=-1, position=text_startPoints)
             diffSWimage = diffSWimage * imageSWpath
-
+            del imageSWpath, DiffSW.cosine_similarity
             ######################################################################################################################################
 
             # Optionally smooth and normalize alignment output
@@ -213,10 +221,16 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
                                 cloned_alignment_output_for_viz, cloned_processed_smith_for_viz, smith_matrix_for_char_level_viz,
                                 matrices_epoch_dir, original_text1_batch, original_text2_batch)
 
+                del cloned_alignment_output_for_viz, cloned_processed_smith_for_viz
+                del smith_matrix_for_char_level_viz, vectors_epoch_dir, matrices_epoch_dir
             ####################################################################################################################################
-            # Compute loss and accuracy
+            del image_a, image_b 
+            del tokens_a, tokens_b
             
+            # Compute loss and accuracy
             path_loss = criterion(diffSWText, diffSWimage)
+            del diffSWText, diffSWimage
+
             epoch_loss += path_loss.item()
 
             # Backpropagation
@@ -224,6 +238,7 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
             optimizer.step()
 
             print(f"Epoch {epoch+1}, Batch {batch_idx+1}/{len(trainLoader)}, Loss: {path_loss.item():.4f}")
+            del path_loss
             
             # print gradients for debugging
             # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
@@ -231,28 +246,7 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
             ######################################################################################################################################
             # Free memory
 
-            variables_to_delete = [
-                'image_a', 'image_b', 'tokens_a', 'tokens_b', 
-                'diffSWText', 'diffSWimage', 'textSWpath', 
-                'imageSWpath', 'path_loss', 'textSimilar', 
-                'new_size', 'text_startPoints'
-            ]
-            
-            # Add debug variables if they exist
-            if debug and batch_idx % 10 == 9:
-                debug_vars = [
-                    'cloned_alignment_output_for_viz', 'cloned_processed_smith_for_viz',
-                    'smith_matrix_for_char_level_viz', 'vectors_epoch_dir', 'matrices_epoch_dir'
-                ]
-                variables_to_delete.extend(debug_vars)
-            
-            # Delete all variables that exist in local scope
-            for var_name in variables_to_delete:
-                if var_name in locals():
-                    del locals()[var_name]
-            
-            if hasattr(DiffSW, 'cosine_similarity'):
-                del DiffSW.cosine_similarity
+            del new_size, text_startPoints
             torch.cuda.empty_cache()
 
             ######################################################################################################################################
@@ -276,10 +270,10 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
 if __name__ == '__main__':
     loss_type = 'MSE' # ['HeightDiff', 'MSE', 'GuidedAttention', 'KL-Divergence', 'Dice', 'Wasserstein]
     model_arch = 'CNN' # ['CNN-Transformer','CNN','Transformer']
-    window_size = 16
+    window_size = 32
     vector_size = 64
-    normalize_type = 'mean_std' # ['min_max', 'mean_std']
-    epochs = 300
+    normalize_type = '' # ['min_max', 'mean_std']
+    epochs = 100
     learning_rate = 1e-3
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     debug = False # Set to True to save patches and heatmaps for debugging
@@ -318,9 +312,19 @@ if __name__ == '__main__':
         criterion = wasserstein_distance
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
-
-    loss_lst = Train(cnn_transformer_model, DiffSW, train_dataloader,
-                      criterion, loss_type, device, normalize_type,epochs,learning_rate,debug)
+    try:
+        loss_lst = Train(cnn_transformer_model, DiffSW, train_dataloader,
+                          criterion, loss_type, device, normalize_type,epochs,
+                          learning_rate,debug)
+        del cnn_transformer_model
+    except Exception as e: 
+        del cnn_transformer_model
+        for obj in gc.get_objects():
+            try:
+                if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                    print(type(obj), obj.size(), obj.device)
+            except:
+                pass
     wandb.finish()
     
     # epochs = range(1, len(loss_lst) + 1)
