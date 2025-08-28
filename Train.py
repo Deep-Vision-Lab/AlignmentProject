@@ -312,19 +312,19 @@ if __name__ == '__main__':
         criterion = wasserstein_distance
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
-    try:
-        loss_lst = Train(cnn_transformer_model, DiffSW, train_dataloader,
-                          criterion, loss_type, device, normalize_type,epochs,
-                          learning_rate,debug)
-        del cnn_transformer_model
-    except Exception as e: 
-        del cnn_transformer_model
-        for obj in gc.get_objects():
-            try:
-                if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
-                    print(type(obj), obj.size(), obj.device)
-            except:
-                pass
+    # try:
+    loss_lst = Train(cnn_transformer_model, DiffSW, train_dataloader,
+                        criterion, loss_type, device, normalize_type,epochs,
+                        learning_rate,debug)
+    #     del cnn_transformer_model
+    # except Exception as e: 
+    #     del cnn_transformer_model
+    #     for obj in gc.get_objects():
+    #         try:
+    #             if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+    #                 print(type(obj), obj.size(), obj.device)
+    #         except:
+    #             pass
     wandb.finish()
     
     # epochs = range(1, len(loss_lst) + 1)

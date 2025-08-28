@@ -120,10 +120,8 @@ def custom_collate_fn(batch):
     # Stack image tensors
     images_a = torch.stack(images_a, dim=0).to(device)
     images_a.retain_grad()
-    print(f'images_a.shape: {images_a.shape}')
     images_b = torch.stack(images_b, dim=0).to(device)
     images_b.retain_grad()
-    print(f'images_b.shape: {images_b.shape}')
     
     # Pad and stack smith matrices
     # Smoothing can be enabled here if desired, e.g., pad_matrices(smith_matrices, smooth=True)
@@ -132,9 +130,6 @@ def custom_collate_fn(batch):
                                                 gap=-1).to(device)
     SW_matrices = alignment_model(similarity_matrix=similar_matrix,
                                                 calc_cosine=False).to(device)
-    
-    print(f'SW_matrices.shape: {SW_matrices.shape}')
-    print(f'similar_matrix.shape: {similar_matrix.shape}')
 
     return (
         images_a,
