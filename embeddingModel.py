@@ -120,8 +120,8 @@ class EmbeddingModel(nn.Module):
 
         if self.model_arch == 'Transformer':
             # Compute mean over width (W) for each row
-            reduced_tokens_a = self.channel_reducer(tokens_a)  # [batch_size, windows_num, 1, H, W]
-            reduced_tokens_b = self.channel_reducer(tokens_b)  # [batch_size, windows_num, 1, H, W]
+            reduced_tokens_a = self.channel_reducer(tokens_a)  # type: ignore # [batch_size, windows_num, 1, H, W]
+            reduced_tokens_b = self.channel_reducer(tokens_b)  # type: ignore # [batch_size, windows_num, 1, H, W]
             if show_dims: print(f"Patches_a shape after channel reduction: {reduced_tokens_a.shape}, Patches_b shape after channel reduction: {reduced_tokens_b.shape}")
             del tokens_a, tokens_b # type: ignore
 
@@ -160,7 +160,7 @@ class EmbeddingModel(nn.Module):
             if show_dims: print(f"Tokens_a shape after reshaping: {features_vector_a.shape}, Tokens_b shape after reshaping: {features_vector_b.shape}")
             del featured_tokens_a, featured_tokens_b
 
-        return features_vector_a, features_vector_b
+        return features_vector_a, features_vector_b # type: ignore
 
 import gc
 import torch
