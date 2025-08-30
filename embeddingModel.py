@@ -1,12 +1,9 @@
-from matplotlib import patches
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint
 import torchvision
-from torchvision.models import resnet34, ResNet34_Weights, vit_b_16, ViT_B_16_Weights
-import cv2
-import matplotlib.pyplot as plt  
-import numpy as np 
+from torchvision.models import resnet34, ResNet34_Weights
 
 
 # Sliding window function to divide image into patches (subwindows)
@@ -64,15 +61,17 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
+
 class EmbeddingModel(nn.Module):
     def __init__(self, window_size=128, stride=64, vector_size=512, model_arch='CNN-Transformer',
-                  device='cuda'):
+                  device='cuda', use_checkpointing=True):
         super(EmbeddingModel, self).__init__()
         
         self.model_arch = model_arch
+        self.use_checkpointing = use_checkpointing  # Enable/disable gradient checkpointing
 
         if model_arch == 'CNN-Transformer' or model_arch == 'CNN':
-            self.cnn_encoder = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)
+            self.cnn_encoder = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1).to(device)
             cnn_feature_dim = self.cnn_encoder.fc.in_features
             self.cnn_encoder.fc = nn.Linear(cnn_feature_dim, vector_size)
 
@@ -81,86 +80,173 @@ class EmbeddingModel(nn.Module):
         
         if model_arch == 'Transformer':
             self.channel_reducer = nn.Conv2d(3, 1, kernel_size=1, stride=1, padding=0, bias=False)
-            self.convert_to_vectors = nn.Sequential(
-                nn.Linear(in_features=tokens_a.shape[-1], out_features=self.vector_size)
-            ).to(device) 
+            # Fix the initialization issue - we'll handle this in forward()
+            self.convert_to_vectors = None
+            
         self.window_size = window_size
         self.stride = stride
         self.vector_size = vector_size
-        self.model_arch = model_arch
-    
-    def forward(self, image_a, image_b, show_dims=False, debug=False):
-       
-        #################################################################################
-
-        tokens_a = sliding_window(image_a, self.window_size, self.stride, debug_mode=debug)
-        tokens_b = sliding_window(image_b, self.window_size, self.stride, debug_mode=debug)
-        if show_dims: print(f"Patches_a shape: {tokens_a.shape}, Patches_b shape: {tokens_b.shape}")
         
+    def _process_cnn_branch(self, tokens_a, tokens_b, show_dims=False):
+        """Process CNN branch with gradient checkpointing"""
         batches_num, windows_num, Channels, H, W = tokens_a.shape
         
-        # Reshape patches to [batch_size, windows_num, Channels, H, W]
-        if self.model_arch == 'CNN-Transformer' or self.model_arch == 'CNN':        
-            reshaped_tokens_a  = tokens_a.reshape(batches_num * windows_num, Channels, H, W)
-            reshaped_tokens_b = tokens_b.reshape(batches_num * windows_num, Channels, H, W)
-            if show_dims: print(f"Patches_a shape after reshaping: {reshaped_tokens_a.shape}, Patches_b shape after reshaping: {reshaped_tokens_b.shape}")
-            del tokens_a, tokens_b
-
-            # Pass through CNN to get feature vectors
+        # Reshape patches
+        reshaped_tokens_a = tokens_a.reshape(batches_num * windows_num, Channels, H, W)
+        reshaped_tokens_b = tokens_b.reshape(batches_num * windows_num, Channels, H, W)
+        if show_dims: 
+            print(f"Patches after reshaping: {reshaped_tokens_a.shape}, {reshaped_tokens_b.shape}")
+        
+        del tokens_a, tokens_b
+        
+        # Use gradient checkpointing for CNN encoder
+        if self.use_checkpointing and self.training:
+            # Split ResNet into sequential modules for checkpointing
+            resnet_modules = [
+                nn.Sequential(self.cnn_encoder.conv1, self.cnn_encoder.bn1, self.cnn_encoder.relu),
+                self.cnn_encoder.maxpool,
+                self.cnn_encoder.layer1,
+                self.cnn_encoder.layer2,
+                self.cnn_encoder.layer3,
+                self.cnn_encoder.layer4,
+                nn.Sequential(self.cnn_encoder.avgpool, nn.Flatten(), self.cnn_encoder.fc)
+            ]
+            
+            # Process with checkpointing
+            encoded_tokens_a = torch.utils.checkpoint.checkpoint_sequential(
+                resnet_modules, segments=4, input=reshaped_tokens_a
+            )
+            encoded_tokens_b = torch.utils.checkpoint.checkpoint_sequential(
+                resnet_modules, segments=4, input=reshaped_tokens_b
+            )
+        else:
+            # Standard forward pass
             encoded_tokens_a = self.cnn_encoder(reshaped_tokens_a)
             encoded_tokens_b = self.cnn_encoder(reshaped_tokens_b)
-            if show_dims: print(f"Tokens_a shape: {encoded_tokens_a.shape}, Tokens_b shape: {encoded_tokens_b.shape}")
-            del reshaped_tokens_a, reshaped_tokens_b
+            
+        if show_dims: 
+            print(f"Tokens after CNN: {encoded_tokens_a.shape}, {encoded_tokens_b.shape}")
+        
+        del reshaped_tokens_a, reshaped_tokens_b
+        
+        return encoded_tokens_a, encoded_tokens_b, batches_num, windows_num
 
-            if self.model_arch == 'CNN':  
-                features_vector_a = encoded_tokens_a.view(batches_num, windows_num, self.vector_size) 
-                features_vector_b = encoded_tokens_b.view(batches_num, windows_num, self.vector_size) 
-                if show_dims: print(f"Tokens_a shape after reshaping: {features_vector_a.shape}, Tokens_b shape after reshaping: {features_vector_b.shape}")
-                del encoded_tokens_a, encoded_tokens_b
-
-        if self.model_arch == 'Transformer':
-            # Compute mean over width (W) for each row
-            reduced_tokens_a = self.channel_reducer(tokens_a)  # type: ignore # [batch_size, windows_num, 1, H, W]
-            reduced_tokens_b = self.channel_reducer(tokens_b)  # type: ignore # [batch_size, windows_num, 1, H, W]
-            if show_dims: print(f"Patches_a shape after channel reduction: {reduced_tokens_a.shape}, Patches_b shape after channel reduction: {reduced_tokens_b.shape}")
-            del tokens_a, tokens_b # type: ignore
-
-            # Compute mean over width (W) for each row
-            mean_tokens_a = reduced_tokens_a.mean(dim=2)  # [batch_size, windows_num, H, W]
-            mean_tokens_b = reduced_tokens_b.mean(dim=2)  # [batch_size, windows_num, H, W]
-            if show_dims: print(f"mean_a shape: {mean_tokens_a.shape}, mean_b shape: {mean_tokens_b.shape}")
-            del reduced_tokens_a, reduced_tokens_b # type: ignore
-
-            # Compute mean over width (W) for each row
-            mean_a = mean_tokens_a.mean(dim=-1)  # [batch_size, windows_num, 1, H, W]
-            mean_b = mean_tokens_b.mean(dim=-1)  # [batch_size, windows_num, 1, H, W]
-            if show_dims: print(f"mean_a shape: {mean_a.shape}, mean_b shape: {mean_b.shape}")
-            del mean_tokens_a, mean_tokens_b # type: ignore
-
-            # Reshape for transformer: [batch_size * windows_num, Channels*H]
-            reshaped_means_a = mean_a.reshape(-1, mean_a.shape[-1])
-            reshaped_means_b = mean_b.reshape(-1, mean_b.shape[-1])
-            if show_dims: print(f"Tokens_a shape: {reshaped_means_a.shape}, Tokens_b shape: {reshaped_means_b.shape}")
-            del mean_a, mean_b
-
-            # Convert to vectors
+    def _process_transformer_branch(self, tokens_a, tokens_b, show_dims=False):
+        """Process Transformer-only branch with gradient checkpointing"""
+        batches_num, windows_num, Channels, H, W = tokens_a.shape
+        
+        # Initialize convert_to_vectors if needed
+        if self.convert_to_vectors is None:
+            self.convert_to_vectors = nn.Sequential(
+                nn.Linear(in_features=H, out_features=self.vector_size)
+            ).to(tokens_a.device)
+        
+        # Channel reduction
+        reduced_tokens_a = self.channel_reducer(tokens_a)
+        reduced_tokens_b = self.channel_reducer(tokens_b)
+        if show_dims: 
+            print(f"After channel reduction: {reduced_tokens_a.shape}, {reduced_tokens_b.shape}")
+        
+        del tokens_a, tokens_b
+        
+        # Mean operations
+        mean_tokens_a = reduced_tokens_a.mean(dim=2)
+        mean_tokens_b = reduced_tokens_b.mean(dim=2)
+        del reduced_tokens_a, reduced_tokens_b
+        
+        mean_a = mean_tokens_a.mean(dim=-1)
+        mean_b = mean_tokens_b.mean(dim=-1)
+        del mean_tokens_a, mean_tokens_b
+        
+        # Reshape for processing
+        reshaped_means_a = mean_a.reshape(-1, mean_a.shape[-1])
+        reshaped_means_b = mean_b.reshape(-1, mean_b.shape[-1])
+        del mean_a, mean_b
+        
+        # Convert to vectors with checkpointing
+        if self.use_checkpointing and self.training:
+            encoded_tokens_a = torch.utils.checkpoint.checkpoint(
+                self.convert_to_vectors, reshaped_means_a
+            )
+            encoded_tokens_b = torch.utils.checkpoint.checkpoint(
+                self.convert_to_vectors, reshaped_means_b
+            )
+        else:
             encoded_tokens_a = self.convert_to_vectors(reshaped_means_a)
             encoded_tokens_b = self.convert_to_vectors(reshaped_means_b)
-            if show_dims: print(f"Tokens_a shape: {encoded_tokens_a.shape}, Tokens_b shape: {encoded_tokens_b.shape}")
-            del reshaped_means_a, reshaped_means_b
+            
+        del reshaped_means_a, reshaped_means_b
         
+        return encoded_tokens_a, encoded_tokens_b, batches_num, windows_num
+
+    def _process_transformer_encoder(self, encoded_tokens_a, encoded_tokens_b, show_dims=False):
+        """Process transformer encoder with gradient checkpointing"""
+        if self.use_checkpointing and self.training:
+            # Get transformer encoder layers
+            transformer_layers = list(self.transformer_encoder.transformer_encoder.layers)
+            
+            # Apply positional encoding first
+            tokens_a = self.transformer_encoder.pos_encoder(encoded_tokens_a)
+            tokens_b = self.transformer_encoder.pos_encoder(encoded_tokens_b)
+            
+            # Process with checkpointing
+            featured_tokens_a = torch.utils.checkpoint.checkpoint_sequential(
+                transformer_layers, segments=3, input=tokens_a
+            )
+            featured_tokens_b = torch.utils.checkpoint.checkpoint_sequential(
+                transformer_layers, segments=3, input=tokens_b
+            )
+        else:
+            # Standard forward pass
+            featured_tokens_a = self.transformer_encoder(encoded_tokens_a)
+            featured_tokens_b = self.transformer_encoder(encoded_tokens_b)
+            
+        if show_dims: 
+            print(f"After transformer: {featured_tokens_a.shape}, {featured_tokens_b.shape}")
+        
+        del encoded_tokens_a, encoded_tokens_b
+        
+        return featured_tokens_a, featured_tokens_b
+
+    def forward(self, image_a, image_b, show_dims=False, debug=False):
+        # Extract patches
+        tokens_a = sliding_window(image_a, self.window_size, self.stride, debug_mode=debug)
+        tokens_b = sliding_window(image_b, self.window_size, self.stride, debug_mode=debug)
+        if show_dims: 
+            print(f"Patches: {tokens_a.shape}, {tokens_b.shape}")
+        
+        batches_num, windows_num = tokens_a.shape[:2]
+        
+        # Process based on architecture
+        if self.model_arch == 'CNN-Transformer' or self.model_arch == 'CNN':
+            encoded_tokens_a, encoded_tokens_b, batches_num, windows_num = self._process_cnn_branch(
+                tokens_a, tokens_b, show_dims
+            )
+            
+            if self.model_arch == 'CNN':
+                # CNN-only: directly reshape to final output
+                features_vector_a = encoded_tokens_a.view(batches_num, windows_num, self.vector_size)
+                features_vector_b = encoded_tokens_b.view(batches_num, windows_num, self.vector_size)
+                del encoded_tokens_a, encoded_tokens_b
+                return features_vector_a, features_vector_b
+                
+        elif self.model_arch == 'Transformer':
+            encoded_tokens_a, encoded_tokens_b, batches_num, windows_num = self._process_transformer_branch(
+                tokens_a, tokens_b, show_dims
+            )
+        
+        # CNN-Transformer or Transformer: process through transformer encoder
         if self.model_arch == 'CNN-Transformer' or self.model_arch == 'Transformer':
-            featured_tokens_a = self.transformer_encoder(encoded_tokens_a) # type: ignore
-            featured_tokens_b = self.transformer_encoder(encoded_tokens_b) # type: ignore
-            if show_dims: print(f"Tokens_a shape after permuting: {featured_tokens_a.shape}, Tokens_b shape after permuting: {featured_tokens_b.shape}")
-            del encoded_tokens_a, encoded_tokens_b # type: ignore
-
-            features_vector_a = featured_tokens_a.view(batches_num, windows_num, self.vector_size) 
-            features_vector_b = featured_tokens_b.view(batches_num, windows_num, self.vector_size) 
-            if show_dims: print(f"Tokens_a shape after reshaping: {features_vector_a.shape}, Tokens_b shape after reshaping: {features_vector_b.shape}")
+            featured_tokens_a, featured_tokens_b = self._process_transformer_encoder(
+                encoded_tokens_a, encoded_tokens_b, show_dims
+            )
+            
+            # Final reshape
+            features_vector_a = featured_tokens_a.view(batches_num, windows_num, self.vector_size)
+            features_vector_b = featured_tokens_b.view(batches_num, windows_num, self.vector_size)
             del featured_tokens_a, featured_tokens_b
-
-        return features_vector_a, features_vector_b # type: ignore
+            
+        return features_vector_a, features_vector_b
 
 import gc
 import torch
@@ -172,17 +258,22 @@ if __name__ == "__main__":
     image_b = torch.randn(8, 3, 224, 1024).to('cuda')
     
     # Instantiate the alignment model
-    model = EmbeddingModel(window_size=16, stride=8, vector_size=64,
-                            model_arch='CNN').to('cuda') # ['CNN-Transformer','CNN','Transformer']
+    model = EmbeddingModel(
+        window_size=16,
+        stride=8, 
+        vector_size=64,
+        model_arch='CNN',
+        use_checkpointing=True 
+    ).to('cuda') # ['CNN-Transformer','CNN','Transformer']
 
     # Forward pass: get token sequences for both images
-    tokens_a, tokens_b = model(image_a, image_b,  show_dims=True)
+    tokens_a, tokens_b = model(image_a, image_b,  show_dims=False)
     
     # Output token shapes
     print(f"Tokens A shape: {tokens_a.shape}")
     print(f"Tokens B shape: {tokens_b.shape}")
     del image_a, image_b 
-    # del tokens_a, tokens_b, 
+    del tokens_a, tokens_b, 
     del model
     torch.cuda.empty_cache()
 
