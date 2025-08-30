@@ -132,12 +132,15 @@ def smooth_and_normalize_matrix(matrix, normalize_type):
 import gc
 import torch
 
-def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_type, epochs=100, learning_rate=1e-4, debug=False):
+def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_type, epochs=100, learning_rate=1e-4, debug=False, gradient_accumulation_steps=1):
     model.train()
     optimizer = optim.Adam(list(model.parameters()), lr=learning_rate)
+    scaler = torch.cuda.amp.GradScaler()  # Add GradScaler for mixed precision
     loss_lst = []
     print(f"Using device: {device}")
     print("Train DataLoader length:", len(trainLoader))
+    print(f"Gradient accumulation steps: {gradient_accumulation_steps}")
+    print("Using automatic mixed precision training")
 
     for epoch in range(epochs):
         # Prepare output directories
@@ -145,15 +148,19 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
         os.makedirs(weights_dir, exist_ok=True)
 
         epoch_loss = 0
+        accumulated_loss = 0
 
         for batch_idx, (image_a, image_b, diffSWText, textSimilar) in enumerate(trainLoader):
-            optimizer.zero_grad()
+            # Only zero gradients at the start of accumulation cycle
+            if batch_idx % gradient_accumulation_steps == 0:
+                optimizer.zero_grad()
             
-            # Forward pass
-            tokens_a, tokens_b = model(image_a, image_b, show_dims=False, debug=debug)
-            flip_tokens_a = torch.flip(tokens_a, dims=[1])
-            flip_tokens_b = torch.flip(tokens_b, dims=[1])
-            diffSWimage = DiffSW(x1=flip_tokens_a, x2=flip_tokens_b)
+            # Forward pass with autocast for mixed precision
+            with torch.cuda.amp.autocast():
+                tokens_a, tokens_b = model(image_a, image_b, show_dims=False)
+                flip_tokens_a = torch.flip(tokens_a, dims=[1])
+                flip_tokens_b = torch.flip(tokens_b, dims=[1])
+                diffSWimage = DiffSW(x1=flip_tokens_a, x2=flip_tokens_b)
 
             del flip_tokens_a, flip_tokens_b
 
@@ -182,7 +189,7 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
                                                    DiffSW.cosine_similarity,match_score=7,
                                                    miss_score=-3, gap_penalty=-1, position=text_startPoints)
             diffSWimage = diffSWimage * imageSWpath
-            del imageSWpath, DiffSW.cosine_similarity
+            del imageSWpath, DiffSW.cosine_similarity, DiffSW.align
             ######################################################################################################################################
 
             # Optionally smooth and normalize alignment output
@@ -190,11 +197,10 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
             # interpolated_smith_matrix = smooth_and_normalize_matrix(interpolated_smith_matrix, normalize_type)
 
             ####################################################################################################################################
-
-            if debug and batch_idx % 10 == 9: # Save visualizations every 10 batches if in debug mode
+            if debug and batch_idx == len(trainLoader) - 1 : # Save visualizations every 10 batches if in debug mode
                 # Prepare directories for saving visualizations
-                vectors_epoch_dir = f'Visualizations/{loss_type}/{model.model_arch}/Vectors/Epoch_{epoch+1}'
-                matrices_epoch_dir = f'Visualizations/{loss_type}/{model.model_arch}/Matrices/Epoch_{epoch+1}'
+                vectors_epoch_dir = f'TrainResults/{loss_type}/VectorsPerEpoch/{model.model_arch}/Epoch_{epoch+1}'
+                matrices_epoch_dir = f'TrainResults/{loss_type}/ScoreMatricesPerEpoch/{model.model_arch}/Epoch_{epoch+1}'
                 os.makedirs(vectors_epoch_dir, exist_ok=True)
                 os.makedirs(matrices_epoch_dir, exist_ok=True)
 
@@ -224,28 +230,37 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
                 del cloned_alignment_output_for_viz, cloned_processed_smith_for_viz
                 del smith_matrix_for_char_level_viz, vectors_epoch_dir, matrices_epoch_dir
             ####################################################################################################################################
-            del image_a, image_b 
             del tokens_a, tokens_b
             
-            # Compute loss and accuracy
-            path_loss = criterion(diffSWText, diffSWimage)
+            # Compute loss and scale by accumulation steps with autocast
+            with torch.cuda.amp.autocast():
+                path_loss = criterion(diffSWText, diffSWimage)
+                scaled_loss = path_loss / gradient_accumulation_steps
             del diffSWText, diffSWimage
 
             epoch_loss += path_loss.item()
+            accumulated_loss += path_loss.item()
 
-            # Backpropagation
-            path_loss.backward()
-            optimizer.step()
+            # Backpropagation with gradient scaling
+            scaler.scale(scaled_loss).backward()
 
-            print(f"Epoch {epoch+1}, Batch {batch_idx+1}/{len(trainLoader)}, Loss: {path_loss.item():.4f}")
-            del path_loss
+            # Update weights only after accumulating enough gradients
+            if (batch_idx + 1) % gradient_accumulation_steps == 0 or batch_idx == len(trainLoader) - 1:
+                scaler.step(optimizer)
+                scaler.update()
+                
+                print(f"Epoch {epoch+1}, Batch {batch_idx+1}/{len(trainLoader)}, Accumulated Loss: {accumulated_loss:.4f}")
+                accumulated_loss = 0  # Reset accumulated loss for next cycle
+
+            del path_loss, scaled_loss
             
             # print gradients for debugging
             # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
 
             ######################################################################################################################################
             # Free memory
-
+            # del model.features_vector_a, model.features_vector_b
+            del image_a, image_b 
             del new_size, text_startPoints
             torch.cuda.empty_cache()
 
@@ -268,20 +283,21 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
 
 
 if __name__ == '__main__':
-    loss_type = 'MSE' # ['HeightDiff', 'MSE', 'GuidedAttention', 'KL-Divergence', 'Dice', 'Wasserstein]
-    model_arch = 'CNN' # ['CNN-Transformer','CNN','Transformer']
+    loss_type = 'MSE' # ['HeightDiff', 'MSE', 'GuidedAttention', 'KL-Divergence', 'Dice', 'Wasserstein']
+    model_arch = 'CNN' # ['CNN-Transformer', 'CNN', 'Transformer']
     window_size = 32
     vector_size = 64
     normalize_type = '' # ['min_max', 'mean_std']
     epochs = 100
-    learning_rate = 1e-3
+    learning_rate = 1e-4
+    gradient_accumulation_steps = 4  # Accumulate gradients over 4 batches
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    debug = False # Set to True to save patches and heatmaps for debugging
+    debug = True # Set to True to save patches and heatmaps for debugging
     
     wandb.init(
         # set the wandb project where this run will be logged
-        project="AlignmentCNN-TransformerProject",
-        name=f"Train model {window_size} - {model_arch} - {loss_type} - {normalize_type}",
+        project="AlignmentProject",
+        name=f"Train model {window_size} - {model_arch} - {loss_type} - {normalize_type} - AMP",
         # track hyperparameters and run metadata
         config={
             "learning_rate": learning_rate,
@@ -291,10 +307,18 @@ if __name__ == '__main__':
             "architecture": model_arch,
             "epochs": epochs,
             "slicing_window_width": window_size,
-            "normalizing method ": normalize_type
+            "normalizing method ": normalize_type,
+            "gradient_accumulation_steps": gradient_accumulation_steps,
+            "mixed_precision": True
         })
-    cnn_transformer_model = EmbeddingModel(window_size=window_size, stride=window_size//2, 
-                                           vector_size=vector_size, model_arch=model_arch).to(device)# In Train.py
+
+    cnn_transformer_model = EmbeddingModel(
+        window_size=window_size,
+        stride=window_size//2,
+        vector_size=vector_size,
+        model_arch=model_arch,
+        use_checkpointing=True
+    ).to(device)  # In Train.py
 
     DiffSW = DiffSWAlgo(match_score=7, miss_score=-3, gap=-1).to(device)
 
@@ -313,10 +337,20 @@ if __name__ == '__main__':
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
     # try:
-    loss_lst = Train(cnn_transformer_model, DiffSW, train_dataloader,
-                        criterion, loss_type, device, normalize_type,epochs,
-                        learning_rate,debug)
-    #     del cnn_transformer_model
+    loss_lst = Train(
+        cnn_transformer_model,
+        DiffSW,
+        train_dataloader,
+        criterion,
+        loss_type,
+        device,
+        normalize_type,
+        epochs,
+        learning_rate,
+        debug,
+        gradient_accumulation_steps
+    )
+    # del cnn_transformer_model
     # except Exception as e: 
     #     del cnn_transformer_model
     #     for obj in gc.get_objects():

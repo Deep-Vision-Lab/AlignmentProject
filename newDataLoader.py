@@ -9,7 +9,7 @@ from newDataSet import TextLineModern, window_size
 from DiffSWAlgo import *
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-batch_size = 8
+batch_size = 4
 
 data_dir = "DataSet/NewSynthetic"  # Directory for the new dataset
 # Define paths for NewDataSet
@@ -32,13 +32,8 @@ class ScoreMapping:
 # Define transformations for images
 transform = transforms.Compose([
     ToTensorWithGrad(),
-    transforms.Resize((224, 1024)),
+    transforms.Resize((128, 1024)),
     ScoreMapping()
-])
-# Define transformations for images
-transform = transforms.Compose([
-    ToTensorWithGrad(),
-    transforms.Resize((224, 1024))
 ])
 
 # Create the full dataset
