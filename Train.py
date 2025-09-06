@@ -9,7 +9,6 @@ from pathExtractor import *
 from saveDATA import *
 from LossFunctionWithHelpers import *
 from Evaluation import *
-from Visualization import *
 from embeddingModel import *
 
 import os
@@ -58,8 +57,11 @@ def saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_
             # Extract the traceback path from the original Smith-Waterman matrix
             smith_original_scores_np = current_smith_original_item.cpu().numpy()
 
-            # makeTracerouteMatrixBinary expects a batch, so add a dimension and remove it
-            smith_original_path_np = makeTracerouteMatrixBinary(np.expand_dims(smith_original_scores_np, axis=0))[0]
+            # Use SW_Path instead of makeTracerouteMatrixBinary
+            smith_original_path_tensor, _ = SW_Path(current_smith_original_item.unsqueeze(0), 
+                                                   current_smith_original_item.unsqueeze(0),
+                                                   match_score=7, miss_score=-3, gap_penalty=-1)
+            smith_original_path_np = smith_original_path_tensor[0].cpu().numpy()
 
             # SW matrix has text1 along rows, text2 along columns.
             # To put text1 (seq1) on X-axis and text2 (seq2) on Y-axis, we need to transpose.
@@ -129,7 +131,6 @@ def smooth_and_normalize_matrix(matrix, normalize_type):
 
 
 
-import gc
 import torch
 
 def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_type, epochs=100, learning_rate=1e-4, debug=False, gradient_accumulation_steps=1):
@@ -150,7 +151,7 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
         epoch_loss = 0
         accumulated_loss = 0
 
-        for batch_idx, (image_a, image_b, diffSWText, textSimilar) in enumerate(trainLoader):
+        for batch_idx, (image_a, image_b, SWText, textSimilar) in enumerate(trainLoader):
             # Only zero gradients at the start of accumulation cycle
             if batch_idx % gradient_accumulation_steps == 0:
                 optimizer.zero_grad()
@@ -167,22 +168,22 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
             ######################################################################################################################################
             
             # Interpolate smith matrix to match alignment output shape
-            new_size = diffSWText.shape[-2:]
+            new_size = SWText.shape[-2:]
             diffSWimage = interpolate_SW_matrix(diffSWimage,
                                                    new_size)
             DiffSW.cosine_similarity = interpolate_SW_matrix(DiffSW.cosine_similarity,
                                                                     new_size)
-            assert diffSWText.shape == diffSWimage.shape == DiffSW.cosine_similarity.shape, \
+            assert SWText.shape == diffSWimage.shape == DiffSW.cosine_similarity.shape, \
                 f"Shapes after interpolation do not match! diffSWimage: {diffSWimage.shape}, \
-                diffSWText: {diffSWText.shape}, cosine_similarity: {DiffSW.cosine_similarity.shape}"
+                SWText: {SWText.shape}, cosine_similarity: {DiffSW.cosine_similarity.shape}"
 
             ######################################################################################################################################
             # Extracting the path
             
-            textSWpath, text_startPoints = diff_SW_Path(diffSWText,
+            textSWpath, text_startPoints = SW_Path(SWText,
                                                    textSimilar,match_score=7,
                                                    miss_score=-3, gap_penalty=-1)
-            diffSWText = diffSWText * textSWpath
+            SWText = SWText * textSWpath
             del textSWpath, textSimilar
 
             imageSWpath, _ = diff_SW_Path(diffSWimage,
@@ -206,7 +207,7 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
 
                 # Clone tensors for visualization to avoid affecting gradients
                 cloned_alignment_output_for_viz = diffSWimage.clone().detach()
-                cloned_processed_smith_for_viz = diffSWText.clone().detach()
+                cloned_processed_smith_for_viz = SWText.clone().detach()
 
                 # smith_matrix_for_char_level_viz is only available during training if calc_cosine=False in Alignment
                 if hasattr(DiffSW, 'similarity_matrix'):
@@ -234,9 +235,9 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
             
             # Compute loss and scale by accumulation steps with autocast
             with torch.cuda.amp.autocast():
-                path_loss = criterion(diffSWText, diffSWimage)
+                path_loss = criterion(SWText, diffSWimage)
                 scaled_loss = path_loss / gradient_accumulation_steps
-            del diffSWText, diffSWimage
+            del SWText, diffSWimage
 
             epoch_loss += path_loss.item()
             accumulated_loss += path_loss.item()

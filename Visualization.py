@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
-from pathExtractor import extract_traceback_path
+from pathExtractor import *
 
 
 
