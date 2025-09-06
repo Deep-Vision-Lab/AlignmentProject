@@ -11,11 +11,12 @@ from DiffSWAlgo import *
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 batch_size = 4
 
-data_dir = "DataSet/NewSynthetic"  # Directory for the new dataset
+data_dir = "DataSet/Synthetic"  # Directory for the new dataset
 # Define paths for NewDataSet
 new_dataset = {
     "images": os.path.join(data_dir, "images"),
-    "scoreMatrix": os.path.join(data_dir, "matrices"),
+    "score_matrices": os.path.join(data_dir, "score_matrices"),
+    "similarity_matrices": os.path.join(data_dir, "similarity_matrices"),
     "texts":  os.path.join(data_dir, "texts")
 }
 
@@ -33,7 +34,7 @@ class ScoreMapping:
 transform = transforms.Compose([
     ToTensorWithGrad(),
     transforms.Resize((128, 1024)),
-    ScoreMapping()
+    # ScoreMapping()
 ])
 
 # Create the full dataset
@@ -110,7 +111,7 @@ def custom_collate_fn(batch):
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    images_a, images_b, similar_matrix = zip(*batch)
+    images_a, images_b, score_matrix, similar_matrix = zip(*batch)
     
     # Stack image tensors
     images_a = torch.stack(images_a, dim=0).to(device)
@@ -120,16 +121,17 @@ def custom_collate_fn(batch):
     
     # Pad and stack smith matrices
     # Smoothing can be enabled here if desired, e.g., pad_matrices(smith_matrices, smooth=True)
+    score_matrix = pad_matrices(score_matrix, smooth=False) # Defaulting to no smoothing for now
     similar_matrix = pad_matrices(similar_matrix, smooth=False) # Defaulting to no smoothing for now
-    alignment_model = DiffSWAlgo(match_score=7, miss_score=-3, 
-                                                gap=-1).to(device)
-    SW_matrices = alignment_model(similarity_matrix=similar_matrix,
-                                                calc_cosine=False).to(device)
+    # alignment_model = DiffSWAlgo(match_score=7, miss_score=-3, 
+    #                                             gap=-1).to(device)
+    # SW_matrices = alignment_model(similarity_matrix=similar_matrix,
+    #                                             calc_cosine=False).to(device)
 
     return (
         images_a,
         images_b,
-        SW_matrices,
+        score_matrix,
         similar_matrix
     )
 

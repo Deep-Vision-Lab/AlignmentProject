@@ -53,7 +53,7 @@ class TextLineModern(Dataset):
         if new_dataset:
             # Preload file mappings for NewDataSet
             self.image_pairs = [
-                (f"img1_{i}.png", f"img2_{i}.png", f"scoreMatrix_{i}.npy", f"text1_{i}.txt", f"text2_{i}.txt") for i in
+                (f"img1_{i}.png", f"img2_{i}.png", f"scoreMatrix_{i}.npy", f"similarityMatrix_{i}.npy", f"text1_{i}.txt", f"text2_{i}.txt") for i in
                 range(1, 3001)]
                 # range(1, 3001)]
 
@@ -63,20 +63,20 @@ class TextLineModern(Dataset):
     def __getitem__(self, idx):
         if self.new_dataset:
             # Load images and score matrix for NewDataSet
-            img1_name, img2_name, matrix_name, text1_name, text2_name = self.image_pairs[idx]
+            img1_name, img2_name, score_matrix_name, similarity_matrix_name, text1_name, text2_name = self.image_pairs[idx]
 
             img1_path = os.path.join(self.new_dataset['images'], img1_name)
             img2_path = os.path.join(self.new_dataset['images'], img2_name)
 
-            matrix_path = os.path.join(self.new_dataset['scoreMatrix'], matrix_name)
-
+            score_path = os.path.join(self.new_dataset['score_matrices'], score_matrix_name)
+            similar_path = os.path.join(self.new_dataset['similarity_matrices'], similarity_matrix_name)
             text1_path = os.path.join(self.new_dataset['texts'], text1_name)
             text2_path = os.path.join(self.new_dataset['texts'], text2_name)
 
             img1 = Image.open(img1_path).convert("RGB")
             img2 = Image.open(img2_path).convert("RGB")
-
-            similar_matrix = np.load(matrix_path)
+            score_matrix = np.load(score_path)
+            similar_matrix = np.load(similar_path)
 
             with (open(text1_path, "r") as file):
                 text1 = file.read()
@@ -90,10 +90,10 @@ class TextLineModern(Dataset):
             if self.transform:
                 img1 = self.transform(img1)
                 img2 = self.transform(img2)
-            
+            score_matrix = torch.tensor(score_matrix, dtype=torch.float32,requires_grad=True).to(device)
             similar_matrix = torch.tensor(similar_matrix, dtype=torch.float32,requires_grad=True).to(device)
-            
-            return img1, img2, similar_matrix
+
+            return img1, img2, score_matrix, similar_matrix
         else:
             raise NotImplementedError("Handling for non-NewDataSet is not included.")
 

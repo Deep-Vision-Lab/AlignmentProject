@@ -22,6 +22,7 @@ warnings.filterwarnings("ignore")
 def smith_waterman_matrix(seq1, seq2, match_score=2, mismatch_penalty=-1, gap_penalty=-1):
     """
     Computes the Smith-Waterman scoring matrix for local alignment.
+    Returns the matrix without the first row and column (removes empty string alignments).
 
     Args:
         seq1 (str): The first sequence (e.g., sentence).
@@ -31,13 +32,13 @@ def smith_waterman_matrix(seq1, seq2, match_score=2, mismatch_penalty=-1, gap_pe
         gap_penalty (int): Penalty for a gap.
 
     Returns:
-        numpy.ndarray: The scoring matrix (H-matrix) as a NumPy array.
+        numpy.ndarray: The scoring matrix (H-matrix) as a NumPy array without first row/column.
     """
     rows = len(seq1) + 1
     cols = len(seq2) + 1
 
     # Initialize the scoring matrix with zeros
-    score_matrix = np.zeros((rows, cols), dtype=int)  # Use NumPy array
+    score_matrix = np.zeros((rows, cols), dtype=int)
 
     # Fill the scoring matrix
     for i in range(1, rows):
@@ -51,7 +52,10 @@ def smith_waterman_matrix(seq1, seq2, match_score=2, mismatch_penalty=-1, gap_pe
 
             score_matrix[i, j] = max(0, diagonal_score, up_score, left_score)
 
-    return score_matrix
+    # Remove first row and column to eliminate empty string alignments
+    diff_sw_matrix = score_matrix[1:, 1:]
+    
+    return diff_sw_matrix
 
 
 
@@ -293,13 +297,13 @@ if __name__ == "__main__":
             mismatch_penalty=sw_mismatch_penalty,
             gap_penalty=sw_gap_penalty
         )
-        # fig, axes = plt.subplots(1, 1, figsize=(20, 10))
-        #
-        # sns.heatmap(scoring_matrix, cmap='jet', linewidths=0.1, linecolor='black',
-        #             ax=axes, yticklabels=['Ω'] + list(arabic_sentence_1.replace(" ", "")),
-        #             xticklabels=['Ω'] + list(arabic_sentence_2.replace(" ", "")))
-        #
-        # plt.show()
+        fig, axes = plt.subplots(1, 1, figsize=(20, 10))
+        
+        sns.heatmap(scoring_matrix, cmap='jet', linewidths=0.1, linecolor='black',
+                    ax=axes, yticklabels=list(arabic_sentence_1.replace(" ", "")),
+                    xticklabels=list(arabic_sentence_2.replace(" ", "")))
+        
+        plt.show()
         save_matrix_to_file(scoring_matrix, output_matrix_file)
 
         # 3. Save the raw Arabic text lines to .txt files
