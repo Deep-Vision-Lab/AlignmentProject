@@ -18,63 +18,60 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-def saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, 
-                    cloned_alignment_output_for_viz, cloned_processed_smith_for_viz, smith_matrix_for_char_level_viz,
+def saveHeatmapPlots(model, image1, image2, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, 
+                    debug_diffSWimage, debug_diffSWText, debug_SWTextSimilar,
                     matrices_epoch_dir, original_text1_batch, original_text2_batch):
-    for i in range(image_a.size(0)): # Iterate through items in the current batch
+    for i in range(image1.size(0)): # Iterate through items in the current batch
         # Save token vectors
         # tokens_a and tokens_b are already flipped and on the correct device
         print_elements(tokens_a[i], f'{vectors_epoch_dir}/tokens_a_epoch_{epoch+1}_batch_{batch_idx}_item_{i}.xlsx')
         print_elements(tokens_b[i], f'{vectors_epoch_dir}/tokens_b_epoch_{epoch+1}_batch_{batch_idx}_item_{i}.xlsx')
         # Generate patches for visualization
-        current_img_a_for_patches = image_a[i].unsqueeze(0).cpu()
-        current_img_b_for_patches = image_b[i].unsqueeze(0).cpu()
+        image1 = image1[i].unsqueeze(0)
+        image2 = image2[i].unsqueeze(0)
         model_window_size = model.window_size
         model_stride = model.stride
-        patches_a_for_viz = sliding_window(current_img_a_for_patches, model_window_size, model_stride).squeeze(0)
-        patches_b_for_viz = sliding_window(current_img_b_for_patches, model_window_size, model_stride).squeeze(0)
+        windows_img1 = sliding_window(image1, model_window_size, model_stride).squeeze(0)
+        windows_img2 = sliding_window(image2, model_window_size, model_stride).squeeze(0)
 
-        patches_y_heatmap = torch.flip(patches_a_for_viz, dims=[0]) # From image_a, for Y-axis
-        patches_x_heatmap = torch.flip(patches_b_for_viz, dims=[0]) # From image_b, for X-axis
+        y_heatmap = torch.flip(windows_img1, dims=[0]) # From image1, for Y-axis
+        x_heatmap = torch.flip(windows_img2, dims=[0]) # From image2, for X-axis
 
         # Visualize heatmaps
         visualize_heatmaps(
-            cloned_alignment_output_for_viz[i].detach().cpu(),
-            cloned_processed_smith_for_viz[i].detach().cpu(),
+            debug_diffSWimage[i],
+            debug_diffSWText[i],
             f"{matrices_epoch_dir}/heatmaps_epoch_{epoch+1}_batch_{batch_idx}_item_{i}.png",
-            patches_y=patches_y_heatmap.detach().cpu(),
-            patches_x=patches_x_heatmap.detach().cpu()
+            patches_y=y_heatmap,
+            patches_x=x_heatmap
         )
 
-        # Only run the following if smith_matrix_for_char_level_viz is not None
-        if smith_matrix_for_char_level_viz is not None:
+        # Only run the following if debug_SWTextSimilar is not None
+        if debug_SWTextSimilar is not None:
             # New visualization: Raw Smith-Waterman matrix (before interpolation)
             # with original character sequences as axes. seq1 on X, seq2 on Y.
-            current_smith_original_item = smith_matrix_for_char_level_viz[i] # Shape [H_orig, W_orig]
-            current_original_text1 = original_text1_batch[i] # string for seq1
-            current_original_text2 = original_text2_batch[i] # string for seq2
-
-            # Extract the traceback path from the original Smith-Waterman matrix
-            smith_original_scores_np = current_smith_original_item.cpu().numpy()
+            debug_SWTextSimilar_i = debug_SWTextSimilar[i] # Shape [H_orig, W_orig]
+            original_text1_batch_i = original_text1_batch[i] # string for seq1
+            original_text2_batch_i = original_text2_batch[i] # string for seq2
 
             # Use SW_Path instead of makeTracerouteMatrixBinary
-            smith_original_path_tensor, _ = SW_Path(current_smith_original_item.unsqueeze(0), 
-                                                   current_smith_original_item.unsqueeze(0),
+            smith_original_path_tensor, _ = SW_Path(debug_SWTextSimilar_i.unsqueeze(0), 
+                                                   debug_SWTextSimilar_i.unsqueeze(0),
                                                    match_score=7, miss_score=-3, gap_penalty=-1)
             smith_original_path_np = smith_original_path_tensor[0].cpu().numpy()
 
             # SW matrix has text1 along rows, text2 along columns.
             # To put text1 (seq1) on X-axis and text2 (seq2) on Y-axis, we need to transpose.
-            scores_matrix_to_plot = current_smith_original_item.T 
+            scores_matrix_to_plot = debug_SWTextSimilar_i.T
             path_matrix_to_plot = torch.tensor(smith_original_path_np).T
 
             # Labels for axes: X-axis for seq1 (original_text1), Y-axis for seq2 (original_text2)
-            x_char_labels = ['ø'] + list(current_original_text1.replace(" ", "")) # 'ø' for the initial empty string state
-            y_char_labels = ['ø'] + list(current_original_text2.replace(" ", ""))
+            x_char_labels = ['ø'] + list(original_text1_batch_i.replace(" ", "")) # 'ø' for the initial empty string state
+            y_char_labels = ['ø'] + list(original_text2_batch_i.replace(" ", ""))
             filename_char_level_smith_dual = f"{matrices_epoch_dir}/raw_char_smith_scores_path_epoch_{epoch+1}_batch_{batch_idx}_item_{i}.png"
             visualize_dual_char_heatmaps(
-                scores_matrix_to_plot.cpu(),
-                path_matrix_to_plot.cpu(),
+                scores_matrix_to_plot,
+                path_matrix_to_plot,
                 x_labels=x_char_labels,
                 y_labels=y_char_labels,
                 image_path=filename_char_level_smith_dual,
@@ -133,7 +130,12 @@ def smooth_and_normalize_matrix(matrix, normalize_type):
 
 import torch
 
-def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_type, epochs=100, learning_rate=1e-4, debug=False, gradient_accumulation_steps=1):
+def Train(model, DiffSW, trainLoader, criterion, 
+        loss_type, device, normalize_type, epochs=100,
+        learning_rate=1e-4, debug=False, 
+        gradient_accumulation_steps=1, debug_wandb=True,
+        show_gradients=False):
+
     model.train()
     optimizer = optim.Adam(list(model.parameters()), lr=learning_rate)
     scaler = torch.cuda.amp.GradScaler()  # Add GradScaler for mixed precision
@@ -151,46 +153,43 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
         epoch_loss = 0
         accumulated_loss = 0
 
-        for batch_idx, (image_a, image_b, SWText, textSimilar) in enumerate(trainLoader):
+        for batch_idx, (image1, image2, diffSWText, textSimilar) in enumerate(trainLoader):
             # Only zero gradients at the start of accumulation cycle
             if batch_idx % gradient_accumulation_steps == 0:
                 optimizer.zero_grad()
             
             # Forward pass with autocast for mixed precision
             with torch.cuda.amp.autocast():
-                tokens_a, tokens_b = model(image_a, image_b, show_dims=False)
+                tokens_a, tokens_b = model(image1, image2, show_dims=False)
                 flip_tokens_a = torch.flip(tokens_a, dims=[1])
                 flip_tokens_b = torch.flip(tokens_b, dims=[1])
                 diffSWimage = DiffSW(x1=flip_tokens_a, x2=flip_tokens_b)
 
-            del flip_tokens_a, flip_tokens_b
 
             ######################################################################################################################################
             
             # Interpolate smith matrix to match alignment output shape
-            new_size = SWText.shape[-2:]
+            new_size = diffSWText.shape[-2:]
             diffSWimage = interpolate_SW_matrix(diffSWimage,
                                                    new_size)
             DiffSW.cosine_similarity = interpolate_SW_matrix(DiffSW.cosine_similarity,
                                                                     new_size)
-            assert SWText.shape == diffSWimage.shape == DiffSW.cosine_similarity.shape, \
+            assert diffSWText.shape == diffSWimage.shape == DiffSW.cosine_similarity.shape, \
                 f"Shapes after interpolation do not match! diffSWimage: {diffSWimage.shape}, \
-                SWText: {SWText.shape}, cosine_similarity: {DiffSW.cosine_similarity.shape}"
+                diffSWText: {diffSWText.shape}, cosine_similarity: {DiffSW.cosine_similarity.shape}"
 
             ######################################################################################################################################
             # Extracting the path
             
-            textSWpath, text_startPoints = SW_Path(SWText,
+            textSWpath, text_startPoints = SW_Path(diffSWText,
                                                    textSimilar,match_score=7,
                                                    miss_score=-3, gap_penalty=-1)
-            SWText = SWText * textSWpath
-            del textSWpath, textSimilar
+            diffSWText = diffSWText * textSWpath
 
             imageSWpath, _ = diff_SW_Path(diffSWimage,
                                                    DiffSW.cosine_similarity,match_score=7,
                                                    miss_score=-3, gap_penalty=-1, position=text_startPoints)
             diffSWimage = diffSWimage * imageSWpath
-            del imageSWpath, DiffSW.cosine_similarity, DiffSW.align
             ######################################################################################################################################
 
             # Optionally smooth and normalize alignment output
@@ -198,46 +197,11 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
             # interpolated_smith_matrix = smooth_and_normalize_matrix(interpolated_smith_matrix, normalize_type)
 
             ####################################################################################################################################
-            if debug and batch_idx == len(trainLoader) - 1 : # Save visualizations every 10 batches if in debug mode
-                # Prepare directories for saving visualizations
-                vectors_epoch_dir = f'TrainResults/{loss_type}/VectorsPerEpoch/{model.model_arch}/Epoch_{epoch+1}'
-                matrices_epoch_dir = f'TrainResults/{loss_type}/ScoreMatricesPerEpoch/{model.model_arch}/Epoch_{epoch+1}'
-                os.makedirs(vectors_epoch_dir, exist_ok=True)
-                os.makedirs(matrices_epoch_dir, exist_ok=True)
-
-                # Clone tensors for visualization to avoid affecting gradients
-                cloned_alignment_output_for_viz = diffSWimage.clone().detach()
-                cloned_processed_smith_for_viz = SWText.clone().detach()
-
-                # smith_matrix_for_char_level_viz is only available during training if calc_cosine=False in Alignment
-                if hasattr(DiffSW, 'similarity_matrix'):
-                    smith_matrix_for_char_level_viz = DiffSW.similarity_matrix.clone().detach()
-                else:
-                    smith_matrix_for_char_level_viz = None
-
-                # original_text1_batch and original_text2_batch are only available during training if calc_cosine=False in Alignment
-                if hasattr(DiffSW, 'original_text1_batch') and hasattr(DiffSW, 'original_text2_batch'):
-                    original_text1_batch = DiffSW.original_text1_batch
-                    original_text2_batch = DiffSW.original_text2_batch
-                else:
-                    original_text1_batch = None
-                    original_text2_batch = None
-
-                # Save heatmap visualizations
-                saveHeatmapPlots(model, image_a, image_b, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx,
-                                cloned_alignment_output_for_viz, cloned_processed_smith_for_viz, smith_matrix_for_char_level_viz,
-                                matrices_epoch_dir, original_text1_batch, original_text2_batch)
-
-                del cloned_alignment_output_for_viz, cloned_processed_smith_for_viz
-                del smith_matrix_for_char_level_viz, vectors_epoch_dir, matrices_epoch_dir
-            ####################################################################################################################################
-            del tokens_a, tokens_b
             
             # Compute loss and scale by accumulation steps with autocast
             with torch.cuda.amp.autocast():
-                path_loss = criterion(SWText, diffSWimage)
+                path_loss = criterion(diffSWText, diffSWimage)
                 scaled_loss = path_loss / gradient_accumulation_steps
-            del SWText, diffSWimage
 
             epoch_loss += path_loss.item()
             accumulated_loss += path_loss.item()
@@ -249,20 +213,71 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
             if (batch_idx + 1) % gradient_accumulation_steps == 0 or batch_idx == len(trainLoader) - 1:
                 scaler.step(optimizer)
                 scaler.update()
-                
-                print(f"Epoch {epoch+1}, Batch {batch_idx+1}/{len(trainLoader)}, Accumulated Loss: {accumulated_loss:.4f}")
-                accumulated_loss = 0  # Reset accumulated loss for next cycle
 
-            del path_loss, scaled_loss
+            if show_gradients:
+                # print gradients for debugging
+                print(f"Epoch {epoch+1}, Batch {batch_idx+1}/{len(trainLoader)}, Accumulated Loss: {accumulated_loss:.4f}, image1.grad: {image1.grad.sum()}, image2.grad: {image2.grad.sum()}")
+            else:
+                print(f"Epoch {epoch+1}, Batch {batch_idx+1}/{len(trainLoader)}, Accumulated Loss: {accumulated_loss:.4f}")
+            accumulated_loss = 0  # Reset accumulated loss for next cycle
+
             
-            # print gradients for debugging
-            # print(f"image_a.grad: {image_a.grad.sum()}, image_b.grad: {image_b.grad.sum()}, ")
 
             ######################################################################################################################################
             # Free memory
-            # del model.features_vector_a, model.features_vector_b
-            del image_a, image_b 
+
+            if debug and batch_idx == len(trainLoader) - 1 : # Save visualizations every 10 batches if in debug mode
+                # Prepare directories for saving visualizations
+                vectors_epoch_dir = f'TrainResults/{loss_type}/VectorsPerEpoch/{model.model_arch}/Epoch_{epoch+1}'
+                matrices_epoch_dir = f'TrainResults/{loss_type}/ScoreMatricesPerEpoch/{model.model_arch}/Epoch_{epoch+1}'
+                os.makedirs(vectors_epoch_dir, exist_ok=True)
+                os.makedirs(matrices_epoch_dir, exist_ok=True)
+
+                # Clone tensors for visualization to avoid affecting gradients
+                debug_image1 = image1.detach().cpu()
+                debug_image2 = image2.detach().cpu()
+                debug_tokens_a = tokens_a.detach().cpu()
+                debug_tokens_b = tokens_b.detach().cpu()
+                debug_diffSWText = diffSWText.detach().cpu()
+                debug_diffSWimage = diffSWimage.detach().cpu()
+
+                # debug_diffSWText is only available during training if calc_cosine=False in Alignment
+                if hasattr(DiffSW, 'similarity_matrix'):
+                    debug_SWTextSimilar = DiffSW.similarity_matrix.clone().detach()
+                else:
+                    debug_SWTextSimilar = None
+
+                # original_text1_batch and original_text2_batch are only available during training if calc_cosine=False in Alignment
+                if hasattr(DiffSW, 'original_text1_batch') and hasattr(DiffSW, 'original_text2_batch'):
+                    original_text1_batch = DiffSW.original_text1_batch
+                    original_text2_batch = DiffSW.original_text2_batch
+                else:
+                    original_text1_batch = None
+                    original_text2_batch = None
+
+                # Save heatmap visualizations
+                saveHeatmapPlots(model, debug_image1, debug_image2, 
+                                debug_tokens_a, debug_tokens_b, 
+                                vectors_epoch_dir, epoch, batch_idx,
+                                debug_diffSWimage, 
+                                debug_diffSWText, 
+                                debug_SWTextSimilar, 
+                                matrices_epoch_dir, original_text1_batch,
+                                original_text2_batch)
+
+                del debug_image1, debug_image2
+                del debug_tokens_a, debug_tokens_b
+                del debug_diffSWimage, debug_diffSWText
+                del vectors_epoch_dir, matrices_epoch_dir
+            
+            del image1, image2 
+            del tokens_a, tokens_b
+            del flip_tokens_a, flip_tokens_b
+            del diffSWText, diffSWimage
+            del textSWpath, textSimilar
+            del imageSWpath, DiffSW.cosine_similarity, DiffSW.align
             del new_size, text_startPoints
+            del path_loss, scaled_loss
             torch.cuda.empty_cache()
 
             ######################################################################################################################################
@@ -271,7 +286,8 @@ def Train(model, DiffSW, trainLoader, criterion, loss_type, device, normalize_ty
         epoch_loss = epoch_loss / len(trainLoader)
         print(f'Epoch {epoch+1} - Loss: {epoch_loss:.4f}')
         loss_lst.append(epoch_loss)
-        wandb.log({"Loss": epoch_loss}, step=epoch, commit=True)
+        if debug_wandb:
+            wandb.log({"Loss": epoch_loss}, step=epoch, commit=True)
 
         # Save model every 10 epochs
         if epoch % 10 == 9:
@@ -291,27 +307,30 @@ if __name__ == '__main__':
     normalize_type = '' # ['min_max', 'mean_std']
     epochs = 100
     learning_rate = 1e-4
-    gradient_accumulation_steps = 4  # Accumulate gradients over 4 batches
+    gradient_accumulation_steps = 2  # Accumulate gradients over 4 batches
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     debug = True # Set to True to save patches and heatmaps for debugging
+    debug_wandb = True # Set to True to log training to Weights & Biases
+    show_gradients = False # Set to True to print gradients for debugging
     
-    wandb.init(
-        # set the wandb project where this run will be logged
-        project="AlignmentProject",
-        name=f"Train model {window_size} - {model_arch} - {loss_type} - {normalize_type} - AMP",
-        # track hyperparameters and run metadata
-        config={
-            "learning_rate": learning_rate,
-            "batch_size": batch_size,
-            "vector size": vector_size,
-            "loss": loss_type,
-            "architecture": model_arch,
-            "epochs": epochs,
-            "slicing_window_width": window_size,
-            "normalizing method ": normalize_type,
-            "gradient_accumulation_steps": gradient_accumulation_steps,
-            "mixed_precision": True
-        })
+    if debug_wandb:
+        wandb.init(
+            # set the wandb project where this run will be logged
+            project="AlignmentProject",
+            name=f"Train model {window_size} - {model_arch} - {loss_type} - {normalize_type} - AMP",
+            # track hyperparameters and run metadata
+            config={
+                "learning_rate": learning_rate,
+                "batch_size": batch_size,
+                "vector size": vector_size,
+                "loss": loss_type,
+                "architecture": model_arch,
+                "epochs": epochs,
+                "slicing_window_width": window_size,
+                "normalizing method ": normalize_type,
+                "gradient_accumulation_steps": gradient_accumulation_steps,
+                "mixed_precision": True
+            })
 
     cnn_transformer_model = EmbeddingModel(
         window_size=window_size,
@@ -349,31 +368,9 @@ if __name__ == '__main__':
         epochs,
         learning_rate,
         debug,
-        gradient_accumulation_steps
+        gradient_accumulation_steps,
+        debug_wandb,
+        show_gradients
     )
-    # del cnn_transformer_model
-    # except Exception as e: 
-    #     del cnn_transformer_model
-    #     for obj in gc.get_objects():
-    #         try:
-    #             if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
-    #                 print(type(obj), obj.size(), obj.device)
-    #         except:
-    #             pass
-    wandb.finish()
-    
-    # epochs = range(1, len(loss_lst) + 1)
-    # plt.plot(epochs, loss_lst, marker='o', label='Training Loss')
-    # plt.xlabel('Epoch')
-    # plt.ylabel('Loss')
-    # plt.title('Training Loss Over Epochs')
-    # plt.grid(True)
-    # plt.legend()
-    # plt.tight_layout() # Not needed if using wandb
-    # plt.savefig(f'Results/{loss_type}/Training_loss.png')
-
-    # print(f'**********************************Starting the Validation**********************************')
-    # print('')
-    
-    # Example of how you might call Evaluate for validation after training
-    # Evaluate(cnn_transformer_model, alignment_model, valid_dataloader, criterion, window_size, loss_type, device, normalize_type)
+    if debug_wandb:
+        wandb.finish()
