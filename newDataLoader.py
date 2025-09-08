@@ -25,10 +25,6 @@ class ToTensorWithGrad:
         tensor = transforms.ToTensor()(img)
         return tensor.requires_grad_()
 
-class ScoreMapping:
-    def __call__(self, tensor):
-        # Map 1 to 7 and 0 to -3
-        return torch.where(tensor == 1, torch.tensor(7.0), torch.where(tensor == 0, torch.tensor(-3.0), tensor))
 
 # Define transformations for images
 transform = transforms.Compose([
@@ -38,12 +34,7 @@ transform = transforms.Compose([
 ])
 
 # Create the full dataset
-full_dataset = TextLineModern(
-    datasetPaths=None,  # Not used for NewDataSet
-    fonts=None,         # Not used for NewDataSet
-    patchHeight=None,   # Not used for NewDataSet
-    patchWidth=None,    # Not used for NewDataSet
-    numberWords=None,   # Not used for NewDataSet
+full_dataset = TextLineModern(  # Not used for NewDataSet
     new_dataset=new_dataset,
     transform=transform
 )
@@ -111,7 +102,8 @@ def custom_collate_fn(batch):
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    images_a, images_b, score_matrix, similar_matrix = zip(*batch)
+    # images_a, images_b, score_matrix, similar_matrix = zip(*batch)
+    images_a, images_b, similar_matrix = zip(*batch)
     
     # Stack image tensors
     images_a = torch.stack(images_a, dim=0).to(device)
@@ -121,17 +113,17 @@ def custom_collate_fn(batch):
     
     # Pad and stack smith matrices
     # Smoothing can be enabled here if desired, e.g., pad_matrices(smith_matrices, smooth=True)
-    score_matrix = pad_matrices(score_matrix, smooth=False) # Defaulting to no smoothing for now
-    similar_matrix = pad_matrices(similar_matrix, smooth=False) # Defaulting to no smoothing for now
-    # alignment_model = DiffSWAlgo(match_score=7, miss_score=-3, 
-    #                                             gap=-1).to(device)
-    # SW_matrices = alignment_model(similarity_matrix=similar_matrix,
-    #                                             calc_cosine=False).to(device)
+    # score_matrix = pad_matrices(score_matrix, smooth=False) # Defaulting to no smoothing for now
+    similar_matrix = pad_matrices(similar_matrix, smooth=False).to(device) # Defaulting to no smoothing for now
+    DiffSW = DiffSWAlgo(match_score=7, miss_score=-3, 
+                                                gap=-1).to(device)
+    SW_matrices = DiffSW(similarity_matrix=similar_matrix,
+                                                calc_cosine=False).to(device)
 
     return (
         images_a,
         images_b,
-        score_matrix,
+        SW_matrices,
         similar_matrix
     )
 
