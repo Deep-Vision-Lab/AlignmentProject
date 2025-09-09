@@ -27,20 +27,24 @@ def saveHeatmapPlots(model, image1, image2, tokens_a, tokens_b, vectors_epoch_di
         print_elements(tokens_a[i], f'{vectors_epoch_dir}/tokens_a_epoch_{epoch+1}_batch_{batch_idx}_item_{i}.xlsx')
         print_elements(tokens_b[i], f'{vectors_epoch_dir}/tokens_b_epoch_{epoch+1}_batch_{batch_idx}_item_{i}.xlsx')
         # Generate patches for visualization
-        image1 = image1[i].unsqueeze(0)
-        image2 = image2[i].unsqueeze(0)
+        image1_i = image1[i].unsqueeze(0)
+        image2_i = image2[i].unsqueeze(0)
         model_window_size = model.window_size
         model_stride = model.stride
-        windows_img1 = sliding_window(image1, model_window_size, model_stride).squeeze(0)
-        windows_img2 = sliding_window(image2, model_window_size, model_stride).squeeze(0)
+        windows_img1 = sliding_window(image1_i, model_window_size, model_stride).squeeze(0)
+        windows_img2 = sliding_window(image2_i, model_window_size, model_stride).squeeze(0)
 
         y_heatmap = torch.flip(windows_img1, dims=[0]) # From image1, for Y-axis
         x_heatmap = torch.flip(windows_img2, dims=[0]) # From image2, for X-axis
 
-        # Visualize heatmaps
+        # Extract paths using diff_SW_Path for visualization
+        textPath, _ = SW_Path(debug_diffSWText[i:i+1], debug_diffSWText[i:i+1], match_score=7, miss_score=-3, gap_penalty=-1)
+        imagePath, _ = diff_SW_Path(debug_diffSWimage[i:i+1], debug_diffSWimage[i:i+1], match_score=7, miss_score=-3, gap_penalty=-1)
+        
+        # Visualize paths instead of raw matrices
         visualize_heatmaps(
-            debug_diffSWimage[i],
-            debug_diffSWText[i],
+            imagePath[0],  # Use extracted path
+            textPath[0],   # Use extracted path
             f"{matrices_epoch_dir}/heatmaps_epoch_{epoch+1}_batch_{batch_idx}_item_{i}.png",
             patches_y=y_heatmap,
             patches_x=x_heatmap
@@ -78,7 +82,7 @@ def saveHeatmapPlots(model, image1, image2, tokens_a, tokens_b, vectors_epoch_di
                 title1=f"Raw SW Scores (Seq1 vs Seq2) - Item {i}",
                 title2=f"Raw SW Path (Seq1 vs Seq2) - Item {i}"
             )
-
+       
 
 def interpolate_SW_matrix(SW_matrix, target_shape):
     """
@@ -309,8 +313,8 @@ if __name__ == '__main__':
     learning_rate = 1e-4
     gradient_accumulation_steps = 2  # Accumulate gradients over 4 batches
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    debug = True # Set to True to save patches and heatmaps for debugging
-    debug_wandb = True # Set to True to log training to Weights & Biases
+    debug = False # Set to True to save patches and heatmaps for debugging
+    debug_wandb = False # Set to True to log training to Weights & Biases
     show_gradients = False # Set to True to print gradients for debugging
     
     if debug_wandb:
