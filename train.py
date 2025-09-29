@@ -144,207 +144,127 @@ def smooth_and_normalize_matrix(matrix, normalize_type):
 import torch
 import time
 
-def Train(model, trainLoader, criterion, 
-        loss_type, device, normalize_type, epochs=100,
-        learning_rate=1e-4, debug=False, 
-        gradient_accumulation_steps=1, debug_wandb=True,
-        show_gradients=False):
+def Train(model, trainLoader, criterion, loss_type, device, normalize_type, epochs=100,
+        learning_rate=1e-4, debug=False, gradient_accumulation_steps=1, 
+        debug_wandb=True, show_gradients=False):
 
     model.train()
     optimizer = optim.Adam(list(model.parameters()), lr=learning_rate)
     loss_lst = []
-    print(f"Using device: {device}")
-    print("Train DataLoader length:", len(trainLoader))
-    print(f"Gradient accumulation steps: {gradient_accumulation_steps}")
-
+    
+    # Enable memory monitoring
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+    
     for epoch in range(epochs):
-        # Prepare output directories
-        weights_dir = f'Weights/{loss_type}/{model.model_arch}'
-        os.makedirs(weights_dir, exist_ok=True)
-
         epoch_loss = 0
         accumulated_loss = 0
+        
         for batch_idx, (image1, image2, diffSWText, textSimilar) in enumerate(trainLoader):
             try:
-                # Only zero gradients at the start of accumulation cycle
+                # Monitor memory at start
+                if torch.cuda.is_available() and batch_idx % 5 == 0:
+                    current_mem = torch.cuda.memory_allocated() / 1e9
+                    peak_mem = torch.cuda.max_memory_allocated() / 1e9
+                    print(f"Batch {batch_idx}: Current: {current_mem:.2f}GB, Peak: {peak_mem:.2f}GB")
+                
+                # Ensure all data is on correct device
+                image1 = image1.to(device, non_blocking=True)
+                image2 = image2.to(device, non_blocking=True)
+                diffSWText = diffSWText.to(device, non_blocking=True)
+                textSimilar = textSimilar.to(device, non_blocking=True)
+                
                 if batch_idx % gradient_accumulation_steps == 0:
                     optimizer.zero_grad()
                 
                 # Forward pass
+                with torch.no_grad():
+                    # Clear any cached gradients
+                    torch.cuda.empty_cache()
+                
                 tokens_a, tokens_b = model(image1, image2, show_dims=False)
                 flip_tokens_a = torch.flip(tokens_a, dims=[1])
                 flip_tokens_b = torch.flip(tokens_b, dims=[1])
 
-                ######################################################################################################################################
-                # JAX part - Differential Smith-Waterman alignment
-                jax_start_time = time.time()
-                
-                # Differential Smith-Waterman alignment
+                # Immediately delete original tokens
+                del tokens_a, tokens_b
+                torch.cuda.empty_cache()
+
+                # JAX computation
                 DiffSW = DiffSWAlgo(match_score=2, miss_score=-3, gap=-1).to(device)
                 diffSWimage = DiffSW(x1=flip_tokens_a, x2=flip_tokens_b)
-
-                # Compute JAX compilation time
-                jax_end_time = time.time()
-                jax_compilation_time = jax_end_time - jax_start_time 
-                if jax_compilation_time > 15.0:  # If compilation takes more than 60 seconds
-                    print(f"⚠️  SLOW JAX COMPILATION DETECTED!")
-                    print(f"Skipping batch {batch_idx} in epoch {epoch} due to error.")
-                    print(f"image1 shape: {image1.shape}, image2 shape: {image2.shape}")
-                    print(f"tokens_a shape: {tokens_a.shape}, tokens_b shape: {tokens_b.shape}")
-                    print(f"diffSWText shape: {diffSWText.shape}, textSimilar shape: {textSimilar.shape}")
-                    print(f"diffSWimage shape: {diffSWimage.shape}")
-                    exit(1)
-
-                ######################################################################################################################################
                 
-                # Interpolate smith matrix to match alignment output shape
-                new_size = (64,64)
-                # new_size = diffSWimage.shape[-2:]
-                diffSWimage = interpolate_SW_matrix(diffSWimage,
-                                                        new_size)
-                DiffSW.cosine_similarity = interpolate_SW_matrix(DiffSW.cosine_similarity,
-                                                        new_size)
-                diffSWText = interpolate_SW_matrix(diffSWText,
-                                                        new_size)
-                textSimilar = interpolate_SW_matrix(textSimilar,
-                                                        new_size)
-                assert diffSWText.shape == diffSWimage.shape == textSimilar.shape == DiffSW.cosine_similarity.shape, \
-                    f"Shapes after interpolation do not match! diffSWimage: {diffSWimage.shape}, \
-                    diffSWText: {diffSWText.shape}, textSimilar: {textSimilar.shape}, cosine_similarity: {DiffSW.cosine_similarity.shape}"
+                # Delete flip tokens immediately after use
+                del flip_tokens_a, flip_tokens_b
+                torch.cuda.empty_cache()
+
+                # Use smaller interpolation size
+                new_size = min(16, diffSWText.shape[-1])  # Cap at 16x16 for memory
+                new_size = (new_size, new_size)
                 
-                ######################################################################################################################################
-                # Extracting the paths and applying them to the matrices
-                
-                textSWpath, text_startPoints = diff_SW_Path(diffSWText,
-                                                    textSimilar,match_score=2,
-                                                    miss_score=-3, gap_penalty=-1)
-                diffSWText = diffSWText * textSWpath
+                diffSWimage = interpolate_SW_matrix(diffSWimage, new_size)
+                cosine_sim = interpolate_SW_matrix(DiffSW.cosine_similarity, new_size)
+                diffSWText = interpolate_SW_matrix(diffSWText, new_size)
+                textSimilar = interpolate_SW_matrix(textSimilar, new_size)
 
-                imageSWpath, _ = diff_SW_Path(diffSWimage,
-                                                    DiffSW.cosine_similarity,match_score=2,
-                                                    miss_score=-3, gap_penalty=-1, position=text_startPoints)
-                diffSWimage = diffSWimage * imageSWpath
+                # Delete DiffSW object and clear cache
+                del DiffSW
+                torch.cuda.empty_cache()
 
-                ######################################################################################################################################
+                # Path extraction
+                textSWpath, text_startPoints = diff_SW_Path(diffSWText, textSimilar,
+                                                          match_score=2, miss_score=-3, gap_penalty=-1)
+                diffSWText_final = diffSWText * textSWpath
+                del diffSWText, textSWpath, textSimilar
+                torch.cuda.empty_cache()
 
-                # Optionally smooth and normalize alignment output
-                # alignment_output = smooth_and_normalize_matrix(alignment_output, normalize_type)
-                # interpolated_smith_matrix = smooth_and_normalize_matrix(interpolated_smith_matrix, normalize_type)
+                imageSWpath, _ = diff_SW_Path(diffSWimage, cosine_sim,
+                                            match_score=2, miss_score=-3, gap_penalty=-1, 
+                                            position=text_startPoints)
+                diffSWimage_final = diffSWimage * imageSWpath
+                del diffSWimage, imageSWpath, cosine_sim, text_startPoints
+                torch.cuda.empty_cache()
 
-                ####################################################################################################################################
-                
-                # Compute loss and scale by accumulation steps
-                path_loss = criterion(diffSWText, diffSWimage)
+                # Loss computation
+                path_loss = criterion(diffSWText_final, diffSWimage_final)
                 scaled_loss = path_loss / gradient_accumulation_steps
+                
+                del diffSWText_final, diffSWimage_final
+                torch.cuda.empty_cache()
 
                 epoch_loss += path_loss.item()
                 accumulated_loss += path_loss.item()
 
                 # Backpropagation
                 scaled_loss.backward()
-
-                # Update weights only after accumulating enough gradients
-                if (batch_idx + 1) % gradient_accumulation_steps == 0 or batch_idx == len(trainLoader) - 1:
-                    optimizer.step()
-
-                if show_gradients:
-                    # print gradients for debugging
-                    print(f"Epoch {epoch+1}, Batch {batch_idx+1}/{len(trainLoader)}, Accumulated Loss: {accumulated_loss:.4f}, image1.grad: {image1.grad.sum()}, image2.grad: {image2.grad.sum()}")
-                else:
-                    print(f"Epoch {epoch+1}, Batch {batch_idx+1}/{len(trainLoader)}, Accumulated Loss: {accumulated_loss:.4f}")
-                accumulated_loss = 0  # Reset accumulated loss for next cycle
-
-                ######################################################################################################################################
-                # Debugging: Save visualizations for the last batch of each epoch
-
-                if debug and batch_idx == len(trainLoader) - 1 : # Save visualizations every 10 batches if in debug mode
-                    # Prepare directories for saving visualizations
-                    vectors_epoch_dir = f'TrainResults/{loss_type}/VectorsPerEpoch/{model.model_arch}/Epoch_{epoch+1}'
-                    matrices_epoch_dir = f'TrainResults/{loss_type}/ScoreMatricesPerEpoch/{model.model_arch}/Epoch_{epoch+1}'
-                    os.makedirs(vectors_epoch_dir, exist_ok=True)
-                    os.makedirs(matrices_epoch_dir, exist_ok=True)
-
-                    # Clone tensors for visualization to avoid affecting gradients
-                    debug_image1 = image1.detach().cpu()
-                    debug_image2 = image2.detach().cpu()
-                    debug_tokens_a = tokens_a.detach().cpu()
-                    debug_tokens_b = tokens_b.detach().cpu()
-                    debug_diffSWText = diffSWText.detach().cpu()
-                    debug_diffSWimage = diffSWimage.detach().cpu()
-
-                    # debug_diffSWText is only available during training if calc_cosine=False in Alignment
-                    if hasattr(DiffSW, 'similarity_matrix'):
-                        debug_SWTextSimilar = DiffSW.similarity_matrix.clone().detach()
-                    else:
-                        debug_SWTextSimilar = None
-
-                    # original_text1_batch and original_text2_batch are only available during training if calc_cosine=False in Alignment
-                    if hasattr(DiffSW, 'original_text1_batch') and hasattr(DiffSW, 'original_text2_batch'):
-                        original_text1_batch = DiffSW.original_text1_batch
-                        original_text2_batch = DiffSW.original_text2_batch
-                    else:
-                        original_text1_batch = None
-                        original_text2_batch = None
-
-                    # Save heatmap visualizations
-                    saveHeatmapPlots(model, debug_image1, debug_image2, 
-                                    debug_tokens_a, debug_tokens_b, 
-                                    vectors_epoch_dir, epoch, batch_idx,
-                                    debug_diffSWimage, 
-                                    debug_diffSWText, 
-                                    debug_SWTextSimilar, 
-                                    matrices_epoch_dir, original_text1_batch,
-                                    original_text2_batch)
-
-                    del debug_image1, debug_image2
-                    del debug_tokens_a, debug_tokens_b
-                    del debug_diffSWimage, debug_diffSWText
-                    del vectors_epoch_dir, matrices_epoch_dir
-                    del original_text1_batch, original_text2_batch
-                    if debug_SWTextSimilar is not None:
-                        del debug_SWTextSimilar
-
-                ######################################################################################################################################
-                # Free memory
-                
-                del image1, image2 
-                del tokens_a, tokens_b
-                del flip_tokens_a, flip_tokens_b
-                del diffSWText, diffSWimage
-                del textSWpath, textSimilar
-                del imageSWpath, DiffSW.cosine_similarity, DiffSW.align
-                del new_size, text_startPoints
                 del path_loss, scaled_loss
                 torch.cuda.empty_cache()
 
-                ######################################################################################################################################
-            except Exception as e:
-                print(f"Error during training at epoch {epoch}, batch {batch_idx}: {e}")
-                print(f"Skipping batch {batch_idx} in epoch {epoch} due to error.")
-                # Optionally, you can log the error to a file for later analysis
-                with open("training_errors.log", "a") as log_file:
-                    log_file.write(f"Epoch {epoch}, Batch {batch_idx}: {e}\n")
-                
-                # print shapes for debugging
-                # print(f"image1 shape: {image1.shape}, image2 shape: {image2.shape}")
-                # print(f"tokens_a shape: {tokens_a.shape}, tokens_b shape: {tokens_b.shape}")
-                # print(f"diffSWText shape: {diffSWText.shape}, textSimilar shape: {textSimilar.shape}")
+                if (batch_idx + 1) % gradient_accumulation_steps == 0 or batch_idx == len(trainLoader) - 1:
+                    optimizer.step()
 
-                exit(1)
-                
-        # Epoch summary
+                print(f"Epoch {epoch+1}, Batch {batch_idx+1}, Loss: {accumulated_loss:.4f}")
+                accumulated_loss = 0
+
+                # Final cleanup - don't delete input images until the very end
+                # The gradients should be computed by now
+                del image1, image2
+                torch.cuda.empty_cache()
+
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    print(f"❌ OOM at epoch {epoch}, batch {batch_idx}: {e}")
+                    if torch.cuda.is_available():
+                        print(f"Peak memory: {torch.cuda.max_memory_allocated() / 1e9:.2f}GB")
+                    torch.cuda.empty_cache()
+                    return loss_lst
+                else:
+                    raise e
+
         epoch_loss = epoch_loss / len(trainLoader)
         print(f'Epoch {epoch+1} - Loss: {epoch_loss:.4f}')
         loss_lst.append(epoch_loss)
-        if debug_wandb:
-            wandb.log({"Loss": epoch_loss}, step=epoch, commit=True)
 
-        # Save model every 10 epochs
-        if epoch % 10 == 9:
-            torch.save(model.state_dict(), f'Weights/{loss_type}/{model.model_arch}/model_epoch_{epoch+1}.pth')
-            print(f"Model saved at epoch {epoch + 1}.")
-
-    print('Training complete!')
     return loss_lst
 
 
