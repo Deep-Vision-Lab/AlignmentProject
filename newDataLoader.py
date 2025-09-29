@@ -9,7 +9,7 @@ from newDataSet import TextLineModern, window_size
 from DiffSWAlgo import *
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-batch_size = 8
+batch_size = 4  # Start with batch size 1 for memory testing
 
 data_dir = "DataSet/Synthetic"  # Directory for the new dataset
 # Define paths for NewDataSet
@@ -100,47 +100,45 @@ def pad_matrices(matrices, smooth=False, kernel_size=5, sigma=1.0):
 
 # Define a custom collate function to handle variable-sized smith matrices
 def custom_collate_fn(batch):
-    """
-    Custom collate function to handle the batching of the dataset.
-    """
+    """Custom collate function"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # images_a, images_b, score_matrix, similar_matrix = zip(*batch)
-    images_a, images_b, diffmatrices, similar_matrix = zip(*batch)
-
-    # Stack image tensors and ensure they're on the correct device
-    images_a = torch.stack(images_a, dim=0).to(device)    
-    images_a.retain_grad()
-    images_b = torch.stack(images_b, dim=0).to(device)
-    images_b.retain_grad()
     
-    # Convert matrices to tensors and move to device before padding
-    diffmatrices_tensors = []
-    similar_matrix_tensors = []
+    images_a, images_b, diffmatrices, similar_matrix = zip(*batch)
+    
+    # Stack on CPU first, then move to device
+    images_a = torch.stack(images_a, dim=0)
+    images_b = torch.stack(images_b, dim=0)
+    
+    # Convert matrices to tensors on CPU
+    diffmatrices_cpu = []
+    similar_matrix_cpu = []
     
     for diff_mat, sim_mat in zip(diffmatrices, similar_matrix):
-        # Ensure matrices are tensors and on the correct device
         if not isinstance(diff_mat, torch.Tensor):
             diff_mat = torch.tensor(diff_mat, dtype=torch.float32)
         if not isinstance(sim_mat, torch.Tensor):
             sim_mat = torch.tensor(sim_mat, dtype=torch.float32)
             
-        diffmatrices_tensors.append(diff_mat.to(device))
-        similar_matrix_tensors.append(sim_mat.to(device))
+        diffmatrices_cpu.append(diff_mat)
+        similar_matrix_cpu.append(sim_mat)
+    
+    # Pad matrices (still on CPU)
+    diffmatrices = pad_matrices(diffmatrices_cpu, smooth=False)
+    similar_matrix = pad_matrices(similar_matrix_cpu, smooth=False)
+    
+    # Now move everything to device at once
+    images_a = images_a.to(device, non_blocking=True)
+    images_b = images_b.to(device, non_blocking=True)
+    diffmatrices = diffmatrices.to(device, non_blocking=True)
+    similar_matrix = similar_matrix.to(device, non_blocking=True)
+    
+    # Set requires_grad only after moving to device
+    images_a.requires_grad_(True)
+    images_b.requires_grad_(True)
+    diffmatrices.requires_grad_(True)
+    similar_matrix.requires_grad_(True)
 
-    # Pad and stack smith matrices (they're already on the correct device)
-    diffmatrices = pad_matrices(diffmatrices_tensors, smooth=False)
-    similar_matrix = pad_matrices(similar_matrix_tensors, smooth=False)
-
-    # Ensure final tensors have gradients and are on the correct device
-    diffmatrices = diffmatrices.requires_grad_(True)
-    similar_matrix = similar_matrix.requires_grad_(True)
-    return (
-        images_a,
-        images_b,
-        diffmatrices,
-        similar_matrix
-    )
+    return images_a, images_b, diffmatrices, similar_matrix
 
 
 # Create DataLoaders for training and testing
