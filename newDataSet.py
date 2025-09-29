@@ -53,7 +53,9 @@ class TextLineModern(Dataset):
         if new_dataset:
             # Preload file mappings for NewDataSet
             self.image_pairs = [
-                (f"img1_{i}.png", f"img2_{i}.png", f"scoreMatrix_{i}.npy", f"similarityMatrix_{i}.npy", f"text1_{i}.txt", f"text2_{i}.txt") for i in
+                (f"img1_{i}.png", f"img2_{i}.png", f"scoreMatrix_{i}.npy", 
+                 f"diffMatrix_{i}.npy", f"similarityMatrix_{i}.npy", 
+                 f"text1_{i}.txt", f"text2_{i}.txt") for i in
                 range(1, 3001)]
                 # range(1, 3001)]
 
@@ -68,20 +70,30 @@ class TextLineModern(Dataset):
     def __getitem__(self, idx):
         if self.new_dataset:
             # Load images and score matrix for NewDataSet
-            img1_name, img2_name, score_matrix_name, similarity_matrix_name, text1_name, text2_name = self.image_pairs[idx]
+            img1_name, img2_name, score_matrix_name, diffmatrix_name, similarity_matrix_name, text1_name, text2_name = self.image_pairs[idx]
 
             img1_path = os.path.join(self.new_dataset['images'], img1_name)
             img2_path = os.path.join(self.new_dataset['images'], img2_name)
 
             # score_path = os.path.join(self.new_dataset['score_matrices'], score_matrix_name)
+            diffmatrix_path = os.path.join(self.new_dataset['diffmatrices'], diffmatrix_name)
             similar_path = os.path.join(self.new_dataset['similarity_matrices'], similarity_matrix_name)
             text1_path = os.path.join(self.new_dataset['texts'], text1_name)
             text2_path = os.path.join(self.new_dataset['texts'], text2_name)
 
             img1 = Image.open(img1_path).convert("RGB")
             img2 = Image.open(img2_path).convert("RGB")
+            
+            # Resize images to fixed dimensions: width=1024, height=128
+            img1 = img1.resize((1024, 128))
+            img2 = img2.resize((1024, 128))
+            
+
+            # Load diff matrix
             # score_matrix = np.load(score_path)
+            diff_matrix = np.load(diffmatrix_path)
             similar_matrix = np.load(similar_path)
+
 
             with (open(text1_path, "r") as file):
                 text1 = file.read()
@@ -95,53 +107,12 @@ class TextLineModern(Dataset):
             if self.transform:
                 img1 = self.transform(img1)
                 img2 = self.transform(img2)
-            # score_matrix = torch.tensor(score_matrix, dtype=torch.float32,requires_grad=True).to(device)
-            similar_matrix = torch.tensor(similar_matrix, dtype=torch.float32,requires_grad=True).to(device)
-            similar_matrix = self.ScoreMapping(similar_matrix).to(device)
 
-            return img1, img2, similar_matrix
-            # return img1, img2, score_matrix, similar_matrix
+            # score_matrix = torch.tensor(score_matrix, dtype=torch.float32,requires_grad=True).to(device)
+            diff_matrix = torch.tensor(diff_matrix, dtype=torch.float32,requires_grad=True).to(device)
+            similar_matrix = torch.tensor(similar_matrix, dtype=torch.float32,requires_grad=True).to(device)
+            # similar_matrix = self.ScoreMapping(similar_matrix).to(device)
+
+            return img1, img2, diff_matrix, similar_matrix
         else:
             raise NotImplementedError("Handling for non-NewDataSet is not included.")
-
-
-
-def tokenize_based_on_non_connecting_letters(text):
-    # Expanded list of non-connecting Arabic characters
-    non_connecting_letters = {'ا', 'د', 'ذ', 'ر', 'ز', 'و', 'ى', ' ', 'أ', 'إ', 'ؤ', 'ء'}
-
-    # Tokenize based on the presence of non-connecting letters or spaces
-    tokens = []
-    current_token = ''
-
-    for char in text:
-        current_token += char
-
-        if char in non_connecting_letters:
-            tokens.append(current_token)
-            current_token = ''
-
-    # Add the last token if it exists
-    if current_token:
-        tokens.append(current_token)
-
-    # strip all componets with
-    lst=[]
-    for t in tokens:
-        if ' ' in t and len(t)> 1:
-           lst.append(t.strip())
-        else:
-            lst.append(t)
-    lst = remove_whitespace_from_subwords(lst)
-    return lst
-
-def remove_whitespace_from_subwords(subwords_list):
-    """
-    Remove all empty strings or strings consisting solely of white spaces from the list of subwords.
-
-    :param subwords_list: List of subwords which may include spaces or white spaces.
-    :return: List of subwords with all white spaces removed.
-    """
-    # Use list comprehension to filter out empty or whitespace-only subwords
-    cleaned_subwords_list = [subword for subword in subwords_list if subword.strip()]
-    return cleaned_subwords_list

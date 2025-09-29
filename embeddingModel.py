@@ -5,6 +5,7 @@ import torch.utils.checkpoint
 import torchvision
 from torchvision.models import resnet34, ResNet34_Weights
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Sliding window function to divide image into patches (subwindows)
 def sliding_window(image, window_size, stride, debug_mode=False, save_dir=False):
@@ -98,20 +99,20 @@ class EmbeddingModel(nn.Module):
             print(f"Patches after reshaping: {reshaped_tokens_a.shape}, {reshaped_tokens_b.shape}")
         
         del tokens_a, tokens_b
-        
+    
         # Use gradient checkpointing for CNN encoder
         if self.use_checkpointing and self.training:
             # Split ResNet into sequential modules for checkpointing
             resnet_modules = [
-                nn.Sequential(self.cnn_encoder.conv1, self.cnn_encoder.bn1, self.cnn_encoder.relu),
-                self.cnn_encoder.maxpool,
-                self.cnn_encoder.layer1,
-                self.cnn_encoder.layer2,
-                self.cnn_encoder.layer3,
-                self.cnn_encoder.layer4,
-                nn.Sequential(self.cnn_encoder.avgpool, nn.Flatten(), self.cnn_encoder.fc)
+                nn.Sequential(self.cnn_encoder.conv1, self.cnn_encoder.bn1, self.cnn_encoder.relu).to(device),
+                self.cnn_encoder.maxpool.to(device),
+                self.cnn_encoder.layer1.to(device),
+                self.cnn_encoder.layer2.to(device),
+                self.cnn_encoder.layer3.to(device),
+                self.cnn_encoder.layer4.to(device),
+                nn.Sequential(self.cnn_encoder.avgpool, nn.Flatten(), self.cnn_encoder.fc).to(device)
             ]
-            
+
             # Process with checkpointing
             encoded_tokens_a = torch.utils.checkpoint.checkpoint_sequential(
                 resnet_modules, segments=4, input=reshaped_tokens_a
@@ -123,7 +124,7 @@ class EmbeddingModel(nn.Module):
             # Standard forward pass
             encoded_tokens_a = self.cnn_encoder(reshaped_tokens_a)
             encoded_tokens_b = self.cnn_encoder(reshaped_tokens_b)
-            
+
         if show_dims: 
             print(f"Tokens after CNN: {encoded_tokens_a.shape}, {encoded_tokens_b.shape}")
         
@@ -245,7 +246,6 @@ class EmbeddingModel(nn.Module):
             features_vector_a = featured_tokens_a.view(batches_num, windows_num, self.vector_size)
             features_vector_b = featured_tokens_b.view(batches_num, windows_num, self.vector_size)
             del featured_tokens_a, featured_tokens_b
-            
         return features_vector_a, features_vector_b
 
 import gc

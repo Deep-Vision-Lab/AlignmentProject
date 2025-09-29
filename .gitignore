@@ -22,3 +22,7 @@ __pycache__
 
 # png files
 *.png
+
+
+# log files
+*.log
