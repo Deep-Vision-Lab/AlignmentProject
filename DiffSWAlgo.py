@@ -1,13 +1,21 @@
-import torch
-import torch.utils.dlpack
-import jax
-import jax.dlpack
-from matplotlib import pyplot as plt
-import jax.numpy as jnp 
-import matplotlib.pyplot as plt
-import numpy as np
+# Set JAX to use 32-bit precision for faster compilation
+
+import os
 from typing import Optional
 
+import torch
+import torch.utils.dlpack
+
+import jax
+import jax.dlpack
+import jax.numpy as jnp 
+
+from matplotlib import pyplot as plt
+import matplotlib.pyplot as plt
+import numpy as np
+
+os.environ['JAX_ENABLE_X64'] = 'False'
+os.environ['XLA_FLAGS'] = "--xla_dump_to=/tmp/foo"
 
 # A generic mechanism for turning a JAX function into a PyTorch function.
 
@@ -20,12 +28,14 @@ def sw_simple(batch=True, unroll=2):
         a, b = x.shape
         ar, br = jnp.arange(a)[::-1, None], jnp.arange(b)[None, :]
         i, j = (br - ar) + (a - 1), (ar + br) // 2
+        del ar, br  # Clean up intermediate arrays
         n, m = (a + b - 1), (a + b) // 2
         zero = jnp.zeros([n, m])
         if mask is None: mask = 1.0
         output = {"x": zero.at[i, j].set(x),
                   "m": zero.at[i, j].set(mask),
                   "o": (jnp.arange(n) + a % 2) % 2}
+        del zero  # Clean up zero array after use
         prev = (jnp.zeros(m), jnp.zeros(m))
         return output, prev, (i, j)
 
@@ -37,7 +47,9 @@ def sw_simple(batch=True, unroll=2):
         def _step(prev, sm):
             h2, h1 = prev  # previous two rows of scoring (hij) mtx
             h1_T = _cond(sm["o"], jnp.pad(h1[:-1], [1, 0]), jnp.pad(h1[1:], [0, 1]))
-            h0 = sm["m"] * jax.nn.logsumexp(jnp.stack([h2 + sm["x"], h1, h1_T]), 0)
+            stacked_values = jnp.stack([h2 + sm["x"], h1, h1_T])
+            h0 = sm["m"] * jax.nn.logsumexp(stacked_values, 0)
+            del h1_T, stacked_values  # Clean up intermediate calculations
             return (h1, h0), h0
 
         sm, prev, idx = sw_rotate(x)
@@ -52,6 +64,8 @@ def sw_simple(batch=True, unroll=2):
         return jax.vmap(traceback)
     else:
         return traceback    
+    
+
 def sw_with_gap(batch=True, unroll=2, gap_penalty=-1):
     '''smith-waterman (local alignment) with gap support'''
 
@@ -98,7 +112,9 @@ def sw_with_gap(batch=True, unroll=2, gap_penalty=-1):
 
             # Take the maximum of alignment, insert, and delete
             # jax.debug.print("align: {align}")
-            h0 = sm["m"] * jax.nn.logsumexp(jnp.stack([align, insert, delete]), 0)
+            stacked_scores = jnp.stack([align, insert, delete])
+            h0 = sm["m"] * jax.nn.logsumexp(stacked_scores, 0)
+            del align, insert, delete, h1_T, stacked_scores  # Clean up intermediate calculations
             return (h1, h0), h0
 
         # Apply the rotate function and calculate the score
@@ -134,7 +150,7 @@ def jax2torch(fun):
     @staticmethod
     def backward(ctx, grad_y): # type: ignore
       grad_x_, = ctx.fun_vjp(t2j(grad_y))
-      return j2t(grad_x_),
+      return j2t(grad_x_)
 
   return JaxFun.apply
 
@@ -171,7 +187,9 @@ class CosineSimilarityLayer(nn.Module):
         # torch.bmm([B, N, D], [B, D, M]) results in [B, N, M]
         # This correctly computes dot products over the feature dimension D
         # for each pair of vectors from sequence N and sequence M.
-        dot_product = torch.bmm(x1, x2.transpose(1, 2))  # shape (batch_size, N, M)
+        x2_transposed = x2.transpose(1, 2)
+        dot_product = torch.bmm(x1, x2_transposed)  # shape (batch_size, N, M)
+        del x2_transposed
         
         # Compute the magnitudes of the vectors (norm over feature dimension D)
         magnitude_x1 = torch.norm(x1, dim=2, keepdim=True)  # shape (batch_size, N, 1)
@@ -181,17 +199,23 @@ class CosineSimilarityLayer(nn.Module):
         # magnitude_x1: [B, N, 1]
         # magnitude_x2.transpose(1, 2): [B, 1, M] (after transposing [B, M, 1])
         # Denominator broadcasts to [B, N, M]
-        denominator = magnitude_x1 * magnitude_x2.transpose(1, 2) + 1e-8
+        magnitude_x2_transposed = magnitude_x2.transpose(1, 2)
+        denominator = magnitude_x1 * magnitude_x2_transposed + 1e-8
+        del magnitude_x1, magnitude_x2, magnitude_x2_transposed
+        
         cosine_similarity = dot_product / denominator  # shape (batch_size, N, M)
+        del dot_product, denominator
 
         comp_cosine_similarity = 1 - cosine_similarity
 
         # Multiply by matchscore and missscore
         match_score_contribution = cosine_similarity * self.matchscore
         miss_score_contribution = comp_cosine_similarity * self.missscore # missscore is typically negative
+        del cosine_similarity, comp_cosine_similarity
 
         # Sum match and miss scores to get the final score
         final_score = match_score_contribution + miss_score_contribution
+        del match_score_contribution, miss_score_contribution
 
         return final_score
     
@@ -218,6 +242,9 @@ class DiffSWAlgo(nn.Module):
                 calc_cosine = True):
         if calc_cosine:
             self.cosine_similarity = self.cosine_similarity_layer(x1, x2)
+            # Clean up input tensors if they're not needed elsewhere
+            del x1, x2
+            
             # print(f'cosine_similarity shape: {self.cosine_similarity.shape}')
             new_output = torch.squeeze(self.cosine_similarity, dim=0)
             # visualize_heatmap_with_values(new_output[0], title="Cosine Similarity Heatmap")
@@ -226,7 +253,11 @@ class DiffSWAlgo(nn.Module):
             # visualize_heatmap_with_values(self.align[0], title="Alignment Heatmap")
         else:
             self.cosine_similarity = similarity_matrix
+            # Clean up input parameters
+            del x1, x2
+            
             self.align = self.sw_fn_torch(self.cosine_similarity)
+            
         return self.align
 
 ###########################################################################
@@ -266,6 +297,7 @@ if __name__ == '__main__':
     # # Visualize the output as a heatmap
     # # output_np = output.detach().cpu().numpy()
     # visualize_heatmap_with_values(output[0], title="Cosine Similarity Heatmap")
+    
     # Create the Alignment layer
     alignment = DiffSWAlgo(match_score=7, miss_score=-3, gap=-1)
     # Get the cosine similarity output
@@ -274,6 +306,9 @@ if __name__ == '__main__':
     
     # Visualize the output as a heatmap
     output_np = output.detach().cpu().numpy()
+    
+    # Clean up input tensors after forward pass
+    del x1, x2
 
 
     # Function to compute traceback path
@@ -292,8 +327,11 @@ if __name__ == '__main__':
             left_score = matrix[i, j-1] + gap_penalty if j > 0 else 0 
             
             # Find the maximum score using simple max
-            max_score_idx = (torch.exp(torch.tensor([diag_score, up_score, left_score]))
-                            / torch.exp(torch.tensor([diag_score, up_score, left_score])).sum()).argmax().item()
+            scores_tensor = torch.tensor([diag_score, up_score, left_score])
+            exp_scores = torch.exp(scores_tensor)
+            softmax_scores = exp_scores / exp_scores.sum()
+            max_score_idx = softmax_scores.argmax().item()
+            del scores_tensor, exp_scores, softmax_scores  # Clean up intermediate tensors
 
             # Priority: diagonal -> up -> left when scores are equal (standard Smith-Waterman)
             if max_score_idx == 0:
@@ -317,7 +355,11 @@ if __name__ == '__main__':
         # Compute and plot the traceback path
         # We need to get the similarity matrix from the alignment output
         # For simplicity, we'll use the cosine similarity as a proxy
-        similarity_matrix = alignment.output[batch_idx].detach().cpu().numpy()
+        if hasattr(alignment, 'cosine_similarity') and alignment.cosine_similarity is not None:
+            similarity_matrix = alignment.cosine_similarity[batch_idx].detach().cpu().numpy()
+        else:
+            # Fallback: use the output matrix itself as similarity matrix
+            similarity_matrix = output_np[batch_idx]
         
         # Visualize the similarity matrix
         plt.figure(figsize=(12, 8))
@@ -345,6 +387,8 @@ if __name__ == '__main__':
             plt.plot(path_x, path_y, color='red', linewidth=3, marker='o', 
                     markersize=6, alpha=0.8, label='Optimal Alignment Path')
             plt.legend()
+            # Clean up path variables
+            del path_y, path_x
         
         # Add values to each cell for better readability (skip for large matrices)
         if output_np[batch_idx].shape[0] <= 20 and output_np[batch_idx].shape[1] <= 20:
@@ -354,4 +398,10 @@ if __name__ == '__main__':
         
         plt.tight_layout()
         plt.savefig(f'alignment_output_heatmap_with_path_batch_{batch_idx}.png', dpi=150)
-        plt.close() 
+        plt.close()
+        
+        # Clean up batch-specific variables
+        del similarity_matrix, path
+    
+    # Final cleanup
+    del output_np, alignment 

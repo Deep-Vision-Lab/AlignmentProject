@@ -9,13 +9,14 @@ from newDataSet import TextLineModern, window_size
 from DiffSWAlgo import *
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-batch_size = 4
+batch_size = 8
 
 data_dir = "DataSet/Synthetic"  # Directory for the new dataset
 # Define paths for NewDataSet
 new_dataset = {
     "images": os.path.join(data_dir, "images"),
     "score_matrices": os.path.join(data_dir, "score_matrices"),
+    "diffmatrices": os.path.join(data_dir, "diffmatrices"),
     "similarity_matrices": os.path.join(data_dir, "similarity_matrices"),
     "texts":  os.path.join(data_dir, "texts")
 }
@@ -57,43 +58,45 @@ def pad_matrices(matrices, smooth=False, kernel_size=5, sigma=1.0):
     The target dimension is the maximum dimension found across all matrices in the batch.
     """
     if not matrices:
-        return torch.empty(0) # Or handle as an error, though DataLoader usually provides non-empty batches.
+        return torch.empty(0)
 
+    # Ensure all matrices are on the same device
+    device = matrices[0].device
     max_dim = max(max(mat.shape) for mat in matrices)
 
     gaussian_kernel_2d = None
     if smooth:
-        # This check is technically redundant due to the initial 'if not matrices:'
-        # but ensures device can be accessed if matrices is guaranteed non-empty here.
-        if matrices:
-            device = matrices[0].device # Assume all matrices in the list are on the same device
-            
-            # Create 1D Gaussian kernel centered at 0
-            _x = torch.arange(-(kernel_size // 2), kernel_size // 2 + 1, device=device, dtype=torch.float32)
-            _gauss1d = torch.exp(-_x.pow(2) / (2 * sigma**2))
-            _gauss1d /= _gauss1d.sum() # Normalize 1D kernel
+        # Create 1D Gaussian kernel centered at 0
+        _x = torch.arange(-(kernel_size // 2), kernel_size // 2 + 1, device=device, dtype=torch.float32)
+        _gauss1d = torch.exp(-_x.pow(2) / (2 * sigma**2))
+        _gauss1d /= _gauss1d.sum()
 
-            # Create 2D kernel from outer product of 1D kernel
-            # This results in a kernel that sums to 1
-            gaussian_kernel_2d = torch.outer(_gauss1d, _gauss1d)
-            # Reshape for conv2d: [out_channels, in_channels, H, W]
-            gaussian_kernel_2d = gaussian_kernel_2d.unsqueeze(0).unsqueeze(0)
+        # Create 2D kernel from outer product of 1D kernel
+        gaussian_kernel_2d = torch.outer(_gauss1d, _gauss1d)
+        # Reshape for conv2d: [out_channels, in_channels, H, W]
+        gaussian_kernel_2d = gaussian_kernel_2d.unsqueeze(0).unsqueeze(0)
 
     processed_matrices = []
     for mat in matrices:
+        # Ensure matrix is on the correct device
+        mat = mat.to(device)
+        
         # Add batch and channel dimensions for interpolate: [H, W] -> [1, 1, H, W]
         mat_unsqueezed = mat.unsqueeze(0).unsqueeze(0)
         # Interpolate to [1, 1, max_dim, max_dim]
         processed_mat = F.interpolate(mat_unsqueezed, size=(max_dim, max_dim), mode='nearest')
         
         if smooth and gaussian_kernel_2d is not None:
-            current_kernel = gaussian_kernel_2d.to(processed_mat.device) # Ensure kernel is on correct device
+            current_kernel = gaussian_kernel_2d.to(processed_mat.device)
             padding = kernel_size // 2
             processed_mat = F.conv2d(processed_mat, current_kernel, padding=padding)
 
         # Remove batch and channel dimensions: [1, 1, max_dim, max_dim] -> [max_dim, max_dim]
         processed_matrices.append(processed_mat.squeeze(0).squeeze(0))
-    return torch.stack(processed_matrices, dim=0)
+    
+    # Stack all processed matrices and ensure they're on the correct device
+    result = torch.stack(processed_matrices, dim=0).to(device)
+    return result
 
 # Define a custom collate function to handle variable-sized smith matrices
 def custom_collate_fn(batch):
@@ -103,27 +106,39 @@ def custom_collate_fn(batch):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # images_a, images_b, score_matrix, similar_matrix = zip(*batch)
-    images_a, images_b, similar_matrix = zip(*batch)
-    
-    # Stack image tensors
-    images_a = torch.stack(images_a, dim=0).to(device)
+    images_a, images_b, diffmatrices, similar_matrix = zip(*batch)
+
+    # Stack image tensors and ensure they're on the correct device
+    images_a = torch.stack(images_a, dim=0).to(device)    
     images_a.retain_grad()
     images_b = torch.stack(images_b, dim=0).to(device)
     images_b.retain_grad()
     
-    # Pad and stack smith matrices
-    # Smoothing can be enabled here if desired, e.g., pad_matrices(smith_matrices, smooth=True)
-    # score_matrix = pad_matrices(score_matrix, smooth=False) # Defaulting to no smoothing for now
-    similar_matrix = pad_matrices(similar_matrix, smooth=False).to(device) # Defaulting to no smoothing for now
-    DiffSW = DiffSWAlgo(match_score=7, miss_score=-3, 
-                                                gap=-1).to(device)
-    SW_matrices = DiffSW(similarity_matrix=similar_matrix,
-                                                calc_cosine=False).to(device)
+    # Convert matrices to tensors and move to device before padding
+    diffmatrices_tensors = []
+    similar_matrix_tensors = []
+    
+    for diff_mat, sim_mat in zip(diffmatrices, similar_matrix):
+        # Ensure matrices are tensors and on the correct device
+        if not isinstance(diff_mat, torch.Tensor):
+            diff_mat = torch.tensor(diff_mat, dtype=torch.float32)
+        if not isinstance(sim_mat, torch.Tensor):
+            sim_mat = torch.tensor(sim_mat, dtype=torch.float32)
+            
+        diffmatrices_tensors.append(diff_mat.to(device))
+        similar_matrix_tensors.append(sim_mat.to(device))
 
+    # Pad and stack smith matrices (they're already on the correct device)
+    diffmatrices = pad_matrices(diffmatrices_tensors, smooth=False)
+    similar_matrix = pad_matrices(similar_matrix_tensors, smooth=False)
+
+    # Ensure final tensors have gradients and are on the correct device
+    diffmatrices = diffmatrices.requires_grad_(True)
+    similar_matrix = similar_matrix.requires_grad_(True)
     return (
         images_a,
         images_b,
-        SW_matrices,
+        diffmatrices,
         similar_matrix
     )
 

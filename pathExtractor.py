@@ -31,12 +31,14 @@ def compute_traceback_path(matrix, similarity_matrix, match_score=1, miss_score=
             i -= 1
         elif max_score_idx == 2:
             j -= 1
+        # Clean up
+        del diag_score, up_score, left_score, scores, max_score_idx
 
     return path[::-1], (start_i, start_j) # Reverse to get path from start to end
 
 
 def SW_Path(matrices, similarity_matrix, match_score=1, miss_score=-1, gap_penalty=-1, position=None):
-    path_matrix = torch.zeros_like(matrices)
+    path_matrix = torch.zeros_like(matrices,device=matrices.device)
     starting_points = []
     for i, matrix in enumerate(matrices):
         if position is None:
@@ -49,7 +51,9 @@ def SW_Path(matrices, similarity_matrix, match_score=1, miss_score=-1, gap_penal
         for (x, y) in path:
             path_matrix[i, x, y] = 1
         starting_points.append((start_i, start_j))
-        
+        # Clean up
+        del path, start_i, start_j
+
     return path_matrix, starting_points
 
 
@@ -83,12 +87,14 @@ def compute_diff_traceback_path(matrix, similarity_matrix, match_score=1, miss_s
             i -= 1
         elif max_score_idx == 2:
             j -= 1
+        # Clean up
+        del diag_score, up_score, left_score, max_score_idx
 
     return path[::-1], (start_i, start_j) # Reverse to get path from start to end
 
 
 def diff_SW_Path(matrices, similarity_matrix, match_score=1, miss_score=-1, gap_penalty=-1, position=None):
-    path_matrix = torch.zeros_like(matrices)
+    path_matrix = torch.zeros_like(matrices,device=matrices.device)
     starting_points = []
     for i, matrix in enumerate(matrices):
         if position is None:
@@ -101,5 +107,7 @@ def diff_SW_Path(matrices, similarity_matrix, match_score=1, miss_score=-1, gap_
         for (x, y) in path:
             path_matrix[i, x, y] = 1
         starting_points.append((start_i, start_j))
+        # Clean up
+        del path, start_i, start_j
         
     return path_matrix, starting_points
