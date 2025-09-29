@@ -166,7 +166,7 @@ def Train(model, trainLoader, criterion, loss_type, device, normalize_type, epoc
                 if torch.cuda.is_available() and batch_idx % 5 == 0:
                     current_mem = torch.cuda.memory_allocated() / 1e9
                     peak_mem = torch.cuda.max_memory_allocated() / 1e9
-                    print(f"Batch {batch_idx}: Current: {current_mem:.2f}GB, Peak: {peak_mem:.2f}GB")
+                    print(f"Batch {batch_idx}: Current: {current_mem:.2f}GB, Peak: {peak_mem:.2f}GB", flush=True)
                 
                 # Ensure all data is on correct device
                 image1 = image1.to(device, non_blocking=True)
@@ -243,7 +243,7 @@ def Train(model, trainLoader, criterion, loss_type, device, normalize_type, epoc
                 if (batch_idx + 1) % gradient_accumulation_steps == 0 or batch_idx == len(trainLoader) - 1:
                     optimizer.step()
 
-                print(f"Epoch {epoch+1}, Batch {batch_idx+1}, Loss: {accumulated_loss:.4f}")
+                print(f"Epoch {epoch+1}, Batch {batch_idx+1}, Loss: {accumulated_loss:.4f}", flush=True)
                 accumulated_loss = 0
 
                 # Final cleanup - don't delete input images until the very end
@@ -253,16 +253,16 @@ def Train(model, trainLoader, criterion, loss_type, device, normalize_type, epoc
 
             except RuntimeError as e:
                 if "out of memory" in str(e):
-                    print(f"❌ OOM at epoch {epoch}, batch {batch_idx}: {e}")
+                    print(f"❌ OOM at epoch {epoch}, batch {batch_idx}: {e}", flush=True)
                     if torch.cuda.is_available():
-                        print(f"Peak memory: {torch.cuda.max_memory_allocated() / 1e9:.2f}GB")
+                        print(f"Peak memory: {torch.cuda.max_memory_allocated() / 1e9:.2f}GB", flush=True)
                     torch.cuda.empty_cache()
                     return loss_lst
                 else:
                     raise e
 
         epoch_loss = epoch_loss / len(trainLoader)
-        print(f'Epoch {epoch+1} - Loss: {epoch_loss:.4f}')
+        print(f'Epoch {epoch+1} - Loss: {epoch_loss:.4f}', flush=True)
         loss_lst.append(epoch_loss)
 
     return loss_lst
