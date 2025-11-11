@@ -84,6 +84,6 @@ class TextLineModern(Dataset):
             diff_matrix = torch.tensor(diff_matrix, dtype=torch.float32)
             similar_matrix = torch.tensor(similar_matrix, dtype=torch.float32)
 
-            return img1, img2, diff_matrix, similar_matrix
+            return img1, img2, diff_matrix, similar_matrix, img1_name, img2_name
         else:
             raise NotImplementedError("Handling for non-NewDataSet is not included.")

@@ -159,8 +159,8 @@ def Train(model, trainLoader, criterion, loss_type, device, normalize_type, epoc
     for epoch in range(epochs):
         epoch_loss = 0
         accumulated_loss = 0
-        
-        for batch_idx, (image1, image2, diffSWText, textSimilar) in enumerate(trainLoader):
+
+        for batch_idx, (image1, image2, diffSWText, textSimilar, image1_name, image2_name) in enumerate(trainLoader):
             try:
                 # Monitor memory at start
                 if torch.cuda.is_available() and batch_idx % 5 == 0:
@@ -190,10 +190,18 @@ def Train(model, trainLoader, criterion, loss_type, device, normalize_type, epoc
                 del tokens_a, tokens_b
                 torch.cuda.empty_cache()
 
+                begin_time = time.time()
+                # Debug: Save original text sequences for visualization
+
                 # JAX computation
                 DiffSW = DiffSWAlgo(match_score=2, miss_score=-3, gap=-1).to(device)
                 diffSWimage = DiffSW(x1=flip_tokens_a, x2=flip_tokens_b)
                 
+                end_time = time.time()
+                if end_time - begin_time > 60:
+                    print(f"⚠️ Warning: DiffSW computation took {end_time - begin_time:.2f} seconds in batch {batch_idx}", flush=True)
+                    print(f"Image1 name: {image1_name}", flush=True)  
+                    print(f"Image2 name: {image2_name}", flush=True)
                 # Delete flip tokens immediately after use
                 del flip_tokens_a, flip_tokens_b
                 torch.cuda.empty_cache()

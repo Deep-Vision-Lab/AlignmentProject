@@ -102,9 +102,9 @@ def pad_matrices(matrices, smooth=False, kernel_size=5, sigma=1.0):
 def custom_collate_fn(batch):
     """Custom collate function"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    images_a, images_b, diffmatrices, similar_matrix = zip(*batch)
-    
+
+    images_a, images_b, diffmatrices, similar_matrix, images1_names, images2_names = zip(*batch)
+
     # Stack on CPU first, then move to device
     images_a = torch.stack(images_a, dim=0)
     images_b = torch.stack(images_b, dim=0)
@@ -138,7 +138,7 @@ def custom_collate_fn(batch):
     diffmatrices.requires_grad_(True)
     similar_matrix.requires_grad_(True)
 
-    return images_a, images_b, diffmatrices, similar_matrix
+    return images_a, images_b, diffmatrices, similar_matrix, images1_names, images2_names
 
 
 # Create DataLoaders for training and testing
