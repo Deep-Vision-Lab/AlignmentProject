@@ -15,7 +15,7 @@ from embeddingModel import *
 import os
 import wandb
 import warnings
-
+import gc
 
 warnings.filterwarnings("ignore")
 
@@ -144,8 +144,9 @@ def smooth_and_normalize_matrix(matrix, normalize_type):
 import torch
 import time
 
-def Train(model, trainLoader, criterion, loss_type, device, normalize_type, epochs=100,
-        learning_rate=1e-4, debug=False, gradient_accumulation_steps=1, 
+def Train(model, trainLoader, DiffSW, criterion, loss_type, 
+        device, normalize_type, epochs=100,
+        learning_rate=1e-4, debug=False, 
         debug_wandb=True, show_gradients=False):
 
     model.train()
@@ -162,27 +163,17 @@ def Train(model, trainLoader, criterion, loss_type, device, normalize_type, epoc
 
         for batch_idx, (image1, image2, diffSWText, textSimilar, image1_name, image2_name) in enumerate(trainLoader):
             try:
-                # Monitor memory at start
-                if torch.cuda.is_available() and batch_idx % 5 == 0:
-                    current_mem = torch.cuda.memory_allocated() / 1e9
-                    peak_mem = torch.cuda.max_memory_allocated() / 1e9
-                    print(f"Batch {batch_idx}: Current: {current_mem:.2f}GB, Peak: {peak_mem:.2f}GB", flush=True)
-                
                 # Ensure all data is on correct device
                 image1 = image1.to(device, non_blocking=True)
                 image2 = image2.to(device, non_blocking=True)
                 diffSWText = diffSWText.to(device, non_blocking=True)
                 textSimilar = textSimilar.to(device, non_blocking=True)
                 
-                if batch_idx % gradient_accumulation_steps == 0:
-                    optimizer.zero_grad()
+                optimizer.zero_grad()
                 
                 # Forward pass
-                with torch.no_grad():
-                    # Clear any cached gradients
-                    torch.cuda.empty_cache()
-                
                 tokens_a, tokens_b = model(image1, image2, show_dims=False)
+                
                 flip_tokens_a = torch.flip(tokens_a, dims=[1])
                 flip_tokens_b = torch.flip(tokens_b, dims=[1])
 
@@ -191,11 +182,14 @@ def Train(model, trainLoader, criterion, loss_type, device, normalize_type, epoc
                 torch.cuda.empty_cache()
 
                 begin_time = time.time()
-                # Debug: Save original text sequences for visualization
 
                 # JAX computation
-                DiffSW = DiffSWAlgo(match_score=2, miss_score=-3, gap=-1).to(device)
-                diffSWimage = DiffSW(x1=flip_tokens_a, x2=flip_tokens_b)
+                # print((f"Starting Diff SW Algorithm, batch {batch_idx}..."))
+                
+                # Running the DiffSW Algorithm
+                DiffSW.reset_cosine_similarity()  # Reset cosine similarity before each forward pass
+                diffSWimage = DiffSW(x1=flip_tokens_a, x2=flip_tokens_b,show_dims=False).to(device)
+                # print(f"DiffSWAlgo completed for batch {batch_idx}", flush=True)
                 
                 end_time = time.time()
                 if end_time - begin_time > 60:
@@ -209,50 +203,37 @@ def Train(model, trainLoader, criterion, loss_type, device, normalize_type, epoc
                 # Use smaller interpolation size
                 new_size = min(16, diffSWText.shape[-1])  # Cap at 16x16 for memory
                 new_size = (new_size, new_size)
-                
-                diffSWimage = interpolate_SW_matrix(diffSWimage, new_size)
-                cosine_sim = interpolate_SW_matrix(DiffSW.cosine_similarity, new_size)
-                diffSWText = interpolate_SW_matrix(diffSWText, new_size)
-                textSimilar = interpolate_SW_matrix(textSimilar, new_size)
 
-                # Delete DiffSW object and clear cache
-                del DiffSW
-                torch.cuda.empty_cache()
+                diffSWimage = interpolate_SW_matrix(diffSWimage, new_size).to(device)
+                cosine_sim = interpolate_SW_matrix(DiffSW.cosine_similarity, new_size).to(device)
+                diffSWText = interpolate_SW_matrix(diffSWText, new_size).to(device)
+                textSimilar = interpolate_SW_matrix(textSimilar, new_size).to(device)
 
                 # Path extraction
                 textSWpath, text_startPoints = diff_SW_Path(diffSWText, textSimilar,
                                                           match_score=2, miss_score=-3, gap_penalty=-1)
                 diffSWText_final = diffSWText * textSWpath
                 del diffSWText, textSWpath, textSimilar
-                torch.cuda.empty_cache()
 
                 imageSWpath, _ = diff_SW_Path(diffSWimage, cosine_sim,
                                             match_score=2, miss_score=-3, gap_penalty=-1, 
                                             position=text_startPoints)
                 diffSWimage_final = diffSWimage * imageSWpath
                 del diffSWimage, imageSWpath, cosine_sim, text_startPoints
-                torch.cuda.empty_cache()
 
                 # Loss computation
                 path_loss = criterion(diffSWText_final, diffSWimage_final)
-                scaled_loss = path_loss / gradient_accumulation_steps
                 
                 del diffSWText_final, diffSWimage_final
-                torch.cuda.empty_cache()
 
                 epoch_loss += path_loss.item()
-                accumulated_loss += path_loss.item()
 
-                # Backpropagation
-                scaled_loss.backward()
-                del path_loss, scaled_loss
-                torch.cuda.empty_cache()
+                # Backpropagation and optimizer step
+                path_loss.backward()
+                optimizer.step()
+                del path_loss
 
-                if (batch_idx + 1) % gradient_accumulation_steps == 0 or batch_idx == len(trainLoader) - 1:
-                    optimizer.step()
-
-                print(f"Epoch {epoch+1}, Batch {batch_idx+1}, Loss: {accumulated_loss:.4f}", flush=True)
-                accumulated_loss = 0
+                print(f"Epoch {epoch+1}, Batch {batch_idx+1}, Loss: {epoch_loss / (batch_idx + 1):.4f}", flush=True)
 
                 # Final cleanup - don't delete input images until the very end
                 # The gradients should be computed by now
@@ -262,16 +243,20 @@ def Train(model, trainLoader, criterion, loss_type, device, normalize_type, epoc
             except RuntimeError as e:
                 if "out of memory" in str(e):
                     print(f"❌ OOM at epoch {epoch}, batch {batch_idx}: {e}", flush=True)
-                    if torch.cuda.is_available():
-                        print(f"Peak memory: {torch.cuda.max_memory_allocated() / 1e9:.2f}GB", flush=True)
+                    try:
+                        log_memory(f"OOM caught at epoch{epoch} batch{batch_idx}")
+                    except Exception:
+                        if torch.cuda.is_available():
+                            print(f"Peak memory: {torch.cuda.max_memory_allocated() / 1e9:.2f}GB", flush=True)
                     torch.cuda.empty_cache()
                     return loss_lst
                 else:
                     raise e
-
+        print(f"Epoch {epoch+1} completed. Average Loss: {epoch_loss / len(trainLoader):.4f}", flush=True)
         epoch_loss = epoch_loss / len(trainLoader)
         print(f'Epoch {epoch+1} - Loss: {epoch_loss:.4f}', flush=True)
         loss_lst.append(epoch_loss)
+        print(f"Epoch {epoch+1} loss appended to loss list.", flush=True)
 
     return loss_lst
 
@@ -280,12 +265,11 @@ def Train(model, trainLoader, criterion, loss_type, device, normalize_type, epoc
 if __name__ == '__main__':
     loss_type = 'MSE' # ['HeightDiff', 'MSE', 'GuidedAttention', 'KL-Divergence', 'Dice', 'Wasserstein']
     model_arch = 'CNN' # ['CNN-Transformer', 'CNN', 'Transformer']
-    window_size = 32
+    window_size = 64
     vector_size = 64
     normalize_type = '' # ['min_max', 'mean_std']
     epochs = 100
     learning_rate = 1e-4
-    gradient_accumulation_steps = 1  # Accumulate gradients over 4 batches
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     debug = True # Set to True to save patches and heatmaps for debugging
     debug_wandb = False # Set to True to log training to Weights & Biases
@@ -305,9 +289,7 @@ if __name__ == '__main__':
                 "architecture": model_arch,
                 "epochs": epochs,
                 "slicing_window_width": window_size,
-                "normalizing method ": normalize_type,
-                "gradient_accumulation_steps": gradient_accumulation_steps,
-                "mixed_precision": True
+                "normalizing method ": normalize_type
             })
 
     cnn_transformer_model = EmbeddingModel(
@@ -319,7 +301,8 @@ if __name__ == '__main__':
         device='cuda' if torch.cuda.is_available() else 'cpu'
     )  # In Train.py
 
-
+    DiffSW = DiffSWAlgo(match_score=2, miss_score=-3, gap=-1)
+    
     if loss_type == 'HeightDiff':
         criterion = HeightDiff_loss
     elif loss_type == 'MSE':
@@ -338,6 +321,7 @@ if __name__ == '__main__':
     loss_lst = Train(
         cnn_transformer_model,
         train_dataloader,
+        DiffSW,
         criterion,
         loss_type,
         device,
@@ -345,7 +329,6 @@ if __name__ == '__main__':
         epochs,
         learning_rate,
         debug,
-        gradient_accumulation_steps,
         debug_wandb,
         show_gradients
     )
