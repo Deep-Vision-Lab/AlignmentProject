@@ -5,6 +5,11 @@ from typing import Optional
 
 import torch
 import torch.utils.dlpack
+import gc
+try:
+    import psutil
+except Exception:
+    psutil = None
 
 import jax
 import jax.dlpack
@@ -155,6 +160,56 @@ def jax2torch(fun):
   return JaxFun.apply
 
 
+# Memory / RAM helper -----------------------------------------------------
+def log_memory(prefix: str = "", log_file: str | None = None):
+    """Print RAM and GPU memory usage with a short prefix.
+
+    - Uses `psutil` if available to report system RAM.
+    - Uses `torch.cuda` APIs if CUDA is available to report GPU memory.
+    - Always prints to stdout (use `python -u` or `flush=True` when running under batch systems).
+    - If `log_file` is provided, appended to that file.
+    """
+    try:
+        lines = []
+        # System RAM
+        if psutil is not None:
+            vm = psutil.virtual_memory()
+            lines.append(f"RAM: {vm.used // (1024**2)}MB/{vm.total // (1024**2)}MB ({vm.percent}%)")
+        else:
+            lines.append("RAM: psutil unavailable")
+
+        # Python memory objects (rough indicator)
+        try:
+            objs = gc.get_objects()
+            lines.append(f"Python objects: {len(objs)}")
+        except Exception:
+            lines.append("Python objects: n/a")
+
+        # GPU memory
+        if torch.cuda.is_available():
+            try:
+                dev = torch.cuda.current_device()
+                allocated = torch.cuda.memory_allocated(dev) // (1024**2)
+                reserved = torch.cuda.memory_reserved(dev) // (1024**2)
+                max_alloc = torch.cuda.max_memory_allocated(dev) // (1024**2)
+                lines.append(f"CUDA device {dev}: allocated={allocated}MB reserved={reserved}MB max_alloc={max_alloc}MB")
+            except Exception as e:
+                lines.append(f"CUDA stats error: {e}")
+        else:
+            lines.append("CUDA: not available")
+
+        msg = f"[MEM] {prefix} | " + " | ".join(lines)
+        print(msg, flush=True)
+        if log_file is not None:
+            try:
+                with open(log_file, "a") as f:
+                    f.write(msg + "\n")
+            except Exception:
+                pass
+    except Exception as e:
+        # Be robust: don't crash the main program if memory logging fails
+        print(f"[MEM] logging failed ({e})", flush=True)
+
 
 ###########################################################################
 # Cosine Similarity Layer
@@ -235,29 +290,39 @@ class DiffSWAlgo(nn.Module):
         self.sw_fn_torch = jax2torch(jax.jit(sw_with_gap(gap_penalty=gap)))
 
         # self.sw_fn_torch = jax2torch(jax.jit(sw_simple()))
+    
+    def reset_cosine_similarity(self):
+        self.cosine_similarity = None
+        
     def forward(self, 
                 x1: Optional[torch.Tensor] = None, 
                 x2: Optional[torch.Tensor] = None, 
                 similarity_matrix = None, 
-                calc_cosine = True):
+                calc_cosine = True,
+                show_dims = False):
+        if show_dims and x1 is not None and x2 is not None:
+            print(f"x1 shape: {x1.shape}")
+            print(f"x2 shape: {x2.shape}")
+
         if calc_cosine:
             self.cosine_similarity = self.cosine_similarity_layer(x1, x2)
-            # Clean up input tensors if they're not needed elsewhere
-            del x1, x2
-            
-            # print(f'cosine_similarity shape: {self.cosine_similarity.shape}')
+            if show_dims:
+                print(f"Cosine similarity shape: {self.cosine_similarity.shape}")
             new_output = torch.squeeze(self.cosine_similarity, dim=0)
+            if show_dims:
+                print(f"Squeezed cosine similarity shape: {new_output.shape}")
             # visualize_heatmap_with_values(new_output[0], title="Cosine Similarity Heatmap")
             self.align = self.sw_fn_torch(new_output)
-            del new_output
-            # visualize_heatmap_with_values(self.align[0], title="Alignment Heatmap")
+            if show_dims:
+                print(f"align shape: {self.align.shape}")
         else:
             self.cosine_similarity = similarity_matrix
-            # Clean up input parameters
-            del x1, x2
-            
+            if show_dims:
+                print(f"Cosine similarity shape: {self.cosine_similarity.shape}")
             self.align = self.sw_fn_torch(self.cosine_similarity)
-            
+            if show_dims:
+                print(f"align shape: {self.align.shape}")
+        
         return self.align
 
 ###########################################################################
@@ -281,12 +346,12 @@ def visualize_heatmap_with_values(tensor, title="Heatmap", cmap="viridis"):
 if __name__ == '__main__':
     # Example usage - output CNN or transformer
     # Create tensors with 4 consecutive nonzero elements, rest zeros
-    x1 = torch.ones(2, 20, 512)
-    x2 = torch.ones(2, 20, 512)
+    x1 = torch.ones(4, 63, 64)
+    x2 = torch.ones(4, 63, 64)
     # x2[:, 0:3, :] = torch.zeros(2, 3, 512)
-    x2[:, 8:10, :] = torch.zeros(2, 2, 512)
-    x2[:, 15:17, :] = torch.zeros(2, 2, 512)
-    x2[:, 19:20, :] = torch.zeros(2, 1, 512)
+    x2[:, 8:10, :] = torch.zeros(4, 2, 64)
+    x2[:, 15:17, :] = torch.zeros(4, 2, 64)
+    x2[:, 19:20, :] = torch.zeros(4, 1, 64)
     x1.requires_grad = True
     x2.requires_grad = True
     # Create the Cosine Similarity layer
