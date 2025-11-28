@@ -1,21 +1,22 @@
-import torch.optim as optim
+import torch
 import torch.nn as nn
+import torch.optim as optim
 import torch.nn.functional as F
 
-from DiffSWAlgo import DiffSWAlgo
-from embeddingModel import *
+from saveDATA import *
+from Evaluation import *
 from DiffSWAlgo import *
 from newDataLoader import *
 from pathExtractor import *
-from saveDATA import *
-from LossFunctionWithHelpers import *
-from Evaluation import *
 from embeddingModel import *
+from embeddingModel import *
+from LossFunctionWithHelpers import *
 
 import os
+import gc
+import time
 import wandb
 import warnings
-import gc
 
 warnings.filterwarnings("ignore")
 
@@ -122,7 +123,6 @@ def smooth_and_normalize_matrix(matrix, normalize_type):
     Optionally smooth and normalize the alignment output tensor.
     Args:
         matrix (torch.Tensor): The alignment output tensor.
-        interpolated_smith_matrix (torch.Tensor): The smith matrix after interpolation (for scaling).
         normalize_type (str): Normalization type: 'min_max', 'mean_std', or ''.
     Returns:
         torch.Tensor: Smoothed and normalized alignment output.
@@ -141,10 +141,96 @@ def smooth_and_normalize_matrix(matrix, normalize_type):
 
 
 
-import torch
-import time
 
-def Train(model, trainLoader, DiffSW, criterion, loss_type, 
+def compute_accuracy(pred_path, target_path, threshold=0.5):
+    """
+    Compute accuracy by measuring path agreement between predicted and target alignment paths.
+    
+    Args:
+        pred_path (torch.Tensor): Predicted alignment path, shape [B, H, W]
+        target_path (torch.Tensor): Target alignment path, shape [B, H, W]
+        threshold (float): Threshold for binarizing paths (default: 0.5)
+    
+    Returns:
+        accuracy (float): Percentage of matching alignment positions
+    """
+    # Binarize the paths
+    pred_binary = (pred_path > threshold).float()
+    target_binary = (target_path > threshold).float()
+    
+    # Calculate accuracy as the percentage of matching positions
+    correct = (pred_binary == target_binary).float()
+    accuracy = correct.sum().item() / correct.numel()
+    
+    return accuracy
+
+
+def compute_batch_loss(model, image1, image2, diffSWText, textSimilar, DiffSW, criterion, device):
+    """
+    Compute loss for a single batch (used in both training and validation).
+    
+    Args:
+        model: The embedding model
+        image1, image2: Input images
+        diffSWText, textSimilar: Text similarity matrices
+        DiffSW: DiffSW algorithm instance
+        criterion: Loss function
+        device: Device to run computation on
+    
+    Returns:
+        path_loss: Loss tensor (for backprop)
+        loss_value (float): Computed loss value
+        diffSWText_final: Final text alignment path
+        diffSWimage_final: Final image alignment path
+    """
+    # Forward pass
+    tokens_a, tokens_b = model(image1, image2, show_dims=False)
+    
+    flip_tokens_a = torch.flip(tokens_a, dims=[1])
+    flip_tokens_b = torch.flip(tokens_b, dims=[1])
+
+    # Immediately delete original tokens
+    del tokens_a, tokens_b
+    torch.cuda.empty_cache()
+
+    # Running the DiffSW Algorithm
+    DiffSW.reset_cosine_similarity()
+    diffSWimage = DiffSW(x1=flip_tokens_a, x2=flip_tokens_b, show_dims=False).to(device)
+    
+    # Delete flip tokens immediately after use
+    del flip_tokens_a, flip_tokens_b
+    torch.cuda.empty_cache()
+
+    # Use smaller interpolation size
+    new_size = min(16, diffSWText.shape[-1])
+    new_size = (new_size, new_size)
+
+    diffSWimage = interpolate_SW_matrix(diffSWimage, new_size).to(device)
+    cosine_sim = interpolate_SW_matrix(DiffSW.cosine_similarity, new_size).to(device)
+    diffSWText = interpolate_SW_matrix(diffSWText, new_size).to(device)
+    textSimilar = interpolate_SW_matrix(textSimilar, new_size).to(device)
+
+    # Path extraction
+    textSWpath, text_startPoints = diff_SW_Path(diffSWText, textSimilar,
+                                                match_score=2, miss_score=-3, gap_penalty=-1)
+    diffSWText_final = diffSWText * textSWpath
+    del diffSWText, textSWpath, textSimilar
+
+    imageSWpath, _ = diff_SW_Path(diffSWimage, cosine_sim,
+                                match_score=2, miss_score=-3, gap_penalty=-1, 
+                                position=text_startPoints)
+    diffSWimage_final = diffSWimage * imageSWpath
+    del diffSWimage, imageSWpath, cosine_sim, text_startPoints
+
+    # Loss computation
+    path_loss = criterion(diffSWText_final, diffSWimage_final)
+    
+    loss_value = path_loss.item()
+    
+    return path_loss, loss_value, diffSWText_final, diffSWimage_final
+
+
+def Train(model, trainLoader, validLoader, DiffSW, criterion, loss_type, 
         device, normalize_type, epochs=100,
         learning_rate=1e-4, debug=False, 
         debug_wandb=True, show_gradients=False):
@@ -158,105 +244,99 @@ def Train(model, trainLoader, DiffSW, criterion, loss_type,
         torch.cuda.reset_peak_memory_stats()
     
     for epoch in range(epochs):
-        epoch_loss = 0
-        accumulated_loss = 0
+        train_loss = 0.0
+        train_accuracy = 0.0
 
         for batch_idx, (image1, image2, diffSWText, textSimilar, image1_name, image2_name) in enumerate(trainLoader):
-            try:
+            # Ensure all data is on correct device
+            image1 = image1.to(device, non_blocking=True)
+            image2 = image2.to(device, non_blocking=True)
+            diffSWText = diffSWText.to(device, non_blocking=True)
+            textSimilar = textSimilar.to(device, non_blocking=True)
+            
+            optimizer.zero_grad()
+            
+            begin_time = time.time()
+            
+            # Compute loss using shared function
+            path_loss, loss_value, diffSWText_final, diffSWimage_final = compute_batch_loss(
+                model, image1, image2, diffSWText, textSimilar, DiffSW, criterion, device
+            )
+            
+            # Compute accuracy
+            batch_accuracy = compute_accuracy(diffSWimage_final, diffSWText_final)
+            train_accuracy += batch_accuracy
+            
+            del diffSWText_final, diffSWimage_final
+            
+            end_time = time.time()
+            if end_time - begin_time > 60:
+                print(f"⚠️ Warning: Batch computation took {end_time - begin_time:.2f} seconds in batch {batch_idx}", flush=True)
+                print(f"Image1 name: {image1_name}", flush=True)  
+                print(f"Image2 name: {image2_name}", flush=True)
+
+            train_loss += loss_value
+
+            # Backpropagation and optimizer step
+            path_loss.backward()
+            optimizer.step()
+            del path_loss
+
+            print(f"Epoch {epoch+1}, Batch {batch_idx+1}, Loss: {train_loss / (batch_idx + 1):.4f}", flush=True)
+
+            # Final cleanup
+            del image1, image2
+            torch.cuda.empty_cache()
+
+        print(f"Epoch {epoch+1} completed. Average Loss: {train_loss / len(trainLoader):.4f}", flush=True)
+        train_loss = train_loss / len(trainLoader)
+        train_accuracy = train_accuracy / len(trainLoader)
+        print(f'Epoch {epoch+1} - Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}', flush=True)
+        
+        # Validation phase
+        model.eval()
+        val_loss = 0.0
+        val_accuracy = 0.0
+        with torch.no_grad():
+            for batch_idx, (image1, image2, diffSWText, textSimilar, image1_name, image2_name) in enumerate(validLoader):
                 # Ensure all data is on correct device
                 image1 = image1.to(device, non_blocking=True)
                 image2 = image2.to(device, non_blocking=True)
                 diffSWText = diffSWText.to(device, non_blocking=True)
                 textSimilar = textSimilar.to(device, non_blocking=True)
                 
-                optimizer.zero_grad()
+                # Compute loss using shared function
+                _, loss_value, diffSWText_final, diffSWimage_final = compute_batch_loss(
+                    model, image1, image2, diffSWText, textSimilar, DiffSW, criterion, device
+                )
                 
-                # Forward pass
-                tokens_a, tokens_b = model(image1, image2, show_dims=False)
-                
-                flip_tokens_a = torch.flip(tokens_a, dims=[1])
-                flip_tokens_b = torch.flip(tokens_b, dims=[1])
-
-                # Immediately delete original tokens
-                del tokens_a, tokens_b
-                torch.cuda.empty_cache()
-
-                begin_time = time.time()
-
-                # JAX computation
-                # print((f"Starting Diff SW Algorithm, batch {batch_idx}..."))
-                
-                # Running the DiffSW Algorithm
-                DiffSW.reset_cosine_similarity()  # Reset cosine similarity before each forward pass
-                diffSWimage = DiffSW(x1=flip_tokens_a, x2=flip_tokens_b,show_dims=False).to(device)
-                # print(f"DiffSWAlgo completed for batch {batch_idx}", flush=True)
-                
-                end_time = time.time()
-                if end_time - begin_time > 60:
-                    print(f"⚠️ Warning: DiffSW computation took {end_time - begin_time:.2f} seconds in batch {batch_idx}", flush=True)
-                    print(f"Image1 name: {image1_name}", flush=True)  
-                    print(f"Image2 name: {image2_name}", flush=True)
-                # Delete flip tokens immediately after use
-                del flip_tokens_a, flip_tokens_b
-                torch.cuda.empty_cache()
-
-                # Use smaller interpolation size
-                new_size = min(16, diffSWText.shape[-1])  # Cap at 16x16 for memory
-                new_size = (new_size, new_size)
-
-                diffSWimage = interpolate_SW_matrix(diffSWimage, new_size).to(device)
-                cosine_sim = interpolate_SW_matrix(DiffSW.cosine_similarity, new_size).to(device)
-                diffSWText = interpolate_SW_matrix(diffSWText, new_size).to(device)
-                textSimilar = interpolate_SW_matrix(textSimilar, new_size).to(device)
-
-                # Path extraction
-                textSWpath, text_startPoints = diff_SW_Path(diffSWText, textSimilar,
-                                                          match_score=2, miss_score=-3, gap_penalty=-1)
-                diffSWText_final = diffSWText * textSWpath
-                del diffSWText, textSWpath, textSimilar
-
-                imageSWpath, _ = diff_SW_Path(diffSWimage, cosine_sim,
-                                            match_score=2, miss_score=-3, gap_penalty=-1, 
-                                            position=text_startPoints)
-                diffSWimage_final = diffSWimage * imageSWpath
-                del diffSWimage, imageSWpath, cosine_sim, text_startPoints
-
-                # Loss computation
-                path_loss = criterion(diffSWText_final, diffSWimage_final)
+                # Compute accuracy
+                batch_accuracy = compute_accuracy(diffSWimage_final, diffSWText_final)
+                val_accuracy += batch_accuracy
                 
                 del diffSWText_final, diffSWimage_final
+                val_loss += loss_value
 
-                epoch_loss += path_loss.item()
-
-                # Backpropagation and optimizer step
-                path_loss.backward()
-                optimizer.step()
-                del path_loss
-
-                print(f"Epoch {epoch+1}, Batch {batch_idx+1}, Loss: {epoch_loss / (batch_idx + 1):.4f}", flush=True)
-
-                # Final cleanup - don't delete input images until the very end
-                # The gradients should be computed by now
+                # Final cleanup
                 del image1, image2
                 torch.cuda.empty_cache()
-
-            except RuntimeError as e:
-                if "out of memory" in str(e):
-                    print(f"❌ OOM at epoch {epoch}, batch {batch_idx}: {e}", flush=True)
-                    try:
-                        log_memory(f"OOM caught at epoch{epoch} batch{batch_idx}")
-                    except Exception:
-                        if torch.cuda.is_available():
-                            print(f"Peak memory: {torch.cuda.max_memory_allocated() / 1e9:.2f}GB", flush=True)
-                    torch.cuda.empty_cache()
-                    return loss_lst
-                else:
-                    raise e
-        print(f"Epoch {epoch+1} completed. Average Loss: {epoch_loss / len(trainLoader):.4f}", flush=True)
-        epoch_loss = epoch_loss / len(trainLoader)
-        print(f'Epoch {epoch+1} - Loss: {epoch_loss:.4f}', flush=True)
-        loss_lst.append(epoch_loss)
-        print(f"Epoch {epoch+1} loss appended to loss list.", flush=True)
+        
+        val_loss = val_loss / len(validLoader)
+        val_accuracy = val_accuracy / len(validLoader)
+        print(f'Epoch {epoch+1} - Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.4f}', flush=True)
+        
+        # Log train and validation losses and accuracies to wandb
+        if debug_wandb:
+            wandb.log({
+                "train_loss": train_loss, 
+                "val_loss": val_loss,
+                "train_accuracy": train_accuracy,
+                "val_accuracy": val_accuracy
+            })
+        loss_lst.append(train_loss)
+        
+        # Set model back to training mode
+        model.train()
 
     return loss_lst
 
@@ -266,13 +346,13 @@ if __name__ == '__main__':
     loss_type = 'MSE' # ['HeightDiff', 'MSE', 'GuidedAttention', 'KL-Divergence', 'Dice', 'Wasserstein']
     model_arch = 'CNN' # ['CNN-Transformer', 'CNN', 'Transformer']
     window_size = 64
-    vector_size = 64
+    vector_size = 128
     normalize_type = '' # ['min_max', 'mean_std']
-    epochs = 100
+    epochs = 300
     learning_rate = 1e-4
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     debug = True # Set to True to save patches and heatmaps for debugging
-    debug_wandb = False # Set to True to log training to Weights & Biases
+    debug_wandb = True # Set to True to log training to Weights & Biases
     show_gradients = True # Set to True to print gradients for debugging
     
     if debug_wandb:
@@ -321,6 +401,7 @@ if __name__ == '__main__':
     loss_lst = Train(
         cnn_transformer_model,
         train_dataloader,
+        valid_dataloader,
         DiffSW,
         criterion,
         loss_type,
