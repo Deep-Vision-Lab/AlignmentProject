@@ -18,80 +18,7 @@ import time
 import wandb
 import warnings
 
-warnings.filterwarnings("ignore")
-
-def saveHeatmapPlots(model, image1, image2, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, 
-                    debug_diffSWimage, debug_diffSWText, debug_SWTextSimilar,
-                    matrices_epoch_dir, original_text1_batch, original_text2_batch):
-    for i in range(image1.size(0)): # Iterate through items in the current batch
-        # Save token vectors
-        # tokens_a and tokens_b are already flipped and on the correct device
-        print_elements(tokens_a[i], f'{vectors_epoch_dir}/tokens_a_epoch_{epoch+1}_batch_{batch_idx}_item_{i}.xlsx')
-        print_elements(tokens_b[i], f'{vectors_epoch_dir}/tokens_b_epoch_{epoch+1}_batch_{batch_idx}_item_{i}.xlsx')
-        # Generate patches for visualization
-        image1_i = image1[i].unsqueeze(0)
-        image2_i = image2[i].unsqueeze(0)
-        model_window_size = model.window_size
-        model_stride = model.stride
-        windows_img1 = sliding_window(image1_i, model_window_size, model_stride).squeeze(0)
-        windows_img2 = sliding_window(image2_i, model_window_size, model_stride).squeeze(0)
-
-        y_heatmap = torch.flip(windows_img1, dims=[0]) # From image1, for Y-axis
-        x_heatmap = torch.flip(windows_img2, dims=[0]) # From image2, for X-axis
-
-        # Extract paths using diff_SW_Path for visualization
-        textPath, _ = SW_Path(debug_diffSWText[i:i+1], debug_diffSWText[i:i+1], match_score=7, miss_score=-3, gap_penalty=-1)
-        imagePath, _ = diff_SW_Path(debug_diffSWimage[i:i+1], debug_diffSWimage[i:i+1], match_score=7, miss_score=-3, gap_penalty=-1)
-        
-        # Visualize paths instead of raw matrices
-        visualize_heatmaps(
-            imagePath[0],  # Use extracted path
-            textPath[0],   # Use extracted path
-            f"{matrices_epoch_dir}/heatmaps_epoch_{epoch+1}_batch_{batch_idx}_item_{i}.png",
-            patches_y=y_heatmap,
-            patches_x=x_heatmap
-        )
-
-        # Only run the following if debug_SWTextSimilar is not None
-        if debug_SWTextSimilar is not None:
-            # New visualization: Raw Smith-Waterman matrix (before interpolation)
-            # with original character sequences as axes. seq1 on X, seq2 on Y.
-            debug_SWTextSimilar_i = debug_SWTextSimilar[i] # Shape [H_orig, W_orig]
-            original_text1_batch_i = original_text1_batch[i] # string for seq1
-            original_text2_batch_i = original_text2_batch[i] # string for seq2
-
-            # Use SW_Path instead of makeTracerouteMatrixBinary
-            smith_original_path_tensor, _ = SW_Path(debug_SWTextSimilar_i.unsqueeze(0), 
-                                                   debug_SWTextSimilar_i.unsqueeze(0),
-                                                   match_score=7, miss_score=-3, gap_penalty=-1)
-            smith_original_path_np = smith_original_path_tensor[0].cpu().numpy()
-
-            # SW matrix has text1 along rows, text2 along columns.
-            # To put text1 (seq1) on X-axis and text2 (seq2) on Y-axis, we need to transpose.
-            scores_matrix_to_plot = debug_SWTextSimilar_i.T
-            path_matrix_to_plot = torch.tensor(smith_original_path_np).T
-
-            # Labels for axes: X-axis for seq1 (original_text1), Y-axis for seq2 (original_text2)
-            x_char_labels = ['ø'] + list(original_text1_batch_i.replace(" ", "")) # 'ø' for the initial empty string state
-            y_char_labels = ['ø'] + list(original_text2_batch_i.replace(" ", ""))
-            filename_char_level_smith_dual = f"{matrices_epoch_dir}/raw_char_smith_scores_path_epoch_{epoch+1}_batch_{batch_idx}_item_{i}.png"
-            visualize_dual_char_heatmaps(
-                scores_matrix_to_plot,
-                path_matrix_to_plot,
-                x_labels=x_char_labels,
-                y_labels=y_char_labels,
-                image_path=filename_char_level_smith_dual,
-                title1=f"Raw SW Scores (Seq1 vs Seq2) - Item {i}",
-                title2=f"Raw SW Path (Seq1 vs Seq2) - Item {i}"
-            )
-            del debug_SWTextSimilar_i, original_text1_batch_i, original_text2_batch_i
-            del smith_original_path_tensor, smith_original_path_np
-            del scores_matrix_to_plot, path_matrix_to_plot
-            del x_char_labels, y_char_labels, filename_char_level_smith_dual
-        del windows_img1, windows_img2, y_heatmap, x_heatmap
-        del textPath, imagePath
-        del image1_i, image2_i
-            
+warnings.filterwarnings("ignore")    
 
 def interpolate_SW_matrix(SW_matrix, target_shape):
     """
@@ -165,41 +92,19 @@ def compute_accuracy(pred_path, target_path, threshold=0.5):
     return accuracy
 
 
-def compute_batch_loss(model, image1, image2, diffSWText, textSimilar, DiffSW, criterion, device):
-    """
-    Compute loss for a single batch (used in both training and validation).
+# second line of parameters is for saving visualizations during debugging 
+def compute_batch_loss(model, image1, image2, diffSWText, textSimilar, DiffSW, criterion, device, 
+                       loss_type='MSE', debug=False, epoch=0, batch_idx=0, dataloader_length=0):
     
-    Args:
-        model: The embedding model
-        image1, image2: Input images
-        diffSWText, textSimilar: Text similarity matrices
-        DiffSW: DiffSW algorithm instance
-        criterion: Loss function
-        device: Device to run computation on
-    
-    Returns:
-        path_loss: Loss tensor (for backprop)
-        loss_value (float): Computed loss value
-        diffSWText_final: Final text alignment path
-        diffSWimage_final: Final image alignment path
-    """
-    # Forward pass
     tokens_a, tokens_b = model(image1, image2, show_dims=False)
     
     flip_tokens_a = torch.flip(tokens_a, dims=[1])
     flip_tokens_b = torch.flip(tokens_b, dims=[1])
 
-    # Immediately delete original tokens
-    del tokens_a, tokens_b
-    torch.cuda.empty_cache()
-
     # Running the DiffSW Algorithm
     DiffSW.reset_cosine_similarity()
     diffSWimage = DiffSW(x1=flip_tokens_a, x2=flip_tokens_b, show_dims=False).to(device)
     
-    # Delete flip tokens immediately after use
-    del flip_tokens_a, flip_tokens_b
-    torch.cuda.empty_cache()
 
     # Use smaller interpolation size
     new_size = min(16, diffSWText.shape[-1])
@@ -214,18 +119,74 @@ def compute_batch_loss(model, image1, image2, diffSWText, textSimilar, DiffSW, c
     textSWpath, text_startPoints = diff_SW_Path(diffSWText, textSimilar,
                                                 match_score=2, miss_score=-3, gap_penalty=-1)
     diffSWText_final = diffSWText * textSWpath
-    del diffSWText, textSWpath, textSimilar
 
     imageSWpath, _ = diff_SW_Path(diffSWimage, cosine_sim,
                                 match_score=2, miss_score=-3, gap_penalty=-1, 
                                 position=text_startPoints)
     diffSWimage_final = diffSWimage * imageSWpath
-    del diffSWimage, imageSWpath, cosine_sim, text_startPoints
 
     # Loss computation
     path_loss = criterion(diffSWText_final, diffSWimage_final)
-    
     loss_value = path_loss.item()
+    
+    ######################################################################################################################################
+    # Debugging: Save visualizations for the last batch every 10 epochs
+
+    if debug and batch_idx == dataloader_length - 1 and (epoch + 1) % 10 == 0: # Save visualizations for last batch every 10 epochs
+        # Prepare directories for saving visualizations
+        vectors_epoch_dir = f'TrainResults/{loss_type}/VectorsPerEpoch/{model.model_arch}/Epoch_{epoch+1}'
+        matrices_epoch_dir = f'TrainResults/{loss_type}/ScoreMatricesPerEpoch/{model.model_arch}/Epoch_{epoch+1}'
+        os.makedirs(vectors_epoch_dir, exist_ok=True)
+        os.makedirs(matrices_epoch_dir, exist_ok=True)
+
+        # Clone tensors for visualization to avoid affecting gradients
+        debug_image1 = image1.detach().cpu()
+        debug_image2 = image2.detach().cpu()
+        debug_tokens_a = tokens_a.detach().cpu()
+        debug_tokens_b = tokens_b.detach().cpu()
+        debug_diffSWText = diffSWText.detach().cpu()
+        debug_diffSWimage = diffSWimage.detach().cpu()
+
+        # debug_diffSWText is only available during training if calc_cosine=False in Alignment
+        if hasattr(DiffSW, 'similarity_matrix'):
+            debug_SWTextSimilar = DiffSW.similarity_matrix.clone().detach()
+        else:
+            debug_SWTextSimilar = None
+
+        # original_text1_batch and original_text2_batch are only available during training if calc_cosine=False in Alignment
+        if hasattr(DiffSW, 'original_text1_batch') and hasattr(DiffSW, 'original_text2_batch'):
+            original_text1_batch = DiffSW.original_text1_batch
+            original_text2_batch = DiffSW.original_text2_batch
+        else:
+            original_text1_batch = None
+            original_text2_batch = None
+
+        # Save heatmap visualizations
+        saveHeatmapPlots(model, debug_image1, debug_image2, 
+                        debug_tokens_a, debug_tokens_b, 
+                        vectors_epoch_dir, epoch, batch_idx,
+                        debug_diffSWimage, 
+                        debug_diffSWText, 
+                        debug_SWTextSimilar, 
+                        matrices_epoch_dir, original_text1_batch,
+                        original_text2_batch)
+
+        del debug_image1, debug_image2
+        del debug_tokens_a, debug_tokens_b
+        del debug_diffSWimage, debug_diffSWText
+        del vectors_epoch_dir, matrices_epoch_dir
+        del original_text1_batch, original_text2_batch
+        if debug_SWTextSimilar is not None:
+            del debug_SWTextSimilar
+
+    ######################################################################################################################################
+
+    # Delete tensors to free memory
+    del tokens_a, tokens_b
+    del flip_tokens_a, flip_tokens_b
+    del diffSWText, textSWpath, textSimilar
+    del diffSWimage, imageSWpath, cosine_sim, text_startPoints
+    torch.cuda.empty_cache()
     
     return path_loss, loss_value, diffSWText_final, diffSWimage_final
 
@@ -260,32 +221,27 @@ def Train(model, trainLoader, validLoader, DiffSW, criterion, loss_type,
             
             # Compute loss using shared function
             path_loss, loss_value, diffSWText_final, diffSWimage_final = compute_batch_loss(
-                model, image1, image2, diffSWText, textSimilar, DiffSW, criterion, device
+                model, image1, image2, diffSWText, textSimilar, DiffSW, criterion, device,
+                loss_type=loss_type, debug=debug, epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader)
             )
             
             # Compute accuracy
             batch_accuracy = compute_accuracy(diffSWimage_final, diffSWText_final)
             train_accuracy += batch_accuracy
             
-            del diffSWText_final, diffSWimage_final
-            
-            end_time = time.time()
-            if end_time - begin_time > 60:
-                print(f"⚠️ Warning: Batch computation took {end_time - begin_time:.2f} seconds in batch {batch_idx}", flush=True)
-                print(f"Image1 name: {image1_name}", flush=True)  
-                print(f"Image2 name: {image2_name}", flush=True)
 
             train_loss += loss_value
 
             # Backpropagation and optimizer step
             path_loss.backward()
             optimizer.step()
-            del path_loss
 
             print(f"Epoch {epoch+1}, Batch {batch_idx+1}, Loss: {train_loss / (batch_idx + 1):.4f}", flush=True)
 
             # Final cleanup
+            del path_loss
             del image1, image2
+            del diffSWText_final, diffSWimage_final
             torch.cuda.empty_cache()
 
         print(f"Epoch {epoch+1} completed. Average Loss: {train_loss / len(trainLoader):.4f}", flush=True)
@@ -300,10 +256,10 @@ def Train(model, trainLoader, validLoader, DiffSW, criterion, loss_type,
         with torch.no_grad():
             for batch_idx, (image1, image2, diffSWText, textSimilar, image1_name, image2_name) in enumerate(validLoader):
                 # Ensure all data is on correct device
-                image1 = image1.to(device, non_blocking=True)
-                image2 = image2.to(device, non_blocking=True)
-                diffSWText = diffSWText.to(device, non_blocking=True)
-                textSimilar = textSimilar.to(device, non_blocking=True)
+                image1 = image1.to(device)
+                image2 = image2.to(device)
+                diffSWText = diffSWText.to(device)
+                textSimilar = textSimilar.to(device)
                 
                 # Compute loss using shared function
                 _, loss_value, diffSWText_final, diffSWimage_final = compute_batch_loss(
