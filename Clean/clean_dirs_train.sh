@@ -20,13 +20,6 @@ for dir in "${DIRS_TO_CLEAN[@]}"; do
   echo " - TrainResults/${LOSS_TYPE}/${dir}/${ARCHITECTURE}"
 done
 
-read -p "Are you sure you want to delete all contents in these directories? (y/n): " confirm
-
-if [[ "$confirm" != "y" ]]; then
-  echo "Aborted."
-  exit 1
-fi
-
 for dir in "${DIRS_TO_CLEAN[@]}"; do
   full_path="TrainResults/${LOSS_TYPE}/${dir}/${ARCHITECTURE}"
   if [ -d "$full_path" ]; then

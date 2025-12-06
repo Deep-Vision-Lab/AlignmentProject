@@ -156,7 +156,7 @@ def dice_loss(pred, target, eps=1e-8):
 
 
 
-def kl_divergence_loss(pred, target, eps=1e-8):
+def kl_divergence_loss(pred, target, eps=1e-8, class_dim=1):
     """
     KL-divergence loss for multi-label classification.
     Args:
@@ -167,15 +167,21 @@ def kl_divergence_loss(pred, target, eps=1e-8):
         torch.Tensor: Scalar KL-divergence loss.
     """
     # Convert predictions to log-probabilities
-    log_probs = torch.nn.functional.log_softmax(pred, dim=1)
-    
-    # Normalize target to ensure it sums to 1 along classes
-    # target = F.softmax(target, dim=1)
-    target = target / (target.sum(dim=1, keepdim=True) + eps)
-    
-    # Compute KL divergence loss
-    kl = torch.nn.functional.kl_div(log_probs, target, reduction='none')
-    loss = kl.sum(dim=1).mean()
+    log_probs = torch.nn.functional.log_softmax(pred, dim=class_dim)
+    # Convert targets to probabilities
+    probs_target = torch.nn.functional.softmax(target, dim=class_dim)
+
+    # Optional: gently avoid exact zeros in target to keep log well-defined
+    probs_target = probs_target.clamp_min(eps)  # preserves gradients
+
+    # KL between target and prediction: E_target[log(target) - log(pred)]
+    kl = torch.nn.functional.kl_div(log_probs, probs_target, reduction='none')
+    # Reduce over class dimension, then mean over batch and remaining dims
+    loss = kl.sum(dim=class_dim)
+    # If there are extra dims (e.g., H/W), average them too
+    if loss.dim() > 1:
+        loss = loss.mean(dim=tuple(range(1, loss.dim())))
+    loss = loss.mean()  # mean over batch
     return loss
 
 

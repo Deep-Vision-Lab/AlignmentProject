@@ -1,15 +1,12 @@
-import os.path
-
 import torch
 import torch.nn.functional as F # Added for interpolate and conv2d
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 from newDataSet import TextLineModern, window_size
 
+from Parameters import *
 from DiffSWAlgo import *
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-batch_size = 4  # Start with batch size 1 for memory testing
 
 data_dir = "DataSet/Synthetic"  # Directory for the new dataset
 # Define paths for NewDataSet

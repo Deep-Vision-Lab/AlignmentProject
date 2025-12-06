@@ -1,23 +1,20 @@
 # Set JAX to use 32-bit precision for faster compilation
 
+
+import gc
 import os
 from typing import Optional
-
-import torch
-import torch.utils.dlpack
-import gc
-try:
-    import psutil
-except Exception:
-    psutil = None
 
 import jax
 import jax.dlpack
 import jax.numpy as jnp 
 
-from matplotlib import pyplot as plt
-import matplotlib.pyplot as plt
+import torch
 import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import pyplot as plt
+
+from Parameters import *
 
 os.environ['JAX_ENABLE_X64'] = 'False'
 os.environ['XLA_FLAGS'] = "--xla_dump_to=/tmp/foo"
@@ -364,7 +361,8 @@ if __name__ == '__main__':
     # visualize_heatmap_with_values(output[0], title="Cosine Similarity Heatmap")
     
     # Create the Alignment layer
-    alignment = DiffSWAlgo(match_score=7, miss_score=-3, gap=-1)
+    alignment = DiffSWAlgo(match_score=matchScore, miss_score=mismatchScore, 
+                           gap=gapScore)
     # Get the cosine similarity output
     output = alignment(x1, x2)
     print(output.shape)

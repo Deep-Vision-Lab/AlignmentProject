@@ -4,6 +4,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 
 from saveDATA import *
+from Parameters import *
 from Evaluation import *
 from DiffSWAlgo import *
 from newDataLoader import *
@@ -132,7 +133,7 @@ def compute_batch_loss(model, image1, image2, diffSWText, textSimilar, DiffSW, c
     ######################################################################################################################################
     # Debugging: Save visualizations for the last batch every 10 epochs
 
-    if debug and batch_idx == dataloader_length - 1 and (epoch + 1) % 10 == 0: # Save visualizations for last batch every 10 epochs
+    if debug and batch_idx == dataloader_length - 1 and epoch % 10 == 0: # Save visualizations for last batch every 10 epochs
         # Prepare directories for saving visualizations
         vectors_epoch_dir = f'TrainResults/{loss_type}/VectorsPerEpoch/{model.model_arch}/Epoch_{epoch+1}'
         matrices_epoch_dir = f'TrainResults/{loss_type}/ScoreMatricesPerEpoch/{model.model_arch}/Epoch_{epoch+1}'
@@ -299,18 +300,6 @@ def Train(model, trainLoader, validLoader, DiffSW, criterion, loss_type,
 
 
 if __name__ == '__main__':
-    loss_type = 'MSE' # ['HeightDiff', 'MSE', 'GuidedAttention', 'KL-Divergence', 'Dice', 'Wasserstein']
-    model_arch = 'CNN' # ['CNN-Transformer', 'CNN', 'Transformer']
-    window_size = 64
-    vector_size = 128
-    normalize_type = '' # ['min_max', 'mean_std']
-    epochs = 300
-    learning_rate = 1e-4
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    debug = True # Set to True to save patches and heatmaps for debugging
-    debug_wandb = True # Set to True to log training to Weights & Biases
-    show_gradients = True # Set to True to print gradients for debugging
-    
     if debug_wandb:
         wandb.init(
             # set the wandb project where this run will be logged
@@ -333,11 +322,11 @@ if __name__ == '__main__':
         stride=window_size//2,
         vector_size=vector_size,
         model_arch=model_arch,
-        use_checkpointing=True,
-        device='cuda' if torch.cuda.is_available() else 'cpu'
-    )  # In Train.py
+        device=device
+    )
 
-    DiffSW = DiffSWAlgo(match_score=2, miss_score=-3, gap=-1)
+    DiffSW = DiffSWAlgo(match_score=matchScore, miss_score=mismatchScore, 
+                        gap=gapScore)
     
     if loss_type == 'HeightDiff':
         criterion = HeightDiff_loss
@@ -353,6 +342,8 @@ if __name__ == '__main__':
         criterion = wasserstein_distance
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
+    
+    
     # try:
     loss_lst = Train(
         cnn_transformer_model,
