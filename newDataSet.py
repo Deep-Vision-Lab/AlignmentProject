@@ -1,12 +1,12 @@
-from email.mime import image
 import os
 
 import numpy as np
 import torch
 import torch.nn as nn
 from PIL import Image
-import torch.nn.functional as F
 from torch.utils.data import Dataset
+
+from Parameters import *
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -29,10 +29,6 @@ def word2Vec(textLine, img_width):
     word_vector = embedding(word_idx)
 
     return word_vector
-
-
-window_size = 64
-
 
 class TextLineModern(Dataset):
     def __init__(self, new_dataset=None, transform=None):

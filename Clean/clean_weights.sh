@@ -7,14 +7,6 @@ fi
 LOSS_TYPE="$1"
 ARCHITECTURE="$2"
 
-
-read -p "Are you sure you want to delete all contents in these directories? (y/n): " confirm
-if [[ "$confirm" != "y" ]]; then
-  echo "Aborted."
-  exit 1
-fi
-
-
 echo " "
 echo "Cleaning the following directories under Weights/${LOSS_TYPE}/${ARCHITECTURE}:"
 
