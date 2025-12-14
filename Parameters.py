@@ -12,8 +12,8 @@ debug = True # Set to True to save patches and heatmaps for debugging
 debug_wandb = True # Set to True to log training to Weights & Biases
 show_gradients = True # Set to True to print gradients for debugging
 
-matchScore = 2
-mismatchScore = -5
-gapScore = -3
+matchScore = 1
+mismatchScore = -2
+gapScore = -1
 
 batch_size = 4

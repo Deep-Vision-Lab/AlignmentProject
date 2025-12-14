@@ -15,6 +15,11 @@ import matplotlib.pyplot as plt
 from matplotlib import pyplot as plt
 
 from Parameters import *
+from pathExtractor import diff_SW_Path, SW_Path
+try:
+    import psutil  # optional, used for memory logging
+except Exception:
+    psutil = None
 
 os.environ['JAX_ENABLE_X64'] = 'False'
 os.environ['XLA_FLAGS'] = "--xla_dump_to=/tmp/foo"
@@ -34,9 +39,19 @@ def sw_simple(batch=True, unroll=2):
         n, m = (a + b - 1), (a + b) // 2
         zero = jnp.zeros([n, m])
         if mask is None: mask = 1.0
-        output = {"x": zero.at[i, j].set(x),
-                  "m": zero.at[i, j].set(mask),
-                  "o": (jnp.arange(n) + a % 2) % 2}
+        output = {
+            "x": zero.at[i, j].set(x), 
+            "m": zero.at[i, j].set(mask), # Mask Tensor
+            "o": (jnp.arange(n) + a % 2) % 2
+        }
+        print('output[x] shape:', output["x"].shape)
+        jax.debug.print("{x}",x=output['x'])
+        print('output[m] shape:', output["m"].shape)
+        jax.debug.print("{x}",x=output['m'])
+        print('output[o] shape:', output["o"].shape)
+        jax.debug.print("{x}",x=output['o'])
+
+
         del zero  # Clean up zero array after use
         prev = (jnp.zeros(m), jnp.zeros(m))
         return output, prev, (i, j)
@@ -70,28 +85,38 @@ def sw_simple(batch=True, unroll=2):
 
 def sw_with_gap(batch=True, unroll=2, gap_penalty=-1):
     '''smith-waterman (local alignment) with gap support'''
-
     # rotate to vectorize
     def sw_rotate(x, mask=None):
         # solution from jake vanderplas (thanks!)
         a, b = x.shape
         ar, br = jnp.arange(a)[::-1, None], jnp.arange(b)[None, :]
+
+        # Hold element [a,b] is the index in the rotated matrix
+        # i[a,b] = m & j[a,b] = n => rotated_matrix[m,n] = original[a,b]
         i, j = (br - ar) + (a - 1), (ar + br) // 2
-        # jax.debug.print("{x}", x=i)
-        # jax.debug.print("{x}", x=j)
+
         n, m = (a + b - 1), (a + b) // 2
-        # print(f'n: {n}')
-        # print(f'm: {m}')
         zero = jnp.zeros([n, m])
         if mask is None: mask = 1.0
         output = {
-            "x": zero.at[i, j].set(x),  # Set values in the alignment matrix
-            "m": zero.at[i, j].set(mask),  # Set mask values
+            "x": zero.at[i, j].set(x),  # Rotated matrix with the similarity weigts
+            "m": zero.at[i, j].set(mask),  # Mask tensor where are we going to put the elements in the rotated matrix
             "o": (jnp.arange(n) + a % 2) % 2  # For alternating row shifts
         }
-        # print(f'output: {output["x"].shape}')
-        # jax.debug.print("{x}",x=output['m'])
+        print('output[x] shape:', output["x"].shape)
+        jax.debug.print("{x}",x=output['x'])
+        print('output[m] shape:', output["m"].shape)
+        jax.debug.print("{x}",x=output['m'])
+        print('output[o] shape:', output["o"].shape)
+        jax.debug.print("{x}",x=output['o'])
+        
         prev = (jnp.zeros(m), jnp.zeros(m))  # Initial previous values
+        
+        print('prev[0] shapes:', prev[0].shape)
+        jax.debug.print("prev[0]: {x}", x=prev[0])
+        print('prev[1] shapes:', prev[1].shape)
+        jax.debug.print("prev[1]: {x}", x=prev[1])
+        
         return output, prev, (i, j)
 
     # compute scoring (hij) matrix
@@ -100,10 +125,11 @@ def sw_with_gap(batch=True, unroll=2, gap_penalty=-1):
             return cond * true + (1 - cond) * false
 
         def _step(prev, sm):
-            h2, h1 = prev  # previous two rows of scoring (hij) mtx
+            h2, h1 = prev  # previous two rows of scoring (hij) matrix
 
             # Gap handling: introduce a gap penalty
-            h1_T = _cond(sm["o"], jnp.pad(h1[:-1], [1, 0]), jnp.pad(h1[1:], [0, 1]))
+            h1_T = _cond(sm["o"], jnp.pad(h1[:-1], [1, 0]),
+                            jnp.pad(h1[1:], pad_width=[0, 1]))
 
             # Align: normal diagonal movement with no gap
             align = h2 + sm["x"]  # Alignment score (match/mismatch)
@@ -113,15 +139,29 @@ def sw_with_gap(batch=True, unroll=2, gap_penalty=-1):
             delete = h1_T + gap_penalty  # Deletion (moving horizontally)
 
             # Take the maximum of alignment, insert, and delete
-            # jax.debug.print("align: {align}")
+            
+            print('align shape:', align.shape)
+            jax.debug.print("align: {x}", x=align)
+            print('insert shape:', insert.shape)
+            jax.debug.print("insert: {x}", x=insert)
+            print('delete shape:', delete.shape)
+            jax.debug.print("delete: {x}", x=delete)
+            
             stacked_scores = jnp.stack([align, insert, delete])
+            print('stacked_scores shape:', stacked_scores.shape)
+            jax.debug.print("stacked_scores: {x}", x=stacked_scores)
             h0 = sm["m"] * jax.nn.logsumexp(stacked_scores, 0)
+            # h0 = sm["m"] * stacked_scores
             del align, insert, delete, h1_T, stacked_scores  # Clean up intermediate calculations
             return (h1, h0), h0
 
         # Apply the rotate function and calculate the score
         sm, prev, idx = sw_rotate(x)
         hij = jax.lax.scan(_step, prev, sm, unroll=unroll)[-1][idx]
+        
+        # print('hij shape:', hij.shape)
+        # jax.debug.print("{x}",x=hij)
+
         return hij.max()
 
     # traceback (aka backprop) to get alignment
@@ -284,6 +324,7 @@ class DiffSWAlgo(nn.Module):
         self.cosine_similarity_layer = CosineSimilarityLayer(matchscore= match_score,
                                                              missscore=miss_score)
         # self.cosine_similarity_layer = nn.CosineSimilarity(dim=1, eps=1e-6)
+        # Use non-batched SW because we pass a 2D [N,M] similarity matrix
         self.sw_fn_torch = jax2torch(jax.jit(sw_with_gap(gap_penalty=gap)))
 
         # self.sw_fn_torch = jax2torch(jax.jit(sw_simple()))
@@ -339,16 +380,43 @@ def visualize_heatmap_with_values(tensor, title="Heatmap", cmap="viridis"):
     plt.savefig(f"{title.replace(' ', '_')}.png")
     plt.close()
 
+# Helper to annotate numeric values on every cell of a numpy 2D array
+def annotate_all(arr: np.ndarray, fmt: str = ".4f", fontsize: int = 6):
+    for (i, j), val in np.ndenumerate(arr):
+        color = 'white' if val < arr.mean() else 'black'
+        plt.text(j, i, f"{val:{fmt}}", ha='center', va='center', color=color, fontsize=fontsize)
+
 
 if __name__ == '__main__':
-    # Example usage - output CNN or transformer
-    # Create tensors with 4 consecutive nonzero elements, rest zeros
-    x1 = torch.ones(4, 63, 64)
-    x2 = torch.ones(4, 63, 64)
-    # x2[:, 0:3, :] = torch.zeros(2, 3, 512)
-    x2[:, 8:10, :] = torch.zeros(4, 2, 64)
-    x2[:, 15:17, :] = torch.zeros(4, 2, 64)
-    x2[:, 19:20, :] = torch.zeros(4, 1, 64)
+    # Example usage - convert two sentences to ASCII one-hot vectors and align
+
+    def sentence_to_ascii_onehot(s: str, vocab_size: int = 128) -> torch.Tensor:
+        """Convert a sentence to a [len(s), vocab_size] one-hot matrix by ASCII code.
+
+        - Non-ASCII chars (>= vocab_size) are mapped to index 0.
+        - Returns float32 tensor suitable as features (D = vocab_size).
+        """
+        v = torch.zeros(len(s), vocab_size, dtype=torch.float32)
+        for i, ch in enumerate(s):
+            code = ord(ch)
+            if code >= vocab_size:
+                code = 0
+            v[i, code] = 1.0
+        return v
+
+    # Sentences to align (edit as needed)
+    sentence1 = "HELLOAERLD"
+    sentence2 = "HELLOWORLD"
+
+    # Build per-character ASCII one-hot feature sequences: [N, D] and [M, D]
+    vec1 = sentence_to_ascii_onehot(sentence1)  # [N, 128]
+    vec2 = sentence_to_ascii_onehot(sentence2)  # [M, 128]
+
+    # Expand to batched tensors expected by the model: [B, N, D], [B, M, D]
+    # Use B=1 to keep shapes simple and consistent here
+    x1 = vec1.unsqueeze(0)
+    x2 = vec2.unsqueeze(0)
+
     x1.requires_grad = True
     x2.requires_grad = True
     # Create the Cosine Similarity layer
@@ -407,22 +475,35 @@ if __name__ == '__main__':
 
         return path[::-1]  # Reverse to get path from start to end
     
-    for batch_idx in range(output_np.shape[0]):
+    # Prepare matrices and indices whether output is 2D ([N,M]) or 3D ([B,N,M])
+    if output_np.ndim == 2:
+        matrices = [output_np]
+        batch_indices = [0]
+    else:
+        matrices = [output_np[i] for i in range(output_np.shape[0])]
+        batch_indices = list(range(output_np.shape[0]))
+
+    for matrix, batch_idx in zip(matrices, batch_indices):
         plt.figure(figsize=(12, 8))
-        plt.imshow(output_np[batch_idx], cmap='viridis', aspect='auto')
+        plt.imshow(matrix, cmap='viridis', aspect='auto')
         plt.colorbar(label='Alignment Score')
         plt.title(f'Alignment Output Heatmap with Traceback Path - Batch {batch_idx}')
         plt.xlabel('Sequence 2 Position')
         plt.ylabel('Sequence 1 Position')
+        annotate_all(matrix)
         
         # Compute and plot the traceback path
         # We need to get the similarity matrix from the alignment output
         # For simplicity, we'll use the cosine similarity as a proxy
         if hasattr(alignment, 'cosine_similarity') and alignment.cosine_similarity is not None:
-            similarity_matrix = alignment.cosine_similarity[batch_idx].detach().cpu().numpy()
+            cs = alignment.cosine_similarity.detach().cpu().numpy()
+            if cs.ndim == 3:
+                similarity_matrix = cs[batch_idx]
+            else:
+                similarity_matrix = cs
         else:
             # Fallback: use the output matrix itself as similarity matrix
-            similarity_matrix = output_np[batch_idx]
+            similarity_matrix = matrix
         
         # Visualize the similarity matrix
         plt.figure(figsize=(12, 8))
@@ -431,6 +512,7 @@ if __name__ == '__main__':
         plt.title(f'Cosine Similarity Matrix - Batch {batch_idx}')
         plt.xlabel('Sequence 2 Position')
         plt.ylabel('Sequence 1 Position')
+        annotate_all(similarity_matrix, fmt=".3f")
         
         # Add values to each cell for better readability (skip for large matrices)
         if similarity_matrix.shape[0] <= 20 and similarity_matrix.shape[1] <= 20:
@@ -442,8 +524,9 @@ if __name__ == '__main__':
         plt.savefig(f'similarity_matrix_batch_{batch_idx}.png', dpi=150)
         plt.close()
         
-        path = compute_traceback_path(output_np[batch_idx], similarity_matrix,
-                                      match_score=7, miss_score=-3, gap_penalty=-1,position=(13,17))
+        # Compute traceback path starting from the global maximum by default
+        path = compute_traceback_path(matrix, similarity_matrix,
+                          match_score=7, miss_score=-3, gap_penalty=-1)
         if path:
             path_y = [p[0] for p in path]  # Row indices
             path_x = [p[1] for p in path]  # Column indices
@@ -454,10 +537,10 @@ if __name__ == '__main__':
             del path_y, path_x
         
         # Add values to each cell for better readability (skip for large matrices)
-        if output_np[batch_idx].shape[0] <= 20 and output_np[batch_idx].shape[1] <= 20:
-            for (i, j), val in np.ndenumerate(output_np[batch_idx]):
+        if matrix.shape[0] <= 20 and matrix.shape[1] <= 20:
+            for (i, j), val in np.ndenumerate(matrix):
                 plt.text(j, i, f"{val:.4f}", ha='center', va='center', 
-                        color='white' if val < output_np[batch_idx].mean() else 'black', fontsize=8)
+                        color='white' if val < matrix.mean() else 'black', fontsize=8)
         
         plt.tight_layout()
         plt.savefig(f'alignment_output_heatmap_with_path_batch_{batch_idx}.png', dpi=150)
@@ -465,6 +548,108 @@ if __name__ == '__main__':
         
         # Clean up batch-specific variables
         del similarity_matrix, path
+
+    # --- Regular Smith-Waterman (non-differentiable) over raw characters ---
+    def smith_waterman_scores(s1: str, s2: str, match=1, mismatch=-1, gap=-1):
+        n, m = len(s1), len(s2)
+        H = np.zeros((n + 1, m + 1), dtype=np.float32)
+        for i in range(1, n + 1):
+            for j in range(1, m + 1):
+                score_diag = H[i - 1, j - 1] + (match if s1[i - 1] == s2[j - 1] else mismatch)
+                score_up = H[i - 1, j] + gap
+                score_left = H[i, j - 1] + gap
+                H[i, j] = max(0.0, score_diag, score_up, score_left)
+        return H
+
+    H = smith_waterman_scores(sentence1, sentence2, match=matchScore, mismatch=mismatchScore, gap=gapScore)
+
+    # Heatmap for DiffSWAlgo result (first matrix if batched)
+    diff_matrix = output_np if output_np.ndim == 2 else output_np[0]
+    plt.figure(figsize=(12, 8))
+    plt.imshow(diff_matrix, cmap='viridis', aspect='auto')
+    plt.colorbar(label='DiffSW Alignment Score')
+    plt.title('DiffSWAlgo Alignment Heatmap')
+    plt.xlabel('Sequence 2 Position')
+    plt.ylabel('Sequence 1 Position')
+    annotate_all(diff_matrix)
+    plt.tight_layout()
+    plt.savefig('diffsw_alignment_heatmap.png', dpi=150)
+    plt.close()
+
+    # Heatmap for Regular Smith-Waterman (trim zero row/col to N x M)
+    reg_matrix = H[1:, 1:]
+    plt.figure(figsize=(12, 8))
+    plt.imshow(reg_matrix, cmap='magma', aspect='auto')
+    plt.colorbar(label='Regular SW Score')
+    plt.title('Regular Smith-Waterman Alignment Heatmap')
+    plt.xlabel('Sequence 2 Position')
+    plt.ylabel('Sequence 1 Position')
+    annotate_all(reg_matrix)
+    plt.tight_layout()
+    plt.savefig('regular_sw_alignment_heatmap.png', dpi=150)
+    plt.close()
     
+    # --- Overlay paths using pathExtractor on both results ---
+    try:
+        # DiffSW path overlay
+        diff_matrix_t = torch.as_tensor(diff_matrix, dtype=torch.float32)
+        diff_batch = diff_matrix_t.unsqueeze(0) if diff_matrix_t.ndim == 2 else diff_matrix_t
+        # Use cosine similarity from the model as similarity matrix
+        cs_t = getattr(alignment, 'cosine_similarity', None)
+        if cs_t is None:
+            cs_batch = diff_batch  # fallback if similarity not available
+        else:
+            if cs_t.ndim == 2:
+                cs_batch = cs_t.unsqueeze(0)
+            else:
+                cs_batch = cs_t
+        path_mat_diff, _ = diff_SW_Path(diff_batch, cs_batch, match_score=matchScore,
+                                        miss_score=mismatchScore, gap_penalty=gapScore)
+        path_np = path_mat_diff[0].detach().cpu().numpy()
+        ry, rx = np.where(path_np > 0)
+        plt.figure(figsize=(12, 8))
+        plt.imshow(diff_matrix, cmap='viridis', aspect='auto')
+        if ry.size > 0:
+            plt.scatter(rx, ry, c='red', s=12, label='Path')
+            plt.legend()
+        annotate_all(diff_matrix)
+        plt.colorbar(label='DiffSW Alignment Score')
+        plt.title('DiffSWAlgo Alignment Heatmap (pathExtractor path)')
+        plt.xlabel('Sequence 2 Position')
+        plt.ylabel('Sequence 1 Position')
+        plt.tight_layout()
+        plt.savefig('diffsw_alignment_heatmap_with_path.png', dpi=150)
+        plt.close()
+
+        # Regular SW path overlay
+        reg_matrix_t = torch.as_tensor(reg_matrix, dtype=torch.float32)
+        # Build binary similarity matrix for character matches
+        N, M = reg_matrix_t.shape
+        sim_bin = torch.zeros((N, M), dtype=torch.float32)
+        for i, ch1 in enumerate(sentence1):
+            for j, ch2 in enumerate(sentence2):
+                sim_bin[i, j] = 1.0 if ch1 == ch2 else 0.0
+        reg_batch = reg_matrix_t.unsqueeze(0)
+        sim_batch = sim_bin.unsqueeze(0)
+        path_mat_sw, _ = SW_Path(reg_batch, sim_batch, match_score=matchScore,
+                                 miss_score=mismatchScore, gap_penalty=gapScore)
+        path_sw_np = path_mat_sw[0].detach().cpu().numpy()
+        sy, sx = np.where(path_sw_np > 0)
+        plt.figure(figsize=(12, 8))
+        plt.imshow(reg_matrix, cmap='magma', aspect='auto')
+        if sy.size > 0:
+            plt.scatter(sx, sy, c='cyan', s=12, label='Path')
+            plt.legend()
+        annotate_all(reg_matrix)
+        plt.colorbar(label='Regular SW Score')
+        plt.title('Regular Smith-Waterman Heatmap (pathExtractor path)')
+        plt.xlabel('Sequence 2 Position')
+        plt.ylabel('Sequence 1 Position')
+        plt.tight_layout()
+        plt.savefig('regular_sw_alignment_heatmap_with_path.png', dpi=150)
+        plt.close()
+    except Exception as e:
+        print(f"Path overlay failed: {e}")
+
     # Final cleanup
     del output_np, alignment 
