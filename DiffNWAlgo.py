@@ -102,7 +102,8 @@ def nw(batch=True, unroll=2, gap=-10.0, temp=100.0):
   traceback = jax.grad(sco)
 
   # add batch dimension
-  if batch: return jax.vmap(traceback)
+  # Only vmap over x (axis 0), lengths/gap/temp are not batched (None)
+  if batch: return jax.vmap(traceback, in_axes=(0, None, None, None))
   else: return traceback
 
 
@@ -347,7 +348,7 @@ class DiffNWAlgo(nn.Module):
             # visualize_heatmap_with_values(new_output[0], title="Cosine Similarity Heatmap")
             # Pass lengths as a tuple (N, M) and gap as positional args
             lengths = (new_output.shape[-2], new_output.shape[-1])
-            self.align = self.nw_fn_torch(new_output, lengths, gapScore)
+            self.align = self.nw_fn_torch(new_output, lengths, gapScore, 100.0)
             if show_dims:
                 print(f"align shape: {self.align.shape}")
         else:
@@ -355,7 +356,7 @@ class DiffNWAlgo(nn.Module):
             if show_dims:
                 print(f"Cosine similarity shape: {self.cosine_similarity.shape}")
             lengths = (self.cosine_similarity.shape[-2], self.cosine_similarity.shape[-1])
-            self.align = self.nw_fn_torch(self.cosine_similarity, lengths, gapScore, temp=100.0)
+            self.align = self.nw_fn_torch(self.cosine_similarity, lengths, gapScore, 100.0)
             if show_dims:
                 print(f"align shape: {self.align.shape}")
         

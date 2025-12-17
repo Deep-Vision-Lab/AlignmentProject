@@ -117,15 +117,19 @@ def compute_batch_loss(model, image1, image2, diffNWText, textSimilar, DiffNW, c
     textSimilar = interpolate_NW_matrix(textSimilar, new_size).to(device)
 
     # Path extraction
-    textNWpath, text_startPoints = diff_NW_Path(diffNWText, textSimilar,
-                                                match_score=2, miss_score=-3, gap_penalty=-1)
-    diffNWText_final = diffNWText * textNWpath
+    # textNWpath, text_startPoints = diff_NW_Path(diffNWText, textSimilar,
+    #                                             match_score=2, miss_score=-3, gap_penalty=-1)
+    # diffNWText_final = diffNWText * textNWpath
 
-    imageNWpath, _ = diff_NW_Path(diffNWimage, cosine_sim,
-                                match_score=2, miss_score=-3, gap_penalty=-1, 
-                                position=text_startPoints)
-    diffNWimage_final = diffNWimage * imageNWpath
+    # imageNWpath, _ = diff_NW_Path(diffNWimage, cosine_sim,
+    #                             match_score=2, miss_score=-3, gap_penalty=-1, 
+    #                             position=text_startPoints)
+    # diffNWimage_final = diffNWimage * imageNWpath
 
+    # Normalize and smooth alignment outputs
+    diffNWText_final = smooth_and_normalize_matrix(diffNWText, normalize_type)
+    diffNWimage_final = smooth_and_normalize_matrix(diffNWimage, normalize_type)
+    
     # Loss computation
     path_loss = criterion(diffNWText_final, diffNWimage_final)
     loss_value = path_loss.item()
@@ -185,8 +189,8 @@ def compute_batch_loss(model, image1, image2, diffNWText, textSimilar, DiffNW, c
     # Delete tensors to free memory
     del tokens_a, tokens_b
     del flip_tokens_a, flip_tokens_b
-    del diffNWText, textNWpath, textSimilar
-    del diffNWimage, imageNWpath, cosine_sim, text_startPoints
+    del diffNWText, textSimilar
+    del diffNWimage, cosine_sim
     torch.cuda.empty_cache()
     
     return path_loss, loss_value, diffNWText_final, diffNWimage_final
