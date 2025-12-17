@@ -11,7 +11,7 @@ from embeddingModel import sliding_window
 
 
 def saveHeatmapPlots(model, image1, image2, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, 
-                    debug_diffSWimage, debug_diffSWText, debug_SWTextSimilar,
+                    debug_diffNWimage, debug_diffNWText, debug_NWTextSimilar,
                     matrices_epoch_dir, original_text1_batch, original_text2_batch):
     for i in range(image1.size(0)): # Iterate through items in the current batch
         # Save token vectors
@@ -29,9 +29,9 @@ def saveHeatmapPlots(model, image1, image2, tokens_a, tokens_b, vectors_epoch_di
         y_heatmap = torch.flip(windows_img1, dims=[0]) # From image1, for Y-axis
         x_heatmap = torch.flip(windows_img2, dims=[0]) # From image2, for X-axis
 
-        # Extract paths using diff_SW_Path for visualization
-        textPath, _ = SW_Path(debug_diffSWText[i:i+1], debug_diffSWText[i:i+1], match_score=7, miss_score=-3, gap_penalty=-1)
-        imagePath, _ = diff_SW_Path(debug_diffSWimage[i:i+1], debug_diffSWimage[i:i+1], match_score=7, miss_score=-3, gap_penalty=-1)
+        # Extract paths using diff_NW_Path for visualization
+        textPath, _ = NW_Path(debug_diffNWText[i:i+1], debug_diffNWText[i:i+1], match_score=7, miss_score=-3, gap_penalty=-1)
+        imagePath, _ = diff_NW_Path(debug_diffNWimage[i:i+1], debug_diffNWimage[i:i+1], match_score=7, miss_score=-3, gap_penalty=-1)
         
         # Visualize paths instead of raw matrices
         visualize_heatmaps(
@@ -42,23 +42,23 @@ def saveHeatmapPlots(model, image1, image2, tokens_a, tokens_b, vectors_epoch_di
             patches_x=x_heatmap
         )
 
-        # Only run the following if debug_SWTextSimilar is not None
-        if debug_SWTextSimilar is not None:
+        # Only run the following if debug_NWTextSimilar is not None
+        if debug_NWTextSimilar is not None:
             # New visualization: Raw Smith-Waterman matrix (before interpolation)
             # with original character sequences as axes. seq1 on X, seq2 on Y.
-            debug_SWTextSimilar_i = debug_SWTextSimilar[i] # Shape [H_orig, W_orig]
+            debug_NWTextSimilar_i = debug_NWTextSimilar[i] # Shape [H_orig, W_orig]
             original_text1_batch_i = original_text1_batch[i] # string for seq1
             original_text2_batch_i = original_text2_batch[i] # string for seq2
 
-            # Use SW_Path instead of makeTracerouteMatrixBinary
-            smith_original_path_tensor, _ = SW_Path(debug_SWTextSimilar_i.unsqueeze(0), 
-                                                   debug_SWTextSimilar_i.unsqueeze(0),
+            # Use NW_Path instead of makeTracerouteMatrixBinary
+            smith_original_path_tensor, _ = NW_Path(debug_NWTextSimilar_i.unsqueeze(0), 
+                                                   debug_NWTextSimilar_i.unsqueeze(0),
                                                    match_score=7, miss_score=-3, gap_penalty=-1)
             smith_original_path_np = smith_original_path_tensor[0].cpu().numpy()
 
-            # SW matrix has text1 along rows, text2 along columns.
+            # NW matrix has text1 along rows, text2 along columns.
             # To put text1 (seq1) on X-axis and text2 (seq2) on Y-axis, we need to transpose.
-            scores_matrix_to_plot = debug_SWTextSimilar_i.T
+            scores_matrix_to_plot = debug_NWTextSimilar_i.T
             path_matrix_to_plot = torch.tensor(smith_original_path_np).T
 
             # Labels for axes: X-axis for seq1 (original_text1), Y-axis for seq2 (original_text2)
@@ -71,10 +71,10 @@ def saveHeatmapPlots(model, image1, image2, tokens_a, tokens_b, vectors_epoch_di
                 x_labels=x_char_labels,
                 y_labels=y_char_labels,
                 image_path=filename_char_level_smith_dual,
-                title1=f"Raw SW Scores (Seq1 vs Seq2) - Item {i}",
-                title2=f"Raw SW Path (Seq1 vs Seq2) - Item {i}"
+                title1=f"Raw NW Scores (Seq1 vs Seq2) - Item {i}",
+                title2=f"Raw NW Path (Seq1 vs Seq2) - Item {i}"
             )
-            del debug_SWTextSimilar_i, original_text1_batch_i, original_text2_batch_i
+            del debug_NWTextSimilar_i, original_text1_batch_i, original_text2_batch_i
             del smith_original_path_tensor, smith_original_path_np
             del scores_matrix_to_plot, path_matrix_to_plot
             del x_char_labels, y_char_labels, filename_char_level_smith_dual

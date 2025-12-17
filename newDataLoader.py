@@ -5,7 +5,7 @@ from torchvision import transforms
 from newDataSet import TextLineModern, window_size
 
 from Parameters import *
-from DiffSWAlgo import *
+from DiffNWAlgo import *
 
 
 data_dir = "DataSet/Synthetic"  # Directory for the new dataset
@@ -156,9 +156,9 @@ test_dataloader = DataLoader(
 if __name__ == "__main__":
     # Test the DataLoader
     for batch in train_dataloader:
-        images_a, images_b, SW_matrices, similar_matrix = batch
+        images_a, images_b, NW_matrices, similar_matrix = batch
         print(f'Batch images_a shape: {images_a.shape}')
         print(f'Batch images_b shape: {images_b.shape}')
-        print(f'Batch SW_matrices shape: {SW_matrices.shape}')
+        print(f'Batch NW_matrices shape: {NW_matrices.shape}')
         print(f'Batch similar_matrix shape: {similar_matrix.shape}')
         break  # Just test one batch
