@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from saveDATA import *
 from Parameters import *
 from Evaluation import *
-from DiffSWAlgo import *
+from DiffNWAlgo import *
 from newDataLoader import *
 from pathExtractor import *
 from embeddingModel import *
@@ -21,7 +21,7 @@ import warnings
 
 warnings.filterwarnings("ignore")    
 
-def interpolate_SW_matrix(SW_matrix, target_shape):
+def interpolate_NW_matrix(NW_matrix, target_shape):
     """
     Interpolates the smith matrix to match the target shape (usually alignment output shape).
     Args:
@@ -30,19 +30,19 @@ def interpolate_SW_matrix(SW_matrix, target_shape):
     Returns:
         torch.Tensor: Interpolated smith matrix, shape [B, H_new, W_new]
     """
-    if SW_matrix.dim() == 2:
-        squeezed_SW_matrix = SW_matrix.unsqueeze(0).unsqueeze(0)
-    elif SW_matrix.dim() == 3:
-        squeezed_SW_matrix = SW_matrix.unsqueeze(1)
+    if NW_matrix.dim() == 2:
+        squeezed_NW_matrix = NW_matrix.unsqueeze(0).unsqueeze(0)
+    elif NW_matrix.dim() == 3:
+        squeezed_NW_matrix = NW_matrix.unsqueeze(1)
     else:
-        raise ValueError(f"Unexpected smith matrix shape: {SW_matrix.shape}")
+        raise ValueError(f"Unexpected smith matrix shape: {NW_matrix.shape}")
     
-    interpolated_SW_matrix = F.interpolate(squeezed_SW_matrix, size=target_shape, mode='bilinear')
-    squeezed_interpolated_SW_matrix = interpolated_SW_matrix.squeeze(1)
+    interpolated_NW_matrix = F.interpolate(squeezed_NW_matrix, size=target_shape, mode='bilinear')
+    squeezed_interpolated_NW_matrix = interpolated_NW_matrix.squeeze(1)
     
-    del SW_matrix, squeezed_SW_matrix, interpolated_SW_matrix
+    del NW_matrix, squeezed_NW_matrix, interpolated_NW_matrix
     
-    return squeezed_interpolated_SW_matrix
+    return squeezed_interpolated_NW_matrix
 
 
 
@@ -94,7 +94,7 @@ def compute_accuracy(pred_path, target_path, threshold=0.5):
 
 
 # second line of parameters is for saving visualizations during debugging 
-def compute_batch_loss(model, image1, image2, diffSWText, textSimilar, DiffSW, criterion, device, 
+def compute_batch_loss(model, image1, image2, diffNWText, textSimilar, DiffNW, criterion, device, 
                        loss_type='MSE', debug=False, epoch=0, batch_idx=0, dataloader_length=0):
     
     tokens_a, tokens_b = model(image1, image2, show_dims=False)
@@ -102,32 +102,32 @@ def compute_batch_loss(model, image1, image2, diffSWText, textSimilar, DiffSW, c
     flip_tokens_a = torch.flip(tokens_a, dims=[1])
     flip_tokens_b = torch.flip(tokens_b, dims=[1])
 
-    # Running the DiffSW Algorithm
-    DiffSW.reset_cosine_similarity()
-    diffSWimage = DiffSW(x1=flip_tokens_a, x2=flip_tokens_b, show_dims=False).to(device)
+    # Running the DiffNW Algorithm
+    DiffNW.reset_cosine_similarity()
+    diffNWimage = DiffNW(x1=flip_tokens_a, x2=flip_tokens_b, show_dims=False).to(device)
     
 
     # Use smaller interpolation size
-    new_size = min(16, diffSWText.shape[-1])
+    new_size = min(16, diffNWText.shape[-1])
     new_size = (new_size, new_size)
 
-    diffSWimage = interpolate_SW_matrix(diffSWimage, new_size).to(device)
-    cosine_sim = interpolate_SW_matrix(DiffSW.cosine_similarity, new_size).to(device)
-    diffSWText = interpolate_SW_matrix(diffSWText, new_size).to(device)
-    textSimilar = interpolate_SW_matrix(textSimilar, new_size).to(device)
+    diffNWimage = interpolate_NW_matrix(diffNWimage, new_size).to(device)
+    cosine_sim = interpolate_NW_matrix(DiffNW.cosine_similarity, new_size).to(device)
+    diffNWText = interpolate_NW_matrix(diffNWText, new_size).to(device)
+    textSimilar = interpolate_NW_matrix(textSimilar, new_size).to(device)
 
     # Path extraction
-    textSWpath, text_startPoints = diff_SW_Path(diffSWText, textSimilar,
+    textNWpath, text_startPoints = diff_NW_Path(diffNWText, textSimilar,
                                                 match_score=2, miss_score=-3, gap_penalty=-1)
-    diffSWText_final = diffSWText * textSWpath
+    diffNWText_final = diffNWText * textNWpath
 
-    imageSWpath, _ = diff_SW_Path(diffSWimage, cosine_sim,
+    imageNWpath, _ = diff_NW_Path(diffNWimage, cosine_sim,
                                 match_score=2, miss_score=-3, gap_penalty=-1, 
                                 position=text_startPoints)
-    diffSWimage_final = diffSWimage * imageSWpath
+    diffNWimage_final = diffNWimage * imageNWpath
 
     # Loss computation
-    path_loss = criterion(diffSWText_final, diffSWimage_final)
+    path_loss = criterion(diffNWText_final, diffNWimage_final)
     loss_value = path_loss.item()
     
     ######################################################################################################################################
@@ -145,19 +145,19 @@ def compute_batch_loss(model, image1, image2, diffSWText, textSimilar, DiffSW, c
         debug_image2 = image2.detach().cpu()
         debug_tokens_a = tokens_a.detach().cpu()
         debug_tokens_b = tokens_b.detach().cpu()
-        debug_diffSWText = diffSWText.detach().cpu()
-        debug_diffSWimage = diffSWimage.detach().cpu()
+        debug_diffNWText = diffNWText.detach().cpu()
+        debug_diffNWimage = diffNWimage.detach().cpu()
 
-        # debug_diffSWText is only available during training if calc_cosine=False in Alignment
-        if hasattr(DiffSW, 'similarity_matrix'):
-            debug_SWTextSimilar = DiffSW.similarity_matrix.clone().detach()
+        # debug_diffNWText is only available during training if calc_cosine=False in Alignment
+        if hasattr(DiffNW, 'similarity_matrix'):
+            debug_NWTextSimilar = DiffNW.similarity_matrix.clone().detach()
         else:
-            debug_SWTextSimilar = None
+            debug_NWTextSimilar = None
 
         # original_text1_batch and original_text2_batch are only available during training if calc_cosine=False in Alignment
-        if hasattr(DiffSW, 'original_text1_batch') and hasattr(DiffSW, 'original_text2_batch'):
-            original_text1_batch = DiffSW.original_text1_batch
-            original_text2_batch = DiffSW.original_text2_batch
+        if hasattr(DiffNW, 'original_text1_batch') and hasattr(DiffNW, 'original_text2_batch'):
+            original_text1_batch = DiffNW.original_text1_batch
+            original_text2_batch = DiffNW.original_text2_batch
         else:
             original_text1_batch = None
             original_text2_batch = None
@@ -166,33 +166,33 @@ def compute_batch_loss(model, image1, image2, diffSWText, textSimilar, DiffSW, c
         saveHeatmapPlots(model, debug_image1, debug_image2, 
                         debug_tokens_a, debug_tokens_b, 
                         vectors_epoch_dir, epoch, batch_idx,
-                        debug_diffSWimage, 
-                        debug_diffSWText, 
-                        debug_SWTextSimilar, 
+                        debug_diffNWimage, 
+                        debug_diffNWText, 
+                        debug_NWTextSimilar, 
                         matrices_epoch_dir, original_text1_batch,
                         original_text2_batch)
 
         del debug_image1, debug_image2
         del debug_tokens_a, debug_tokens_b
-        del debug_diffSWimage, debug_diffSWText
+        del debug_diffNWimage, debug_diffNWText
         del vectors_epoch_dir, matrices_epoch_dir
         del original_text1_batch, original_text2_batch
-        if debug_SWTextSimilar is not None:
-            del debug_SWTextSimilar
+        if debug_NWTextSimilar is not None:
+            del debug_NWTextSimilar
 
     ######################################################################################################################################
 
     # Delete tensors to free memory
     del tokens_a, tokens_b
     del flip_tokens_a, flip_tokens_b
-    del diffSWText, textSWpath, textSimilar
-    del diffSWimage, imageSWpath, cosine_sim, text_startPoints
+    del diffNWText, textNWpath, textSimilar
+    del diffNWimage, imageNWpath, cosine_sim, text_startPoints
     torch.cuda.empty_cache()
     
-    return path_loss, loss_value, diffSWText_final, diffSWimage_final
+    return path_loss, loss_value, diffNWText_final, diffNWimage_final
 
 
-def Train(model, trainLoader, validLoader, DiffSW, criterion, loss_type, 
+def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type, 
         device, normalize_type, epochs=100,
         learning_rate=1e-4, debug=False, 
         debug_wandb=True, show_gradients=False):
@@ -209,11 +209,11 @@ def Train(model, trainLoader, validLoader, DiffSW, criterion, loss_type,
         train_loss = 0.0
         train_accuracy = 0.0
 
-        for batch_idx, (image1, image2, diffSWText, textSimilar, image1_name, image2_name) in enumerate(trainLoader):
+        for batch_idx, (image1, image2, diffNWText, textSimilar, image1_name, image2_name) in enumerate(trainLoader):
             # Ensure all data is on correct device
             image1 = image1.to(device, non_blocking=True)
             image2 = image2.to(device, non_blocking=True)
-            diffSWText = diffSWText.to(device, non_blocking=True)
+            diffNWText = diffNWText.to(device, non_blocking=True)
             textSimilar = textSimilar.to(device, non_blocking=True)
             
             optimizer.zero_grad()
@@ -221,13 +221,13 @@ def Train(model, trainLoader, validLoader, DiffSW, criterion, loss_type,
             begin_time = time.time()
             
             # Compute loss using shared function
-            path_loss, loss_value, diffSWText_final, diffSWimage_final = compute_batch_loss(
-                model, image1, image2, diffSWText, textSimilar, DiffSW, criterion, device,
+            path_loss, loss_value, diffNWText_final, diffNWimage_final = compute_batch_loss(
+                model, image1, image2, diffNWText, textSimilar, DiffNW, criterion, device,
                 loss_type=loss_type, debug=debug, epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader)
             )
             
             # Compute accuracy
-            batch_accuracy = compute_accuracy(diffSWimage_final, diffSWText_final)
+            batch_accuracy = compute_accuracy(diffNWimage_final, diffNWText_final)
             train_accuracy += batch_accuracy
             
 
@@ -242,7 +242,7 @@ def Train(model, trainLoader, validLoader, DiffSW, criterion, loss_type,
             # Final cleanup
             del path_loss
             del image1, image2
-            del diffSWText_final, diffSWimage_final
+            del diffNWText_final, diffNWimage_final
             torch.cuda.empty_cache()
 
         print(f"Epoch {epoch+1} completed. Average Loss: {train_loss / len(trainLoader):.4f}", flush=True)
@@ -255,23 +255,23 @@ def Train(model, trainLoader, validLoader, DiffSW, criterion, loss_type,
         val_loss = 0.0
         val_accuracy = 0.0
         with torch.no_grad():
-            for batch_idx, (image1, image2, diffSWText, textSimilar, image1_name, image2_name) in enumerate(validLoader):
+            for batch_idx, (image1, image2, diffNWText, textSimilar, image1_name, image2_name) in enumerate(validLoader):
                 # Ensure all data is on correct device
                 image1 = image1.to(device)
                 image2 = image2.to(device)
-                diffSWText = diffSWText.to(device)
+                diffNWText = diffNWText.to(device)
                 textSimilar = textSimilar.to(device)
                 
                 # Compute loss using shared function
-                _, loss_value, diffSWText_final, diffSWimage_final = compute_batch_loss(
-                    model, image1, image2, diffSWText, textSimilar, DiffSW, criterion, device
+                _, loss_value, diffNWText_final, diffNWimage_final = compute_batch_loss(
+                    model, image1, image2, diffNWText, textSimilar, DiffNW, criterion, device
                 )
                 
                 # Compute accuracy
-                batch_accuracy = compute_accuracy(diffSWimage_final, diffSWText_final)
+                batch_accuracy = compute_accuracy(diffNWimage_final, diffNWText_final)
                 val_accuracy += batch_accuracy
                 
-                del diffSWText_final, diffSWimage_final
+                del diffNWText_final, diffNWimage_final
                 val_loss += loss_value
 
                 # Final cleanup
@@ -325,7 +325,7 @@ if __name__ == '__main__':
         device=device
     )
 
-    DiffSW = DiffSWAlgo(match_score=matchScore, miss_score=mismatchScore, 
+    DiffNW = DiffNWAlgo(match_score=matchScore, miss_score=mismatchScore, 
                         gap=gapScore)
     
     if loss_type == 'HeightDiff':
@@ -349,7 +349,7 @@ if __name__ == '__main__':
         cnn_transformer_model,
         train_dataloader,
         valid_dataloader,
-        DiffSW,
+        DiffNW,
         criterion,
         loss_type,
         device,

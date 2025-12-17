@@ -3,8 +3,8 @@ import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Import sw_with_gap from DiffSWAlgo
-from DiffSWAlgo import sw_with_gap
+# Import NW_with_gap from DiffNWAlgo
+from DiffNWAlgo import NW_with_gap
 
 
 def main():
@@ -17,8 +17,8 @@ def main():
         [0.0, 1.0, 0.0, 1.0],
     ], dtype=jnp.float32)
 
-    # Build the differentiable SW (non-batched) with gap penalty
-    traceback = sw_with_gap(batch=False, gap_penalty=-1)
+    # Build the differentiable NW (non-batched) with gap penalty
+    traceback = NW_with_gap(batch=False, gap_penalty=-1)
 
     # Run the function: returns gradient of max-score wrt S
     grad_S = traceback(S)
@@ -26,7 +26,7 @@ def main():
     # Print matrices
     # print("Similarity matrix S [4,4] (symmetric):")
     # print(np.array(S))
-    # print("\nDiffSW 'traceback' output (gradient wrt S) [5,4]:")
+    # print("\nDiffNW 'traceback' output (gradient wrt S) [5,4]:")
     # print(np.array(grad_S))
 
     # Visualize similarity and gradient as heatmaps
@@ -46,7 +46,7 @@ def main():
         plt.text(j, i, f"{val:.2f}", ha='center', va='center', color='white' if val < np.mean(grad_S) else 'black', fontsize=8)
 
     plt.tight_layout()
-    plt.savefig('sw_demo_heatmaps.png', dpi=150)
+    plt.savefig('NW_demo_heatmaps.png', dpi=150)
     plt.close()
 
 

@@ -53,9 +53,9 @@ def smith_waterman_matrix(seq1, seq2, match_score=2, mismatch_penalty=-1, gap_pe
             score_matrix[i, j] = max(0, diagonal_score, up_score, left_score)
 
     # Remove first row and column to eliminate empty string alignments
-    diff_sw_matrix = score_matrix[1:, 1:]
+    diff_NW_matrix = score_matrix[1:, 1:]
     
-    return diff_sw_matrix
+    return diff_NW_matrix
 
 
 
@@ -221,9 +221,9 @@ if __name__ == "__main__":
     image_dimensions = (img_width, img_height)  # Passed but effectively overridden by text size + padding
 
     # Smith-Waterman parameters
-    sw_match_score = 2
-    sw_mismatch_penalty = -3
-    sw_gap_penalty = -1
+    NW_match_score = 2
+    NW_mismatch_penalty = -3
+    NW_gap_penalty = -1
 
     print(f"\nStarting generation of {num_samples_to_generate} sample pairs (image + matrix + text lines)...")
 
@@ -270,7 +270,7 @@ if __name__ == "__main__":
         if not arabic_sentence_1: arabic_sentence_1 = common_phrase1 # Fallback
         if not arabic_sentence_2: arabic_sentence_2 = common_phrase2 # Fallback
 
-        # Final random swap to ensure that (e.g.) the shorter sentence isn't always sentence_1
+        # Final random NWap to ensure that (e.g.) the shorter sentence isn't always sentence_1
         if random.choice([True, False]):
             arabic_sentence_1, arabic_sentence_2 = arabic_sentence_2, arabic_sentence_1
 
@@ -293,9 +293,9 @@ if __name__ == "__main__":
         scoring_matrix = smith_waterman_matrix(
             arabic_sentence_1.replace(" ", ""),
             arabic_sentence_2.replace(" ", ""),
-            match_score=sw_match_score,
-            mismatch_penalty=sw_mismatch_penalty,
-            gap_penalty=sw_gap_penalty
+            match_score=NW_match_score,
+            mismatch_penalty=NW_mismatch_penalty,
+            gap_penalty=NW_gap_penalty
         )
         fig, axes = plt.subplots(1, 1, figsize=(20, 10))
         

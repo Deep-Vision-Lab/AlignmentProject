@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from saveDATA import *
 from Visualization import *
 from embeddingModel import EmbeddingModel
-from DiffSWAlgo import * # Assuming sliding_window is not here
+from DiffNWAlgo import * # Assuming sliding_window is not here
 from newDataLoader import test_dataloader
 from pathExtractor import *
 from LossFunctionWithHelpers import *
@@ -137,7 +137,7 @@ from LossFunctionWithHelpers import *
 #                                            vector_size=vector_size,model_arch=model_arch).to(device)
 #     cnn_transformer_model.load_state_dict(torch.load(f"Weights/{loss_type}/model_epoch_100.pth",
 #                                                       map_location=device))
-#     sw = SmithWaterman(match_score=3, mismatch_penalty=-1, gap_penalty=-2).to(device)
+#     NW = SmithWaterman(match_score=3, mismatch_penalty=-1, gap_penalty=-2).to(device)
 
-#     Evaluate(cnn_transformer_model, sw, test_dataloader, 
+#     Evaluate(cnn_transformer_model, NW, test_dataloader, 
 #              criterion, window_size, loss_type, device, normalize_type)
