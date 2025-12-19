@@ -12,7 +12,7 @@ data_dir = "DataSet/Synthetic"  # Directory for the new dataset
 # Define paths for NewDataSet
 new_dataset = {
     "images": os.path.join(data_dir, "images"),
-    "score_matrices": os.path.join(data_dir, "score_matrices"),
+    "matrices": os.path.join(data_dir, "matrices"),
     "diffmatrices": os.path.join(data_dir, "diffmatrices"),
     "similarity_matrices": os.path.join(data_dir, "similarity_matrices"),
     "texts":  os.path.join(data_dir, "texts")
@@ -100,42 +100,42 @@ def custom_collate_fn(batch):
     """Custom collate function"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    images_a, images_b, diffmatrices, similar_matrix, images1_names, images2_names = zip(*batch)
+    images_a, images_b, matrices, similar_matrix, images1_names, images2_names = zip(*batch)
 
     # Stack on CPU first, then move to device
     images_a = torch.stack(images_a, dim=0)
     images_b = torch.stack(images_b, dim=0)
     
     # Convert matrices to tensors on CPU
-    diffmatrices_cpu = []
+    matrices_cpu = []
     similar_matrix_cpu = []
     
-    for diff_mat, sim_mat in zip(diffmatrices, similar_matrix):
-        if not isinstance(diff_mat, torch.Tensor):
-            diff_mat = torch.tensor(diff_mat, dtype=torch.float32)
+    for matrix, sim_mat in zip(matrices, similar_matrix):
+        if not isinstance(matrix, torch.Tensor):
+            matrix = torch.tensor(matrix, dtype=torch.float32)
         if not isinstance(sim_mat, torch.Tensor):
             sim_mat = torch.tensor(sim_mat, dtype=torch.float32)
             
-        diffmatrices_cpu.append(diff_mat)
+        matrices_cpu.append(matrix)
         similar_matrix_cpu.append(sim_mat)
     
     # Pad matrices (still on CPU)
-    diffmatrices = pad_matrices(diffmatrices_cpu, smooth=False)
+    matrices = pad_matrices(matrices_cpu, smooth=False)
     similar_matrix = pad_matrices(similar_matrix_cpu, smooth=False)
     
     # Now move everything to device at once
     images_a = images_a.to(device, non_blocking=True)
     images_b = images_b.to(device, non_blocking=True)
-    diffmatrices = diffmatrices.to(device, non_blocking=True)
+    matrices = matrices.to(device, non_blocking=True)
     similar_matrix = similar_matrix.to(device, non_blocking=True)
     
     # Set requires_grad only after moving to device
     images_a.requires_grad_(True)
     images_b.requires_grad_(True)
-    diffmatrices.requires_grad_(True)
+    matrices.requires_grad_(True)
     similar_matrix.requires_grad_(True)
 
-    return images_a, images_b, diffmatrices, similar_matrix, images1_names, images2_names
+    return images_a, images_b, matrices, similar_matrix, images1_names, images2_names
 
 
 # Create DataLoaders for training and testing

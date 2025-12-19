@@ -1,5 +1,4 @@
 import os
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -57,7 +56,7 @@ class TextLineModern(Dataset):
 
             img1_path = os.path.join(self.new_dataset['images'], img1_name)
             img2_path = os.path.join(self.new_dataset['images'], img2_name)
-            diffmatrix_path = os.path.join(self.new_dataset['diffmatrices'], diffmatrix_name)
+            scorematrix_path = os.path.join(self.new_dataset['matrices'], score_matrix_name)
             similar_path = os.path.join(self.new_dataset['similarity_matrices'], similarity_matrix_name)
 
             img1 = Image.open(img1_path).convert("RGB")
@@ -68,7 +67,7 @@ class TextLineModern(Dataset):
             img2 = img2.resize((512, 64))
 
             # Load matrices
-            diff_matrix = np.load(diffmatrix_path)
+            score_matrix = np.load(scorematrix_path)
             similar_matrix = np.load(similar_path)
 
             if self.transform:
@@ -77,9 +76,9 @@ class TextLineModern(Dataset):
 
             # DON'T move to device here - let the data loader handle it
             # Create tensors on CPU without gradients initially
-            diff_matrix = torch.tensor(diff_matrix, dtype=torch.float32)
+            score_matrix = torch.tensor(score_matrix, dtype=torch.float32)
             similar_matrix = torch.tensor(similar_matrix, dtype=torch.float32)
 
-            return img1, img2, diff_matrix, similar_matrix, img1_name, img2_name
+            return img1, img2, score_matrix, similar_matrix, img1_name, img2_name
         else:
             raise NotImplementedError("Handling for non-NewDataSet is not included.")
