@@ -7,7 +7,70 @@ from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 from pathExtractor import *
 from saveDATA import *
 from embeddingModel import sliding_window
+import os
 
+
+def save_debug_visualizations(model, image1, image2, tokens_a, tokens_b, NWTextTensor, diffNWimage, 
+                               DiffNWAlgo, loss_type, epoch, batch_idx):
+    """
+    Save debug visualizations for the training process.
+    
+    Args:
+        model: The embedding model
+        image1, image2: Input images
+        tokens_a, tokens_b: Token embeddings
+        NWTextTensor: Text-based NW tensor
+        diffNWimage: Image-based NW tensor
+        DiffNWAlgo: The DiffNW algorithm instance
+        loss_type: Type of loss function used
+        epoch: Current epoch number
+        batch_idx: Current batch index
+    """
+    # Prepare directories for saving visualizations
+    vectors_epoch_dir = f'TrainResults/{loss_type}/VectorsPerEpoch/{model.model_arch}/Epoch_{epoch+1}'
+    matrices_epoch_dir = f'TrainResults/{loss_type}/ScoreMatricesPerEpoch/{model.model_arch}/Epoch_{epoch+1}'
+    os.makedirs(vectors_epoch_dir, exist_ok=True)
+    os.makedirs(matrices_epoch_dir, exist_ok=True)
+
+    # Clone tensors for visualization to avoid affecting gradients
+    debug_image1 = image1.detach().cpu()
+    debug_image2 = image2.detach().cpu()
+    debug_tokens_a = tokens_a.detach().cpu()
+    debug_tokens_b = tokens_b.detach().cpu()
+    debug_diffNWText = NWTextTensor.detach().cpu()
+    debug_diffNWimage = diffNWimage.detach().cpu()
+
+    # debug_diffNWText is only available during training if calc_cosine=False in Alignment
+    if hasattr(DiffNWAlgo, 'similarity_matrix'):
+        debug_NWTextSimilar = DiffNWAlgo.similarity_matrix.clone().detach()
+    else:
+        debug_NWTextSimilar = None
+
+    # original_text1_batch and original_text2_batch are only available during training if calc_cosine=False in Alignment
+    if hasattr(DiffNWAlgo, 'original_text1_batch') and hasattr(DiffNWAlgo, 'original_text2_batch'):
+        original_text1_batch = DiffNWAlgo.original_text1_batch
+        original_text2_batch = DiffNWAlgo.original_text2_batch
+    else:
+        original_text1_batch = None
+        original_text2_batch = None
+
+    # Save heatmap visualizations
+    saveHeatmapPlots(model, debug_image1, debug_image2, 
+                    debug_tokens_a, debug_tokens_b, 
+                    vectors_epoch_dir, epoch, batch_idx,
+                    debug_diffNWimage, 
+                    debug_diffNWText, 
+                    debug_NWTextSimilar, 
+                    matrices_epoch_dir, original_text1_batch,
+                    original_text2_batch)
+
+    del debug_image1, debug_image2
+    del debug_tokens_a, debug_tokens_b
+    del debug_diffNWimage, debug_diffNWText
+    del vectors_epoch_dir, matrices_epoch_dir
+    del original_text1_batch, original_text2_batch
+    if debug_NWTextSimilar is not None:
+        del debug_NWTextSimilar
 
 
 def saveHeatmapPlots(model, image1, image2, tokens_a, tokens_b, vectors_epoch_dir, epoch, batch_idx, 

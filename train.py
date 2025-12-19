@@ -13,6 +13,7 @@ from embeddingModel import *
 from embeddingModel import *
 from LossFunctionWithHelpers import *
 from NormalizeFuncs import *
+from Visualization import save_debug_visualizations
 
 import os
 import gc
@@ -24,7 +25,7 @@ from wandb_config import init_wandb
 
 warnings.filterwarnings("ignore")    
 
-def interpolate_NW_matrix(NW_matrix, target_shape):
+def interpolate_NW_matrix(NWTensor, target_shape):
     """
     Interpolates the smith matrix to match the target shape (usually alignment output shape).
     Args:
@@ -33,19 +34,10 @@ def interpolate_NW_matrix(NW_matrix, target_shape):
     Returns:
         torch.Tensor: Interpolated smith matrix, shape [B, H_new, W_new]
     """
-    if NW_matrix.dim() == 2:
-        squeezed_NW_matrix = NW_matrix.unsqueeze(0).unsqueeze(0)
-    elif NW_matrix.dim() == 3:
-        squeezed_NW_matrix = NW_matrix.unsqueeze(1)
-    else:
-        raise ValueError(f"Unexpected smith matrix shape: {NW_matrix.shape}")
+    interpolated_NW_matrix = F.interpolate(NWTensor, size=target_shape, mode='bilinear')
+    del NWTensor
     
-    interpolated_NW_matrix = F.interpolate(squeezed_NW_matrix, size=target_shape, mode='bilinear')
-    squeezed_interpolated_NW_matrix = interpolated_NW_matrix.squeeze(1)
-    
-    del NW_matrix, squeezed_NW_matrix, interpolated_NW_matrix
-    
-    return squeezed_interpolated_NW_matrix
+    return interpolated_NW_matrix
 
 
 
@@ -74,7 +66,7 @@ def compute_accuracy(pred_path, target_path, threshold=0.5):
 
 
 # second line of parameters is for saving visualizations during debugging 
-def compute_batch_loss(model, image1, image2, diffNWText, textSimilar, DiffNW, criterion, device, 
+def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, DiffNWAlgo, criterion, device, 
                        loss_type='MSE', debug=False, epoch=0, batch_idx=0, dataloader_length=0):
     
     tokens_a, tokens_b = model(image1, image2, show_dims=False)
@@ -83,26 +75,28 @@ def compute_batch_loss(model, image1, image2, diffNWText, textSimilar, DiffNW, c
     flip_tokens_b = torch.flip(tokens_b, dims=[1])
 
     # Running the DiffNW Algorithm
-    DiffNW.reset_cosine_similarity()
-    diffNWimage = DiffNW(x1=flip_tokens_a, x2=flip_tokens_b, show_dims=False).to(device)
+    DiffNWAlgo.reset_cosine_similarity()
+    diffNWimageTensor = DiffNWAlgo(x1=flip_tokens_a, x2=flip_tokens_b, show_dims=False).to(device)
     
 
     # Use smaller interpolation size
-    new_size = min(16, diffNWText.shape[-1])
-    new_size = (new_size, new_size)
+    batch_size = diffNWimageTensor.shape[0]
+    new_height = min(diffNWimageTensor.shape[1], NWTextTensor.shape[1])
+    new_width = min(diffNWimageTensor.shape[2], NWTextTensor.shape[2])
+    new_size = (batch_size, new_height, new_width)
 
-    diffNWimage = interpolate_NW_matrix(diffNWimage, new_size).to(device)
-    cosine_sim = interpolate_NW_matrix(DiffNW.cosine_similarity, new_size).to(device)
-    diffNWText = interpolate_NW_matrix(diffNWText, new_size).to(device)
+    diffNWimageTensor = interpolate_NW_matrix(diffNWimageTensor, new_size).to(device)
+    cosine_sim = interpolate_NW_matrix(DiffNWAlgo.cosine_similarity, new_size).to(device)
+    NWTextTensor = interpolate_NW_matrix(NWTextTensor, new_size).to(device)
     textSimilar = interpolate_NW_matrix(textSimilar, new_size).to(device)
 
 #---------------------------------------------------------------------------------------------------------
     # Normalize matrices or paths before loss computation
-    #-----------------------------------------------------------------------------------------------------
+    #------------------------------------------------------------------------------------------------
     # Normalize and smooth alignment outputs
-    diffNWText_final = normalize_func(diffNWText, normalize_type)
-    diffNWimage_final = normalize_func(diffNWimage, normalize_type)
-    #-----------------------------------------------------------------------------------------------------
+    NWTextFinal = normalize_func(NWTextTensor, normalize_type)
+    diffNWimageFinal = normalize_func(diffNWimageTensor, normalize_type)
+    #------------------------------------------------------------------------------------------------
     # Path extraction
     # textNWpath, text_startPoints = diff_NW_Path(diffNWText, textSimilar,
     #                                             match_score=2, miss_score=-3, gap_penalty=-1)
@@ -112,73 +106,31 @@ def compute_batch_loss(model, image1, image2, diffNWText, textSimilar, DiffNW, c
     #                             match_score=2, miss_score=-3, gap_penalty=-1, 
     #                             position=text_startPoints)
     # diffNWimage_final = diffNWimage * imageNWpath
-    #------------------------------------------------------------------------------------------------------
+    #------------------------------------------------------------------------------------------------
 #---------------------------------------------------------------------------------------------------------
     
     # Loss computation
-    path_loss = criterion(diffNWText_final, diffNWimage_final)
+    path_loss = criterion(NWTextFinal, diffNWimageFinal)
     loss_value = path_loss.item()
     
     ######################################################################################################################################
     # Debugging: Save visualizations for the last batch every 10 epochs
 
-    if debug and batch_idx == dataloader_length - 1 and epoch % 10 == 0: # Save visualizations for last batch every 10 epochs
-        # Prepare directories for saving visualizations
-        vectors_epoch_dir = f'TrainResults/{loss_type}/VectorsPerEpoch/{model.model_arch}/Epoch_{epoch+1}'
-        matrices_epoch_dir = f'TrainResults/{loss_type}/ScoreMatricesPerEpoch/{model.model_arch}/Epoch_{epoch+1}'
-        os.makedirs(vectors_epoch_dir, exist_ok=True)
-        os.makedirs(matrices_epoch_dir, exist_ok=True)
-
-        # Clone tensors for visualization to avoid affecting gradients
-        debug_image1 = image1.detach().cpu()
-        debug_image2 = image2.detach().cpu()
-        debug_tokens_a = tokens_a.detach().cpu()
-        debug_tokens_b = tokens_b.detach().cpu()
-        debug_diffNWText = diffNWText.detach().cpu()
-        debug_diffNWimage = diffNWimage.detach().cpu()
-
-        # debug_diffNWText is only available during training if calc_cosine=False in Alignment
-        if hasattr(DiffNW, 'similarity_matrix'):
-            debug_NWTextSimilar = DiffNW.similarity_matrix.clone().detach()
-        else:
-            debug_NWTextSimilar = None
-
-        # original_text1_batch and original_text2_batch are only available during training if calc_cosine=False in Alignment
-        if hasattr(DiffNW, 'original_text1_batch') and hasattr(DiffNW, 'original_text2_batch'):
-            original_text1_batch = DiffNW.original_text1_batch
-            original_text2_batch = DiffNW.original_text2_batch
-        else:
-            original_text1_batch = None
-            original_text2_batch = None
-
-        # Save heatmap visualizations
-        saveHeatmapPlots(model, debug_image1, debug_image2, 
-                        debug_tokens_a, debug_tokens_b, 
-                        vectors_epoch_dir, epoch, batch_idx,
-                        debug_diffNWimage, 
-                        debug_diffNWText, 
-                        debug_NWTextSimilar, 
-                        matrices_epoch_dir, original_text1_batch,
-                        original_text2_batch)
-
-        del debug_image1, debug_image2
-        del debug_tokens_a, debug_tokens_b
-        del debug_diffNWimage, debug_diffNWText
-        del vectors_epoch_dir, matrices_epoch_dir
-        del original_text1_batch, original_text2_batch
-        if debug_NWTextSimilar is not None:
-            del debug_NWTextSimilar
+    if debug and batch_idx == dataloader_length - 1 and epoch % 10 == 0:
+        save_debug_visualizations(model, image1, image2, tokens_a, tokens_b, 
+                                  NWTextTensor, diffNWimageTensor, DiffNWAlgo, 
+                                  loss_type, epoch, batch_idx)
 
     ######################################################################################################################################
 
     # Delete tensors to free memory
     del tokens_a, tokens_b
     del flip_tokens_a, flip_tokens_b
-    del diffNWText, textSimilar
-    del diffNWimage, cosine_sim
+    del NWTextTensor, textSimilar
+    del diffNWimageTensor, cosine_sim
     torch.cuda.empty_cache()
     
-    return path_loss, loss_value, diffNWText_final, diffNWimage_final
+    return path_loss, loss_value, NWTextFinal, diffNWimageFinal
 
 
 def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type, 
@@ -207,16 +159,14 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type,
             
             optimizer.zero_grad()
             
-            begin_time = time.time()
-            
             # Compute loss using shared function
-            path_loss, loss_value, diffNWText_final, diffNWimage_final = compute_batch_loss(
+            path_loss, loss_value, NWTextFinal, NWImageFinal = compute_batch_loss(
                 model, image1, image2, scoreMatrix, textSimilar, DiffNW, criterion, device,
                 loss_type=loss_type, debug=debug, epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader)
             )
             
             # Compute accuracy
-            batch_accuracy = compute_accuracy(diffNWimage_final, diffNWText_final)
+            batch_accuracy = compute_accuracy(NWImageFinal, NWTextFinal)
             train_accuracy += batch_accuracy
             
 
@@ -231,7 +181,7 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type,
             # Final cleanup
             del path_loss
             del image1, image2
-            del diffNWText_final, diffNWimage_final
+            del NWTextFinal, NWImageFinal
             torch.cuda.empty_cache()
 
         print(f"Epoch {epoch+1} completed. Average Loss: {train_loss / len(trainLoader):.4f}", flush=True)
@@ -252,15 +202,15 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type,
                 textSimilar = textSimilar.to(device)
                 
                 # Compute loss using shared function
-                _, loss_value, diffNWText_final, diffNWimage_final = compute_batch_loss(
+                _, loss_value, NWTextFinal, NWImageFinal = compute_batch_loss(
                     model, image1, image2, scoreMatrix, textSimilar, DiffNW, criterion, device
                 )
                 
                 # Compute accuracy
-                batch_accuracy = compute_accuracy(diffNWimage_final, diffNWText_final)
+                batch_accuracy = compute_accuracy(NWImageFinal, NWTextFinal)
                 val_accuracy += batch_accuracy
                 
-                del diffNWText_final, diffNWimage_final
+                del NWTextFinal, NWImageFinal
                 val_loss += loss_value
 
                 # Final cleanup
