@@ -12,12 +12,15 @@ from pathExtractor import *
 from embeddingModel import *
 from embeddingModel import *
 from LossFunctionWithHelpers import *
+from NormalizeFuncs import *
 
 import os
 import gc
 import time
 import wandb
 import warnings
+
+from wandb_config import init_wandb
 
 warnings.filterwarnings("ignore")    
 
@@ -43,29 +46,6 @@ def interpolate_NW_matrix(NW_matrix, target_shape):
     del NW_matrix, squeezed_NW_matrix, interpolated_NW_matrix
     
     return squeezed_interpolated_NW_matrix
-
-
-
-def smooth_and_normalize_matrix(matrix, normalize_type):
-    """
-    Optionally smooth and normalize the alignment output tensor.
-    Args:
-        matrix (torch.Tensor): The alignment output tensor.
-        normalize_type (str): Normalization type: 'min_max', 'mean_std', or ''.
-    Returns:
-        torch.Tensor: Smoothed and normalized alignment output.
-    """
-    matrix = smooth_path(matrix)
-    if normalize_type == 'min_max':
-        alignment_min = matrix.min()
-        alignment_max = matrix.max()
-        matrix = 2 * (matrix - alignment_min) / (alignment_max - alignment_min + 1e-8) - 1
-    elif normalize_type == 'mean_std':
-        alignment_mean = matrix.mean(dim=(1, 2), keepdim=True)
-        alignment_std = matrix.std(dim=(1, 2), keepdim=True)
-        matrix = (matrix - alignment_mean) / (alignment_std + 1e-8)
-        del alignment_mean, alignment_std
-    return matrix
 
 
 
@@ -116,6 +96,13 @@ def compute_batch_loss(model, image1, image2, diffNWText, textSimilar, DiffNW, c
     diffNWText = interpolate_NW_matrix(diffNWText, new_size).to(device)
     textSimilar = interpolate_NW_matrix(textSimilar, new_size).to(device)
 
+#---------------------------------------------------------------------------------------------------------
+    # Normalize matrices or paths before loss computation
+    #-----------------------------------------------------------------------------------------------------
+    # Normalize and smooth alignment outputs
+    diffNWText_final = normalize_func(diffNWText, normalize_type)
+    diffNWimage_final = normalize_func(diffNWimage, normalize_type)
+    #-----------------------------------------------------------------------------------------------------
     # Path extraction
     # textNWpath, text_startPoints = diff_NW_Path(diffNWText, textSimilar,
     #                                             match_score=2, miss_score=-3, gap_penalty=-1)
@@ -125,10 +112,8 @@ def compute_batch_loss(model, image1, image2, diffNWText, textSimilar, DiffNW, c
     #                             match_score=2, miss_score=-3, gap_penalty=-1, 
     #                             position=text_startPoints)
     # diffNWimage_final = diffNWimage * imageNWpath
-
-    # Normalize and smooth alignment outputs
-    diffNWText_final = smooth_and_normalize_matrix(diffNWText, normalize_type)
-    diffNWimage_final = smooth_and_normalize_matrix(diffNWimage, normalize_type)
+    #------------------------------------------------------------------------------------------------------
+#---------------------------------------------------------------------------------------------------------
     
     # Loss computation
     path_loss = criterion(diffNWText_final, diffNWimage_final)
@@ -213,11 +198,11 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type,
         train_loss = 0.0
         train_accuracy = 0.0
 
-        for batch_idx, (image1, image2, diffNWText, textSimilar, image1_name, image2_name) in enumerate(trainLoader):
+        for batch_idx, (image1, image2, scoreMatrix, textSimilar, image1_name, image2_name) in enumerate(trainLoader):
             # Ensure all data is on correct device
             image1 = image1.to(device, non_blocking=True)
             image2 = image2.to(device, non_blocking=True)
-            diffNWText = diffNWText.to(device, non_blocking=True)
+            scoreMatrix = scoreMatrix.to(device, non_blocking=True)
             textSimilar = textSimilar.to(device, non_blocking=True)
             
             optimizer.zero_grad()
@@ -226,7 +211,7 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type,
             
             # Compute loss using shared function
             path_loss, loss_value, diffNWText_final, diffNWimage_final = compute_batch_loss(
-                model, image1, image2, diffNWText, textSimilar, DiffNW, criterion, device,
+                model, image1, image2, scoreMatrix, textSimilar, DiffNW, criterion, device,
                 loss_type=loss_type, debug=debug, epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader)
             )
             
@@ -259,16 +244,16 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type,
         val_loss = 0.0
         val_accuracy = 0.0
         with torch.no_grad():
-            for batch_idx, (image1, image2, diffNWText, textSimilar, image1_name, image2_name) in enumerate(validLoader):
+            for batch_idx, (image1, image2, scoreMatrix, textSimilar, image1_name, image2_name) in enumerate(validLoader):
                 # Ensure all data is on correct device
                 image1 = image1.to(device)
                 image2 = image2.to(device)
-                diffNWText = diffNWText.to(device)
+                scoreMatrix = scoreMatrix.to(device)
                 textSimilar = textSimilar.to(device)
                 
                 # Compute loss using shared function
                 _, loss_value, diffNWText_final, diffNWimage_final = compute_batch_loss(
-                    model, image1, image2, diffNWText, textSimilar, DiffNW, criterion, device
+                    model, image1, image2, scoreMatrix, textSimilar, DiffNW, criterion, device
                 )
                 
                 # Compute accuracy
@@ -305,21 +290,7 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type,
 
 if __name__ == '__main__':
     if debug_wandb:
-        wandb.init(
-            # set the wandb project where this run will be logged
-            project="AlignmentProject",
-            name=f"Train model {window_size} - {model_arch} - {loss_type} - {normalize_type} - AMP",
-            # track hyperparameters and run metadata
-            config={
-                "learning_rate": learning_rate,
-                "batch_size": batch_size,
-                "vector size": vector_size,
-                "loss": loss_type,
-                "architecture": model_arch,
-                "epochs": epochs,
-                "slicing_window_width": window_size,
-                "normalizing method ": normalize_type
-            })
+        init_wandb()
 
     cnn_transformer_model = EmbeddingModel(
         window_size=window_size,
@@ -332,21 +303,7 @@ if __name__ == '__main__':
     DiffNW = DiffNWAlgo(match_score=matchScore, miss_score=mismatchScore, 
                         gap=gapScore)
     
-    if loss_type == 'HeightDiff':
-        criterion = HeightDiff_loss
-    elif loss_type == 'MSE':
-        criterion = nn.MSELoss()
-    elif loss_type == 'GuidedAttention':
-        criterion = guided_attention_loss
-    elif loss_type == 'KL-Divergence':
-        criterion = kl_divergence_loss
-    elif loss_type == 'Dice':
-        criterion = dice_loss
-    elif loss_type == 'Wasserstein':
-        criterion = wasserstein_distance
-    else:
-        raise ValueError(f"Unknown loss type: {loss_type}")
-    
+    criterion = Loss_choice(loss_type)
     
     # try:
     loss_lst = Train(
@@ -364,5 +321,6 @@ if __name__ == '__main__':
         debug_wandb,
         show_gradients
     )
+    
     if debug_wandb:
         wandb.finish()

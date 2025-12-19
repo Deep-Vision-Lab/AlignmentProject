@@ -1,35 +1,9 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+
 from saveDATA import *
 
-
-def smooth_path(mask, kernel_size=5, sigma=1):
-    """
-    Smooth the path using a Gaussian filter.
-
-    Args:
-        mask (torch.Tensor): Binary mask (1 for path, 0 elsewhere).
-        kernel_size (int): Size of the Gaussian kernel.
-        sigma (float): Standard deviation of the Gaussian blur.
-
-    Returns:
-        torch.Tensor: Smoothed mask.
-    """
-    device = mask.device
-
-    # Create a Gaussian kernel
-    x = torch.arange(kernel_size, dtype=torch.float32) - kernel_size // 2
-    gaussian_kernel = torch.exp(-x.pow(2) / (2 * sigma**2))
-    gaussian_kernel /= gaussian_kernel.sum()
-
-    # Convert to 2D filter
-    kernel_2d = gaussian_kernel[:, None] * gaussian_kernel[None, :]
-    kernel_2d = kernel_2d.unsqueeze(0).unsqueeze(0).to(device) # Shape: (H,W)
-    # Apply Gaussian filter
-    mask = mask.unsqueeze(1) # Add batch and channel dims
-    smoothed_mask = F.conv2d(mask, kernel_2d, padding=kernel_size//2)
-
-    return smoothed_mask.squeeze(1)
 
 
 def HeightDiff_loss(inputs, targets, lamda=0.5):
@@ -208,6 +182,23 @@ def wasserstein_distance(pred, target, p=1):
     wass = torch.mean(torch.abs(pred_cdf - target_cdf) ** p)
     return wass
 
+
+def Loss_choice(loss_type):
+    if loss_type == 'HeightDiff':
+        criterion = HeightDiff_loss
+    elif loss_type == 'MSE':
+        criterion = nn.MSELoss(reduction='sum')
+    elif loss_type == 'GuidedAttention':
+        criterion = guided_attention_loss
+    elif loss_type == 'KL-Divergence':
+        criterion = kl_divergence_loss
+    elif loss_type == 'Dice':
+        criterion = dice_loss
+    elif loss_type == 'Wasserstein':
+        criterion = wasserstein_distance
+    else:
+        raise ValueError(f"Unknown loss type: {loss_type}")
+    return criterion
 
 
 
