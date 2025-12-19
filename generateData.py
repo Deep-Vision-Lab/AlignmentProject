@@ -8,20 +8,23 @@ import arabic_reshaper
 from bidi.algorithm import get_display
 from PIL import Image, ImageDraw, ImageFont
 import random
+from Parameters import *
 import os
 import seaborn as sns
 
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 import numpy as np  # Import numpy
+import torch
+from DiffNWAlgo import DiffNWAlgo
 
 import warnings
 warnings.filterwarnings("ignore")
 
-# --- Smith-Waterman Algorithm Implementation ---
-def smith_waterman_matrix(seq1, seq2, match_score=2, mismatch_penalty=-1, gap_penalty=-1):
+# --- Needleman-Wunsch Algorithm Implementation ---
+def needleman_wunsch_matrix(seq1, seq2, match_score=2, mismatch_penalty=-1, gap_penalty=-1):
     """
-    Computes the Smith-Waterman scoring matrix for local alignment.
+    Computes the Needleman-Wunsch scoring matrix for global alignment.
     Returns the matrix without the first row and column (removes empty string alignments).
 
     Args:
@@ -32,13 +35,19 @@ def smith_waterman_matrix(seq1, seq2, match_score=2, mismatch_penalty=-1, gap_pe
         gap_penalty (int): Penalty for a gap.
 
     Returns:
-        numpy.ndarray: The scoring matrix (H-matrix) as a NumPy array without first row/column.
+        numpy.ndarray: The scoring matrix as a NumPy array without first row/column.
     """
     rows = len(seq1) + 1
     cols = len(seq2) + 1
 
-    # Initialize the scoring matrix with zeros
+    # Initialize the scoring matrix
     score_matrix = np.zeros((rows, cols), dtype=int)
+
+    # Initialize first row and column with gap penalties (global alignment)
+    for i in range(rows):
+        score_matrix[i, 0] = i * gap_penalty
+    for j in range(cols):
+        score_matrix[0, j] = j * gap_penalty
 
     # Fill the scoring matrix
     for i in range(1, rows):
@@ -50,7 +59,7 @@ def smith_waterman_matrix(seq1, seq2, match_score=2, mismatch_penalty=-1, gap_pe
             up_score = score_matrix[i - 1, j] + gap_penalty
             left_score = score_matrix[i, j - 1] + gap_penalty
 
-            score_matrix[i, j] = max(0, diagonal_score, up_score, left_score)
+            score_matrix[i, j] = max(diagonal_score, up_score, left_score)
 
     # Remove first row and column to eliminate empty string alignments
     diff_NW_matrix = score_matrix[1:, 1:]
@@ -73,6 +82,29 @@ def save_matrix_to_file(matrix, filepath):
         print(f"Error saving matrix to {filepath}: {e}")
 
 
+def create_similarity_matrix(seq1, seq2):
+    """
+    Creates a binary similarity matrix where 1 indicates a match and 0 indicates a mismatch.
+
+    Args:
+        seq1 (str): The first sequence.
+        seq2 (str): The second sequence.
+
+    Returns:
+        numpy.ndarray: A binary similarity matrix of shape (len(seq1), len(seq2)).
+    """
+    rows = len(seq1)
+    cols = len(seq2)
+    similarity_matrix = np.zeros((rows, cols), dtype=int)
+    
+    for i in range(rows):
+        for j in range(cols):
+            if seq1[i] == seq2[j]:
+                similarity_matrix[i, j] = 1
+    
+    return similarity_matrix
+
+
 # --- Image Generation Function (from previous version) ---
 def create_arabic_text_image(text_to_render, font_path_or_name, font_size_px, image_dimensions_px, output_image_path,
                              text_color="white", background_color="black", padding=20):
@@ -91,8 +123,10 @@ def create_arabic_text_image(text_to_render, font_path_or_name, font_size_px, im
     image = Image.new("RGB", (1000, 1000), background_color)
     draw = ImageDraw.Draw(image)
 
-    # Get the size of the text
-    text_width, text_height = draw.textsize(bidi_text, font=font)
+    # Calculate the bounding box of the text
+    left, top, right, bottom = draw.textbbox((0, 0), bidi_text, font=font)
+    text_width = right - left
+    text_height = bottom - top
 
     image_width = text_width + padding * 2
     image_height = text_height + padding * 2
@@ -133,16 +167,25 @@ if __name__ == "__main__":
     # Define subdirectories for images, matrices, and text lines
     output_images_dir = os.path.join(base_output_directory, "images")
     output_matrices_dir = os.path.join(base_output_directory, "matrices")
+    output_similarity_matrices_dir = os.path.join(base_output_directory, "similarity_matrices")
+    output_diff_nw_matrices_dir = os.path.join(base_output_directory, "diff_nw_matrices")
     output_text_lines_dir = os.path.join(base_output_directory, "texts")
 
     # Create output directories if they don't exist
     os.makedirs(output_images_dir, exist_ok=True)
     os.makedirs(output_matrices_dir, exist_ok=True)
+    os.makedirs(output_similarity_matrices_dir, exist_ok=True)
+    os.makedirs(output_diff_nw_matrices_dir, exist_ok=True)
     os.makedirs(output_text_lines_dir, exist_ok=True)
     print(f"Output will be saved in: {os.path.abspath(base_output_directory)}")
     print(f"Images will be in: {os.path.abspath(output_images_dir)}")
     print(f"Matrices will be in: {os.path.abspath(output_matrices_dir)}")
+    print(f"Similarity matrices will be in: {os.path.abspath(output_similarity_matrices_dir)}")
+    print(f"Diff NW matrices will be in: {os.path.abspath(output_diff_nw_matrices_dir)}")
     print(f"Text lines will be in: {os.path.abspath(output_text_lines_dir)}")
+
+    # Initialize DiffNWAlgo model
+    diff_nw_algo = DiffNWAlgo(match_score=matchScore, miss_score=mismatchScore, gap=gapScore, batch=False)
 
     # --- Define Arabic phrases for sentence construction ---
     base_arabic_phrases = [
@@ -221,9 +264,9 @@ if __name__ == "__main__":
     image_dimensions = (img_width, img_height)  # Passed but effectively overridden by text size + padding
 
     # Smith-Waterman parameters
-    NW_match_score = 2
-    NW_mismatch_penalty = -3
-    NW_gap_penalty = -1
+    NW_match_score = matchScore
+    NW_mismatch_penalty = mismatchScore
+    NW_gap_penalty = gapScore
 
     print(f"\nStarting generation of {num_samples_to_generate} sample pairs (image + matrix + text lines)...")
 
@@ -280,6 +323,8 @@ if __name__ == "__main__":
 
         # Define output file path for the matrix (now .npy)
         output_matrix_file = os.path.join(output_matrices_dir, f"scoreMatrix_{i}.npy")
+        output_similarity_matrix_file = os.path.join(output_similarity_matrices_dir, f"similarityMatrix_{i}.npy")
+        output_diff_nw_matrix_file = os.path.join(output_diff_nw_matrices_dir, f"diffNWMatrix_{i}.npy")
 
         # Define output file paths for the text lines
         output_text_file_1 = os.path.join(output_text_lines_dir, f"text1_{i}.txt")
@@ -289,24 +334,49 @@ if __name__ == "__main__":
         create_arabic_text_image(arabic_sentence_1, font_to_use, text_font_size, image_dimensions, output_img_file_1)
         create_arabic_text_image(arabic_sentence_2, font_to_use, text_font_size, image_dimensions, output_img_file_2)
 
-        # 2. Generate and save Smith-Waterman scoring matrix as .npy
-        scoring_matrix = smith_waterman_matrix(
-            arabic_sentence_1.replace(" ", ""),
-            arabic_sentence_2.replace(" ", ""),
+        # 2. Generate and save Needleman-Wunsch scoring matrix as .npy
+        seq1_no_spaces = arabic_sentence_1.replace(" ", "")
+        seq2_no_spaces = arabic_sentence_2.replace(" ", "")
+        
+        scoring_matrix = needleman_wunsch_matrix(
+            seq1_no_spaces,
+            seq2_no_spaces,
             match_score=NW_match_score,
             mismatch_penalty=NW_mismatch_penalty,
             gap_penalty=NW_gap_penalty
         )
+        
+        # 3. Generate and save similarity matrix (1 for match, 0 for mismatch)
+        similarity_matrix = create_similarity_matrix(seq1_no_spaces, seq2_no_spaces)
+        save_matrix_to_file(similarity_matrix, output_similarity_matrix_file)
+        
+        # 4. Generate and save DiffNW alignment matrix
+        # Convert similarity matrix to torch tensor with proper scaling for DiffNWAlgo
+        sim_tensor = torch.tensor(similarity_matrix, dtype=torch.float32)
+        # Scale: 1 (match) -> matchScore, 0 (mismatch) -> mismatchScore
+        scaled_sim = sim_tensor * (matchScore - mismatchScore) + mismatchScore
+        # Add batch dimension: [1, N, M]
+        # scaled_sim_batch = scaled_sim.unsqueeze(0)
+        scaled_sim_batch = scaled_sim
+        
+        with torch.no_grad():
+            diff_nw_align = diff_nw_algo(similarity_matrix=scaled_sim_batch, calc_cosine=False)
+        
+        # Save the diff NW alignment matrix
+        diff_nw_matrix = diff_nw_align.squeeze(0).cpu().numpy()
+        save_matrix_to_file(diff_nw_matrix, output_diff_nw_matrix_file)
+        
         fig, axes = plt.subplots(1, 1, figsize=(20, 10))
         
         sns.heatmap(scoring_matrix, cmap='jet', linewidths=0.1, linecolor='black',
-                    ax=axes, yticklabels=list(arabic_sentence_1.replace(" ", "")),
-                    xticklabels=list(arabic_sentence_2.replace(" ", "")))
+                    ax=axes, yticklabels=list(seq1_no_spaces),
+                    xticklabels=list(seq2_no_spaces))
         
-        plt.show()
+        # plt.show()
         save_matrix_to_file(scoring_matrix, output_matrix_file)
+        plt.close(fig)  # Close the figure to prevent resource leaks
 
-        # 3. Save the raw Arabic text lines to .txt files
+        # 4. Save the raw Arabic text lines to .txt files
         save_text_to_file(arabic_sentence_1, output_text_file_1)
         save_text_to_file(arabic_sentence_2, output_text_file_2)
 
