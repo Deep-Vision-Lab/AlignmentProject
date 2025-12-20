@@ -29,15 +29,24 @@ def interpolate_NW_matrix(NWTensor, target_shape):
     """
     Interpolates the smith matrix to match the target shape (usually alignment output shape).
     Args:
-        current_smith_matrix (torch.Tensor): Smith matrix, shape [B, H, W] or [H, W]
+        NWTensor (torch.Tensor): Smith matrix, shape [B, H, W] or [H, W]
         target_shape (tuple): Target (H, W) shape
     Returns:
         torch.Tensor: Interpolated smith matrix, shape [B, H_new, W_new]
     """
-    interpolated_NW_matrix = F.interpolate(NWTensor, size=target_shape, mode='bilinear')
-    del NWTensor
+    if NWTensor.dim() == 2:
+        squeezed_NW_matrix = NWTensor.unsqueeze(0).unsqueeze(0)  # [H, W] -> [1, 1, H, W]
+    elif NWTensor.dim() == 3:
+        squeezed_NW_matrix = NWTensor.unsqueeze(1)  # [B, H, W] -> [B, 1, H, W]
+    else:
+        raise ValueError(f"Unexpected NW matrix shape: {NWTensor.shape}")
     
-    return interpolated_NW_matrix
+    interpolated_NW_matrix = F.interpolate(squeezed_NW_matrix, size=target_shape, mode='bilinear')
+    squeezed_interpolated_NW_matrix = interpolated_NW_matrix.squeeze(1)  # Remove channel dim
+    
+    del NWTensor, squeezed_NW_matrix, interpolated_NW_matrix
+    
+    return squeezed_interpolated_NW_matrix
 
 
 
@@ -80,10 +89,9 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, DiffNWA
     
 
     # Use smaller interpolation size
-    batch_size = diffNWimageTensor.shape[0]
     new_height = min(diffNWimageTensor.shape[1], NWTextTensor.shape[1])
     new_width = min(diffNWimageTensor.shape[2], NWTextTensor.shape[2])
-    new_size = (batch_size, new_height, new_width)
+    new_size = (new_height, new_width)
 
     diffNWimageTensor = interpolate_NW_matrix(diffNWimageTensor, new_size).to(device)
     cosine_sim = interpolate_NW_matrix(DiffNWAlgo.cosine_similarity, new_size).to(device)
