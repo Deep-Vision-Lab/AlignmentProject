@@ -102,8 +102,8 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, DiffNWA
     # Normalize matrices or paths before loss computation
     #------------------------------------------------------------------------------------------------
     # Normalize and smooth alignment outputs
-    NWTextFinal = normalize_func(NWTextTensor, normalize_type)
-    diffNWimageFinal = normalize_func(diffNWimageTensor, normalize_type)
+    NWTextFinal = normalize_func(NWTextTensor, normalize_type) * 100
+    diffNWimageFinal = normalize_func(diffNWimageTensor, normalize_type) * 100
     #------------------------------------------------------------------------------------------------
     # Path extraction
     # textNWpath, text_startPoints = diff_NW_Path(diffNWText, textSimilar,
