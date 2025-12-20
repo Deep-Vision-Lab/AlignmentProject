@@ -2,7 +2,7 @@ import torch
 
 loss_type = 'MSE' # ['HeightDiff', 'MSE', 'GuidedAttention', 'KL-Divergence', 'Dice', 'Wasserstein']
 model_arch = 'CNN' # ['CNN-Transformer', 'CNN', 'Transformer']
-window_size = 32
+window_size = 16
 vector_size = 128
 normalize_type = 'average' # ['min_max', 'mean_std', 'average']
 epochs = 300
