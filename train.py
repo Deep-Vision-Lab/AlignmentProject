@@ -245,10 +245,10 @@ if __name__ == '__main__':
     )
 
     DiffNW = DiffNWAlgo(
-                    match_score=matchScore, 
-                    miss_score=mismatchScore, 
-                    gap=gapScore
-            )
+        match_score=matchScore, 
+        miss_score=mismatchScore, 
+        gap=gapScore
+    )
     
     criterion = Loss_choice(loss_type)
     

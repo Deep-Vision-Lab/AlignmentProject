@@ -30,7 +30,8 @@ def word2Vec(textLine, img_width):
     return word_vector
 
 class TextLineModern(Dataset):
-    def __init__(self, new_dataset=None, transform=None):
+    def __init__(self, regularScoreMatrix=True, new_dataset=None, transform=None):
+        self.regularMatrix = regularScoreMatrix
         self.new_dataset = new_dataset
         self.transform = transform
 
@@ -38,7 +39,7 @@ class TextLineModern(Dataset):
             # Reduce dataset size for memory testing
             self.image_pairs = [
                 (f"img1_{i}.png", f"img2_{i}.png", f"scoreMatrix_{i}.npy", 
-                 f"diffMatrix_{i}.npy", f"similarityMatrix_{i}.npy", 
+                 f"diffNWMatrix_{i}.npy", f"similarityMatrix_{i}.npy", 
                  f"text1_{i}.txt", f"text2_{i}.txt") for i in
                 range(1, 3001)]  # Reduced from 3001 to 101
 
@@ -46,8 +47,9 @@ class TextLineModern(Dataset):
         return len(self.image_pairs)
 
     def ScoreMapping(self, tensor):
-        # Map 1 to 7 and 0 to -3
-        return torch.where(tensor == 1, torch.tensor(2.0), torch.where(tensor == 0, torch.tensor(-3.0), tensor))
+        return torch.where(tensor == 1, torch.tensor(matchScore), 
+                           torch.where(tensor == 0, torch.tensor(mismatchScore), 
+                            tensor))
 
 
     def __getitem__(self, idx):
@@ -56,28 +58,26 @@ class TextLineModern(Dataset):
 
             img1_path = os.path.join(self.new_dataset['images'], img1_name)
             img2_path = os.path.join(self.new_dataset['images'], img2_name)
-            scorematrix_path = os.path.join(self.new_dataset['matrices'], score_matrix_name)
-            similar_path = os.path.join(self.new_dataset['similarity_matrices'], similarity_matrix_name)
+            if self.regularMatrix:
+                ScoreMatrix = os.path.join(self.new_dataset['matrices'], score_matrix_name)
+            else:
+                ScoreMatrix = os.path.join(self.new_dataset['diffNWmatrices'], diffmatrix_name)
+            SimilarityMatrix = os.path.join(self.new_dataset['similarity_matrices'], similarity_matrix_name)
 
             img1 = Image.open(img1_path).convert("RGB")
             img2 = Image.open(img2_path).convert("RGB")
-            
-            # Reduce image size to save memory
-            img1 = img1.resize((512, 64))  # Reduced from (1024, 128)
-            img2 = img2.resize((512, 64))
 
             # Load matrices
-            score_matrix = np.load(scorematrix_path)
-            similar_matrix = np.load(similar_path)
+            score_matrix = np.load(ScoreMatrix)
+            score_matrix = torch.tensor(score_matrix, dtype=torch.float32)
 
+            similar_matrix = np.load(SimilarityMatrix)
+            similar_matrix = torch.tensor(similar_matrix, dtype=torch.float32)
+            similar_matrix = self.ScoreMapping(similar_matrix)
+            
             if self.transform:
                 img1 = self.transform(img1)
                 img2 = self.transform(img2)
-
-            # DON'T move to device here - let the data loader handle it
-            # Create tensors on CPU without gradients initially
-            score_matrix = torch.tensor(score_matrix, dtype=torch.float32)
-            similar_matrix = torch.tensor(similar_matrix, dtype=torch.float32)
 
             return img1, img2, score_matrix, similar_matrix, img1_name, img2_name
         else:
