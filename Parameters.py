@@ -11,6 +11,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 debug = True # Set to True to save patches and heatmaps for debugging
 debug_wandb = True # Set to True to log training to Weights & Biases
 show_gradients = True # Set to True to print gradients for debugging
+preLoss = True # Set to True to normalize before loss computation
 
 matchScore = 10
 mismatchScore = -27
