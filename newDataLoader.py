@@ -13,7 +13,7 @@ data_dir = "DataSet/Synthetic"  # Directory for the new dataset
 new_dataset = {
     "images": os.path.join(data_dir, "images"),
     "matrices": os.path.join(data_dir, "matrices"),
-    "diffmatrices": os.path.join(data_dir, "diffmatrices"),
+    "diffNWmatrices": os.path.join(data_dir, "diffNWmatrices"),
     "similarity_matrices": os.path.join(data_dir, "similarity_matrices"),
     "texts":  os.path.join(data_dir, "texts")
 }
@@ -32,7 +32,8 @@ transform = transforms.Compose([
 ])
 
 # Create the full dataset
-full_dataset = TextLineModern(  # Not used for NewDataSet
+full_dataset = TextLineModern(
+    regularScoreMatrix=Regular_ScoreMatrix_Load,  # Not used for NewDataSet
     new_dataset=new_dataset,
     transform=transform
 )
@@ -42,18 +43,12 @@ train_size = int(0.6 * len(full_dataset))
 valid_size = int(0.2 * len(full_dataset))
 test_size = len(full_dataset) - train_size - valid_size
 
-# test_size = 2
-# valid_size = len(full_dataset) - train_size - test_size
 
 train_dataset, valid_dataset, test_dataset = random_split(full_dataset, [train_size, valid_size, test_size])
 
+
 # Function to pad matrices to the maximum size in the batch
 def pad_matrices(matrices, smooth=False, kernel_size=5, sigma=1.0):
-    """
-    Resizes matrices in a batch to a common square dimension using interpolation.
-    Optionally applies Gaussian smoothing after interpolation.
-    The target dimension is the maximum dimension found across all matrices in the batch.
-    """
     if not matrices:
         return torch.empty(0)
 
@@ -94,6 +89,8 @@ def pad_matrices(matrices, smooth=False, kernel_size=5, sigma=1.0):
     # Stack all processed matrices and ensure they're on the correct device
     result = torch.stack(processed_matrices, dim=0).to(device)
     return result
+
+
 
 # Define a custom collate function to handle variable-sized smith matrices
 def custom_collate_fn(batch):
@@ -136,6 +133,8 @@ def custom_collate_fn(batch):
     similar_matrix.requires_grad_(True)
 
     return images_a, images_b, matrices, similar_matrix, images1_names, images2_names
+
+
 
 
 # Create DataLoaders for training and testing
