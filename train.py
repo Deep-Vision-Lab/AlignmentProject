@@ -75,7 +75,7 @@ def compute_accuracy(pred_path, target_path, threshold=0.5):
 
 
 # second line of parameters is for saving visualizations during debugging 
-def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, DiffNWAlgo, criterion, device, 
+def compute_batch_loss(model, image1, image2, NWTextTensor, TextSimilar, DiffNWAlgo, criterion, device, 
                        loss_type='MSE', debug=False, epoch=0, batch_idx=0, dataloader_length=0):
     
     tokens_a, tokens_b = model(image1, image2, show_dims=False)
@@ -94,17 +94,17 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, DiffNWA
     new_size = (new_height, new_width)
 
     diffNWimageTensor = interpolate_NW_matrix(diffNWimageTensor, new_size).to(device)
-    cosine_sim = interpolate_NW_matrix(DiffNWAlgo.cosine_similarity, new_size).to(device)
+    ImageSimilar = interpolate_NW_matrix(DiffNWAlgo.ImageSimilar, new_size).to(device)
     NWTextTensor = interpolate_NW_matrix(NWTextTensor, new_size).to(device)
-    textSimilar = interpolate_NW_matrix(textSimilar, new_size).to(device)
+    TextSimilar = interpolate_NW_matrix(TextSimilar, new_size).to(device)
 
 #---------------------------------------------------------------------------------------------------------
     # Normalize matrices or paths before loss computation
-    #------------------------------------------------------------------------------------------------
+    #-------------------------------------------------------------------------------------------
     # Normalize and smooth alignment outputs
     NWTextFinal = normalize_func(NWTextTensor, normalize_type) * 100
     diffNWimageFinal = normalize_func(diffNWimageTensor, normalize_type) * 100
-    #------------------------------------------------------------------------------------------------
+    #-------------------------------------------------------------------------------------------
     # Path extraction
     # textNWpath, text_startPoints = diff_NW_Path(diffNWText, textSimilar,
     #                                             match_score=2, miss_score=-3, gap_penalty=-1)
@@ -114,7 +114,7 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, DiffNWA
     #                             match_score=2, miss_score=-3, gap_penalty=-1, 
     #                             position=text_startPoints)
     # diffNWimage_final = diffNWimage * imageNWpath
-    #------------------------------------------------------------------------------------------------
+    #-------------------------------------------------------------------------------------------
 #---------------------------------------------------------------------------------------------------------
     
     # Loss computation
@@ -134,8 +134,8 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, DiffNWA
     # Delete tensors to free memory
     del tokens_a, tokens_b
     del flip_tokens_a, flip_tokens_b
-    del NWTextTensor, textSimilar
-    del diffNWimageTensor, cosine_sim
+    del NWTextTensor, TextSimilar
+    del diffNWimageTensor, ImageSimilar
     torch.cuda.empty_cache()
     
     return path_loss, loss_value, NWTextFinal, diffNWimageFinal

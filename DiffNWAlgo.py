@@ -326,7 +326,7 @@ class DiffNWAlgo(nn.Module):
         # self.nw_fn_torch = jax2torch(jax.jit(nw_simple()))
     
     def reset_cosine_similarity(self):
-        self.cosine_similarity = None
+        self.ImageSimilar = None
         
     def forward(self, 
                 x1: Optional[torch.Tensor] = None, 
@@ -339,10 +339,10 @@ class DiffNWAlgo(nn.Module):
             print(f"x2 shape: {x2.shape}")
 
         if calc_cosine:
-            self.cosine_similarity = self.cosine_similarity_layer(x1, x2)
+            self.ImageSimilar = self.cosine_similarity_layer(x1, x2)
             if show_dims:
-                print(f"Cosine similarity shape: {self.cosine_similarity.shape}")
-            new_output = torch.squeeze(self.cosine_similarity, dim=0)
+                print(f"Cosine similarity shape: {self.ImageSimilar.shape}")
+            new_output = torch.squeeze(self.ImageSimilar, dim=0)
             if show_dims:
                 print(f"Squeezed cosine similarity shape: {new_output.shape}")
             # visualize_heatmap_with_values(new_output[0], title="Cosine Similarity Heatmap")
@@ -352,11 +352,11 @@ class DiffNWAlgo(nn.Module):
             if show_dims:
                 print(f"align shape: {self.align.shape}")
         else:
-            self.cosine_similarity = similarity_matrix
+            self.ImageSimilar = similarity_matrix
             if show_dims:
-                print(f"Cosine similarity shape: {self.cosine_similarity.shape}")
-            lengths = (self.cosine_similarity.shape[-2], self.cosine_similarity.shape[-1])
-            self.align = self.nw_fn_torch(self.cosine_similarity, lengths, gapScore, 100.0)
+                print(f"Cosine similarity shape: {self.ImageSimilar.shape}")
+            lengths = (self.ImageSimilar.shape[-2], self.ImageSimilar.shape[-1])
+            self.align = self.nw_fn_torch(self.ImageSimilar, lengths, gapScore, 100.0)
             if show_dims:
                 print(f"align shape: {self.align.shape}")
         
@@ -460,8 +460,8 @@ if __name__ == '__main__':
         # Compute and plot the traceback path
         # We need to get the similarity matrix from the alignment output
         # For simplicity, we'll use the cosine similarity as a proxy
-        if hasattr(alignment, 'cosine_similarity') and alignment.cosine_similarity is not None:
-            cs = alignment.cosine_similarity.detach().cpu().numpy()
+        if hasattr(alignment, 'cosine_similarity') and alignment.ImageSimilar is not None:
+            cs = alignment.ImageSimilar.detach().cpu().numpy()
             if cs.ndim == 3:
                 similarity_matrix = cs[batch_idx]
             else:
