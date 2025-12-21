@@ -76,7 +76,7 @@ def compute_accuracy(pred_path, target_path, threshold=0.5):
 
 # second line of parameters is for saving visualizations during debugging 
 def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, DiffNWAlgo, criterion, device, 
-                       loss_type='MSE', debug=False, epoch=0, batch_idx=0, dataloader_length=0):
+                       loss_type='MSE', debug=False, epoch=0, batch_idx=0, dataloader_length=0, preLoss=True):
     
     tokens_a, tokens_b = model(image1, image2, show_dims=False)
     
@@ -100,21 +100,21 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, DiffNWA
 
 #---------------------------------------------------------------------------------------------------------
     # Normalize matrices or paths before loss computation
+    if preLoss:
+        # Normalize and smooth alignment outputs
+        NWTextFinal = normalize_func(NWTextTensor, normalize_type)
+        diffNWimageFinal = normalize_func(diffNWimageTensor, normalize_type)
     #------------------------------------------------------------------------------------------------
-    # Normalize and smooth alignment outputs
-    NWTextFinal = normalize_func(NWTextTensor, normalize_type)
-    diffNWimageFinal = normalize_func(diffNWimageTensor, normalize_type)
-    #------------------------------------------------------------------------------------------------
-    # Path extraction
-    # textNWpath, text_startPoints = diff_NW_Path(diffNWText, textSimilar,
-    #                                             match_score=2, miss_score=-3, gap_penalty=-1)
-    # diffNWText_final = diffNWText * textNWpath
+    else:
+        # Path extraction
+        textNWpath, text_startPoints = diff_NW_Path(NWTextTensor, textSimilar,
+                                                    match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore)
+        NWTextFinal = NWTextTensor * textNWpath
 
-    # imageNWpath, _ = diff_NW_Path(diffNWimage, cosine_sim,
-    #                             match_score=2, miss_score=-3, gap_penalty=-1, 
-    #                             position=text_startPoints)
-    # diffNWimage_final = diffNWimage * imageNWpath
-    #------------------------------------------------------------------------------------------------
+        imageNWpath, _ = diff_NW_Path(diffNWimageTensor, cosine_sim,
+                                    match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore, 
+                                    position=text_startPoints)
+        diffNWimageFinal = diffNWimageTensor * imageNWpath
 #---------------------------------------------------------------------------------------------------------
     
     # Loss computation
@@ -144,7 +144,7 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, DiffNWA
 def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type, 
         device, normalize_type, epochs=100,
         learning_rate=1e-4, debug=False, 
-        debug_wandb=True, show_gradients=False):
+        debug_wandb=True, show_gradients=False, preLoss=True):
 
     model.train()
     optimizer = optim.Adam(list(model.parameters()), lr=learning_rate)
@@ -169,8 +169,10 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type,
             
             # Compute loss using shared function
             path_loss, loss_value, NWTextFinal, NWImageFinal = compute_batch_loss(
-                model, image1, image2, scoreMatrix, textSimilar, DiffNW, criterion, device,
-                loss_type=loss_type, debug=debug, epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader)
+                model, image1, image2, scoreMatrix, textSimilar, 
+                DiffNW, criterion, device, loss_type=loss_type, 
+                debug=debug, epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader),
+                preLoss=preLoss
             )
             
             # Compute accuracy
@@ -277,7 +279,8 @@ if __name__ == '__main__':
         learning_rate,
         debug,
         debug_wandb,
-        show_gradients
+        show_gradients,
+        preLoss=preLoss
     )
     
     if debug_wandb:
