@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Import NW_with_gap from DiffNWAlgo
-from DiffNWAlgo import NW_with_gap
+from DiffNWAlgo import *
 
 
 def main():
@@ -18,16 +18,20 @@ def main():
     ], dtype=jnp.float32)
 
     # Build the differentiable NW (non-batched) with gap penalty
-    traceback = NW_with_gap(batch=False, gap_penalty=-1)
-
+    NW_with_gap = DiffNWAlgo(
+                    match_score=matchScore, 
+                    miss_score=mismatchScore, 
+                    gap=gapScore, 
+                    batch=False
+                )
+    
+    traceback = NW_with_gap(
+                    similarity_matrix=S, 
+                    calc_cosine=True
+                )
+    
     # Run the function: returns gradient of max-score wrt S
     grad_S = traceback(S)
-
-    # Print matrices
-    # print("Similarity matrix S [4,4] (symmetric):")
-    # print(np.array(S))
-    # print("\nDiffNW 'traceback' output (gradient wrt S) [5,4]:")
-    # print(np.array(grad_S))
 
     # Visualize similarity and gradient as heatmaps
     plt.figure(figsize=(10,4))

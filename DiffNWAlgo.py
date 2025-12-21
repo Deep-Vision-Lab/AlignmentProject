@@ -62,11 +62,13 @@ def nw(batch=True, unroll=2, gap=-10.0, temp=100.0):
     ini = jnp.zeros((a,b)).at[:,0].set(ini_a).at[0,:].set(ini_b)
     output["ini"] = zero.at[i,j].set(ini)
 
-    return {"x":output,
-            "prev":(jnp.zeros(m),jnp.zeros(m)),
-            "idx":(i,j),
-            "mask":mask,
-            "L":real_L}
+    return {
+        "x":output,
+        "prev":(jnp.zeros(m),jnp.zeros(m)),
+        "idx":(i,j),
+        "mask":mask,
+        "L":real_L
+    }
 
   # fill the scoring matrix
   def sco(x, lengths, gap=-10.0, temp=1000.0):
@@ -313,17 +315,15 @@ class CosineSimilarityLayer(nn.Module):
 # Differentiable Smith-Waterman Algorithm
 
 class DiffNWAlgo(nn.Module):
-    def __init__(self, match_score, miss_score,gap=-1.0,batch=True):
+    def __init__(self, match_score, miss_score, gap, temp=100.0, batch=True):
         super(DiffNWAlgo, self).__init__()
         self.match_score = match_score
         self.miss_score = miss_score
         self.cosine_similarity_layer = CosineSimilarityLayer(matchscore= match_score,
                                                              missscore=miss_score)
-        # self.cosine_similarity_layer = nn.CosineSimilarity(dim=1, eps=1e-6)
         # Use non-batched NW because we pass a 2D [N,M] similarity matrix
-        self.nw_fn_torch = jax2torch(jax.jit(nw(batch=batch)))
+        self.nw_fn_torch = jax2torch(jax.jit(nw(batch=batch, gap=gap, temp=temp)))
 
-        # self.nw_fn_torch = jax2torch(jax.jit(nw_simple()))
     
     def reset_cosine_similarity(self):
         self.ImageSimilar = None
@@ -334,6 +334,7 @@ class DiffNWAlgo(nn.Module):
                 similarity_matrix = None, 
                 calc_cosine = True,
                 show_dims = False):
+    
         if show_dims and x1 is not None and x2 is not None:
             print(f"x1 shape: {x1.shape}")
             print(f"x2 shape: {x2.shape}")
@@ -348,7 +349,7 @@ class DiffNWAlgo(nn.Module):
             # visualize_heatmap_with_values(new_output[0], title="Cosine Similarity Heatmap")
             # Pass lengths as a tuple (N, M) and gap as positional args
             lengths = (new_output.shape[-2], new_output.shape[-1])
-            self.align = self.nw_fn_torch(new_output, lengths, gapScore, 100.0)
+            self.align = self.nw_fn_torch(new_output)
             if show_dims:
                 print(f"align shape: {self.align.shape}")
         else:
