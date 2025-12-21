@@ -7,13 +7,14 @@ from saveDATA import *
 from Parameters import *
 from Evaluation import *
 from DiffNWAlgo import *
+from wandb_config import *
 from newDataLoader import *
 from pathExtractor import *
 from embeddingModel import *
 from embeddingModel import *
 from LossFunctionWithHelpers import *
 from NormalizeFuncs import *
-from Visualization import save_debug_visualizations
+from Visualization import *
 
 import os
 import gc
@@ -21,19 +22,11 @@ import time
 import wandb
 import warnings
 
-from wandb_config import init_wandb
+from wandb_config import init_wandb, update_wandb
 
 warnings.filterwarnings("ignore")    
 
 def interpolate_NW_matrix(NWTensor, target_shape):
-    """
-    Interpolates the smith matrix to match the target shape (usually alignment output shape).
-    Args:
-        NWTensor (torch.Tensor): Smith matrix, shape [B, H, W] or [H, W]
-        target_shape (tuple): Target (H, W) shape
-    Returns:
-        torch.Tensor: Interpolated smith matrix, shape [B, H_new, W_new]
-    """
     if NWTensor.dim() == 2:
         squeezed_NW_matrix = NWTensor.unsqueeze(0).unsqueeze(0)  # [H, W] -> [1, 1, H, W]
     elif NWTensor.dim() == 3:
@@ -50,19 +43,7 @@ def interpolate_NW_matrix(NWTensor, target_shape):
 
 
 
-
 def compute_accuracy(pred_path, target_path, threshold=0.5):
-    """
-    Compute accuracy by measuring path agreement between predicted and target alignment paths.
-    
-    Args:
-        pred_path (torch.Tensor): Predicted alignment path, shape [B, H, W]
-        target_path (torch.Tensor): Target alignment path, shape [B, H, W]
-        threshold (float): Threshold for binarizing paths (default: 0.5)
-    
-    Returns:
-        accuracy (float): Percentage of matching alignment positions
-    """
     # Binarize the paths
     pred_binary = (pred_path > threshold).float()
     target_binary = (target_path > threshold).float()
@@ -74,9 +55,12 @@ def compute_accuracy(pred_path, target_path, threshold=0.5):
     return accuracy
 
 
+
 # second line of parameters is for saving visualizations during debugging 
-def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, DiffNWAlgo, criterion, device, 
-                       loss_type='MSE', debug=False, epoch=0, batch_idx=0, dataloader_length=0, preLoss=True):
+def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, 
+                       DiffNWAlgo, criterion, device, loss_type='MSE', 
+                       debug=False, epoch=0, batch_idx=0, dataloader_length=0, 
+                       preLoss=True):
     
     tokens_a, tokens_b = model(image1, image2, show_dims=False)
     
@@ -141,9 +125,9 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, DiffNWA
     return path_loss, loss_value, NWTextFinal, diffNWimageFinal
 
 
+
 def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type, 
-        device, normalize_type, epochs=100,
-        learning_rate=1e-4, debug=False, 
+        device, normalize_type, epochs=100, learning_rate=1e-4, debug=False, 
         debug_wandb=True, show_gradients=False, preLoss=True):
 
     model.train()
@@ -233,12 +217,12 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type,
         
         # Log train and validation losses and accuracies to wandb
         if debug_wandb:
-            wandb.log({
-                "train_loss": train_loss, 
-                "val_loss": val_loss,
-                "train_accuracy": train_accuracy,
-                "val_accuracy": val_accuracy
-            })
+            update_wandb(
+                train_loss, 
+                val_loss, 
+                train_accuracy, 
+                val_accuracy
+            )
         loss_lst.append(train_loss)
         
         # Set model back to training mode
@@ -260,8 +244,11 @@ if __name__ == '__main__':
         device=device
     )
 
-    DiffNW = DiffNWAlgo(match_score=matchScore, miss_score=mismatchScore, 
-                        gap=gapScore)
+    DiffNW = DiffNWAlgo(
+                    match_score=matchScore, 
+                    miss_score=mismatchScore, 
+                    gap=gapScore
+            )
     
     criterion = Loss_choice(loss_type)
     
