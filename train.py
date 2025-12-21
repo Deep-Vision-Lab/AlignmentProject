@@ -96,7 +96,7 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, DiffNWA
     diffNWimageTensor = interpolate_NW_matrix(diffNWimageTensor, new_size).to(device)
     ImageSimilar = interpolate_NW_matrix(DiffNWAlgo.ImageSimilar, new_size).to(device)
     NWTextTensor = interpolate_NW_matrix(NWTextTensor, new_size).to(device)
-    TextSimilar = interpolate_NW_matrix(TextSimilar, new_size).to(device)
+    TextSimilar = interpolate_NW_matrix(textSimilar, new_size).to(device)
 
 #---------------------------------------------------------------------------------------------------------
     # Normalize matrices or paths before loss computation
@@ -111,7 +111,7 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, DiffNWA
                                                     match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore)
         NWTextFinal = NWTextTensor * textNWpath
 
-        imageNWpath, _ = diff_NW_Path(diffNWimageTensor, cosine_sim,
+        imageNWpath, _ = diff_NW_Path(diffNWimageTensor, DiffNWAlgo.ImageSimilar,
                                     match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore, 
                                     position=text_startPoints)
         diffNWimageFinal = diffNWimageTensor * imageNWpath
