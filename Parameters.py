@@ -12,7 +12,7 @@ epochs = 300
 learning_rate = 1e-4
 
 # Data parameters
-window_size = 16
+window_size = 64
 vector_size = 128
 
 # Debugging and visualization parameters
