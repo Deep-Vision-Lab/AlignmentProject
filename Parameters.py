@@ -2,7 +2,7 @@ import torch
 
 # Model parameters
 loss_type = 'MSE' # ['HeightDiff', 'MSE', 'GuidedAttention', 'KL-Divergence', 'Dice', 'Wasserstein']
-model_arch = 'CNN' # ['CNN-Transformer', 'CNN', 'Transformer']
+model_arch = 'dinov2' # ['CNN-Transformer', 'CNN', 'dinov2', 'Transformer']
 normalize_type = 'average' # ['min_max', 'mean_std', 'average']
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
