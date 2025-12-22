@@ -96,7 +96,7 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
                                                         match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore)
         else:
             textNWpath, text_startPoints = diff_NW_Path(NWTextTensor, textSimilar,
-                                                        match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore):
+                                                        match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore)
 
         NWTextFinal = NWTextTensor * textNWpath
 
