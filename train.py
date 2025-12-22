@@ -91,8 +91,13 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
     #------------------------------------------------------------------------------------------------
     else:
         # Path extraction
-        textNWpath, text_startPoints = diff_NW_Path(NWTextTensor, textSimilar,
-                                                    match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore)
+        if Regular_ScoreMatrix_Load:
+            textNWpath, text_startPoints = NW_Path(NWTextTensor, TextSimilar,
+                                                        match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore)
+        else:
+            textNWpath, text_startPoints = diff_NW_Path(NWTextTensor, textSimilar,
+                                                        match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore):
+
         NWTextFinal = NWTextTensor * textNWpath
 
         imageNWpath, _ = diff_NW_Path(diffNWimageTensor, DiffNWAlgo.ImageSimilar,

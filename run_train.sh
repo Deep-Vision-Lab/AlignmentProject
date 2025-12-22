@@ -15,23 +15,30 @@ echo "Loss Type: ${LOSS_TYPE}"
 echo "Model Architecture: ${MODEL_ARCH}"
 echo ""
 
-echo "====================================="
-echo "Cleaning training directories..."
-echo "====================================="
+# Check if debug mode is enabled
+DEBUG_MODE=$(python3 -c "import Parameters; print(Parameters.debug)")
 
-# Run clean_dirs_train.sh
-bash ./Clean/clean_dirs_train.sh "${LOSS_TYPE}" "${MODEL_ARCH}"
+if [ "${DEBUG_MODE}" = "True" ]; then
+    echo "====================================="
+    echo "Cleaning training directories..."
+    echo "====================================="
 
-echo ""
-echo "====================================="
-echo "Cleaning weights..."
-echo "====================================="
+    # Run clean_dirs_train.sh
+    bash ./Clean/clean_dirs_train.sh "${LOSS_TYPE}" "${MODEL_ARCH}"
 
-# Run clean_weights.sh
-bash ./Clean/clean_weights.sh "${LOSS_TYPE}" "${MODEL_ARCH}"
+    echo ""
+    echo "====================================="
+    echo "Cleaning weights..."
+    echo "====================================="
 
-echo ""
-echo "Cleaning completed!"
+    # Run clean_weights.sh
+    bash ./Clean/clean_weights.sh "${LOSS_TYPE}" "${MODEL_ARCH}"
+
+    echo ""
+    echo "Cleaning completed!"
+else
+    echo "Debug mode is disabled, skipping cleaning steps."
+fi
 
 echo ""
 echo "====================================="
