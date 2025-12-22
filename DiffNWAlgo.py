@@ -319,6 +319,7 @@ class DiffNWAlgo(nn.Module):
         super(DiffNWAlgo, self).__init__()
         self.match_score = match_score
         self.miss_score = miss_score
+        self.temp = temp
         self.cosine_similarity_layer = CosineSimilarityLayer(matchscore= match_score,
                                                              missscore=miss_score)
         # Use non-batched NW because we pass a 2D [N,M] similarity matrix
@@ -349,7 +350,7 @@ class DiffNWAlgo(nn.Module):
             # visualize_heatmap_with_values(new_output[0], title="Cosine Similarity Heatmap")
             # Pass lengths as a tuple (N, M) and gap as positional args
             lengths = (new_output.shape[-2], new_output.shape[-1])
-            self.align = self.nw_fn_torch(new_output)
+            self.align = self.nw_fn_torch(new_output, lengths, gapScore, self.temp)
             if show_dims:
                 print(f"align shape: {self.align.shape}")
         else:
