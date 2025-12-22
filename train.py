@@ -55,6 +55,12 @@ def compute_accuracy(pred_path, target_path, threshold=0.5):
     return accuracy
 
 
+def save_model_weights(model, loss_type, model_arch, epoch):
+    weights_dir = os.path.join(os.path.dirname(__file__), "Weights", loss_type, model_arch)
+    os.makedirs(weights_dir, exist_ok=True)
+    weights_path = os.path.join(weights_dir, f"model_epoch_{epoch}.pth")
+    torch.save(model.state_dict(), weights_path)
+
 
 # second line of parameters is for saving visualizations during debugging 
 def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, 
@@ -89,12 +95,14 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
         NWTextFinal = normalize_func(NWTextTensor, normalize_type)
         diffNWimageFinal = normalize_func(diffNWimageTensor, normalize_type)
     #------------------------------------------------------------------------------------------------
+    # Path extraction
     else:
-        # Path extraction
+        # Extract paths using Needleman-Wunsch algorithm
         if Regular_ScoreMatrix_Load:
             textNWpath, text_startPoints = NW_Path(NWTextTensor, TextSimilar,
                                                         match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore)
         else:
+        # Extract paths using Differentiable Needleman-Wunsch algorithm
             textNWpath, text_startPoints = diff_NW_Path(NWTextTensor, textSimilar,
                                                         match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore)
 
@@ -117,6 +125,8 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
         save_debug_visualizations(model, image1, image2, tokens_a, tokens_b, 
                                   NWTextTensor, diffNWimageTensor, DiffNWAlgo, 
                                   loss_type, epoch, batch_idx)
+        # Save model weights
+        save_model_weights(model, loss_type, model_arch, epoch)
 
     ######################################################################################################################################
 
