@@ -73,6 +73,14 @@ class EmbeddingModel(nn.Module):
         
         self.model_arch = model_arch
         self.device = device
+        if model_arch == 'dinov2':
+            self.dinov2 = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
+            self.dinov2 = self.dinov2.to(device)
+            # dinov2_vits14 outputs 384 features
+            self.feature_proj = nn.Linear(384, vector_size).to(device)
+            self.dinov2_batch_size = 32  # Process patches in mini-batches to save memory
+            # CNN to merge batch and windows dimensions instead of reshape
+            self.patch_conv = nn.Conv2d(3, 1,kernel_size=3, padding=1).to(device)
 
         if model_arch == 'CNN-Transformer' or model_arch == 'CNN':
             self.cnn_encoder = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)
@@ -168,6 +176,54 @@ class EmbeddingModel(nn.Module):
         
         return featured_tokens_a, featured_tokens_b
 
+    def _process_dinov2_branch(self, tokens_a, tokens_b, show_dims=False):
+        """Process DINOv2 branch"""
+        batches_num, windows_num, Channels, H, W = tokens_a.shape
+        
+        # Use CNN to process patches - flatten batch and windows, apply conv, then process
+        # First flatten to [B*W, C, H, W] using view (preserves gradients)
+        tokens_a = tokens_a.reshape(batches_num * windows_num, Channels, H, W)
+        tokens_b = tokens_b.reshape(batches_num * windows_num, Channels, H, W)
+        if show_dims:
+            print(f"Patches after reshaping: {tokens_a.shape}, {tokens_b.shape}")
+        # # Apply learnable CNN projection
+        # tokens_a = self.patch_conv(tokens_a).squeeze()
+        # tokens_b = self.patch_conv(tokens_b).squeeze()
+        # if show_dims: 
+        #     print(f"Patches after patch conv: {tokens_a.shape}, {tokens_b.shape}")
+
+        # # Reshape back to [B, W, H, W] for further processing
+        # tokens_a = tokens_a.reshape(batches_num, windows_num, H, W)
+        # tokens_b = tokens_b.reshape(batches_num, windows_num, H, W)
+
+        # DINOv2 requires input dimensions to be multiples of 14 (patch size)
+        # Resize patches to nearest multiple of 14 that's >= current size
+        target_size = max(14, ((max(H, W) + 13) // 14) * 14)
+        tokens_a = F.interpolate(tokens_a, size=(target_size, target_size), mode='bilinear', align_corners=False)
+        tokens_b = F.interpolate(tokens_b, size=(target_size, target_size), mode='bilinear', align_corners=False)
+        
+        if show_dims:
+            print(f"Patches after resizing for DINOv2: {tokens_a.shape}, {tokens_b.shape}")
+        
+        # Run DINOv2
+        feat_a = self.dinov2(tokens_a)
+        feat_b = self.dinov2(tokens_b)
+        
+        # Project to desired vector size
+        featured_tokens_a = self.feature_proj(feat_a)
+        featured_tokens_b = self.feature_proj(feat_b)
+        
+        if show_dims:
+            print(f"After DINOv2: {featured_tokens_a.shape}, {featured_tokens_b.shape}")
+        
+        # Reshape to [batch, windows, vector_size]
+        features_vector_a = featured_tokens_a.reshape(batches_num, windows_num, self.vector_size)
+        features_vector_b = featured_tokens_b.reshape(batches_num, windows_num, self.vector_size)
+        
+        del featured_tokens_a, featured_tokens_b
+        
+        return features_vector_a, features_vector_b
+
     def forward(self, image_a, image_b, show_dims=False, debug=False):
         # Extract patches
         tokens_a = sliding_window(image_a, self.window_size, self.stride, debug_mode=debug).to(device)
@@ -194,36 +250,35 @@ class EmbeddingModel(nn.Module):
             encoded_tokens_a, encoded_tokens_b, batches_num, windows_num = self._process_transformer_branch(
                 tokens_a, tokens_b, show_dims
             )
-        
+        elif self.model_arch == 'dinov2':
+            # DINOv2 model processing
+            features_vector_a, features_vector_b = self._process_dinov2_branch(
+                tokens_a, tokens_b, show_dims
+            )
         # CNN-Transformer or Transformer: process through transformer encoder
         if self.model_arch == 'CNN-Transformer' or self.model_arch == 'Transformer':
             featured_tokens_a, featured_tokens_b = self._process_transformer_encoder(
                 encoded_tokens_a, encoded_tokens_b, show_dims
             )
-            
-            # Final reshape
-            features_vector_a = featured_tokens_a.view(batches_num, windows_num, self.vector_size)
-            features_vector_b = featured_tokens_b.view(batches_num, windows_num, self.vector_size)
-            del featured_tokens_a, featured_tokens_b
         return features_vector_a, features_vector_b
 
 
 # Example usage
 if __name__ == "__main__":
     # Simulate grayscale image inputs
-    image_a = torch.randn(8, 3, 224, 1024).to('cuda') # Batch of 32 grayscale images
-    image_b = torch.randn(8, 3, 224, 1024).to('cuda')
+    image_a = torch.randn(4, 3, 128, 1024).to('cuda') # Batch of 32 grayscale images
+    image_b = torch.randn(4, 3, 128, 1024).to('cuda')
     
     # Instantiate the alignment model
     model = EmbeddingModel(
         window_size=16,
         stride=8, 
         vector_size=64,
-        model_arch='CNN'
-    ).to('cuda') # ['CNN-Transformer','CNN','Transformer']
+        model_arch='dinov2'
+    ).to('cuda') # ['CNN-Transformer','CNN', 'dinov2', 'Transformer']
 
     # Forward pass: get token sequences for both images
-    tokens_a, tokens_b = model(image_a, image_b,  show_dims=False)
+    tokens_a, tokens_b = model(image_a, image_b,  show_dims=True)
     
     # Output token shapes
     print(f"Tokens A shape: {tokens_a.shape}")

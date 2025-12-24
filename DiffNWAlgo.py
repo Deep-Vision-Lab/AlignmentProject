@@ -262,7 +262,7 @@ class CosineSimilarityLayer(nn.Module):
         # self.powerbase = 3 # This was defined in your code but not used.
                            # If you intend to use it, ensure it's part of the computation.
 
-    def forward(self, x1, x2):
+    def forward(self, x1, x2, threshold=0.5):
         # Ensure input tensors have the same feature dimension (last dimension)
         # Original check was x1.shape[1] (sequence length), which might not be the intent.
         if x1.shape[2] != x2.shape[2]: 
@@ -294,13 +294,15 @@ class CosineSimilarityLayer(nn.Module):
         del magnitude_x1, magnitude_x2, magnitude_x2_transposed
         
         cosine_similarity = dot_product / denominator  # shape (batch_size, N, M)
+        comp_cosine_similarity = 1 - cosine_similarity
         del dot_product, denominator
 
-        comp_cosine_similarity = 1 - cosine_similarity
-
+        # threshold_cosine_similarity = comp_cosine_similarity
+        threshold_cosine_similarity = torch.sigmoid(10e6 * (cosine_similarity - threshold))
+        threshold_comp_cosine_similarity = torch.sigmoid(10e6 * (comp_cosine_similarity - threshold))
         # Multiply by matchscore and missscore
-        match_score_contribution = cosine_similarity * self.matchscore
-        miss_score_contribution = comp_cosine_similarity * self.missscore # missscore is typically negative
+        match_score_contribution = threshold_cosine_similarity * self.matchscore
+        miss_score_contribution = threshold_comp_cosine_similarity * self.missscore # missscore is typically negative
         del cosine_similarity, comp_cosine_similarity
 
         # Sum match and miss scores to get the final score
@@ -433,7 +435,7 @@ if __name__ == '__main__':
     alignment = DiffNWAlgo(match_score=matchScore, miss_score=mismatchScore, 
                            gap=gapScore, batch=False)
     # Get the cosine similarity output
-    output = alignment(x1, x2)
+    output = alignment(x1, x2, calc_cosine=True)
     print(output.shape)
     
     # Visualize the output as a heatmap
@@ -462,21 +464,17 @@ if __name__ == '__main__':
         # Compute and plot the traceback path
         # We need to get the similarity matrix from the alignment output
         # For simplicity, we'll use the cosine similarity as a proxy
-        if hasattr(alignment, 'cosine_similarity') and alignment.ImageSimilar is not None:
-            cs = alignment.ImageSimilar.detach().cpu().numpy()
-            if cs.ndim == 3:
-                similarity_matrix = cs[batch_idx]
-            else:
-                similarity_matrix = cs
+        cs = alignment.ImageSimilar.detach().cpu().numpy()
+        if cs.ndim == 3:
+            similarity_matrix = cs[batch_idx]
         else:
-            # Fallback: use the output matrix itself as similarity matrix
-            similarity_matrix = matrix
+            similarity_matrix = cs
         
         # Visualize the similarity matrix
         plt.figure(figsize=(12, 8))
         plt.imshow(similarity_matrix, cmap='coolwarm', aspect='auto')
         plt.colorbar(label='Cosine Similarity Score')
-        plt.title(f'Cosine Similarity Matrix - Batch {batch_idx}')
+        plt.title(f'Cosine Similarity Matrix')
         plt.xlabel('Sequence 2 Position')
         plt.ylabel('Sequence 1 Position')
         # Use characters as axis tick labels
@@ -489,16 +487,10 @@ if __name__ == '__main__':
         except Exception:
             pass
         annotate_all(similarity_matrix, fmt=".3f")
-        
-        # Add values to each cell for better readability (skip for large matrices)
-        if similarity_matrix.shape[0] <= 20 and similarity_matrix.shape[1] <= 20:
-            for (i, j), val in np.ndenumerate(similarity_matrix):
-                plt.text(j, i, f"{val:.3f}", ha='center', va='center', 
-                        color='white' if abs(val) < 0.1 else 'black', fontsize=8)
-        
         plt.tight_layout()
-        plt.savefig(os.path.join(OUTPUT_DIR, f'similarity_matrix_batch_{batch_idx}.png'), dpi=150)
+        plt.savefig(os.path.join(OUTPUT_DIR, f'similarity_matrix.png'), dpi=150)
         plt.close()
+
     # Heatmap for DiffNWAlgo result (first matrix if batched)
     diff_matrix = output_np if output_np.ndim == 2 else output_np[0]
     plt.figure(figsize=(12, 8))

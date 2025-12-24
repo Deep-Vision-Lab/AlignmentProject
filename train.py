@@ -34,7 +34,7 @@ def interpolate_NW_matrix(NWTensor, target_shape):
     else:
         raise ValueError(f"Unexpected NW matrix shape: {NWTensor.shape}")
     
-    interpolated_NW_matrix = F.interpolate(squeezed_NW_matrix, size=target_shape, mode='bilinear')
+    interpolated_NW_matrix = F.interpolate(squeezed_NW_matrix, size=target_shape, mode='nearest')
     squeezed_interpolated_NW_matrix = interpolated_NW_matrix.squeeze(1)  # Remove channel dim
     
     del NWTensor, squeezed_NW_matrix, interpolated_NW_matrix
@@ -81,16 +81,17 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
     # Use smaller interpolation size
     new_height = min(diffNWimageTensor.shape[1], NWTextTensor.shape[1])
     new_width = min(diffNWimageTensor.shape[2], NWTextTensor.shape[2])
-    new_size = (new_height, new_width)
+    new_size = (NWTextTensor.shape[1], NWTextTensor.shape[2])
 
     diffNWimageTensor = interpolate_NW_matrix(diffNWimageTensor, new_size).to(device)
     ImageSimilar = interpolate_NW_matrix(DiffNWAlgo.ImageSimilar, new_size).to(device)
+
     NWTextTensor = interpolate_NW_matrix(NWTextTensor, new_size).to(device)
     TextSimilar = interpolate_NW_matrix(textSimilar, new_size).to(device)
 
 #---------------------------------------------------------------------------------------------------------
     # Normalize matrices or paths before loss computation
-    if preLoss:
+    if Normalize:
         # Normalize and smooth alignment outputs
         NWTextFinal = normalize_func(NWTextTensor, normalize_type)
         diffNWimageFinal = normalize_func(diffNWimageTensor, normalize_type)
@@ -103,12 +104,11 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
                                                         match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore)
         else:
         # Extract paths using Differentiable Needleman-Wunsch algorithm
-            textNWpath, text_startPoints = diff_NW_Path(NWTextTensor, textSimilar,
+            textNWpath, text_startPoints = diff_NW_Path(NWTextTensor, TextSimilar,
                                                         match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore)
-
         NWTextFinal = NWTextTensor * textNWpath
 
-        imageNWpath, _ = diff_NW_Path(diffNWimageTensor, DiffNWAlgo.ImageSimilar,
+        imageNWpath, _ = diff_NW_Path(diffNWimageTensor, ImageSimilar,
                                     match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore, 
                                     position=text_startPoints)
         diffNWimageFinal = diffNWimageTensor * imageNWpath
@@ -162,16 +162,15 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type,
             image1 = image1.to(device, non_blocking=True)
             image2 = image2.to(device, non_blocking=True)
             scoreMatrix = scoreMatrix.to(device, non_blocking=True)
-            textSimilar = textSimilar.to(device, non_blocking=True)
-            
+            textSimilar = textSimilar.to(device, non_blocking=True)  
             optimizer.zero_grad()
             
             # Compute loss using shared function
             path_loss, loss_value, NWTextFinal, NWImageFinal = compute_batch_loss(
-                model, image1, image2, scoreMatrix, textSimilar, 
+                model, image1, image2, scoreMatrix, textSimilar,
                 DiffNW, criterion, device, loss_type=loss_type, 
                 debug=debug, epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader),
-                preLoss=preLoss
+                preLoss=Normalize
             )
             
             # Compute accuracy
@@ -186,6 +185,10 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type,
             optimizer.step()
 
             print(f"Epoch {epoch+1}, Batch {batch_idx+1}, Loss: {train_loss / (batch_idx + 1):.4f}", flush=True)
+            # Optionally print gradients for debugging
+            if show_gradients:
+                if image1.grad is not None and image2.grad is not None:
+                    print(f"Epoch {epoch+1}, Batch {batch_idx+1} - image1 gradient: {image1.grad.sum():.4f}, image2 gradient: {image2.grad.sum():.4f}", flush=True)
 
             # Final cleanup
             del path_loss
@@ -282,7 +285,7 @@ if __name__ == '__main__':
         debug,
         debug_wandb,
         show_gradients,
-        preLoss=preLoss
+        preLoss=Normalize
     )
     
     

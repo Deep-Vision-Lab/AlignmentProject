@@ -18,8 +18,11 @@ from embeddingModel import *
 def save_debug_visualizations(model, image1, image2, tokens_a, tokens_b, NWTextTensor, diffNWimage, 
                                DiffNWAlgo, loss_type, epoch, batch_idx):
     # Prepare directories for saving visualizations
-    vectors_epoch_dir = f'TrainResults/{loss_type}/SimilarityMatricesPerEpoch/{model.model_arch}/Epoch_{epoch}'
-    matrices_epoch_dir = f'TrainResults/{loss_type}/ScoreMatricesPerEpoch/{model.model_arch}/Epoch_{epoch}'
+    loss_dir = f'TrainResults/{loss_type}'
+    os.makedirs(loss_dir, exist_ok=True)
+
+    vectors_epoch_dir = f'{loss_dir}/SimilarityMatricesPerEpoch/{model.model_arch}/Epoch_{epoch}'
+    matrices_epoch_dir = f'{loss_dir}/ScoreMatricesPerEpoch/{model.model_arch}/Epoch_{epoch}'
     os.makedirs(vectors_epoch_dir, exist_ok=True)
     os.makedirs(matrices_epoch_dir, exist_ok=True)
 
