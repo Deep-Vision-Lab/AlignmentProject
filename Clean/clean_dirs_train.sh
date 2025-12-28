@@ -12,7 +12,7 @@ ARCHITECTURE="$2"
 # List of directories to clean (relative to Results/{LOSS_TYPE}/)
 DIRS_TO_CLEAN=(
   "ScoreMatricesPerEpoch"
-  "VectorsPerEpoch"
+  "SimilarityMatricesPerEpoch"
 )
 
 echo "Cleaning the following directories under Results/${LOSS_TYPE}:"

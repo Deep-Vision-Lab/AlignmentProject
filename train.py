@@ -84,10 +84,10 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
     new_size = (NWTextTensor.shape[1], NWTextTensor.shape[2])
 
     diffNWimageTensor = interpolate_NW_matrix(diffNWimageTensor, new_size).to(device)
-    ImageSimilar = interpolate_NW_matrix(DiffNWAlgo.ImageSimilar, new_size).to(device)
+    Interpolated_ImageSimilar = interpolate_NW_matrix(DiffNWAlgo.ImageSimilar, new_size).to(device)
 
     NWTextTensor = interpolate_NW_matrix(NWTextTensor, new_size).to(device)
-    TextSimilar = interpolate_NW_matrix(textSimilar, new_size).to(device)
+    Interpolated_TextSimilar = interpolate_NW_matrix(textSimilar, new_size).to(device)
 
 #---------------------------------------------------------------------------------------------------------
     # Normalize matrices or paths before loss computation
@@ -100,15 +100,15 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
     else:
         # Extract paths using Needleman-Wunsch algorithm
         if Regular_ScoreMatrix_Load:
-            textNWpath, text_startPoints = NW_Path(NWTextTensor, TextSimilar,
+            textNWpath, text_startPoints = NW_Path(NWTextTensor, Interpolated_TextSimilar,
                                                         match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore)
         else:
         # Extract paths using Differentiable Needleman-Wunsch algorithm
-            textNWpath, text_startPoints = diff_NW_Path(NWTextTensor, TextSimilar,
+            textNWpath, text_startPoints = diff_NW_Path(NWTextTensor, Interpolated_TextSimilar,
                                                         match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore)
         NWTextFinal = NWTextTensor * textNWpath
 
-        imageNWpath, _ = diff_NW_Path(diffNWimageTensor, ImageSimilar,
+        imageNWpath, _ = diff_NW_Path(diffNWimageTensor, Interpolated_ImageSimilar,
                                     match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore, 
                                     position=text_startPoints)
         diffNWimageFinal = diffNWimageTensor * imageNWpath
@@ -120,11 +120,19 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
     
     ######################################################################################################################################
     # Debugging: Save visualizations for the last batch every 10 epochs
-
     if debug and batch_idx == dataloader_length - 1 and epoch % 10 == 0:
-        save_debug_visualizations(model, image1, image2, tokens_a, tokens_b, 
-                                  NWTextTensor, diffNWimageTensor, DiffNWAlgo, 
-                                  loss_type, epoch, batch_idx)
+        original_diffNWImageSimilar = DiffNWAlgo.ImageSimilar
+        interpolated_diffNWImageSimilar = Interpolated_ImageSimilar
+        original_NWTextSimilar = textSimilar
+        interpolated_NWTextSimilar = Interpolated_TextSimilar
+
+        save_debug_visualizations(
+                model, image1, image2, tokens_a, tokens_b, 
+                NWTextTensor, diffNWimageTensor,
+                original_diffNWImageSimilar, interpolated_diffNWImageSimilar,
+                original_NWTextSimilar, interpolated_NWTextSimilar, 
+                loss_type, epoch, batch_idx)
+        
         # Save model weights
         save_model_weights(model, loss_type, model_arch, epoch)
 
@@ -133,8 +141,8 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
     # Delete tensors to free memory
     del tokens_a, tokens_b
     del flip_tokens_a, flip_tokens_b
-    del NWTextTensor, TextSimilar
-    del diffNWimageTensor, ImageSimilar
+    del NWTextTensor, Interpolated_TextSimilar
+    del diffNWimageTensor, Interpolated_ImageSimilar
     torch.cuda.empty_cache()
     
     return path_loss, loss_value, NWTextFinal, diffNWimageFinal
