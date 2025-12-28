@@ -70,8 +70,8 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
     
     tokens_a, tokens_b = model(image1, image2, show_dims=False)
     
-    flip_tokens_a = torch.flip(tokens_a, dims=[1])
-    flip_tokens_b = torch.flip(tokens_b, dims=[1])
+    flip_tokens_a = torch.flip(tokens_a, dims=[-2])
+    flip_tokens_b = torch.flip(tokens_b, dims=[-2])
 
     # Running the DiffNW Algorithm
     DiffNWAlgo.reset_cosine_similarity()
