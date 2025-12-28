@@ -15,8 +15,11 @@ from embeddingModel import *
 
 
 
-def save_debug_visualizations(model, image1, image2, tokens_a, tokens_b, NWTextTensor, diffNWimage, 
-                               DiffNWAlgo, loss_type, epoch, batch_idx):
+def save_debug_visualizations(model, image1, image2, tokens_a, tokens_b, 
+                            NWTextTensor, diffNWimage,
+                            original_diffNWImageSimilar, interpolated_diffNWImageSimilar,
+                            original_NWTextSimilar, interpolated_NWTextSimilar,
+                            loss_type, epoch, batch_idx):
     # Prepare directories for saving visualizations
     loss_dir = f'TrainResults/{loss_type}'
     os.makedirs(loss_dir, exist_ok=True)
@@ -29,58 +32,68 @@ def save_debug_visualizations(model, image1, image2, tokens_a, tokens_b, NWTextT
     # Clone tensors for visualization to avoid affecting gradients
     debug_image1 = image1.detach().cpu()
     debug_image2 = image2.detach().cpu()
-    debug_diffNWText = NWTextTensor.detach().cpu()
+    debug_NWText = NWTextTensor.detach().cpu()
     debug_diffNWimage = diffNWimage.detach().cpu()
-
-    # debug_diffNWText is only available during training if calc_cosine=False in Alignment
-    if hasattr(DiffNWAlgo, 'similarity_matrix'):
-        debug_NWTextSimilar = DiffNWAlgo.similarity_matrix.clone().detach()
-    else:
-        debug_NWTextSimilar = None
-
-    # original_text1_batch and original_text2_batch are only available during training if calc_cosine=False in Alignment
-    if hasattr(DiffNWAlgo, 'original_text1_batch') and hasattr(DiffNWAlgo, 'original_text2_batch'):
-        original_text1_batch = DiffNWAlgo.original_text1_batch
-        original_text2_batch = DiffNWAlgo.original_text2_batch
-    else:
-        original_text1_batch = None
-        original_text2_batch = None
+    debug_original_diffNWImageSimilar = original_diffNWImageSimilar.detach().cpu()
+    debug_interpolated_diffNWImageSimilar = interpolated_diffNWImageSimilar.detach().cpu()
+    debug_original_NWTextSimilar = original_NWTextSimilar.detach().cpu()
+    debug_interpolated_NWTextSimilar = interpolated_NWTextSimilar.detach().cpu()
 
     # Save heatmap visualizations
-    saveHeatmapPlots(model, debug_image1, debug_image2, 
-                    vectors_epoch_dir, epoch, batch_idx,
-                    debug_diffNWimage, 
-                    debug_diffNWText, 
-                    debug_NWTextSimilar, 
-                    matrices_epoch_dir, original_text1_batch,
-                    original_text2_batch)
+    saveHeatmapPlots(
+        model, debug_image1, debug_image2, vectors_epoch_dir, epoch, batch_idx,
+        debug_diffNWimage, debug_NWText, 
+        debug_original_diffNWImageSimilar, debug_interpolated_diffNWImageSimilar,
+        debug_original_NWTextSimilar, debug_interpolated_NWTextSimilar, 
+        matrices_epoch_dir
+    )
 
     del debug_image1, debug_image2
-    del debug_diffNWimage, debug_diffNWText
+    del debug_diffNWimage, debug_NWText
     del vectors_epoch_dir, matrices_epoch_dir
-    del original_text1_batch, original_text2_batch
-    if debug_NWTextSimilar is not None:
-        del debug_NWTextSimilar
+    del debug_original_diffNWImageSimilar, debug_interpolated_diffNWImageSimilar
+    del debug_original_NWTextSimilar, debug_interpolated_NWTextSimilar
 
 
 
-def saveHeatmapPlots(model, image1, image2, vectors_epoch_dir, epoch, batch_idx, 
-                    debug_diffNWimage, debug_NWTextMatrix, debug_NWTextSimilar,
-                    matrices_epoch_dir, original_text1_batch, original_text2_batch):
+def saveHeatmapPlots(model, image1, image2, similarity_epoch_dir, epoch, batch_idx, 
+                    debug_diffNWimage, debug_NWTextMatrix, 
+                    debug_original_diffNWImageSimilar, debug_interpolated_diffNWImageSimilar,
+                    debug_original_NWTextSimilar, debug_interpolated_NWTextSimilar, 
+                    matrices_epoch_dir):
     for i in range(image1.size(0)): # Iterate through items in the current batch
-        # Save similarity matrices as heatmaps
+        similarity_dir_per_batch = f'{similarity_epoch_dir}/{i}'
+        os.makedirs(similarity_dir_per_batch, exist_ok=True)
+        # Save Image similarity matrix heatmap
+        image_similarity = f'{similarity_epoch_dir}/{i}/ImageDomain'
+        os.makedirs(image_similarity, exist_ok=True)
+        visualize_heatmap(
+            debug_original_diffNWImageSimilar[i],
+            f"Original Image Similarity Matrix Heatmap",
+            f'{image_similarity}/OriginalImageSimilarityMatrixEpoch_{epoch+1}_batch_{batch_idx}_item_{i}.png'
+        )
         # Save Image similarity matrix heatmap
         visualize_heatmap(
-            debug_diffNWimage[i],
-            f"Image Similarity Matrix Heatmap",
-            f'{vectors_epoch_dir}/ImageSimilarityMatrixEpoch_{epoch+1}_batch_{batch_idx}_item_{i}.png'
+            debug_interpolated_diffNWImageSimilar[i],
+            f"Interpolated Image Similarity Matrix Heatmap",
+            f'{image_similarity}/InterpolatedImageSimilarityMatrixEpoch_{epoch+1}_batch_{batch_idx}_item_{i}.png'
         )
-        # Save Text similarity matrix heatmap
+
+        text_similarity = f'{similarity_epoch_dir}/{i}/TextDomain'
+        os.makedirs(text_similarity, exist_ok=True)
+        # Save Original Text similarity matrix heatmap
         visualize_heatmap(
-            debug_NWTextMatrix[i],
-            f"Text Similarity Matrix Heatmap",
-            f'{vectors_epoch_dir}/TextSimilarityMatrixEpoch_{epoch+1}_batch_{batch_idx}_item_{i}.png'
+            debug_original_NWTextSimilar[i],
+            f"Original Text Similarity Matrix Heatmap",
+            f'{text_similarity}/OriginalTextSimilarityMatrixEpoch_{epoch+1}_batch_{batch_idx}_item_{i}.png'
         )
+        # Save Interpolated Text similarity matrix heatmap
+        visualize_heatmap(
+            debug_interpolated_NWTextSimilar[i],
+            f"Interpolated Text Similarity Matrix Heatmap",
+            f'{text_similarity}/InterpolatedTextSimilarityMatrixEpoch_{epoch+1}_batch_{batch_idx}_item_{i}.png'
+        )
+
         # Generate patches for visualization
         image1_i = image1[i].unsqueeze(0)
         image2_i = image2[i].unsqueeze(0)
@@ -95,14 +108,14 @@ def saveHeatmapPlots(model, image1, image2, vectors_epoch_dir, epoch, batch_idx,
         # Extract paths using diff_NW_Path for visualization
         textPath, _ = NW_Path(
             debug_NWTextMatrix[i:i+1], 
-            debug_NWTextMatrix[i:i+1], 
+            debug_interpolated_NWTextSimilar[i:i+1], 
             match_score=matchScore, 
             miss_score=mismatchScore, 
             gap_penalty=gapScore
         )
         imagePath, _ = diff_NW_Path(
             debug_diffNWimage[i:i+1], 
-            debug_diffNWimage[i:i+1], 
+            debug_interpolated_diffNWImageSimilar[i:i+1], 
             match_score=matchScore, 
             miss_score=mismatchScore, 
             gap_penalty=gapScore
@@ -118,48 +131,6 @@ def saveHeatmapPlots(model, image1, image2, vectors_epoch_dir, epoch, batch_idx,
             patches_y=y_heatmap,
             patches_x=x_heatmap
         )
-
-        # Only run the following if debug_NWTextSimilar is not None
-        if debug_NWTextSimilar is not None:
-            # New visualization: Raw Smith-Waterman matrix (before interpolation)
-            # with original character sequences as axes. seq1 on X, seq2 on Y.
-            debug_NWTextSimilar_i = debug_NWTextSimilar[i] # Shape [H_orig, W_orig]
-            original_text1_batch_i = original_text1_batch[i] # string for seq1
-            original_text2_batch_i = original_text2_batch[i] # string for seq2
-
-            # Use NW_Path instead of makeTracerouteMatrixBinary
-            smith_original_path_tensor, _ = NW_Path(
-                                                    debug_NWTextSimilar_i.unsqueeze(0), 
-                                                    debug_NWTextSimilar_i.unsqueeze(0),
-                                                    match_score=matchScore, 
-                                                    miss_score=mismatchScore, 
-                                                    gap_penalty=gapScore
-                                            )
-            smith_original_path_np = smith_original_path_tensor[0].cpu().numpy()
-
-            # NW matrix has text1 along rows, text2 along columns.
-            # To put text1 (seq1) on X-axis and text2 (seq2) on Y-axis, we need to transpose.
-            scores_matrix_to_plot = debug_NWTextSimilar_i.T
-            path_matrix_to_plot = torch.tensor(smith_original_path_np).T
-
-            # Labels for axes: X-axis for seq1 (original_text1), Y-axis for seq2 (original_text2)
-            x_char_labels = ['ø'] + list(original_text1_batch_i.replace(" ", "")) # 'ø' for the initial empty string state
-            y_char_labels = ['ø'] + list(original_text2_batch_i.replace(" ", ""))
-            filename_char_level_smith_dual = f"{matrices_epoch_dir}/ScoreMatrixPathEpoch_{epoch+1}_batch_{batch_idx}_item_{i}.png"
-            VisualizeDualCharHeatmaps(
-                scores_matrix_to_plot,
-                path_matrix_to_plot,
-                x_labels=x_char_labels,
-                y_labels=y_char_labels,
-                image_path=filename_char_level_smith_dual,
-                title1=f"NW Scores {i}",
-                title2=f"NW Path {i}"
-            )
-            
-            del debug_NWTextSimilar_i, original_text1_batch_i, original_text2_batch_i
-            del smith_original_path_tensor, smith_original_path_np
-            del scores_matrix_to_plot, path_matrix_to_plot
-            del x_char_labels, y_char_labels, filename_char_level_smith_dual
         del windows_img1, windows_img2, y_heatmap, x_heatmap
         del textPath, imagePath
         del image1_i, image2_i
@@ -188,19 +159,23 @@ def visualize_paths(ImagePathMatrix, TextPathMatrix=None, epoch=0, batch_idx=0):
 
 def visualize_heatmap(pathMatrix, title,image_path):
     pathMatrix = pathMatrix.cpu().detach().numpy()
-
-    # Normalize the path for heatmap visualization
-    # pathMatrix = (pathMatrix - pathMatrix.min()) / (pathMatrix.max() - pathMatrix.min() + 1e-6)
-
     # Plot heatmap
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(pathMatrix, cmap='jet', linewidths=0.1, linecolor='black')
+    plt.figure(figsize=(20, 10))
+    ax = sns.heatmap(pathMatrix, cmap='jet', linewidths=0.1, linecolor='black')
     plt.title(title)
-    plt.axis("off")
+    # Show axis labels only every N elements
+    N = 5  # Change this value for different spacing
+    x_indices = np.arange(pathMatrix.shape[1])
+    y_indices = np.arange(pathMatrix.shape[0])
+    x_tick_locs = np.arange(0, pathMatrix.shape[1], N)
+    y_tick_locs = np.arange(0, pathMatrix.shape[0], N)
+    ax.set_xticks(x_tick_locs + 0.5)
+    ax.set_yticks(y_tick_locs + 0.5)
+    ax.set_xticklabels(x_indices[x_tick_locs], rotation=0, fontsize=8)
+    ax.set_yticklabels(y_indices[y_tick_locs], rotation=0, fontsize=8)
 
     # Save heatmap
     plt.savefig(image_path, dpi=300, bbox_inches='tight')
-    plt.show()
 
 
 
