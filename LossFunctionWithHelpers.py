@@ -3,10 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from saveDATA import *
+from functools import partial
 
 
 
-def HeightDiff_loss(inputs, targets, lamda=0.5):
+def HeightDiff_loss(inputs, targets, lamda=0.5, loss_calc=True):
     """
     Compute the path-based loss using weighted column summation.
 
@@ -17,62 +18,60 @@ def HeightDiff_loss(inputs, targets, lamda=0.5):
     Returns:
         torch.Tensor: Scalar loss value.
     """
-    B, H, W = targets.shape  # Get height and width
+    # Accept inputs/targets as either [H, W] or [B, H, W]
+    if targets.dim() == 2:
+        # add batch dim
+        targets = targets.unsqueeze(0)
+        inputs = inputs.unsqueeze(0)
+        _squeezed_batch = True
+    else:
+        _squeezed_batch = False
+
+    if targets.dim() != 3:
+        raise ValueError(f"targets must have 2 or 3 dims, got {targets.dim()}")
+
+    B, H, W = targets.shape  # Get batch, height and width
 
 
     # Vertical column-wise weighted summation
     height_weights = torch.arange(0, H, device=targets.device).unsqueeze(1).repeat(1, W)  # Column height weights
     height_weights = height_weights.unsqueeze(0).repeat(B, 1, 1)
     height_weights = height_weights.flip(dims=[1])  # Flip to match the original orientation
-    # print(f'height_weights: {height_weights}')
+
     # Ensure tensors require gradients
     targets = targets.requires_grad_(True)
     inputs = inputs.requires_grad_(True)
 
     # Compute column-wise weighted sum
-    weighted_HS = (targets * height_weights).sum(dim=1)  # Sum over colums (height-weighted)
-    weighted_HA = (inputs * height_weights).sum(dim=1)
-    # print(f'Vertical weighted_HS: {weighted_HS.shape}')
-    # print(f'Vertical weighted_HA: {weighted_HA.shape}')
+    weighted_Vertical_HN = (targets * height_weights).sum(dim=1)  # Sum over colums (height-weighted)
+    weighted_Vertical_HDIFF= (inputs * height_weights).sum(dim=1)
 
     # Compute absolute column-wise difference
-    vertical_loss = torch.abs(weighted_HS - weighted_HA).mean()
-
+    vertical_loss = torch.abs(weighted_Vertical_HN - weighted_Vertical_HDIFF).mean()
     #######################################################################################################################
     #Horizontal column-wise weighted summation
 
     height_weights = torch.arange(0, W, device=targets.device).unsqueeze(1).repeat(1, H).T  # Column height weights
     height_weights = height_weights.unsqueeze(0).repeat(B, 1, 1)
-    # print(f'Horizontal height_weights: {height_weights.shape}')
-    # print(f'height_weights: {height_weights}')
+
     # Ensure tensors require gradients
     targets = targets.requires_grad_(True)
     inputs = inputs.requires_grad_(True)
 
     # Compute column-wise weighted sum
-    weighted_HS = (targets * height_weights).sum(dim=2)  # Sum over rows (height-weighted)
-    weighted_HA = (inputs * height_weights).sum(dim=2)
-    # print(f'Horizontal weighted_HS: {weighted_HS.shape}')
-    # print(f'Horizontal weighted_HA: {weighted_HA.shape}')
+    weighted_Horizontal_HN = (targets * height_weights).sum(dim=2)  # Sum over rows (height-weighted)
+    weighted_Horizontal_HDIFF = (inputs * height_weights).sum(dim=2)
 
     # Compute absolute column-wise difference
-    horizontal_loss = torch.abs(weighted_HS - weighted_HA).mean()
-
+    horizontal_loss = torch.abs(weighted_Horizontal_HN - weighted_Horizontal_HDIFF).mean()
     loss = lamda * vertical_loss + (1 - lamda) * horizontal_loss
-    return loss
-    ################################################################################
-    # if plot_vectors:
-    #     save_Vectors_plot(weighted_HA.cpu().detach().numpy(), weighted_HS.cpu().detach().numpy(),
-    #                     f'Vectors_plot/vetors_{epoch}_{batch_idx}_{i}.png' if epoch is not None
-    #                     else f'Vectors_plot/vetors_{batch_idx}_{i}.png',
-    #                     f'VectorsSub_plot/vetors_{epoch}_{batch_idx}_{i}.png' if epoch is not None
-    #                     else f'VectorsSub_plot/vetors_{batch_idx}_{i}.png'
-    #                     )
-
-    #     cosine_sim = F.cosine_similarity(weighted_HS, weighted_HA, dim=0, eps=1e-8)
-    #     with open(file_path, 'a') as f:
-    #         f.write(f'vectors {batch_idx}_{i} similarity: {cosine_sim}\n')
-    ################################################################################
+    if loss_calc:
+        return loss
+    else:
+        # If original inputs were 2D (single example), return squeezed vectors for convenience
+        if _squeezed_batch and B == 1:
+            return weighted_Vertical_HN.squeeze(0), weighted_Vertical_HDIFF.squeeze(0), weighted_Horizontal_HN.squeeze(0), weighted_Horizontal_HDIFF.squeeze(0)
+        return weighted_Vertical_HN, weighted_Vertical_HDIFF, weighted_Horizontal_HN, weighted_Horizontal_HDIFF
 
 
 def guided_attention_loss(pred, target, g=0.2, alpha=1.0):
@@ -185,7 +184,7 @@ def wasserstein_distance(pred, target, p=1):
 
 def Loss_choice(loss_type):
     if loss_type == 'HeightDiff':
-        criterion = HeightDiff_loss
+        criterion = partial(HeightDiff_loss, lamda=0.5, loss_calc=True)
     elif loss_type == 'MSE':
         criterion = nn.MSELoss(reduction='sum')
     elif loss_type == 'GuidedAttention':
