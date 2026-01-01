@@ -61,6 +61,13 @@ def save_model_weights(model, loss_type, model_arch, epoch):
     weights_path = os.path.join(weights_dir, f"model_epoch_{epoch}.pth")
     torch.save(model.state_dict(), weights_path)
 
+def check_grad(grad):
+    if grad is None:
+        print("Gradient is None!")
+    elif torch.isnan(grad).any():
+        print("Gradient became NaN!")
+    else:
+        print(f"Gradient flowing... Sum: {grad.sum().item():.5f}")
 
 # second line of parameters is for saving visualizations during debugging 
 def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, 
@@ -78,10 +85,8 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
     diffNWimageTensor = DiffNWAlgo(x1=flip_tokens_a, x2=flip_tokens_b, show_dims=False).to(device)
     
 
-    # Use smaller interpolation size
-    new_height = min(diffNWimageTensor.shape[1], NWTextTensor.shape[1])
-    new_width = min(diffNWimageTensor.shape[2], NWTextTensor.shape[2])
-    new_size = (NWTextTensor.shape[1], NWTextTensor.shape[2])
+    # Interpolate NW matrices to match sizes
+    new_size = (NWTextTensor.shape[-2], NWTextTensor.shape[-1])
 
     diffNWimageTensor = interpolate_NW_matrix(diffNWimageTensor, new_size).to(device)
     Interpolated_ImageSimilar = interpolate_NW_matrix(DiffNWAlgo.ImageSimilar, new_size).to(device)
@@ -115,23 +120,24 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
 #---------------------------------------------------------------------------------------------------------
     
     # Loss computation
-    path_loss = criterion(NWTextFinal, diffNWimageFinal)
+    path_loss = criterion(NWTextFinal, diffNWimageFinal, lamda=1.0) if loss_type == 'HeightDiff' else criterion(NWTextFinal, diffNWimageFinal)
     loss_value = path_loss.item()
     
     ######################################################################################################################################
     # Debugging: Save visualizations for the last batch every 10 epochs
-    if debug and batch_idx == dataloader_length - 1 and epoch % 10 == 0:
+    if debug and batch_idx == 0 and epoch % 10 == 0:
         original_diffNWImageSimilar = DiffNWAlgo.ImageSimilar
         interpolated_diffNWImageSimilar = Interpolated_ImageSimilar
         original_NWTextSimilar = textSimilar
         interpolated_NWTextSimilar = Interpolated_TextSimilar
 
         save_debug_visualizations(
-                model, image1, image2, tokens_a, tokens_b, 
-                NWTextTensor, diffNWimageTensor,
-                original_diffNWImageSimilar, interpolated_diffNWImageSimilar,
-                original_NWTextSimilar, interpolated_NWTextSimilar, 
-                loss_type, epoch, batch_idx)
+            model, image1, image2, tokens_a, tokens_b, 
+            NWTextTensor, diffNWimageTensor,
+            original_diffNWImageSimilar, interpolated_diffNWImageSimilar,
+            original_NWTextSimilar, interpolated_NWTextSimilar, 
+            loss_type, epoch, batch_idx
+        )
         
         # Save model weights
         save_model_weights(model, loss_type, model_arch, epoch)
@@ -152,7 +158,6 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
 def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type, 
         device, normalize_type, epochs=100, learning_rate=1e-4, debug=False, 
         debug_wandb=True, show_gradients=False, preLoss=True):
-
     model.train()
     optimizer = optim.Adam(list(model.parameters()), lr=learning_rate)
     loss_lst = []
@@ -262,13 +267,16 @@ if __name__ == '__main__':
     if debug_wandb:
         init_wandb()
 
-    cnn_transformer_model = EmbeddingModel(
+    model = EmbeddingModel(
         window_size=window_size,
         stride=window_size//2,
         vector_size=vector_size,
         model_arch=model_arch,
         device=device
     )
+    if show_gradients:
+        for param in model.parameters():
+            param.register_hook(check_grad)
 
     DiffNW = DiffNWAlgo(
         match_score=matchScore, 
@@ -280,7 +288,7 @@ if __name__ == '__main__':
     
     # try:
     loss_lst = Train(
-        cnn_transformer_model,
+        model,
         train_dataloader,
         valid_dataloader,
         DiffNW,

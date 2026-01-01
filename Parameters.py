@@ -7,20 +7,20 @@ normalize_type = 'average' # ['min_max', 'mean_std', 'average']
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Training parameters
-batch_size = 4
+batch_size = 8
 epochs = 300
 learning_rate = 1e-4
 
 # Data parameters
-window_size = 16
-vector_size = 128
+window_size = 8
+vector_size = 64
 
 # Debugging and visualization parameters
 debug = True # Set to True to save patches and heatmaps for debugging
 debug_wandb = True # Set to True to log training to Weights & Biases
-show_gradients = True # Set to True to print gradients for debugging
+show_gradients = False # Set to True to print gradients for debugging
 Normalize = True # Set to True to normalize before loss computation
-Regular_ScoreMatrix_Load = True  # Set to True to load regular score matrices, False to load diff NW matrices
+Regular_ScoreMatrix_Load = False  # Set to True to load regular score matrices, False to load diff NW matrices
 
 # Needleman-Wunsch parameters
 matchScore = 10
