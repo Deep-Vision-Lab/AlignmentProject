@@ -43,6 +43,93 @@ def saveImageTensorAsPNG(tensor, path):
     plt.imsave(path, arr, cmap='gray' if arr.ndim == 2 else None)
 
 
+def saveSlidingWindowsWithOverlap(image, output_path, window_size, title="Sliding Windows (Half Overlap)", cols=8):
+    """
+    Extract sliding windows from an image with half overlap, flip them, and save as a grid.
+    
+    Args:
+        image: Input image tensor of shape (C, H, W) or (1, C, H, W) or (H, W)
+        output_path: Path to save the grid image (individual windows saved in same directory)
+        window_size: Size of the sliding window (int or tuple)
+        title: Title for the grid image
+        cols: Number of columns in the grid
+    """
+    if torch.is_tensor(image):
+        image = image.detach().cpu()
+    
+    # Ensure image is 4D (B, C, H, W)
+    if image.ndim == 2:
+        image = image.unsqueeze(0).unsqueeze(0)  # (H, W) -> (1, 1, H, W)
+    elif image.ndim == 3:
+        image = image.unsqueeze(0)  # (C, H, W) -> (1, C, H, W)
+    
+    # Calculate stride as half the window size (50% overlap)
+    if isinstance(window_size, int):
+        stride = window_size // 2
+    else:
+        stride = (window_size[0] // 2, window_size[1] // 2)
+    
+    # Extract sliding windows
+    windows = sliding_window(image, window_size, stride).squeeze(0)  # (num_windows, C, H, W)
+    
+    # Flip the windows (vertical flip)
+    windows = torch.flip(windows, dims=[0])
+    
+    num_windows = windows.shape[0]
+    rows = (num_windows + cols - 1) // cols  # Calculate rows needed
+    
+    # Create output directory for individual windows
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    windows_dir = os.path.join(output_dir if output_dir else ".", "individual_windows")
+    os.makedirs(windows_dir, exist_ok=True)
+    
+    # Create grid figure
+    fig, axes = plt.subplots(rows, cols, figsize=(2 * cols, 2 * rows))
+    axes = np.array(axes).flatten() if rows > 1 or cols > 1 else [axes]
+    
+    for i in range(num_windows):
+        ax = axes[i]
+        window = windows[i]
+        
+        # Handle different tensor shapes
+        if window.ndim == 3 and window.shape[0] in (1, 3):
+            # (C, H, W) -> (H, W, C)
+            img = window.permute(1, 2, 0).numpy()
+            if img.shape[2] == 1:
+                img = img.squeeze(-1)
+        elif window.ndim == 2:
+            img = window.numpy()
+        else:
+            img = window.numpy()
+        
+        # Normalize if needed
+        if np.issubdtype(img.dtype, np.floating):
+            if img.max() > 1.0:
+                img = img / 255.0
+            img = np.clip(img, 0, 1)
+        
+        ax.imshow(img, cmap='gray' if img.ndim == 2 else None)
+        ax.set_title(f"W{i}", fontsize=8)
+        ax.axis('off')
+        
+        # Save individual window
+        individual_path = os.path.join(windows_dir, f"window_{i:04d}.png")
+        plt.imsave(individual_path, img, cmap='gray' if img.ndim == 2 else None)
+    
+    # Hide unused subplots
+    for j in range(num_windows, len(axes)):
+        axes[j].axis('off')
+    
+    plt.suptitle(f"{title}\n({num_windows} windows, stride={stride})", fontsize=14)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved {num_windows} windows grid to {output_path}")
+    print(f"Individual windows saved to {windows_dir}")
+
+
 def saveWindowsAsGrid(windows, output_path, title="Windows Grid", cols=8):
     """
     Save all windows from a tensor as a grid image and also save each window individually.
@@ -119,13 +206,29 @@ def save_debug_visualizations(model, image1, image2, tokens_a, tokens_b,
     os.makedirs(loss_dir, exist_ok=True)
     
     # saving image1 and image2.
-    lines_dir = f'{loss_dir}/InputImages'
+    lines_dir = f'{loss_dir}/InputImages/{model.model_arch}/Epoch_{epoch}'
     os.makedirs(lines_dir, exist_ok=True)
     for i in range(image1.size(0)):
-        lines_dir_per_item = f'{lines_dir}/Epoch_{epoch}/Batch_{batch_idx}'
+        lines_dir_per_item = f'{lines_dir}/{i}'
         os.makedirs(lines_dir_per_item, exist_ok=True)
         saveImageTensorAsPNG(image1[i], f'{lines_dir_per_item}/Image1.png')
         saveImageTensorAsPNG(image2[i], f'{lines_dir_per_item}/Image2.png')
+        
+        # Save sliding windows for image1 and image2
+        saveSlidingWindowsWithOverlap(
+            image=image1[i],
+            output_path=f'{lines_dir_per_item}/Image1_SlidingWindows.png',
+            window_size=model.window_size,
+            title="Image1 Sliding Windows (Half Overlap)",
+            cols=8
+        )
+        saveSlidingWindowsWithOverlap(
+            image=image2[i],
+            output_path=f'{lines_dir_per_item}/Image2_SlidingWindows.png',
+            window_size=model.window_size,
+            title="Image2 Sliding Windows (Half Overlap)",
+            cols=8
+        )
 
     vectors_epoch_dir = f'{loss_dir}/SimilarityMatricesPerEpoch/{model.model_arch}/Epoch_{epoch}'
     matrices_epoch_dir = f'{loss_dir}/ScoreMatricesPerEpoch/{model.model_arch}/Epoch_{epoch}'
@@ -173,13 +276,13 @@ def saveHeatmapPlots(model, image1, image2, similarity_epoch_dir, epoch, batch_i
         visualize_heatmap(
             debug_original_diffNWImageSimilar[i],
             f"Original Image Similarity Matrix Heatmap",
-            f'{image_similarity}/OriginalImageSimilarityMatrixEpoch_{epoch+1}_batch_{batch_idx}_item_{i}.png'
+            f'{image_similarity}/OriginalImageSimilarityMatrix.png'
         )
         # Save Image similarity matrix heatmap
         visualize_heatmap(
             debug_interpolated_diffNWImageSimilar[i],
             f"Interpolated Image Similarity Matrix Heatmap",
-            f'{image_similarity}/InterpolatedImageSimilarityMatrixEpoch_{epoch+1}_batch_{batch_idx}_item_{i}.png'
+            f'{image_similarity}/InterpolatedImageSimilarityMatrix.png'
         )
 
         text_similarity = f'{similarity_epoch_dir}/{i}/TextDomain'
@@ -188,13 +291,13 @@ def saveHeatmapPlots(model, image1, image2, similarity_epoch_dir, epoch, batch_i
         visualize_heatmap(
             debug_original_NWTextSimilar[i],
             f"Original Text Similarity Matrix Heatmap",
-            f'{text_similarity}/OriginalTextSimilarityMatrixEpoch_{epoch+1}_batch_{batch_idx}_item_{i}.png'
+            f'{text_similarity}/OriginalTextSimilarityMatrix.png'
         )
         # Save Interpolated Text similarity matrix heatmap
         visualize_heatmap(
             debug_interpolated_NWTextSimilar[i],
             f"Interpolated Text Similarity Matrix Heatmap",
-            f'{text_similarity}/InterpolatedTextSimilarityMatrixEpoch_{epoch+1}_batch_{batch_idx}_item_{i}.png'
+            f'{text_similarity}/InterpolatedTextSimilarityMatrix.png'
         )
 
         # Generate patches for visualization
@@ -230,12 +333,21 @@ def saveHeatmapPlots(model, image1, image2, similarity_epoch_dir, epoch, batch_i
         VisualizeWithImageAxis(
             ImageMatrix=debug_diffNWimage[i],
             TextMatrix=debug_NWTextMatrix[i],
-            image_path=f"{score_matrix_dir_per_batch}/ScoreMatrixEpoch_{epoch+1}_batch_{batch_idx}_item_{i}.png",
+            image_path=f"{score_matrix_dir_per_batch}/ScoreMatrix.png",
             title1="Image NW score matrix Heatmap",
             title2="Text NW score matrix Heatmap",
             patches_y=y_heatmap,
             patches_x=x_heatmap
         )
+        
+        # Visualize the distance between score matrices
+        score_matrix_distance = torch.abs(debug_diffNWimage[i].squeeze() - debug_NWTextMatrix[i].squeeze())
+        visualize_heatmap(
+            score_matrix_distance,
+            "Distance Between Image & Text Score Matrices",
+            f"{score_matrix_dir_per_batch}/ScoreMatrixDistance.png"
+        )
+        del score_matrix_distance
 
 
         path_dir_per_batch = f'{matrices_epoch_dir}/{i}/path'
@@ -244,12 +356,21 @@ def saveHeatmapPlots(model, image1, image2, similarity_epoch_dir, epoch, batch_i
         VisualizeWithImageAxis(
             ImageMatrix=imagePath[0],
             TextMatrix=textPath[0],
-            image_path=f"{path_dir_per_batch}/PathsEpoch_{epoch+1}_batch_{batch_idx}_item_{i}.png",
+            image_path=f"{path_dir_per_batch}/Paths.png",
             title1="Image NW Path Heatmap",
             title2="Text NW Path Heatmap",
             patches_y=y_heatmap,
             patches_x=x_heatmap
         )
+        
+        # Visualize the distance between paths
+        path_distance = torch.abs(imagePath[0] - textPath[0])
+        visualize_heatmap(
+            path_distance,
+            "Distance Between Image & Text Paths",
+            f"{path_dir_per_batch}/PathDistance.png"
+        )
+        del path_distance
 
         # Visualize vertical vectors using HeightDiff_loss helper
         # Note: This is optional and can be commented out if not needed
@@ -265,16 +386,27 @@ def saveHeatmapPlots(model, image1, image2, similarity_epoch_dir, epoch, batch_i
             height_vectors_dir_per_batch = f'{matrices_epoch_dir}/{i}/HeightVectors'
             os.makedirs(height_vectors_dir_per_batch, exist_ok=True)
             
-            # Save vertical vectors visualization
-            VisualizeWithImageAxis(
-                ImageMatrix=Vertical_HDIFF_Vector.unsqueeze(0),
-                TextMatrix=Vertical_HN_Vector.unsqueeze(0),
-                image_path=f"{height_vectors_dir_per_batch}/VerticalVectorsEpoch_{epoch+1}_batch_{batch_idx}_item_{i}.png",
+            # Save vertical vectors visualization (displayed horizontally, stacked vertically)
+            VisualizeHorizontalVectorHeatmaps(
+                vector1=Vertical_HDIFF_Vector,
+                vector2=Vertical_HN_Vector,
+                image_path=f"{height_vectors_dir_per_batch}/VerticalVectors.png",
                 title1="Image Vertical Vector Heatmap",
                 title2="Text Vertical Vector Heatmap",
-                patches_y=y_heatmap,
-                patches_x=x_heatmap
+                show_values=True,
+                value_fmt=".2f"
             )
+            
+            # Calculate and visualize the distance between the two vertical vectors
+            distance_vector = torch.abs(Vertical_HDIFF_Vector - Vertical_HN_Vector)
+            VisualizeSingleHorizontalVectorHeatmap(
+                vector=distance_vector,
+                image_path=f"{height_vectors_dir_per_batch}/VerticalVectorsDistance.png",
+                title="Distance Between Image & Text Vertical Vectors",
+                show_values=True,
+                value_fmt=".2f"
+            )
+            del distance_vector
             del Vertical_HN_Vector, Vertical_HDIFF_Vector
             del Horizontal_HN_Vector, Horizontal_HDIFF_Vector
 
@@ -425,3 +557,130 @@ def VisualizeDualCharHeatmaps(ScoreMatrix, PathMatrix, x_labels, y_labels, image
     plt.tight_layout()
     plt.savefig(image_path, dpi=150)
     plt.close()
+
+
+def VisualizeHorizontalVectorHeatmaps(vector1, vector2, image_path, title1, title2, 
+                                       show_values=True, value_fmt=".2f", cmap='jet'):
+    """
+    Create two horizontal heatmaps stacked vertically (one under the other).
+    Each vector is displayed as a single row with values annotated and indices on the x-axis.
+    
+    Args:
+        vector1: First vector (1D tensor or array) - displayed as top heatmap
+        vector2: Second vector (1D tensor or array) - displayed as bottom heatmap
+        image_path: Path to save the output image
+        title1: Title for the first (top) heatmap
+        title2: Title for the second (bottom) heatmap
+        show_values: Whether to annotate cells with their values
+        value_fmt: Format string for value annotations (e.g., ".2f", ".0f")
+        cmap: Colormap to use for the heatmaps
+    """
+    # Convert tensors to numpy and ensure 1D
+    if torch.is_tensor(vector1):
+        vector1 = vector1.detach().cpu().numpy()
+    if torch.is_tensor(vector2):
+        vector2 = vector2.detach().cpu().numpy()
+    
+    vector1 = np.array(vector1).flatten()
+    vector2 = np.array(vector2).flatten()
+    
+    # Reshape to (1, N) for horizontal display
+    matrix1 = vector1.reshape(1, -1)
+    matrix2 = vector2.reshape(1, -1)
+    
+    # Calculate figure size based on vector length
+    vec_len = max(len(vector1), len(vector2))
+    fig_width = max(12, vec_len * 0.5)
+    fig_height = 6  # Fixed height for two single-row heatmaps
+    
+    # Create two subplots stacked vertically
+    fig, axes = plt.subplots(2, 1, figsize=(fig_width, fig_height))
+    
+    matrices = [matrix1, matrix2]
+    titles = [title1, title2]
+    
+    for idx, ax in enumerate(axes):
+        matrix_data = matrices[idx]
+        x_labels = list(range(matrix_data.shape[1]))
+        
+        # Create heatmap with values and x-axis indices
+        sns.heatmap(
+            matrix_data, 
+            cmap=cmap, 
+            linewidths=0.5, 
+            linecolor='black',
+            ax=ax, 
+            annot=show_values, 
+            fmt=value_fmt,
+            annot_kws={'fontsize': 8},
+            xticklabels=x_labels,
+            yticklabels=False,  # No y-axis labels for single row
+            cbar=True,
+            cbar_kws={'shrink': 0.5}
+        )
+        
+        ax.set_title(titles[idx], fontsize=12, fontweight='bold')
+        ax.set_xlabel('Index', fontsize=10)
+        ax.tick_params(axis='x', labelrotation=0, labelsize=8)
+    
+    plt.tight_layout()
+    plt.savefig(image_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
+
+def VisualizeSingleHorizontalVectorHeatmap(vector, image_path, title, 
+                                            show_values=True, value_fmt=".2f", cmap='jet'):
+    """
+    Create a single horizontal heatmap for a vector.
+    The vector is displayed as a single row with values annotated and indices on the x-axis.
+    
+    Args:
+        vector: Vector (1D tensor or array) to display
+        image_path: Path to save the output image
+        title: Title for the heatmap
+        show_values: Whether to annotate cells with their values
+        value_fmt: Format string for value annotations (e.g., ".2f", ".0f")
+        cmap: Colormap to use for the heatmap
+    """
+    # Convert tensor to numpy and ensure 1D
+    if torch.is_tensor(vector):
+        vector = vector.detach().cpu().numpy()
+    
+    vector = np.array(vector).flatten()
+    
+    # Reshape to (1, N) for horizontal display
+    matrix = vector.reshape(1, -1)
+    
+    # Calculate figure size based on vector length
+    vec_len = len(vector)
+    fig_width = max(12, vec_len * 0.5)
+    fig_height = 3  # Fixed height for single-row heatmap
+    
+    # Create figure
+    fig, ax = plt.subplots(1, 1, figsize=(fig_width, fig_height))
+    
+    x_labels = list(range(matrix.shape[1]))
+    
+    # Create heatmap with values and x-axis indices
+    sns.heatmap(
+        matrix, 
+        cmap=cmap, 
+        linewidths=0.5, 
+        linecolor='black',
+        ax=ax, 
+        annot=show_values, 
+        fmt=value_fmt,
+        annot_kws={'fontsize': 8},
+        xticklabels=x_labels,
+        yticklabels=False,  # No y-axis labels for single row
+        cbar=True,
+        cbar_kws={'shrink': 0.5}
+    )
+    
+    ax.set_title(title, fontsize=12, fontweight='bold')
+    ax.set_xlabel('Index', fontsize=10)
+    ax.tick_params(axis='x', labelrotation=0, labelsize=8)
+    
+    plt.tight_layout()
+    plt.savefig(image_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)

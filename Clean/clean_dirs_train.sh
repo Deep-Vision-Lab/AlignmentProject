@@ -11,6 +11,7 @@ ARCHITECTURE="$2"
 
 # List of directories to clean (relative to Results/{LOSS_TYPE}/)
 DIRS_TO_CLEAN=(
+  "InputImages"
   "ScoreMatricesPerEpoch"
   "SimilarityMatricesPerEpoch"
 )
