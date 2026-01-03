@@ -17,7 +17,7 @@ vector_size = 64
 
 # Debugging and visualization parameters
 debug = True # Set to True to save patches and heatmaps for debugging
-debug_wandb = False # Set to True to log training to Weights & Biases
+debug_wandb = True # Set to True to log training to Weights & Biases
 show_gradients = False # Set to True to print gradients for debugging
 Normalize = False # Set to True to normalize before loss computation
 Regular_ScoreMatrix_Load = False  # Set to True to load regular score matrices, False to load diff NW matrices
