@@ -347,6 +347,14 @@ def saveHeatmapPlots(model, image1, image2, similarity_epoch_dir, epoch, batch_i
             "Distance Between Image & Text Score Matrices",
             f"{score_matrix_dir_per_batch}/ScoreMatrixDistance.png"
         )
+        # Save sum of score_matrix_distance to txt in score_matrix directory
+        try:
+            score_sum = score_matrix_distance.sum().item()
+            with open(f"{score_matrix_dir_per_batch}/ScoreMatrixDistanceSum.txt", "w") as f:
+                f.write(f"{score_sum}\n")
+        except Exception as e:
+            print(f"Failed to write ScoreMatrixDistanceSum.txt: {e}")
+        
         del score_matrix_distance
 
 
@@ -370,6 +378,13 @@ def saveHeatmapPlots(model, image1, image2, similarity_epoch_dir, epoch, batch_i
             "Distance Between Image & Text Paths",
             f"{path_dir_per_batch}/PathDistance.png"
         )
+        # Save sum of path_distance to txt in path directory
+        try:
+            path_sum = path_distance.sum().item()
+            with open(f"{path_dir_per_batch}/PathDistanceSum.txt", "w") as f:
+                f.write(f"{path_sum}\n")
+        except Exception as e:
+            print(f"Failed to write PathDistanceSum.txt: {e}")
         del path_distance
 
         # Visualize vertical vectors using HeightDiff_loss helper
@@ -406,6 +421,13 @@ def saveHeatmapPlots(model, image1, image2, similarity_epoch_dir, epoch, batch_i
                 show_values=True,
                 value_fmt=".2f"
             )
+            # Save sum of vertical vectors distance to txt in HeightVectors directory
+            try:
+                vectors_sum = distance_vector.sum().item()
+                with open(f"{height_vectors_dir_per_batch}/VerticalVectorsDistanceSum.txt", "w") as f:
+                    f.write(f"{vectors_sum}\n")
+            except Exception as e:
+                print(f"Failed to write VerticalVectorsDistanceSum.txt: {e}")
             del distance_vector
             del Vertical_HN_Vector, Vertical_HDIFF_Vector
             del Horizontal_HN_Vector, Horizontal_HDIFF_Vector

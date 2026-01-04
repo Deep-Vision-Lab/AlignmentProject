@@ -3,7 +3,7 @@
 #              Smith-Waterman alignment scoring matrices.
 # Dependencies: Pillow, tqdm, numpy
 # To install: pip install Pillow tqdm numpy
-# Usage: python generateDataEnglish.py --start 1 --end 1000 --threads 4
+# Usage: python generateDataEnglish.py --start 1 --end 1000
 
 from PIL import Image, ImageDraw, ImageFont
 import random
@@ -17,14 +17,8 @@ from Parameters import *
 from DiffNWAlgo import DiffNWAlgo
 import warnings
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import threading
 
 warnings.filterwarnings("ignore")
-
-# Thread-local storage for random state and model instances
-thread_local = threading.local()
-matplotlib_lock = threading.Lock()
 
 # --- Needleman-Wunsch Algorithm Implementation ---
 def needleman_wunsch_matrix(seq1, seq2, match_score=2, mismatch_penalty=-1, gap_penalty=-1):
@@ -178,37 +172,29 @@ NW_MISMATCH_PENALTY = mismatchScore
 NW_GAP_PENALTY = gapScore
 
 
-def get_thread_random():
-    """Get or create a thread-local random instance with unique seed."""
-    if not hasattr(thread_local, 'random'):
-        # Create unique seed based on thread id and current time
-        seed = hash((threading.current_thread().ident, os.getpid(), random.random()))
-        thread_local.random = random.Random(seed)
-    return thread_local.random
+# Global DiffNWAlgo instance (created once)
+_diff_nw_algo_instance = None
 
-
-def get_thread_diff_nw_algo():
-    """Get or create a thread-local DiffNWAlgo instance."""
-    if not hasattr(thread_local, 'diff_nw_algo'):
-        # Each thread gets its own instance to avoid state sharing issues
-        thread_local.diff_nw_algo = DiffNWAlgo(
-            match_score=matchScore, 
-            miss_score=mismatchScore, 
-            gap=gapScore, 
+def get_diff_nw_algo():
+    """Get a DiffNWAlgo instance."""
+    global _diff_nw_algo_instance
+    if _diff_nw_algo_instance is None:
+        _diff_nw_algo_instance = DiffNWAlgo(
+            match_score=matchScore,
+            miss_score=mismatchScore,
+            gap=gapScore,
             batch=False
         )
-    return thread_local.diff_nw_algo
+    return _diff_nw_algo_instance
 
 
-def get_augment_phrase(phrases_list, empty_prob, rng=None):
+def get_augment_phrase(phrases_list, empty_prob):
     """Get an augmentation phrase with probability of returning empty."""
-    if rng is None:
-        rng = random
     if not phrases_list:
         return ""
-    if rng.random() < empty_prob:
+    if random.random() < empty_prob:
         return ""
-    return rng.choice(phrases_list)
+    return random.choice(phrases_list)
 
 
 def generate_single_sample(i, output_dirs):
@@ -216,14 +202,11 @@ def generate_single_sample(i, output_dirs):
     output_images_dir, output_matrices_dir, output_similarity_matrices_dir, \
         output_diff_nw_matrices_dir, output_text_lines_dir = output_dirs
     
-    # Use thread-local random for unique sentences per thread
-    rng = get_thread_random()
-    # Use thread-local model instance
-    diff_nw_algo = get_thread_diff_nw_algo()
+    diff_nw_algo = get_diff_nw_algo()
     
     # Select common phrases
     if len(BASE_ENGLISH_PHRASES) >= 2:
-        common_phrases = rng.sample(BASE_ENGLISH_PHRASES, 2)
+        common_phrases = random.sample(BASE_ENGLISH_PHRASES, 2)
         common_phrase1 = common_phrases[0]
         common_phrase2 = common_phrases[1]
     elif len(BASE_ENGLISH_PHRASES) == 1:
@@ -234,12 +217,12 @@ def generate_single_sample(i, output_dirs):
         common_phrase2 = "Base phrase two"
     
     # Get augmentation phrases
-    aug1_prefix = get_augment_phrase(AUGMENTING_ENGLISH_PHRASES, EMPTY_AUGMENT_PROBABILITY, rng)
-    aug1_middle = get_augment_phrase(AUGMENTING_ENGLISH_PHRASES, EMPTY_AUGMENT_PROBABILITY, rng)
-    aug1_suffix = get_augment_phrase(AUGMENTING_ENGLISH_PHRASES, EMPTY_AUGMENT_PROBABILITY, rng)
-    aug2_prefix = get_augment_phrase(AUGMENTING_ENGLISH_PHRASES, EMPTY_AUGMENT_PROBABILITY, rng)
-    aug2_middle = get_augment_phrase(AUGMENTING_ENGLISH_PHRASES, EMPTY_AUGMENT_PROBABILITY, rng)
-    aug2_suffix = get_augment_phrase(AUGMENTING_ENGLISH_PHRASES, EMPTY_AUGMENT_PROBABILITY, rng)
+    aug1_prefix = get_augment_phrase(AUGMENTING_ENGLISH_PHRASES, EMPTY_AUGMENT_PROBABILITY)
+    aug1_middle = get_augment_phrase(AUGMENTING_ENGLISH_PHRASES, EMPTY_AUGMENT_PROBABILITY)
+    aug1_suffix = get_augment_phrase(AUGMENTING_ENGLISH_PHRASES, EMPTY_AUGMENT_PROBABILITY)
+    aug2_prefix = get_augment_phrase(AUGMENTING_ENGLISH_PHRASES, EMPTY_AUGMENT_PROBABILITY)
+    aug2_middle = get_augment_phrase(AUGMENTING_ENGLISH_PHRASES, EMPTY_AUGMENT_PROBABILITY)
+    aug2_suffix = get_augment_phrase(AUGMENTING_ENGLISH_PHRASES, EMPTY_AUGMENT_PROBABILITY)
     
     # Build sentences
     sentence1_parts = [aug1_prefix, common_phrase1, aug1_middle, common_phrase2, aug1_suffix]
@@ -253,7 +236,7 @@ def generate_single_sample(i, output_dirs):
         english_sentence_2 = common_phrase2
     
     # Random swap
-    if rng.choice([True, False]):
+    if random.choice([True, False]):
         english_sentence_1, english_sentence_2 = english_sentence_2, english_sentence_1
     
     # Define output file paths
@@ -293,14 +276,13 @@ def generate_single_sample(i, output_dirs):
     diff_nw_matrix = diff_nw_align.squeeze(0).cpu().numpy()
     save_matrix_to_file(diff_nw_matrix, output_diff_nw_matrix_file)
     
-    # Save heatmap and matrix - Matplotlib is not thread-safe, use a lock
-    with matplotlib_lock:
-        fig, axes = plt.subplots(1, 1, figsize=(20, 10))
-        sns.heatmap(scoring_matrix, cmap='jet', linewidths=0.1, linecolor='black',
-                    ax=axes, yticklabels=list(seq1_no_spaces),
-                    xticklabels=list(seq2_no_spaces))
-        save_matrix_to_file(scoring_matrix, output_matrix_file)
-        plt.close(fig)
+    # Save heatmap and matrix (no lock needed)
+    fig, axes = plt.subplots(1, 1, figsize=(20, 10))
+    sns.heatmap(scoring_matrix, cmap='jet', linewidths=0.1, linecolor='black',
+                ax=axes, yticklabels=list(seq1_no_spaces),
+                xticklabels=list(seq2_no_spaces))
+    save_matrix_to_file(scoring_matrix, output_matrix_file)
+    plt.close(fig)
     
     # Save text files
     save_text_to_file(english_sentence_1, output_text_file_1)
@@ -309,137 +291,77 @@ def generate_single_sample(i, output_dirs):
     return i
 
 
-def generate_range_worker(start_idx, end_idx, output_dirs, progress_callback=None):
-    """Worker function to generate samples for a specific range [start_idx, end_idx]."""
-    results = []
-    for i in range(start_idx, end_idx + 1):
-        try:
-            generate_single_sample(i, output_dirs)
-            results.append((i, True, None))
-            if progress_callback:
-                progress_callback(1)
-        except Exception as e:
-            results.append((i, False, str(e)))
-    return results
-
-
-def generate_data_multithreaded(start_idx, end_idx, num_threads=4, base_output_directory=None):
+def generate_data(start_idx, end_idx, base_output_directory=None):
     """
-    Generate data using multiple threads.
-    
-    Args:
-        start_idx: Starting index (inclusive)
-        end_idx: Ending index (inclusive)
-        num_threads: Number of threads to use
-        base_output_directory: Output directory path
+    Generate data sequentially.
     """
     if base_output_directory is None:
         base_output_directory = BASE_OUTPUT_DIRECTORY
-    
+
     # Setup directories
     output_images_dir = os.path.join(base_output_directory, "images")
     output_matrices_dir = os.path.join(base_output_directory, "matrices")
     output_similarity_matrices_dir = os.path.join(base_output_directory, "similarity_matrices")
     output_diff_nw_matrices_dir = os.path.join(base_output_directory, "diff_nw_matrices")
     output_text_lines_dir = os.path.join(base_output_directory, "texts")
-    
+
     os.makedirs(output_images_dir, exist_ok=True)
     os.makedirs(output_matrices_dir, exist_ok=True)
     os.makedirs(output_similarity_matrices_dir, exist_ok=True)
     os.makedirs(output_diff_nw_matrices_dir, exist_ok=True)
     os.makedirs(output_text_lines_dir, exist_ok=True)
-    
+
     output_dirs = (output_images_dir, output_matrices_dir, output_similarity_matrices_dir,
                    output_diff_nw_matrices_dir, output_text_lines_dir)
-    
+
     print(f"Output will be saved in: {os.path.abspath(base_output_directory)}")
     print(f"Generating samples from index {start_idx} to {end_idx}")
-    print(f"Using {num_threads} threads")
-    
+
     total_samples = end_idx - start_idx + 1
-    
-    # Calculate ranges for each thread
-    samples_per_thread = total_samples // num_threads
-    ranges = []
-    current_start = start_idx
-    
-    for t in range(num_threads):
-        if t == num_threads - 1:
-            # Last thread takes the remainder
-            current_end = end_idx
-        else:
-            current_end = current_start + samples_per_thread - 1
-        ranges.append((current_start, current_end))
-        current_start = current_end + 1
-    
-    print(f"\nThread ranges:")
-    for t, (s, e) in enumerate(ranges):
-        print(f"  Thread {t + 1}: indices {s} to {e} ({e - s + 1} samples)")
-    
-    # Progress bar with thread-safe update
     pbar = tqdm(total=total_samples, desc="Generating Samples")
-    pbar_lock = threading.Lock()
-    
-    def update_progress(n=1):
-        with pbar_lock:
-            pbar.update(n)
-    
-    # Execute with thread pool
     all_results = []
-    with ThreadPoolExecutor(max_workers=num_threads) as executor:
-        futures = []
-        for start, end in ranges:
-            future = executor.submit(
-                generate_range_worker, 
-                start, end, output_dirs, update_progress
-            )
-            futures.append(future)
-        
-        for future in as_completed(futures):
-            try:
-                results = future.result()
-                all_results.extend(results)
-            except Exception as e:
-                print(f"Thread error: {e}")
-    
+    for i in range(start_idx, end_idx + 1):
+        try:
+            generate_single_sample(i, output_dirs)
+            all_results.append((i, True, None))
+        except Exception as e:
+            all_results.append((i, False, str(e)))
+        pbar.update(1)
     pbar.close()
-    
+
     # Report results
     successful = sum(1 for _, success, _ in all_results if success)
     failed = sum(1 for _, success, _ in all_results if not success)
-    
+
     print(f"\nGeneration complete!")
     print(f"  Successful: {successful}")
     print(f"  Failed: {failed}")
-    
+
     if failed > 0:
         print("\nFailed samples:")
         for idx, success, error in all_results:
             if not success:
                 print(f"  Sample {idx}: {error}")
-    
+
     return all_results
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Generate English text image pairs with alignment matrices using multi-threading.",
+        description="Generate English text image pairs with alignment matrices (sequential run).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Generate 3000 samples using 4 threads (default)
+  # Generate 3000 samples (default)
   python generateDataEnglish.py
-  
-  # Generate samples from index 1 to 1000 using 8 threads
-  python generateDataEnglish.py --start 1 --end 1000 --threads 8
-  
-  # Generate samples from index 5001 to 10000 (useful for parallel runs)
-  python generateDataEnglish.py --start 5001 --end 10000 --threads 4
-  
+
+  # Generate samples from index 1 to 1000
+  python generateDataEnglish.py --start 1 --end 1000
+
   # Custom output directory
   python generateDataEnglish.py --start 1 --end 500 --output DataSet/Custom_English
         """
     )
-    
+
     parser.add_argument(
         "--start", "-s",
         type=int,
@@ -453,44 +375,34 @@ Examples:
         help="Ending index for sample generation (default: 3000)"
     )
     parser.add_argument(
-        "--threads", "-t",
-        type=int,
-        default=4,
-        help="Number of threads to use (default: 4)"
-    )
-    parser.add_argument(
         "--output", "-o",
         type=str,
         default=BASE_OUTPUT_DIRECTORY,
         help=f"Base output directory (default: {BASE_OUTPUT_DIRECTORY})"
     )
-    
+
     args = parser.parse_args()
-    
+
     # Validate arguments
     if args.start < 1:
         parser.error("Start index must be >= 1")
     if args.end < args.start:
         parser.error("End index must be >= start index")
-    if args.threads < 1:
-        parser.error("Number of threads must be >= 1")
-    
+
     num_samples = args.end - args.start + 1
     print(f"\n{'='*60}")
-    print(f"English Data Generator - Multi-threaded")
+    print(f"English Data Generator - Sequential")
     print(f"{'='*60}")
     print(f"Range: {args.start} to {args.end} ({num_samples} samples)")
-    print(f"Threads: {args.threads}")
     print(f"Output: {args.output}")
     print(f"{'='*60}\n")
-    
-    # Run multi-threaded generation
-    generate_data_multithreaded(
+
+    # Run sequential generation
+    generate_data(
         start_idx=args.start,
         end_idx=args.end,
-        num_threads=args.threads,
         base_output_directory=args.output
     )
-    
+
     print(f"\nScript finished. {num_samples * 2} images, {num_samples} matrices (as .npy), "
           f"and {num_samples * 2} text lines generated in '{args.output}'.")
