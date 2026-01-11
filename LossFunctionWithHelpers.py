@@ -195,6 +195,8 @@ def Loss_choice(loss_type):
         criterion = dice_loss
     elif loss_type == 'Wasserstein':
         criterion = wasserstein_distance
+    elif loss_type == 'SoftCrossEntropy':
+        criterion = soft_cross_entropy
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
     return criterion
@@ -215,3 +217,16 @@ if __name__ == "__main__":
     print(f"Computed loss: {loss.item()}")
 
 
+def soft_cross_entropy(pred, target,eps=1e-8):
+    """
+    Soft Cross-Entropy Loss for multi-class classification with soft targets.
+    Args:
+        pred (torch.Tensor): Logits or unnormalized predictions, shape [B, C, ...].
+        target (torch.Tensor): Target probabilities, shape [B, C, ...].
+    Returns:
+        torch.Tensor: Scalar loss value.
+    """
+    pred = torch.clamp(pred, min=eps, max=1.0)
+    log_probs = torch.log(pred)
+    loss = -(target * log_probs).sum()
+    return loss

@@ -78,13 +78,6 @@ def saveSlidingWindowsWithOverlap(image, output_path, window_size, title="Slidin
     num_windows = windows.shape[0]
     rows = (num_windows + cols - 1) // cols  # Calculate rows needed
     
-    # Create output directory for individual windows
-    output_dir = os.path.dirname(output_path)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-    windows_dir = os.path.join(output_dir if output_dir else ".", "individual_windows")
-    os.makedirs(windows_dir, exist_ok=True)
-    
     # Create grid figure
     fig, axes = plt.subplots(rows, cols, figsize=(2 * cols, 2 * rows))
     axes = np.array(axes).flatten() if rows > 1 or cols > 1 else [axes]
@@ -113,10 +106,6 @@ def saveSlidingWindowsWithOverlap(image, output_path, window_size, title="Slidin
         ax.imshow(img, cmap='gray' if img.ndim == 2 else None)
         ax.set_title(f"W{i}", fontsize=8)
         ax.axis('off')
-        
-        # Save individual window
-        individual_path = os.path.join(windows_dir, f"window_{i:04d}.png")
-        plt.imsave(individual_path, img, cmap='gray' if img.ndim == 2 else None)
     
     # Hide unused subplots
     for j in range(num_windows, len(axes)):
@@ -126,8 +115,7 @@ def saveSlidingWindowsWithOverlap(image, output_path, window_size, title="Slidin
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
-    print(f"Saved {num_windows} windows grid to {output_path}")
-    print(f"Individual windows saved to {windows_dir}")
+
 
 
 def saveWindowsAsGrid(windows, output_path, title="Windows Grid", cols=8):
@@ -196,11 +184,11 @@ def saveWindowsAsGrid(windows, output_path, title="Windows Grid", cols=8):
     print(f"Saved windows grid to {output_path}")
 
 
-def save_debug_visualizations(model, image1, image2, tokens_a, tokens_b, 
+def save_debug_visualizations(model, text1, text2, image1, image2, tokens_a, tokens_b, 
                             NWTextTensor, diffNWimage,
                             original_diffNWImageSimilar, interpolated_diffNWImageSimilar,
                             original_NWTextSimilar, interpolated_NWTextSimilar,
-                            loss_type, epoch, batch_idx):
+                            epoch, batch_idx):
     # Prepare directories for saving visualizations
     loss_dir = f'TrainResults/{loss_type}'
     os.makedirs(loss_dir, exist_ok=True)
@@ -247,7 +235,7 @@ def save_debug_visualizations(model, image1, image2, tokens_a, tokens_b,
 
     # Save heatmap visualizations
     saveHeatmapPlots(
-        model, debug_image1, debug_image2, vectors_epoch_dir, epoch, batch_idx,
+        model, text1,text2, debug_image1, debug_image2, vectors_epoch_dir, epoch, batch_idx,
         debug_diffNWimage, debug_NWText, 
         debug_original_diffNWImageSimilar, debug_interpolated_diffNWImageSimilar,
         debug_original_NWTextSimilar, debug_interpolated_NWTextSimilar, 
@@ -262,7 +250,7 @@ def save_debug_visualizations(model, image1, image2, tokens_a, tokens_b,
 
 
 
-def saveHeatmapPlots(model, image1, image2, similarity_epoch_dir, epoch, batch_idx, 
+def saveHeatmapPlots(model, text1, text2, image1, image2, similarity_epoch_dir, epoch, batch_idx, 
                     debug_diffNWimage, debug_NWTextMatrix, 
                     debug_original_diffNWImageSimilar, debug_interpolated_diffNWImageSimilar,
                     debug_original_NWTextSimilar, debug_interpolated_NWTextSimilar, 
@@ -311,8 +299,11 @@ def saveHeatmapPlots(model, image1, image2, similarity_epoch_dir, epoch, batch_i
         y_heatmap = torch.flip(windows_img1, dims=[0]) # From image1, for Y-axis
         x_heatmap = torch.flip(windows_img2, dims=[0]) # From image2, for X-axis
 
+        y_text = text1[i]
+        x_text = text2[i]
+
         # Extract paths using diff_NW_Path for visualization
-        textPath, _ = NW_Path(
+        textPath, _ = diff_NW_Path(
             debug_NWTextMatrix[i:i+1], 
             debug_interpolated_NWTextSimilar[i:i+1], 
             match_score=matchScore, 
@@ -336,8 +327,8 @@ def saveHeatmapPlots(model, image1, image2, similarity_epoch_dir, epoch, batch_i
             image_path=f"{score_matrix_dir_per_batch}/ScoreMatrix.png",
             title1="Image NW score matrix Heatmap",
             title2="Text NW score matrix Heatmap",
-            patches_y=y_heatmap,
-            patches_x=x_heatmap
+            patches_right_y=y_text,
+            patches_right_x=x_text
         )
         
         # Visualize the distance between score matrices
@@ -367,8 +358,8 @@ def saveHeatmapPlots(model, image1, image2, similarity_epoch_dir, epoch, batch_i
             image_path=f"{path_dir_per_batch}/Paths.png",
             title1="Image NW Path Heatmap",
             title2="Text NW Path Heatmap",
-            patches_y=y_heatmap,
-            patches_x=x_heatmap
+            patches_right_y=y_text,
+            patches_right_x=x_text
         )
         
         # Visualize the distance between paths
@@ -472,38 +463,52 @@ def visualize_heatmap(pathMatrix, title,image_path):
     y_tick_locs = np.arange(0, pathMatrix.shape[0], N)
     ax.set_xticks(x_tick_locs + 0.5)
     ax.set_yticks(y_tick_locs + 0.5)
-    ax.set_xticklabels(x_indices[x_tick_locs], rotation=0, fontsize=8)
-    ax.set_yticklabels(y_indices[y_tick_locs], rotation=0, fontsize=8)
+    ax.set_xticklabels(x_indices[x_tick_locs], rotation=90, fontsize=5)
+    ax.set_yticklabels(y_indices[y_tick_locs], rotation=90, fontsize=5)
 
     # Save heatmap
     plt.savefig(image_path, dpi=300, bbox_inches='tight')
 
 
 
-def VisualizeWithImageAxis(ImageMatrix, TextMatrix, image_path, title1, title2, patches_y=None, patches_x=None,
-                        zoom_factor=0.2, y_axis_x_offset=-30, x_axis_y_offset=25):
+def VisualizeWithImageAxis(ImageMatrix, TextMatrix, image_path, title1, title2, 
+                           patches_left_y=[], patches_left_x=[],
+                            patches_right_y=[], patches_right_x=[], zoom_factor=0.2, 
+                            y_axis_x_offset=-30, x_axis_y_offset=25):
     # Convert tensors to numpy
     ImageMatrix_np = ImageMatrix.detach().cpu().numpy() if torch.is_tensor(ImageMatrix) else np.array(ImageMatrix)
     TextMatrix_np = TextMatrix.detach().cpu().numpy() if torch.is_tensor(TextMatrix) else np.array(TextMatrix)
 
     matrices_to_plot = [ImageMatrix_np, TextMatrix_np]
     titles = [title1, title2]
-    use_img_labels = patches_y is not None and patches_x is not None
+    use_img_labels = patches_left_y is not None and patches_left_x is not None
 
     # Save a single PNG file with the heatmaps of ImageMatrix and TextMatrix side by side
     fig, axes = plt.subplots(1, 2, figsize=(20, 10))
     for idx, ax in enumerate(axes):
         matrix_data = matrices_to_plot[idx]
-        sns.heatmap(matrix_data, cmap='jet', linewidths=0.1, linecolor='black',
-                    ax=ax, annot=False, fmt=".3f",
-                    xticklabels=False if use_img_labels else list(range(matrix_data.shape[1])),
-                    yticklabels=False if use_img_labels else list(range(matrix_data.shape[0])))
+        if idx == 1:
+            label_x = patches_right_x
+            label_y = patches_right_y
+        else:
+            label_x = list(range(matrix_data.shape[1]))
+            label_y = list(range(matrix_data.shape[0]))
+            
+        sns.heatmap(matrix_data, cmap='jet', linewidths=0.1, 
+                    linecolor='black', ax=ax, annot=False, fmt=".3f",
+                    xticklabels=label_x, yticklabels=label_y)
+        
+        # Adjust tick labels: rotation and much smaller font size
+        ax.tick_params(axis='x', rotation=90, labelsize=5)
+        ax.tick_params(axis='y', rotation=90, labelsize=5)
+        
         ax.text(0.5, -0.05, titles[idx], transform=ax.transAxes,
                 ha="center", va="top", fontsize=10)
+        
         if use_img_labels:
-            if len(patches_y) == matrix_data.shape[0]:
+            if len(patches_left_y) == matrix_data.shape[0]:
                 for k in range(matrix_data.shape[0]):
-                    patch_tensor = patches_y[k]
+                    patch_tensor = patches_left_y[k]
                     img = patch_tensor.cpu().permute(1, 2, 0).numpy()
                     img = np.clip(img, 0, 1) if img.max() > 1.0 and img.dtype == np.float32 else img
                     oi = OffsetImage(img, zoom=zoom_factor)
@@ -511,9 +516,9 @@ def VisualizeWithImageAxis(ImageMatrix, TextMatrix, image_path, title1, title2, 
                                         xybox=(y_axis_x_offset, 0), frameon=False,
                                         xycoords='data', boxcoords="offset points", pad=0.1)
                     ax.add_artist(ab)
-            if len(patches_x) == matrix_data.shape[1]:
+            if len(patches_left_x) == matrix_data.shape[1]:
                 for k in range(matrix_data.shape[1]):
-                    patch_tensor = patches_x[k]
+                    patch_tensor = patches_left_x[k]
                     img = patch_tensor.cpu().permute(1, 2, 0).numpy()
                     img = np.clip(img, 0, 1) if img.max() > 1.0 and img.dtype == np.float32 else img
                     oi = OffsetImage(img, zoom=zoom_factor)
@@ -540,8 +545,8 @@ def VisualizeWithText(matrix_data, x_labels, y_labels, image_path, title):
                      xticklabels=x_labels, yticklabels=y_labels,
                      linewidths=.5, cbar=True)
     ax.set_title(title, fontsize=16)
-    ax.tick_params(axis='x', labelrotation=90, labelsize=8) # Rotate x-labels, adjust size
-    ax.tick_params(axis='y', labelrotation=0, labelsize=8)  # Adjust y-label size
+    ax.tick_params(axis='x', labelrotation=90, labelsize=5) # Rotate x-labels, adjust size
+    ax.tick_params(axis='y', labelrotation=90, labelsize=5)  # Adjust y-label size
     plt.tight_layout()
     plt.savefig(image_path, dpi=150) # DPI can be adjusted based on needs
     plt.close()
@@ -574,7 +579,7 @@ def VisualizeDualCharHeatmaps(ScoreMatrix, PathMatrix, x_labels, y_labels, image
                      linewidths=.5, cbar=True, ax=ax)
         ax.set_title(titles[idx], fontsize=16)
         ax.tick_params(axis='x', labelrotation=90, labelsize=8)
-        ax.tick_params(axis='y', labelrotation=0, labelsize=8)
+        ax.tick_params(axis='y', labelrotation=90, labelsize=8)
 
     plt.tight_layout()
     plt.savefig(image_path, dpi=150)

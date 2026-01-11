@@ -55,7 +55,7 @@ def compute_accuracy(pred_path, target_path, threshold=0.5):
     return accuracy
 
 
-def save_model_weights(model, loss_type, model_arch, epoch):
+def save_model_weights(model, epoch):
     weights_dir = os.path.join(os.path.dirname(__file__), "Weights", loss_type, model_arch)
     os.makedirs(weights_dir, exist_ok=True)
     weights_path = os.path.join(weights_dir, f"model_epoch_{epoch}.pth")
@@ -70,10 +70,9 @@ def check_grad(grad):
         print(f"Gradient flowing... Sum: {grad.sum().item():.5f}")
 
 # second line of parameters is for saving visualizations during debugging 
-def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar, 
-                       DiffNWAlgo, criterion, device, loss_type='MSE', 
-                       debug=False, epoch=0, batch_idx=0, dataloader_length=0, 
-                       preLoss=True):
+def compute_batch_loss(model, text1, text2, image1, image2, NWTextTensor, textSimilar, 
+                       DiffNWAlgo, criterion, epoch=0, batch_idx=0, dataloader_length=0, 
+                       debug=False):
     
     tokens_a, tokens_b = model(image1, image2, show_dims=False)
     
@@ -96,13 +95,13 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
 
 #---------------------------------------------------------------------------------------------------------
     # Normalize matrices or paths before loss computation
-    if Normalize:
+    if preprocess == 'Normalize':
         # Normalize and smooth alignment outputs
-        NWTextFinal = normalize_func(NWTextTensor, normalize_type)
-        diffNWimageFinal = normalize_func(diffNWimageTensor, normalize_type)
+        NWTextTensor = normalize_func(NWTextTensor, normalize_type)
+        diffNWimageTensor = normalize_func(diffNWimageTensor, normalize_type)
     #------------------------------------------------------------------------------------------------
     # Path extraction
-    else:
+    elif preprocess == 'ExtractPaths':
         # Extract paths using Needleman-Wunsch algorithm
         if Regular_ScoreMatrix_Load:
             textNWpath, text_startPoints = NW_Path(NWTextTensor, Interpolated_TextSimilar,
@@ -111,17 +110,17 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
         # Extract paths using Differentiable Needleman-Wunsch algorithm
             textNWpath, text_startPoints = diff_NW_Path(NWTextTensor, Interpolated_TextSimilar,
                                                         match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore)
-        NWTextFinal = NWTextTensor * textNWpath
+        NWTextTensor = NWTextTensor * textNWpath
 
         imageNWpath, _ = diff_NW_Path(diffNWimageTensor, Interpolated_ImageSimilar,
                                     match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore, 
                                     position=text_startPoints)
-        diffNWimageFinal = diffNWimageTensor * imageNWpath
+        diffNWimageTensor = diffNWimageTensor * imageNWpath
 #---------------------------------------------------------------------------------------------------------
     
     # Loss computation
-    path_loss = criterion(NWTextFinal, diffNWimageFinal, lamda=1.0) if loss_type == 'HeightDiff' else criterion(NWTextFinal, diffNWimageFinal)
-    loss_value = path_loss.item()
+    loss = criterion(NWTextTensor, diffNWimageTensor, lamda=1.0) if loss_type == 'HeightDiff' else criterion(NWTextTensor, diffNWimageTensor)
+    loss_value = loss.item()
     
     ######################################################################################################################################
     # Debugging: Save visualizations for the last batch every 10 epochs
@@ -132,32 +131,38 @@ def compute_batch_loss(model, image1, image2, NWTextTensor, textSimilar,
         interpolated_NWTextSimilar = Interpolated_TextSimilar
 
         save_debug_visualizations(
-            model, image1, image2, tokens_a, tokens_b, 
+            model, 
+            text1, text2, 
+            image1, image2, 
+            tokens_a, tokens_b, 
             NWTextTensor, diffNWimageTensor,
             original_diffNWImageSimilar, interpolated_diffNWImageSimilar,
-            original_NWTextSimilar, interpolated_NWTextSimilar, 
-            loss_type, epoch, batch_idx
+            original_NWTextSimilar, interpolated_NWTextSimilar,
+            epoch, batch_idx
         )
         
+        del original_diffNWImageSimilar
+        del interpolated_diffNWImageSimilar
+        del original_NWTextSimilar
+        del interpolated_NWTextSimilar
+        
         # Save model weights
-        save_model_weights(model, loss_type, model_arch, epoch)
+        save_model_weights(model, epoch)
 
     ######################################################################################################################################
 
     # Delete tensors to free memory
     del tokens_a, tokens_b
     del flip_tokens_a, flip_tokens_b
-    del NWTextTensor, Interpolated_TextSimilar
-    del diffNWimageTensor, Interpolated_ImageSimilar
+    del Interpolated_TextSimilar
+    del Interpolated_ImageSimilar
     torch.cuda.empty_cache()
     
-    return path_loss, loss_value, NWTextFinal, diffNWimageFinal
+    return loss, loss_value, NWTextTensor, diffNWimageTensor
 
 
 
-def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type, 
-        device, normalize_type, epochs=100, learning_rate=1e-4, debug=False, 
-        debug_wandb=True, show_gradients=False, preLoss=True):
+def Train(model, trainLoader, validLoader, DiffNW, criterion):
     model.train()
     optimizer = optim.Adam(list(model.parameters()), lr=learning_rate)
     loss_lst = []
@@ -170,20 +175,22 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type,
         train_loss = 0.0
         train_accuracy = 0.0
 
-        for batch_idx, (image1, image2, scoreMatrix, textSimilar, image1_name, image2_name) in enumerate(trainLoader):
+        for batch_idx, (image1, image2, scoreMatrix, textSimilar, text1, text2, image1_name, image2_name) in enumerate(trainLoader):
             # Ensure all data is on correct device
             image1 = image1.to(device, non_blocking=True)
             image2 = image2.to(device, non_blocking=True)
             scoreMatrix = scoreMatrix.to(device, non_blocking=True)
-            textSimilar = textSimilar.to(device, non_blocking=True)  
+            textSimilar = textSimilar.to(device, non_blocking=True)
+            text1 = list(text1)
+            text2 = list(text2)
             optimizer.zero_grad()
             
             # Compute loss using shared function
             path_loss, loss_value, NWTextFinal, NWImageFinal = compute_batch_loss(
-                model, image1, image2, scoreMatrix, textSimilar,
-                DiffNW, criterion, device, loss_type=loss_type, 
-                debug=debug, epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader),
-                preLoss=Normalize
+                model, text1, text2, image1, image2, 
+                scoreMatrix, textSimilar, DiffNW, 
+                criterion, epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader),
+                debug=debug
             )
             
             # Compute accuracy
@@ -219,7 +226,7 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type,
         val_loss = 0.0
         val_accuracy = 0.0
         with torch.no_grad():
-            for batch_idx, (image1, image2, scoreMatrix, textSimilar, image1_name, image2_name) in enumerate(validLoader):
+            for batch_idx, (image1, image2, scoreMatrix, textSimilar, text1, text2, image1_name, image2_name) in enumerate(validLoader):
                 # Ensure all data is on correct device
                 image1 = image1.to(device)
                 image2 = image2.to(device)
@@ -228,7 +235,11 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion, loss_type,
                 
                 # Compute loss using shared function
                 _, loss_value, NWTextFinal, NWImageFinal = compute_batch_loss(
-                    model, image1, image2, scoreMatrix, textSimilar, DiffNW, criterion, device
+                    model, 
+                    text1, text2, 
+                    image1, image2, 
+                    scoreMatrix, textSimilar, 
+                    DiffNW, criterion
                 )
                 
                 # Compute accuracy
@@ -269,7 +280,7 @@ if __name__ == '__main__':
 
     model = EmbeddingModel(
         window_size=window_size,
-        stride=window_size//2,
+        stride=window_size,
         vector_size=vector_size,
         model_arch=model_arch,
         device=device
@@ -281,7 +292,7 @@ if __name__ == '__main__':
     DiffNW = DiffNWAlgo(
         match_score=matchScore, 
         miss_score=mismatchScore, 
-        gap=gapScore
+        gap=gapScore,
     )
     
     criterion = Loss_choice(loss_type)
@@ -292,16 +303,7 @@ if __name__ == '__main__':
         train_dataloader,
         valid_dataloader,
         DiffNW,
-        criterion,
-        loss_type,
-        device,
-        normalize_type,
-        epochs,
-        learning_rate,
-        debug,
-        debug_wandb,
-        show_gradients,
-        preLoss=Normalize
+        criterion
     )
     
     

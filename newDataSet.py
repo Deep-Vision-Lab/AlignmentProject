@@ -54,7 +54,7 @@ class TextLineModern(Dataset):
 
     def __getitem__(self, idx):
         if self.new_dataset:
-            img1_name, img2_name, score_matrix_name, diffmatrix_name, similarity_matrix_name, text1_name, text2_name = self.image_pairs[idx]
+            img1_name, img2_name, score_matrix_name, diffmatrix_name, similarity_matrix_name, text1, text2 = self.image_pairs[idx]
 
             img1_path = os.path.join(self.new_dataset['images'], img1_name)
             img2_path = os.path.join(self.new_dataset['images'], img2_name)
@@ -79,6 +79,14 @@ class TextLineModern(Dataset):
                 img1 = self.transform(img1)
                 img2 = self.transform(img2)
 
-            return img1, img2, score_matrix, similar_matrix, img1_name, img2_name
+            text1_path = os.path.join(self.new_dataset['texts'], text1)
+            text2_path = os.path.join(self.new_dataset['texts'], text2)
+            with open(text1_path, 'r') as f:
+                text_line1 = f.read().strip()
+                text_line1 = text_line1.replace(' ', '')
+            with open(text2_path, 'r') as f:
+                text_line2 = f.read().strip()
+                text_line2 = text_line2.replace(' ', '')
+            return img1, img2, score_matrix, similar_matrix, text_line1, text_line2, img1_name, img2_name
         else:
             raise NotImplementedError("Handling for non-NewDataSet is not included.")
