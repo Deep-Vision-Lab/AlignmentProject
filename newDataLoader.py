@@ -97,7 +97,7 @@ def custom_collate_fn(batch):
     """Custom collate function"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    images_a, images_b, matrices, similar_matrix, images1_names, images2_names = zip(*batch)
+    images_a, images_b, matrices, similar_matrix, texts1, texts2, images1_names, images2_names = zip(*batch)
 
     # Stack on CPU first, then move to device
     images_a = torch.stack(images_a, dim=0)
@@ -115,10 +115,11 @@ def custom_collate_fn(batch):
             
         matrices_cpu.append(matrix)
         similar_matrix_cpu.append(sim_mat)
-    
+    matrices = torch.stack(matrices_cpu, dim=0)
+    similar_matrix = torch.stack(similar_matrix_cpu, dim=0)
     # Pad matrices (still on CPU)
-    matrices = pad_matrices(matrices_cpu, smooth=False)
-    similar_matrix = pad_matrices(similar_matrix_cpu, smooth=False)
+    # matrices = pad_matrices(matrices_cpu, smooth=False)
+    # similar_matrix = pad_matrices(similar_matrix_cpu, smooth=False)
     
     # Now move everything to device at once
     images_a = images_a.to(device, non_blocking=True)
@@ -132,9 +133,7 @@ def custom_collate_fn(batch):
     matrices.requires_grad_(True)
     similar_matrix.requires_grad_(True)
 
-    return images_a, images_b, matrices, similar_matrix, images1_names, images2_names
-
-
+    return images_a, images_b, matrices, similar_matrix, texts1, texts2, images1_names, images2_names
 
 
 # Create DataLoaders for training and testing

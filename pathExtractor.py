@@ -77,7 +77,9 @@ def NW_Path(matrices, similarity_matrix, match_score=1, miss_score=-1, gap_penal
 #==================================================================================================
 # Diff NW Path
 
-def compute_diff_traceback_path(matrix, similarity_matrix, match_score=1, miss_score=-1, gap_penalty=-1, position=None, temp=100.0):
+def compute_diff_traceback_path(matrix, similarity_matrix, 
+                                match_score=1, miss_score=-1, gap_penalty=-1,
+                                position=None, temp=1000.0):
     """Compute the optimal alignment path using traceback with temperature-scaled softmax"""
     # Start at bottom-right if no explicit starting position provided
     if position is None:
@@ -92,12 +94,12 @@ def compute_diff_traceback_path(matrix, similarity_matrix, match_score=1, miss_s
         aij = similarity_matrix[i, j]
         # Check diagonal, up, and left moves
         diag_score = matrix[i-1, j-1] + aij if i > 0 and j > 0 else 0
-        up_score = matrix[i, j-1] + gap_penalty if j > 0 else 0 
-        left_score = matrix[i-1, j] + gap_penalty if i > 0 else 0 
+        up_score = matrix[i, j-1] + gap_penalty if j > 0 else gap_penalty * i 
+        left_score = matrix[i-1, j] + gap_penalty if i > 0 else gap_penalty * j
         
         # Find the maximum score using temperature-scaled softmax + argmax
-        scores = torch.tensor([diag_score, up_score, left_score]) / temp
-        max_score_idx = torch.softmax(scores, dim=0).argmax().item()
+        scores = torch.tensor([diag_score, up_score, left_score])
+        max_score_idx = scores.argmax().item()
 
         # Priority: diagonal -> up -> left when scores are equal (standard Smith-Waterman)
         if max_score_idx == 0:
@@ -108,12 +110,12 @@ def compute_diff_traceback_path(matrix, similarity_matrix, match_score=1, miss_s
         elif max_score_idx == 2:
             i -= 1
         # Clean up
-        del diag_score, up_score, left_score, max_score_idx, scores
+        del diag_score, up_score, left_score, max_score_idx
 
     return path[::-1], (start_i, start_j) # Reverse to get path from start to end
 
 
-def diff_NW_Path(matrices, similarity_matrix, match_score=1, miss_score=-1, gap_penalty=-1, position=None, temp=100.0):
+def diff_NW_Path(matrices, similarity_matrix, match_score=1, miss_score=-1, gap_penalty=-1, position=None, temp=1000.0):
     path_matrix = torch.zeros_like(matrices,device=matrices.device)
     starting_points = []
     for i, matrix in enumerate(matrices):

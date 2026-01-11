@@ -14,6 +14,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import pyplot as plt
 
+from NormalizeFuncs import average_normalize
 from Parameters import *
 from pathExtractor import *
 try:
@@ -34,7 +35,7 @@ SAVE_ALIGNMENT_HEATMAPS = False
 
 # A generic mechanism for turning a JAX function into a PyTorch function.
 
-def nw(batch=True, unroll=2, gap=-10.0, temp=100.0):
+def nw(batch=True, unroll=2, gap=-10.0, temp=1.0):
   # rotate matrix for vectorized dynamic-programming
   def rotate(x, lengths, gap, temp):
     def _ini_global(L):
@@ -71,7 +72,7 @@ def nw(batch=True, unroll=2, gap=-10.0, temp=100.0):
     }
 
   # fill the scoring matrix
-  def sco(x, lengths, gap=-10.0, temp=1000.0):
+  def sco(x, lengths, gap=-10.0, temp=1.0):
 
     def _logsumexp(x, axis=None, mask=None):
       if mask is None: return jax.nn.logsumexp(x,axis=axis)
@@ -317,7 +318,7 @@ class CosineSimilarityLayer(nn.Module):
 # Differentiable Smith-Waterman Algorithm
 
 class DiffNWAlgo(nn.Module):
-    def __init__(self, match_score, miss_score, gap, temp=100.0, batch=True):
+    def __init__(self, match_score, miss_score, gap, temp=1.0, batch=True):
         super(DiffNWAlgo, self).__init__()
         self.match_score = match_score
         self.miss_score = miss_score
@@ -439,7 +440,10 @@ if __name__ == '__main__':
     print(output.shape)
     
     # Visualize the output as a heatmap
+    
+    output = average_normalize(output.unsqueeze(0))
     output_np = output.detach().cpu().numpy()
+
     
     # Clean up input tensors after forward pass
     del x1, x2
@@ -513,14 +517,8 @@ if __name__ == '__main__':
         diff_matrix_t = torch.as_tensor(diff_matrix, dtype=torch.float32)
         diff_batch = diff_matrix_t.unsqueeze(0) if diff_matrix_t.ndim == 2 else diff_matrix_t
         # Use cosine similarity from the model as similarity matrix
-        cs_t = getattr(alignment, 'cosine_similarity', None)
-        if cs_t is None:
-            cs_batch = diff_batch  # fallback if similarity not available
-        else:
-            if cs_t.ndim == 2:
-                cs_batch = cs_t.unsqueeze(0)
-            else:
-                cs_batch = cs_t
+       
+        cs_batch = alignment.ImageSimilar  # fallback if similarity not available
         # Build a path matrix using compute_diff_traceback_path per batch item
         if diff_batch.ndim == 3:
             path_mat_diff = torch.zeros_like(diff_batch)
