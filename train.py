@@ -10,11 +10,13 @@ from DiffNWAlgo import *
 from wandb_config import *
 from newDataLoader import *
 from pathExtractor import *
-from embeddingModel import *
-from embeddingModel import *
-from LossFunctionWithHelpers import *
-from NormalizeFuncs import *
 from Visualization import *
+from textEmbedding import *
+from embeddingModel import *
+from embeddingModel import *
+from NormalizeFuncs import *
+from LossFunctionWithHelpers import *
+from SimilarityRNN import SimilarityRNN
 
 import os
 import gc
@@ -70,101 +72,92 @@ def check_grad(grad):
         print(f"Gradient flowing... Sum: {grad.sum().item():.5f}")
 
 # second line of parameters is for saving visualizations during debugging 
-def compute_batch_loss(model, text1, text2, image1, image2, NWTextTensor, textSimilar, 
-                       DiffNWAlgo, criterion, epoch=0, batch_idx=0, dataloader_length=0, 
+def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, NWTextGT, textSimilar, 
+                       DiffNWAlgo, criterion, similarityRNN1=None, similarityRNN2=None,
+                       epoch=0, batch_idx=0, dataloader_length=0, 
                        debug=False):
+
+
+    # Image Embedding and Token Extraction    
+    tokens_a, tokens_b = imageEmbed(image1, image2, show_dims=False)
     
-    tokens_a, tokens_b = model(image1, image2, show_dims=False)
-    
-    flip_tokens_a = torch.flip(tokens_a, dims=[-2])
-    flip_tokens_b = torch.flip(tokens_b, dims=[-2])
+    flip_tokens_a = torch.flip(tokens_a, dims=[-2]) # Shape: (batch_size, seq_len, vector_size)
+    flip_tokens_b = torch.flip(tokens_b, dims=[-2]) # Shape: (batch_size, seq_len, vector_size)
+    # -----------------------------------------------------------------------------------------
+    # Text Embedding
+    embedded_text1 = textEmbed(text1)  # Shape: (batch_size, seq_len, embedding_dim)
+    embedded_text2 = textEmbed(text2)  # Shape: (batch_size, seq_len, embedding_dim)
 
-    # Running the DiffNW Algorithm
-    DiffNWAlgo.reset_cosine_similarity()
-    diffNWimageTensor = DiffNWAlgo(x1=flip_tokens_a, x2=flip_tokens_b, show_dims=False).to(device)
-    
+    # Normalize Vetors
+    normalized_text1 = F.normalize(embedded_text1, p=2, dim=-1)  # Shape: (batch_size, seq_len, embedding_dim)
+    normalized_text2 = F.normalize(embedded_text2, p=2, dim=-1)  # Shape: (batch_size, seq_len, embedding_dim)
+    normalized_tokens_a = F.normalize(flip_tokens_a, p=2, dim=-1)  # Shape: (batch_size, seq_len, vector_size)
+    normalized_tokens_b = F.normalize(flip_tokens_b, p=2, dim=-1)
+                                      
+    # Compute similarity matrices using RNN model (or fallback to bmm)
+    if similarityRNN1 is not None and similarityRNN2 is not None:
+        img1_txt1_similarity = similarityRNN1(normalized_text1, normalized_tokens_a)
+        img2_txt2_similarity = similarityRNN2(normalized_text2, normalized_tokens_b)
+    else:
+        # Fallback to simple matrix multiplication
+        img1_txt1_similarity = torch.bmm(normalized_text1, normalized_tokens_a.transpose(1, 2))
+        img2_txt2_similarity = torch.bmm(normalized_text2, normalized_tokens_b.transpose(1, 2))
 
-    # Interpolate NW matrices to match sizes
-    new_size = (NWTextTensor.shape[-2], NWTextTensor.shape[-1])
-
-    diffNWimageTensor = interpolate_NW_matrix(diffNWimageTensor, new_size).to(device)
-    Interpolated_ImageSimilar = interpolate_NW_matrix(DiffNWAlgo.ImageSimilar, new_size).to(device)
-
-    NWTextTensor = interpolate_NW_matrix(NWTextTensor, new_size).to(device)
-    Interpolated_TextSimilar = interpolate_NW_matrix(textSimilar, new_size).to(device)
-
-#---------------------------------------------------------------------------------------------------------
-    # Normalize matrices or paths before loss computation
-    if preprocess == 'Normalize':
-        # Normalize and smooth alignment outputs
-        NWTextTensor = normalize_func(NWTextTensor, normalize_type)
-        diffNWimageTensor = normalize_func(diffNWimageTensor, normalize_type)
-    #------------------------------------------------------------------------------------------------
-    # Path extraction
-    elif preprocess == 'ExtractPaths':
-        # Extract paths using Needleman-Wunsch algorithm
-        if Regular_ScoreMatrix_Load:
-            textNWpath, text_startPoints = NW_Path(NWTextTensor, Interpolated_TextSimilar,
-                                                        match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore)
-        else:
-        # Extract paths using Differentiable Needleman-Wunsch algorithm
-            textNWpath, text_startPoints = diff_NW_Path(NWTextTensor, Interpolated_TextSimilar,
-                                                        match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore)
-        NWTextTensor = NWTextTensor * textNWpath
-
-        imageNWpath, _ = diff_NW_Path(diffNWimageTensor, Interpolated_ImageSimilar,
-                                    match_score=matchScore, miss_score=mismatchScore, gap_penalty=gapScore, 
-                                    position=text_startPoints)
-        diffNWimageTensor = diffNWimageTensor * imageNWpath
+    # Multiplying score matrices
+    finalSimilarityMatrix = torch.bmm(img1_txt1_similarity, img2_txt2_similarity.transpose(1, 2))
 #---------------------------------------------------------------------------------------------------------
     
     # Loss computation
-    loss = criterion(NWTextTensor, diffNWimageTensor, lamda=1.0) if loss_type == 'HeightDiff' else criterion(NWTextTensor, diffNWimageTensor)
+    loss = criterion(finalSimilarityMatrix, NWTextGT, lamda=1.0) if loss_type == 'HeightDiff' else criterion(finalSimilarityMatrix, textSimilar)
     loss_value = loss.item()
     
     ######################################################################################################################################
     # Debugging: Save visualizations for the last batch every 10 epochs
     if debug and batch_idx == 0 and epoch % 10 == 0:
-        original_diffNWImageSimilar = DiffNWAlgo.ImageSimilar
-        interpolated_diffNWImageSimilar = Interpolated_ImageSimilar
-        original_NWTextSimilar = textSimilar
-        interpolated_NWTextSimilar = Interpolated_TextSimilar
+        debug_imgText1 = img1_txt1_similarity
+        debug_imgText2 = img2_txt2_similarity
 
         save_debug_visualizations(
-            model, 
-            text1, text2, 
-            image1, image2, 
-            tokens_a, tokens_b, 
-            NWTextTensor, diffNWimageTensor,
-            original_diffNWImageSimilar, interpolated_diffNWImageSimilar,
-            original_NWTextSimilar, interpolated_NWTextSimilar,
+            imageEmbed, 
+            text1, text2,
+            image1, image2,
+            textSimilar, finalSimilarityMatrix,
+            debug_imgText1,
+            debug_imgText2,
             epoch, batch_idx
         )
         
-        del original_diffNWImageSimilar
-        del interpolated_diffNWImageSimilar
-        del original_NWTextSimilar
-        del interpolated_NWTextSimilar
+        del debug_imgText1, debug_imgText2
         
         # Save model weights
-        save_model_weights(model, epoch)
+        save_model_weights(imageEmbed, epoch)
 
     ######################################################################################################################################
 
     # Delete tensors to free memory
     del tokens_a, tokens_b
     del flip_tokens_a, flip_tokens_b
-    del Interpolated_TextSimilar
-    del Interpolated_ImageSimilar
     torch.cuda.empty_cache()
     
-    return loss, loss_value, NWTextTensor, diffNWimageTensor
+    return loss, loss_value, textSimilar, finalSimilarityMatrix
 
 
 
-def Train(model, trainLoader, validLoader, DiffNW, criterion):
-    model.train()
-    optimizer = optim.Adam(list(model.parameters()), lr=learning_rate)
+def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, DiffNW, criterion,
+          similarityRNN1=None, similarityRNN2=None):
+    imageEmbedding.train()
+    textEmbedding.eval()
+    
+    # Collect all trainable parameters
+    params_to_train = list(imageEmbedding.parameters())
+    if similarityRNN1 is not None:
+        similarityRNN1.train()
+        params_to_train += list(similarityRNN1.parameters())
+    if similarityRNN2 is not None:
+        similarityRNN2.train()
+        params_to_train += list(similarityRNN2.parameters())
+    
+    optimizer = optim.Adam(params_to_train, lr=learning_rate)
     loss_lst = []
     
     # Enable memory monitoring
@@ -187,9 +180,10 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion):
             
             # Compute loss using shared function
             path_loss, loss_value, NWTextFinal, NWImageFinal = compute_batch_loss(
-                model, text1, text2, image1, image2, 
+                imageEmbedding, textEmbedding, text1, text2, image1, image2, 
                 scoreMatrix, textSimilar, DiffNW, 
-                criterion, epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader),
+                criterion, similarityRNN1=similarityRNN1, similarityRNN2=similarityRNN2,
+                epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader),
                 debug=debug
             )
             
@@ -222,24 +216,25 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion):
         print(f'Epoch {epoch+1} - Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}', flush=True)
         
         # Validation phase
-        model.eval()
+        imageEmbedding.eval()
         val_loss = 0.0
         val_accuracy = 0.0
         with torch.no_grad():
-            for batch_idx, (image1, image2, scoreMatrix, textSimilar, text1, text2, image1_name, image2_name) in enumerate(validLoader):
+            for batch_idx, (image1, image2, NWTextGT, textSimilar, text1, text2, image1_name, image2_name) in enumerate(validLoader):
                 # Ensure all data is on correct device
                 image1 = image1.to(device)
                 image2 = image2.to(device)
-                scoreMatrix = scoreMatrix.to(device)
+                NWTextGT = NWTextGT.to(device)
                 textSimilar = textSimilar.to(device)
                 
                 # Compute loss using shared function
                 _, loss_value, NWTextFinal, NWImageFinal = compute_batch_loss(
-                    model, 
+                    imageEmbedding, textEmbedding,
                     text1, text2, 
                     image1, image2, 
-                    scoreMatrix, textSimilar, 
-                    DiffNW, criterion
+                    NWTextGT, textSimilar, 
+                    DiffNW, criterion,
+                    similarityRNN1=similarityRNN1, similarityRNN2=similarityRNN2
                 )
                 
                 # Compute accuracy
@@ -266,9 +261,6 @@ def Train(model, trainLoader, validLoader, DiffNW, criterion):
                 val_accuracy
             )
         loss_lst.append(train_loss)
-        
-        # Set model back to training mode
-        model.train()
 
     return loss_lst
 
@@ -278,13 +270,33 @@ if __name__ == '__main__':
     if debug_wandb:
         init_wandb()
 
-    model = EmbeddingModel(
+    imageEmbedding = EmbeddingModel(
         window_size=window_size,
         stride=window_size,
         vector_size=vector_size,
         model_arch=model_arch,
         device=device
     )
+
+    textEmbedding = TextEmbedding(embedding_dim=vector_size)
+
+    # Initialize SimilarityRNN models for image-text similarity computation
+    similarityRNN1 = SimilarityRNN(
+        embed_dim=vector_size,
+        hidden_dim=128,
+        num_layers=2,
+        bidirectional=True,
+        dropout=0.1
+    ).to(device)
+    
+    similarityRNN2 = SimilarityRNN(
+        embed_dim=vector_size,
+        hidden_dim=128,
+        num_layers=2,
+        bidirectional=True,
+        dropout=0.1
+    ).to(device)
+
     if show_gradients:
         for param in model.parameters():
             param.register_hook(check_grad)
@@ -299,13 +311,15 @@ if __name__ == '__main__':
     
     # try:
     loss_lst = Train(
-        model,
+        imageEmbedding,
+        textEmbedding,
         train_dataloader,
         valid_dataloader,
         DiffNW,
-        criterion
+        criterion,
+        similarityRNN1=similarityRNN1,
+        similarityRNN2=similarityRNN2
     )
-    
     
     if debug_wandb:
         wandb.finish()

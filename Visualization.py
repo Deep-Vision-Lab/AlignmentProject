@@ -184,10 +184,9 @@ def saveWindowsAsGrid(windows, output_path, title="Windows Grid", cols=8):
     print(f"Saved windows grid to {output_path}")
 
 
-def save_debug_visualizations(model, text1, text2, image1, image2, tokens_a, tokens_b, 
-                            NWTextTensor, diffNWimage,
-                            original_diffNWImageSimilar, interpolated_diffNWImageSimilar,
-                            original_NWTextSimilar, interpolated_NWTextSimilar,
+def save_debug_visualizations(model, text1, text2, image1, image2,
+                            TextSimilarGT, TextSimilarPred,
+                            Similar_TxtImg1, Similar_TxtImg2,
                             epoch, batch_idx):
     # Prepare directories for saving visualizations
     loss_dir = f'TrainResults/{loss_type}'
@@ -218,230 +217,107 @@ def save_debug_visualizations(model, text1, text2, image1, image2, tokens_a, tok
             cols=8
         )
 
-    vectors_epoch_dir = f'{loss_dir}/SimilarityMatricesPerEpoch/{model.model_arch}/Epoch_{epoch}'
-    matrices_epoch_dir = f'{loss_dir}/ScoreMatricesPerEpoch/{model.model_arch}/Epoch_{epoch}'
-    os.makedirs(vectors_epoch_dir, exist_ok=True)
-    os.makedirs(matrices_epoch_dir, exist_ok=True)
+    similar_IMGTXT_epoch_dir = f'{loss_dir}/SimilarityMatricesPerEpoch/{model.model_arch}/Epoch_{epoch}'
+    os.makedirs(similar_IMGTXT_epoch_dir, exist_ok=True)
 
     # Clone tensors for visualization to avoid affecting gradients
     debug_image1 = image1.detach().cpu()
     debug_image2 = image2.detach().cpu()
-    debug_NWText = NWTextTensor.detach().cpu()
-    debug_diffNWimage = diffNWimage.detach().cpu()
-    debug_original_diffNWImageSimilar = original_diffNWImageSimilar.detach().cpu()
-    debug_interpolated_diffNWImageSimilar = interpolated_diffNWImageSimilar.detach().cpu()
-    debug_original_NWTextSimilar = original_NWTextSimilar.detach().cpu()
-    debug_interpolated_NWTextSimilar = interpolated_NWTextSimilar.detach().cpu()
+    debug_NWTextGT = TextSimilarGT.detach().cpu()
+    debug_diffNWPred = TextSimilarPred.detach().cpu()
+    debug_Similar_TxtImg1 = Similar_TxtImg1.detach().cpu()
+    debug_Similar_TxtImg2 = Similar_TxtImg2.detach().cpu()
 
     # Save heatmap visualizations
     saveHeatmapPlots(
-        model, text1,text2, debug_image1, debug_image2, vectors_epoch_dir, epoch, batch_idx,
-        debug_diffNWimage, debug_NWText, 
-        debug_original_diffNWImageSimilar, debug_interpolated_diffNWImageSimilar,
-        debug_original_NWTextSimilar, debug_interpolated_NWTextSimilar, 
-        matrices_epoch_dir
+        text1, text2,
+        debug_image1, debug_image2,
+        similar_IMGTXT_epoch_dir,
+        debug_diffNWPred, debug_NWTextGT,
+        debug_Similar_TxtImg1, debug_Similar_TxtImg2,
     )
 
     del debug_image1, debug_image2
-    del debug_diffNWimage, debug_NWText
-    del vectors_epoch_dir, matrices_epoch_dir
-    del debug_original_diffNWImageSimilar, debug_interpolated_diffNWImageSimilar
-    del debug_original_NWTextSimilar, debug_interpolated_NWTextSimilar
+    del debug_diffNWPred, debug_NWTextGT
+    del similar_IMGTXT_epoch_dir
+    del debug_Similar_TxtImg1, debug_Similar_TxtImg2
 
 
 
-def saveHeatmapPlots(model, text1, text2, image1, image2, similarity_epoch_dir, epoch, batch_idx, 
-                    debug_diffNWimage, debug_NWTextMatrix, 
-                    debug_original_diffNWImageSimilar, debug_interpolated_diffNWImageSimilar,
-                    debug_original_NWTextSimilar, debug_interpolated_NWTextSimilar, 
-                    matrices_epoch_dir):
+
+def saveHeatmapPlots(text1, text2, image1, image2, 
+                    similarity_epoch_dir,
+                    debug_similarTextPred, debug_similarTextGT, 
+                    debug_Similar_TxtImg1, debug_Similar_TxtImg2):
+    
     for i in range(image1.size(0)): # Iterate through items in the current batch
         similarity_dir_per_batch = f'{similarity_epoch_dir}/{i}'
         os.makedirs(similarity_dir_per_batch, exist_ok=True)
-        # Save Image similarity matrix heatmap
-        image_similarity = f'{similarity_epoch_dir}/{i}/ImageDomain'
-        os.makedirs(image_similarity, exist_ok=True)
-        visualize_heatmap(
-            debug_original_diffNWImageSimilar[i],
-            f"Original Image Similarity Matrix Heatmap",
-            f'{image_similarity}/OriginalImageSimilarityMatrix.png'
-        )
-        # Save Image similarity matrix heatmap
-        visualize_heatmap(
-            debug_interpolated_diffNWImageSimilar[i],
-            f"Interpolated Image Similarity Matrix Heatmap",
-            f'{image_similarity}/InterpolatedImageSimilarityMatrix.png'
-        )
-
-        text_similarity = f'{similarity_epoch_dir}/{i}/TextDomain'
-        os.makedirs(text_similarity, exist_ok=True)
-        # Save Original Text similarity matrix heatmap
-        visualize_heatmap(
-            debug_original_NWTextSimilar[i],
-            f"Original Text Similarity Matrix Heatmap",
-            f'{text_similarity}/OriginalTextSimilarityMatrix.png'
-        )
-        # Save Interpolated Text similarity matrix heatmap
-        visualize_heatmap(
-            debug_interpolated_NWTextSimilar[i],
-            f"Interpolated Text Similarity Matrix Heatmap",
-            f'{text_similarity}/InterpolatedTextSimilarityMatrix.png'
-        )
 
         # Generate patches for visualization
         image1_i = image1[i].unsqueeze(0)
         image2_i = image2[i].unsqueeze(0)
-        model_window_size = model.window_size
-        model_stride = model.stride
+        model_window_size = window_size
+        model_stride = window_size
         windows_img1 = sliding_window(image1_i, model_window_size, model_stride).squeeze(0)
         windows_img2 = sliding_window(image2_i, model_window_size, model_stride).squeeze(0)
 
-        y_heatmap = torch.flip(windows_img1, dims=[0]) # From image1, for Y-axis
-        x_heatmap = torch.flip(windows_img2, dims=[0]) # From image2, for X-axis
+        y_image = torch.flip(windows_img1, dims=[0]) # From image1, for Y-axis
+        x_image = torch.flip(windows_img2, dims=[0]) # From image2, for X-axis
 
-        y_text = text1[i]
-        x_text = text2[i]
+        y_text = list(text1[i])
+        x_text = list(text2[i])
 
-        # Extract paths using diff_NW_Path for visualization
-        textPath, _ = diff_NW_Path(
-            debug_NWTextMatrix[i:i+1], 
-            debug_interpolated_NWTextSimilar[i:i+1], 
-            match_score=matchScore, 
-            miss_score=mismatchScore, 
-            gap_penalty=gapScore
+        # Visualize similarity matrix instead of raw matrices
+        VisualizeMatrixWithAxis(
+            matrix_data=debug_Similar_TxtImg1[i],
+            image_path=f"{similarity_dir_per_batch}/IMG_TXT_Similarity_Image1_Text1.png",
+            title="Image1-Text1 Similarity Heatmap",
+            cur_patches_y=y_text,
+            cur_patches_x=y_image
         )
-        imagePath, _ = diff_NW_Path(
-            debug_diffNWimage[i:i+1], 
-            debug_interpolated_diffNWImageSimilar[i:i+1], 
-            match_score=matchScore, 
-            miss_score=mismatchScore, 
-            gap_penalty=gapScore
+        VisualizeMatrixWithAxis(
+            matrix_data=debug_Similar_TxtImg2[i],
+            image_path=f"{similarity_dir_per_batch}/IMG_TXT_Similarity_Image2_Text2.png",
+            title="Image2-Text2 Similarity Heatmap",
+            cur_patches_y=y_text, # Assuming text is shared/aligned? Re-checking logic
+            cur_patches_x=x_image
         )
 
-        score_matrix_dir_per_batch = f'{matrices_epoch_dir}/{i}/score_matrix'
-        os.makedirs(score_matrix_dir_per_batch, exist_ok=True)
-        # Visualize scoreMatrices instead of raw matrices
-        VisualizeWithImageAxis(
-            ImageMatrix=debug_diffNWimage[i],
-            TextMatrix=debug_NWTextMatrix[i],
-            image_path=f"{score_matrix_dir_per_batch}/ScoreMatrix.png",
-            title1="Image NW score matrix Heatmap",
-            title2="Text NW score matrix Heatmap",
-            patches_right_y=y_text,
-            patches_right_x=x_text
+        VisualizeMatrixWithAxis(
+            matrix_data=debug_similarTextPred[i],
+            image_path=f"{similarity_dir_per_batch}/Txt1_Txt2_Similarity_Predicted.png",
+            title="Predicted Similarity Heatmap",
+            cur_patches_y=y_text,
+            cur_patches_x=x_text
         )
-        
-        # Visualize the distance between score matrices
-        score_matrix_distance = torch.abs(debug_diffNWimage[i].squeeze() - debug_NWTextMatrix[i].squeeze())
-        visualize_heatmap(
-            score_matrix_distance,
-            "Distance Between Image & Text Score Matrices",
-            f"{score_matrix_dir_per_batch}/ScoreMatrixDistance.png"
+        VisualizeMatrixWithAxis(
+            matrix_data=debug_similarTextGT[i],
+            image_path=f"{similarity_dir_per_batch}/Txt1_Txt2_Similarity_GT.png",
+            title="Ground Truth Similarity Heatmap",
+            cur_patches_y=y_text,
+            cur_patches_x=x_text
         )
-        # Save sum of score_matrix_distance to txt in score_matrix directory
-        try:
-            score_sum = score_matrix_distance.sum().item()
-            with open(f"{score_matrix_dir_per_batch}/ScoreMatrixDistanceSum.txt", "w") as f:
-                f.write(f"{score_sum}\n")
-        except Exception as e:
-            print(f"Failed to write ScoreMatrixDistanceSum.txt: {e}")
-        
-        del score_matrix_distance
 
 
-        path_dir_per_batch = f'{matrices_epoch_dir}/{i}/path'
-        os.makedirs(path_dir_per_batch, exist_ok=True)
-        # Visualize scoreMatrices instead of raw matrices
-        VisualizeWithImageAxis(
-            ImageMatrix=imagePath[0],
-            TextMatrix=textPath[0],
-            image_path=f"{path_dir_per_batch}/Paths.png",
-            title1="Image NW Path Heatmap",
-            title2="Text NW Path Heatmap",
-            patches_right_y=y_text,
-            patches_right_x=x_text
-        )
-        
-        # Visualize the distance between paths
-        path_distance = torch.abs(imagePath[0] - textPath[0])
-        visualize_heatmap(
-            path_distance,
-            "Distance Between Image & Text Paths",
-            f"{path_dir_per_batch}/PathDistance.png"
-        )
-        # Save sum of path_distance to txt in path directory
-        try:
-            path_sum = path_distance.sum().item()
-            with open(f"{path_dir_per_batch}/PathDistanceSum.txt", "w") as f:
-                f.write(f"{path_sum}\n")
-        except Exception as e:
-            print(f"Failed to write PathDistanceSum.txt: {e}")
-        del path_distance
-
-        # Visualize vertical vectors using HeightDiff_loss helper
-        # Note: This is optional and can be commented out if not needed
-        if loss_type == 'HeightDiff':
-            from LossFunctionWithHelpers import HeightDiff_loss
-            
-            Vertical_HN_Vector, Vertical_HDIFF_Vector, Horizontal_HN_Vector, Horizontal_HDIFF_Vector = HeightDiff_loss(
-                debug_diffNWimage[i].squeeze()*imagePath[0],
-                debug_NWTextMatrix[i].squeeze()*textPath[0],
-                lamda=1.0, loss_calc=False
-            )
-
-            height_vectors_dir_per_batch = f'{matrices_epoch_dir}/{i}/HeightVectors'
-            os.makedirs(height_vectors_dir_per_batch, exist_ok=True)
-            
-            # Save vertical vectors visualization (displayed horizontally, stacked vertically)
-            VisualizeHorizontalVectorHeatmaps(
-                vector1=Vertical_HDIFF_Vector,
-                vector2=Vertical_HN_Vector,
-                image_path=f"{height_vectors_dir_per_batch}/VerticalVectors.png",
-                title1="Image Vertical Vector Heatmap",
-                title2="Text Vertical Vector Heatmap",
-                show_values=True,
-                value_fmt=".2f"
-            )
-            
-            # Calculate and visualize the distance between the two vertical vectors
-            distance_vector = torch.abs(Vertical_HDIFF_Vector - Vertical_HN_Vector)
-            VisualizeSingleHorizontalVectorHeatmap(
-                vector=distance_vector,
-                image_path=f"{height_vectors_dir_per_batch}/VerticalVectorsDistance.png",
-                title="Distance Between Image & Text Vertical Vectors",
-                show_values=True,
-                value_fmt=".2f"
-            )
-            # Save sum of vertical vectors distance to txt in HeightVectors directory
-            try:
-                vectors_sum = distance_vector.sum().item()
-                with open(f"{height_vectors_dir_per_batch}/VerticalVectorsDistanceSum.txt", "w") as f:
-                    f.write(f"{vectors_sum}\n")
-            except Exception as e:
-                print(f"Failed to write VerticalVectorsDistanceSum.txt: {e}")
-            del distance_vector
-            del Vertical_HN_Vector, Vertical_HDIFF_Vector
-            del Horizontal_HN_Vector, Horizontal_HDIFF_Vector
-
-        del windows_img1, windows_img2, y_heatmap, x_heatmap
-        del textPath, imagePath
+        del windows_img1, windows_img2, y_image, x_image
         del image1_i, image2_i
 
 
 
-def visualize_paths(ImagePathMatrix, TextPathMatrix=None, epoch=0, batch_idx=0):
-    ImagePathMatrix = ImagePathMatrix.cpu().detach().numpy()
-    if TextPathMatrix is not None:
-        TextPathMatrix = TextPathMatrix.cpu().detach().numpy()
+def visualize_paths(ImgTxt1Similar, ImgTxt2Similar=None, epoch=0, batch_idx=0):
+    ImgTxt1Similar = ImgTxt1Similar.cpu().detach().numpy()
+    if ImgTxt2Similar is not None:
+        ImgTxt2Similar = ImgTxt2Similar.cpu().detach().numpy()
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
 
-    axes[0].imshow(ImagePathMatrix, interpolation='nearest')
+    axes[0].imshow(ImgTxt1Similar, interpolation='nearest')
     axes[0].set_title(f"Image NW Path (Epoch {epoch}, Batch {batch_idx})")
     axes[0].axis("off")
 
-    if TextPathMatrix is not None:
-        axes[1].imshow(TextPathMatrix, interpolation='nearest')
+    if ImgTxt2Similar is not None:
+        axes[1].imshow(ImgTxt2Similar, interpolation='nearest')
         axes[1].set_title(f"Text NW Path (Epoch {epoch}, Batch {batch_idx})")
         axes[1].axis("off")
 
@@ -471,63 +347,88 @@ def visualize_heatmap(pathMatrix, title,image_path):
 
 
 
-def VisualizeWithImageAxis(ImageMatrix, TextMatrix, image_path, title1, title2, 
-                           patches_left_y=[], patches_left_x=[],
-                            patches_right_y=[], patches_right_x=[], zoom_factor=0.2, 
+def VisualizeMatrixWithAxis(matrix_data, image_path, title, 
+                            cur_patches_y, cur_patches_x, zoom_factor=0.2, 
                             y_axis_x_offset=-30, x_axis_y_offset=25):
-    # Convert tensors to numpy
-    ImageMatrix_np = ImageMatrix.detach().cpu().numpy() if torch.is_tensor(ImageMatrix) else np.array(ImageMatrix)
-    TextMatrix_np = TextMatrix.detach().cpu().numpy() if torch.is_tensor(TextMatrix) else np.array(TextMatrix)
+    # Convert inputs to correct types
+    matrix_data = matrix_data.detach().cpu().numpy() if torch.is_tensor(matrix_data) else np.array(matrix_data)
 
-    matrices_to_plot = [ImageMatrix_np, TextMatrix_np]
-    titles = [title1, title2]
-    use_img_labels = patches_left_y is not None and patches_left_x is not None
+    # Dynamic figsize: Make it much bigger so values don't interfere
+    h, w = matrix_data.shape
+    fig_w = max(15, w * 0.8)
+    fig_h = max(15, h * 0.8)
 
-    # Save a single PNG file with the heatmaps of ImageMatrix and TextMatrix side by side
-    fig, axes = plt.subplots(1, 2, figsize=(20, 10))
-    for idx, ax in enumerate(axes):
-        matrix_data = matrices_to_plot[idx]
-        if idx == 1:
-            label_x = patches_right_x
-            label_y = patches_right_y
-        else:
-            label_x = list(range(matrix_data.shape[1]))
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    
+    # Determine labels and if needs image drawing for Y-axis
+    draw_y_imgs = False
+    if cur_patches_y is not None and len(cur_patches_y) == matrix_data.shape[0]:
+        # check if first element is tensor
+        if len(cur_patches_y) > 0 and (torch.is_tensor(cur_patches_y[0]) or isinstance(cur_patches_y[0], np.ndarray)):
             label_y = list(range(matrix_data.shape[0]))
+            draw_y_imgs = True
+        else:
+            label_y = cur_patches_y
+    else:
+        label_y = list(range(matrix_data.shape[0]))
+
+    # Determine labels and if needs image drawing for X-axis
+    draw_x_imgs = False
+    if cur_patches_x is not None and len(cur_patches_x) == matrix_data.shape[1]:
+        # check if first element is tensor
+        if len(cur_patches_x) > 0 and (torch.is_tensor(cur_patches_x[0]) or isinstance(cur_patches_x[0], np.ndarray)):
+            label_x = False # Drop x-axis indexes
+            draw_x_imgs = True
+        else:
+            label_x = cur_patches_x
+    else:
+        label_x = False # Drop x-axis indexes
+
+    sns.heatmap(matrix_data, cmap='jet', linewidths=0.1, 
+                linecolor='black', ax=ax, annot=True, fmt=".2f",
+                xticklabels=label_x, yticklabels=label_y,
+                cbar=True, annot_kws={"size": 10}) # Increased annotation font size slightly, assuming cells are big
+    
+    # Adjust tick labels: rotation and much smaller font size
+    ax.tick_params(axis='x', rotation=90, labelsize=8)
+    ax.tick_params(axis='y', rotation=0, labelsize=8)
+    
+    ax.set_title(title, fontsize=16)
+    
+    if draw_y_imgs:
+        for k in range(matrix_data.shape[0]):
+            patch_tensor = cur_patches_y[k]
+            img = patch_tensor.cpu().permute(1, 2, 0).numpy() if torch.is_tensor(patch_tensor) else patch_tensor
+            # If numpy array is (C,H,W), permute. If (H,W,C), keep.
+            if img.ndim == 3 and img.shape[0] in [1, 3] and img.shape[2] not in [1, 3]: 
+                    img = np.transpose(img, (1, 2, 0))
             
-        sns.heatmap(matrix_data, cmap='jet', linewidths=0.1, 
-                    linecolor='black', ax=ax, annot=False, fmt=".3f",
-                    xticklabels=label_x, yticklabels=label_y)
-        
-        # Adjust tick labels: rotation and much smaller font size
-        ax.tick_params(axis='x', rotation=90, labelsize=5)
-        ax.tick_params(axis='y', rotation=90, labelsize=5)
-        
-        ax.text(0.5, -0.05, titles[idx], transform=ax.transAxes,
-                ha="center", va="top", fontsize=10)
-        
-        if use_img_labels:
-            if len(patches_left_y) == matrix_data.shape[0]:
-                for k in range(matrix_data.shape[0]):
-                    patch_tensor = patches_left_y[k]
-                    img = patch_tensor.cpu().permute(1, 2, 0).numpy()
-                    img = np.clip(img, 0, 1) if img.max() > 1.0 and img.dtype == np.float32 else img
-                    oi = OffsetImage(img, zoom=zoom_factor)
-                    ab = AnnotationBbox(oi, (0, k + 0.5),
-                                        xybox=(y_axis_x_offset, 0), frameon=False,
-                                        xycoords='data', boxcoords="offset points", pad=0.1)
-                    ax.add_artist(ab)
-            if len(patches_left_x) == matrix_data.shape[1]:
-                for k in range(matrix_data.shape[1]):
-                    patch_tensor = patches_left_x[k]
-                    img = patch_tensor.cpu().permute(1, 2, 0).numpy()
-                    img = np.clip(img, 0, 1) if img.max() > 1.0 and img.dtype == np.float32 else img
-                    oi = OffsetImage(img, zoom=zoom_factor)
-                    ab = AnnotationBbox(oi, (k + 0.5, 0),
-                                        xybox=(0, x_axis_y_offset), frameon=False,
-                                        xycoords='data', boxcoords="offset points", pad=0.1)
-                    ax.add_artist(ab)
-    if use_img_labels:
-        fig.subplots_adjust(left=0.4, bottom=0.35)
+            img = np.clip(img, 0, 1) if img.max() > 1.0 and img.dtype == np.float32 else img
+            oi = OffsetImage(img, zoom=zoom_factor)
+            ab = AnnotationBbox(oi, (0, k + 0.5),
+                                xybox=(y_axis_x_offset, 0), frameon=False,
+                                xycoords='data', boxcoords="offset points", pad=0.1)
+            ax.add_artist(ab)
+    
+    if draw_x_imgs:
+        for k in range(matrix_data.shape[1]):
+            patch_tensor = cur_patches_x[k]
+            img = patch_tensor.cpu().permute(1, 2, 0).numpy() if torch.is_tensor(patch_tensor) else patch_tensor
+            if img.ndim == 3 and img.shape[0] in [1, 3] and img.shape[2] not in [1, 3]:
+                    img = np.transpose(img, (1, 2, 0))
+
+            img = np.clip(img, 0, 1) if img.max() > 1.0 and img.dtype == np.float32 else img
+            oi = OffsetImage(img, zoom=zoom_factor)
+            
+            # Place images at the bottom of the heatmap
+            ab = AnnotationBbox(oi, (k + 0.5, matrix_data.shape[0]),
+                                xybox=(0, -x_axis_y_offset), frameon=False,
+                                xycoords='data', boxcoords="offset points", pad=0.1)
+            ax.add_artist(ab)
+
+    # Use tight_layout but leave space for custom artists (images)
+    # Since we use bbox_inches='tight' in savefig, simple layout adjust is often enough
+    fig.tight_layout()
     fig.savefig(image_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
 
