@@ -1,7 +1,7 @@
 import torch
 
 # Model parameters
-loss_type = 'SoftCrossEntropy'  # ['HeightDiff', 'MSE', 'GuidedAttention', 'KL-Divergence', 
+loss_type = 'MSE'  # ['HeightDiff', 'MSE', 'GuidedAttention', 'KL-Divergence', 
                                 #'Dice', 'Wasserstein', 'SoftCrossEntropy']
 model_arch = 'CNN' # ['CNN-Transformer', 'CNN', 'dinov2', 'Transformer']
 normalize_type = 'average' # ['min_max', 'mean_std', 'average']
@@ -13,13 +13,13 @@ epochs = 300
 learning_rate = 1e-4
 
 # Data parameters
-window_size = 16
+window_size = 32
 vector_size = 128
 lang = 'Arabic' # ['English', 'Arabic']
 
 # Debugging and visualization parameters
 debug = True # Set to True to save patches and heatmaps for debugging
-debug_wandb = True # Set to True to log training to Weights & Biases
+debug_wandb = False # Set to True to log training to Weights & Biases
 show_gradients = False # Set to True to print gradients for debugging
 preprocess = 'none' # Set to True to normalize before loss computation
                     # ['none', 'Normalize', 'ExtractPaths']

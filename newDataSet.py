@@ -73,7 +73,7 @@ class TextLineModern(Dataset):
 
             similar_matrix = np.load(SimilarityMatrix)
             similar_matrix = torch.tensor(similar_matrix, dtype=torch.float32)
-            similar_matrix = self.ScoreMapping(similar_matrix)
+            # similar_matrix = self.ScoreMapping(similar_matrix)
             
             if self.transform:
                 img1 = self.transform(img1)

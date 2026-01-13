@@ -115,7 +115,11 @@ def j2t(x_jax):
 
 def t2j(x_torch):
     x_torch = x_torch.contiguous()  # Ensure tensor is contiguous for conversion
-    return jax.dlpack.from_dlpack(torch.utils.dlpack.to_dlpack(x_torch)) # type: ignore
+    try:
+        return jax.dlpack.from_dlpack(torch.utils.dlpack.to_dlpack(x_torch)) # type: ignore
+    except Exception:
+        # Fallback for layout issues (e.g. on CPU with specific memory formats)
+        return jax.numpy.array(x_torch.detach().cpu().numpy())
 
 def jax2torch(fun):
   class JaxFun(torch.autograd.Function):
@@ -278,8 +282,8 @@ class CosineSimilarityLayer(nn.Module):
         # torch.bmm([B, N, D], [B, D, M]) results in [B, N, M]
         # This correctly computes dot products over the feature dimension D
         # for each pair of vectors from sequence N and sequence M.
-        x2_transposed = x2.transpose(1, 2)
-        dot_product = torch.bmm(x1, x2_transposed)  # shape (batch_size, N, M)
+        x2_transposed = x2.transpose(1, 2).to(device)
+        dot_product = torch.bmm(x1, x2_transposed).to(device)  # shape (batch_size, N, M)
         del x2_transposed
         
         # Compute the magnitudes of the vectors (norm over feature dimension D)
