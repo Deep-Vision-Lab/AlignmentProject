@@ -16,7 +16,7 @@ from embeddingModel import *
 from embeddingModel import *
 from NormalizeFuncs import *
 from LossFunctionWithHelpers import *
-from SimilarityRNN import SimilarityRNN
+from SimilarityTransformer import SimilarityTransformer
 
 import os
 import gc
@@ -73,7 +73,7 @@ def check_grad(grad):
 
 # second line of parameters is for saving visualizations during debugging 
 def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, NWTextGT, textSimilar, 
-                       DiffNWAlgo, criterion, similarityRNN1=None, similarityRNN2=None,
+                       DiffNWAlgo, criterion, similarityTransformer1=None, similarityTransformer2=None,
                        epoch=0, batch_idx=0, dataloader_length=0, 
                        debug=False):
 
@@ -94,17 +94,21 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, NWTe
     normalized_tokens_a = F.normalize(flip_tokens_a, p=2, dim=-1)  # Shape: (batch_size, seq_len, vector_size)
     normalized_tokens_b = F.normalize(flip_tokens_b, p=2, dim=-1)
                                       
-    # Compute similarity matrices using RNN model (or fallback to bmm)
-    if similarityRNN1 is not None and similarityRNN2 is not None:
-        img1_txt1_similarity = similarityRNN1(normalized_text1, normalized_tokens_a)
-        img2_txt2_similarity = similarityRNN2(normalized_text2, normalized_tokens_b)
+    # Compute similarity matrices using Transformer model (or fallback to bmm)
+    # The transformer takes image strokes with context from previous strokes to predict letters
+    if similarityTransformer1 is not None and similarityTransformer2 is not None:
+        img1_txt1_similarity = similarityTransformer1(normalized_text1, normalized_tokens_a)
+        img2_txt2_similarity = similarityTransformer2(normalized_text2, normalized_tokens_b)
     else:
         # Fallback to simple matrix multiplication
         img1_txt1_similarity = torch.bmm(normalized_text1, normalized_tokens_a.transpose(1, 2))
         img2_txt2_similarity = torch.bmm(normalized_text2, normalized_tokens_b.transpose(1, 2))
 
+    normalized_img1_txt1_similarity = F.normalize(img1_txt1_similarity, p=2, dim=-1)
+    normalized_img2_txt2_similarity = F.normalize(img2_txt2_similarity, p=2, dim=-1)
+
     # Multiplying score matrices
-    finalSimilarityMatrix = torch.bmm(img1_txt1_similarity, img2_txt2_similarity.transpose(1, 2))
+    finalSimilarityMatrix = torch.bmm(normalized_img1_txt1_similarity, normalized_img2_txt2_similarity.transpose(1, 2))
 #---------------------------------------------------------------------------------------------------------
     
     # Loss computation
@@ -114,8 +118,8 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, NWTe
     ######################################################################################################################################
     # Debugging: Save visualizations for the last batch every 10 epochs
     if debug and batch_idx == 0 and epoch % 10 == 0:
-        debug_imgText1 = img1_txt1_similarity
-        debug_imgText2 = img2_txt2_similarity
+        debug_imgText1 = normalized_img1_txt1_similarity
+        debug_imgText2 = normalized_img2_txt2_similarity
 
         save_debug_visualizations(
             imageEmbed, 
@@ -144,18 +148,18 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, NWTe
 
 
 def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, DiffNW, criterion,
-          similarityRNN1=None, similarityRNN2=None):
+          similarityTransformer1=None, similarityTransformer2=None):
     imageEmbedding.train()
     textEmbedding.eval()
     
     # Collect all trainable parameters
     params_to_train = list(imageEmbedding.parameters())
-    if similarityRNN1 is not None:
-        similarityRNN1.train()
-        params_to_train += list(similarityRNN1.parameters())
-    if similarityRNN2 is not None:
-        similarityRNN2.train()
-        params_to_train += list(similarityRNN2.parameters())
+    if similarityTransformer1 is not None:
+        similarityTransformer1.train()
+        params_to_train += list(similarityTransformer1.parameters())
+    if similarityTransformer2 is not None:
+        similarityTransformer2.train()
+        params_to_train += list(similarityTransformer2.parameters())
     
     optimizer = optim.Adam(params_to_train, lr=learning_rate)
     loss_lst = []
@@ -182,7 +186,7 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, DiffNW, crite
             path_loss, loss_value, NWTextFinal, NWImageFinal = compute_batch_loss(
                 imageEmbedding, textEmbedding, text1, text2, image1, image2, 
                 scoreMatrix, textSimilar, DiffNW, 
-                criterion, similarityRNN1=similarityRNN1, similarityRNN2=similarityRNN2,
+                criterion, similarityTransformer1=similarityTransformer1, similarityTransformer2=similarityTransformer2,
                 epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader),
                 debug=debug
             )
@@ -234,7 +238,7 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, DiffNW, crite
                     image1, image2, 
                     NWTextGT, textSimilar, 
                     DiffNW, criterion,
-                    similarityRNN1=similarityRNN1, similarityRNN2=similarityRNN2
+                    similarityTransformer1=similarityTransformer1, similarityTransformer2=similarityTransformer2
                 )
                 
                 # Compute accuracy
@@ -272,7 +276,7 @@ if __name__ == '__main__':
 
     imageEmbedding = EmbeddingModel(
         window_size=window_size,
-        stride=window_size,
+        stride=window_size//2,
         vector_size=vector_size,
         model_arch=model_arch,
         device=device
@@ -280,20 +284,21 @@ if __name__ == '__main__':
 
     textEmbedding = TextEmbedding(embedding_dim=vector_size)
 
-    # Initialize SimilarityRNN models for image-text similarity computation
-    similarityRNN1 = SimilarityRNN(
+    # Initialize SimilarityTransformer models for image-text similarity computation
+    # The transformer takes image strokes with context from previous strokes to predict which letter
+    similarityTransformer1 = SimilarityTransformer(
         embed_dim=vector_size,
         hidden_dim=128,
+        num_heads=4,
         num_layers=2,
-        bidirectional=True,
         dropout=0.1
     ).to(device)
     
-    similarityRNN2 = SimilarityRNN(
+    similarityTransformer2 = SimilarityTransformer(
         embed_dim=vector_size,
         hidden_dim=128,
+        num_heads=4,
         num_layers=2,
-        bidirectional=True,
         dropout=0.1
     ).to(device)
 
@@ -317,8 +322,8 @@ if __name__ == '__main__':
         valid_dataloader,
         DiffNW,
         criterion,
-        similarityRNN1=similarityRNN1,
-        similarityRNN2=similarityRNN2
+        similarityTransformer1=similarityTransformer1,
+        similarityTransformer2=similarityTransformer2
     )
     
     if debug_wandb:
