@@ -83,10 +83,10 @@ class TextLineModern(Dataset):
             text2_path = os.path.join(self.new_dataset['texts'], text2)
             with open(text1_path, 'r') as f:
                 text_line1 = f.read().strip()
-                text_line1 = text_line1.replace(' ', '')
+                # text_line1 = text_line1.replace(' ', '')
             with open(text2_path, 'r') as f:
                 text_line2 = f.read().strip()
-                text_line2 = text_line2.replace(' ', '')
+                # text_line2 = text_line2.replace(' ', '')
             return img1, img2, score_matrix, similar_matrix, text_line1, text_line2, img1_name, img2_name
         else:
             raise NotImplementedError("Handling for non-NewDataSet is not included.")
