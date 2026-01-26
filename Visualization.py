@@ -257,46 +257,89 @@ def saveHeatmapPlots(text1, text2, image1, image2,
         # Generate patches for visualization
         image1_i = image1[i].unsqueeze(0)
         image2_i = image2[i].unsqueeze(0)
+        
+        # Calculate stride using the same logic as in train.py to match model output dimensions
+        # Use stride_ratio if available from Parameters.py, otherwise default to 1.0 (no overlap)
+        ratio = stride_ratio if 'stride_ratio' in globals() else 1.0
+        model_stride = max(1, int(window_size * ratio))
         model_window_size = window_size
-        model_stride = window_size
+        
+        # print(f"DEBUG: Visualization using window={model_window_size}, stride={model_stride}")
+        
         windows_img1 = sliding_window(image1_i, model_window_size, model_stride).squeeze(0)
         windows_img2 = sliding_window(image2_i, model_window_size, model_stride).squeeze(0)
 
         y_image = torch.flip(windows_img1, dims=[0]) # From image1, for Y-axis
+        # Flip x-axis patches vertically (dim 2) in addition to sequence reversal (dim 0)
+        # matches user request to "make a flip for the image patches on the x-axis"
         x_image = torch.flip(windows_img2, dims=[0]) # From image2, for X-axis
 
-        y_text = list(text1[i])
-        x_text = list(text2[i])
+        # Prepare text labels (Full and Stripped versions)
+        y_text_full = list(text1[i])
+        x_text_full = list(text2[i])
+        y_text_stripped = list(text1[i].replace(" ", ""))
+        x_text_stripped = list(text2[i].replace(" ", ""))
+
+        # Helper to select correct labels based on matrix dimension
+        def get_labels(dim_len, full_labels, stripped_labels):
+            if dim_len == len(full_labels):
+                return full_labels
+            elif dim_len == len(stripped_labels):
+                return stripped_labels
+            return list(range(dim_len))
+
+        # Select labels for Image-Text Similarity matrices
+        # debug_Similar_TxtImg1 is [Text, Image]
+        h_sim1, _ = debug_Similar_TxtImg1[i].shape
+        y_text_sim1 = get_labels(h_sim1, y_text_full, y_text_stripped)
+        
+        h_sim2, _ = debug_Similar_TxtImg2[i].shape
+        y_text_sim2 = get_labels(h_sim2, y_text_full, y_text_stripped) # Using y_text_full/stripped because logic below used y_text?
+        # WAIT: In original code:
+        # VisualizeMatrixWithAxis(... cur_patches_y=y_text, cur_patches_x=y_image) for Image1-Text1
+        # VisualizeMatrixWithAxis(... cur_patches_y=y_text, cur_patches_x=x_image) for Image2-Text2
+        # Use x_text for Image2-Text2 (Text2 maps to Image2)
+        x_text_sim2 = get_labels(h_sim2, x_text_full, x_text_stripped)
 
         # Visualize similarity matrix instead of raw matrices
         VisualizeMatrixWithAxis(
             matrix_data=debug_Similar_TxtImg1[i],
             image_path=f"{similarity_dir_per_batch}/IMG_TXT_Similarity_Image1_Text1.png",
             title="Image1-Text1 Similarity Heatmap",
-            cur_patches_y=y_text,
+            cur_patches_y=y_text_sim1,
             cur_patches_x=y_image
         )
         VisualizeMatrixWithAxis(
             matrix_data=debug_Similar_TxtImg2[i],
             image_path=f"{similarity_dir_per_batch}/IMG_TXT_Similarity_Image2_Text2.png",
             title="Image2-Text2 Similarity Heatmap",
-            cur_patches_y=y_text, # Assuming text is shared/aligned? Re-checking logic
+            cur_patches_y=x_text_sim2, # Corrected to Text2
             cur_patches_x=x_image
         )
+
+        # Select labels for Text-Text Similarity matrices
+        # debug_similarTextPred is [Text1, Text2]
+        pred_h, pred_w = debug_similarTextPred[i].shape
+        y_text_pred = get_labels(pred_h, y_text_full, y_text_stripped)
+        x_text_pred = get_labels(pred_w, x_text_full, x_text_stripped)
+
+        gt_h, gt_w = debug_similarTextGT[i].shape
+        y_text_gt = get_labels(gt_h, y_text_full, y_text_stripped)
+        x_text_gt = get_labels(gt_w, x_text_full, x_text_stripped)
 
         VisualizeMatrixWithAxis(
             matrix_data=debug_similarTextPred[i],
             image_path=f"{similarity_dir_per_batch}/Txt1_Txt2_Similarity_Predicted.png",
             title="Predicted Similarity Heatmap",
-            cur_patches_y=y_text,
-            cur_patches_x=x_text
+            cur_patches_y=y_text_pred,
+            cur_patches_x=x_text_pred
         )
         VisualizeMatrixWithAxis(
             matrix_data=debug_similarTextGT[i],
             image_path=f"{similarity_dir_per_batch}/Txt1_Txt2_Similarity_GT.png",
             title="Ground Truth Similarity Heatmap",
-            cur_patches_y=y_text,
-            cur_patches_x=x_text
+            cur_patches_y=y_text_gt,
+            cur_patches_x=x_text_gt
         )
 
 
@@ -348,15 +391,17 @@ def visualize_heatmap(pathMatrix, title,image_path):
 
 
 def VisualizeMatrixWithAxis(matrix_data, image_path, title, 
-                            cur_patches_y, cur_patches_x, zoom_factor=0.2, 
-                            y_axis_x_offset=-30, x_axis_y_offset=25):
+                            cur_patches_y, cur_patches_x, zoom_factor=0.3, 
+                            y_axis_x_offset=-40, x_axis_y_offset=40):
     # Convert inputs to correct types
     matrix_data = matrix_data.detach().cpu().numpy() if torch.is_tensor(matrix_data) else np.array(matrix_data)
 
-    # Dynamic figsize: Make it much bigger so values don't interfere
+    # Dynamic figsize: Make it bigger so image patches on axes are visible
+    # But ensure we don't exceed matplotlib's pixel limit (2^16 = 65536)
+    # Safe limit at 300 DPI is ~200 inches.
     h, w = matrix_data.shape
-    fig_w = max(15, w * 0.8)
-    fig_h = max(15, h * 0.8)
+    fig_w = max(25, min(w * 0.6, 180)) # 0.6 inches per column, max 180 inches
+    fig_h = max(20, min(h * 0.6, 180)) # 0.6 inches per row, max 180 inches
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     

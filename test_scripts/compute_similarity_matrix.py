@@ -20,7 +20,7 @@ from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 import argparse
 import os
 
-from Parameters import device, window_size, vector_size, model_arch, matchScore, mismatchScore, gapScore
+from Parameters import *
 from embeddingModel import EmbeddingModel, sliding_window
 from DiffNWAlgo import compute_nw_score_matrix
 from pathExtractor import compute_traceback_path
@@ -136,8 +136,7 @@ def add_patch_axis_labels(ax, patches, axis='x', zoom=0.3):
 def compute_similarity_matrix_for_pair(
     image1_path: str,
     image2_path: str,
-    window_size: int = 16,
-    stride: int = None,
+    stride: int = window_size,
     vector_size: int = 128,
     model_arch: str = 'CNN',
     model: EmbeddingModel = None,
@@ -160,7 +159,7 @@ def compute_similarity_matrix_for_pair(
         Tuple of (similarity_matrix, patches_a, patches_b)
     """
     if stride is None:
-        stride = window_size // 2
+        stride = window_size
     
     # Load images
     print(f"Loading images...")
@@ -356,7 +355,7 @@ def main():
     parser.add_argument('--index', '-i', type=int, required=True,
                         help='Index of the image pair (e.g., 1 for img1_1.png and img2_1.png)')
     parser.add_argument('--data-dir', '-d', type=str, 
-                        default='DataSet/Synthetic_Arabic/images',
+                        default='../DataSet/Synthetic_Arabic/images',
                         help='Directory containing the images')
     parser.add_argument('--window-size', '-w', type=int, default=16,
                         help='Size of the sliding window for patches')
@@ -367,7 +366,7 @@ def main():
     parser.add_argument('--model-arch', '-m', type=str, default='CNN',
                         choices=['CNN', 'CNN-Transformer', 'dinov2', 'Transformer'],
                         help='Model architecture to use')
-    parser.add_argument('--output-dir', '-o', type=str, default='Results/SimilarityMatrices',
+    parser.add_argument('--output-dir', '-o', type=str, default='../Results/SimilarityMatrices',
                         help='Directory to save results')
     parser.add_argument('--visualize', action='store_true',
                         help='Visualize the similarity matrix')
@@ -397,18 +396,18 @@ def main():
     print(f"  Image 1: {image1_path}")
     print(f"  Image 2: {image2_path}")
     print(f"  Window size: {args.window_size}")
-    print(f"  Stride: {args.stride if args.stride else args.window_size // 2}")
+    print(f"  Stride: {window_size}")
     print(f"  Model architecture: {args.model_arch}")
     
     # Compute similarity matrix
     similarity_matrix, patches_a, patches_b = compute_similarity_matrix_for_pair(
         image1_path=image1_path,
         image2_path=image2_path,
-        window_size=args.window_size,
-        stride=args.stride,
-        vector_size=args.vector_size,
-        model_arch=args.model_arch,
-        device=args.device
+        window_size=window_size,
+        stride=window_size,
+        vector_size=vector_size,
+        model_arch=model_arch,
+        device=device
     )
     
     num_patches_1 = patches_a.shape[0]
