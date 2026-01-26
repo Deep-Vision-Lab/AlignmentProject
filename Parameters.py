@@ -54,6 +54,7 @@ use_space_gate = True           # Enable black patch detection gate
 space_threshold = 0.05          # Patches with mean pixel intensity < threshold are "space"
 include_spaces = True           # Include space characters in text embeddings
 
+#a
 # ============================================================================
 # OPTIMIZATION 6: Contrastive Learning Parameters
 # ============================================================================
