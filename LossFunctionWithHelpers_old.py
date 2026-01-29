@@ -5,25 +5,7 @@ import torch.nn.functional as F
 from functools import partial
 
 # Import CUDA-accelerated Soft-DTW
-# Note: The file soft-dtw-cuda.py needs to be renamed to soft_dtw_cuda.py for import
-# Or use importlib to handle the hyphenated name
-import importlib.util
-import sys
-import os
-
-def _import_soft_dtw_cuda():
-    """Import soft-dtw-cuda.py handling the hyphenated filename."""
-    module_path = os.path.join(os.path.dirname(__file__), "soft_dtw_cuda.py")
-    spec = importlib.util.spec_from_file_location("soft_dtw_cuda", module_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load soft-dtw-cuda.py from {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["soft_dtw_cuda"] = module
-    spec.loader.exec_module(module)
-    return module
-
-soft_dtw_cuda = _import_soft_dtw_cuda()
-SoftDTW = soft_dtw_cuda.SoftDTW
+from soft_dtw_cuda import SoftDTW
 
 
 # ============================================================================
@@ -58,23 +40,20 @@ class ContrastiveSoftDTW(nn.Module):
         temperature (float): Temperature for contrastive loss (InfoNCE temperature)
                             Lower = sharper distinctions between pairs
         use_cuda (bool): Whether to use CUDA acceleration for Soft-DTW
+        normalize (bool): Whether to use normalized Soft-DTW (divergence form)
         bandwidth (int): Sakoe-Chiba bandwidth for pruning (None for global alignment)
-    
-    Note:
-        Normalization is disabled because image and text sequences have different lengths.
-        The SoftDTW normalization requires computing self-DTW which needs same-length sequences.
     """
     
-    def __init__(self, gamma=0.1, temperature=0.1, use_cuda=True, bandwidth=None):
+    def __init__(self, gamma=0.1, temperature=0.1, use_cuda=True, normalize=True, bandwidth=None):
         super(ContrastiveSoftDTW, self).__init__()
         self.gamma = gamma
         self.temperature = temperature
         self.use_cuda = use_cuda
+        self.normalize = normalize
         
         # Initialize the CUDA-accelerated Soft-DTW function
-        # IMPORTANT: normalize=False because image and text sequences have different lengths
-        # Normalization requires computing self-DTW which needs same-length sequences
-        self.dtw_func = SoftDTW(use_cuda=use_cuda, gamma=gamma, normalize=False, bandwidth=bandwidth)
+        # Note: We don't use the built-in dist_func since we compute similarity matrices ourselves
+        self.dtw_func = SoftDTW(use_cuda=use_cuda, gamma=gamma, normalize=normalize, bandwidth=bandwidth)
     
     def forward(self, image_embeddings, text_embeddings, final_pred=None, target=None, 
                 mse_weight=1.0, contrastive_weight=0.5):
@@ -333,7 +312,7 @@ def contrastive_soft_dtw_alignment_loss(final_pred, target,
                                          img_embeddings, txt_embeddings,
                                          gamma=0.1, temperature=0.1,
                                          mse_weight=1.0, contrastive_weight=0.5,
-                                         use_cuda=True):
+                                         use_cuda=True, normalize=True):
     """
     Functional interface for Contrastive Soft-DTW loss.
     
@@ -350,6 +329,7 @@ def contrastive_soft_dtw_alignment_loss(final_pred, target,
         mse_weight (float): Weight for MSE loss
         contrastive_weight (float): Weight for contrastive loss
         use_cuda (bool): Use CUDA acceleration
+        normalize (bool): Normalize DTW scores
     
     Returns:
         tuple: (total_loss, loss_dict)
@@ -357,7 +337,8 @@ def contrastive_soft_dtw_alignment_loss(final_pred, target,
     criterion = ContrastiveSoftDTW(
         gamma=gamma, 
         temperature=temperature, 
-        use_cuda=use_cuda
+        use_cuda=use_cuda,
+        normalize=normalize
     )
     return criterion(img_embeddings, txt_embeddings, final_pred, target, 
                     mse_weight=mse_weight, contrastive_weight=contrastive_weight)
@@ -384,13 +365,15 @@ def Loss_choice(loss_type):
         # All contrastive learning is handled inside the loss function
         # No special handling needed in training loop - just pass embeddings
         from Parameters import (contrastive_soft_dtw_gamma, contrastive_soft_dtw_temperature,
-                                contrastive_soft_dtw_mse_weight, contrastive_soft_dtw_contrastive_weight)
+                                contrastive_soft_dtw_mse_weight, contrastive_soft_dtw_contrastive_weight,
+                                contrastive_soft_dtw_normalize)
         criterion = partial(contrastive_soft_dtw_alignment_loss,
                           gamma=contrastive_soft_dtw_gamma,
                           temperature=contrastive_soft_dtw_temperature,
                           mse_weight=contrastive_soft_dtw_mse_weight,
                           contrastive_weight=contrastive_soft_dtw_contrastive_weight,
-                          use_cuda=True)
+                          use_cuda=True,
+                          normalize=contrastive_soft_dtw_normalize)
     else:
         raise ValueError(f"Unknown loss type: {loss_type}. Available: ['MSE', 'ContrastiveSoftDTW']")
     return criterion
@@ -419,7 +402,4 @@ if __name__ == "__main__":
     
     # Test backward pass
     loss.backward()
-    if image_embeddings.grad is not None:
-        print(f"Gradient computed successfully. Grad norm: {image_embeddings.grad.norm().item():.4f}")
-    else:
-        print("Warning: No gradient computed")
+    print(f"Gradient computed successfully. Grad norm: {image_embeddings.grad.norm().item():.4f}")

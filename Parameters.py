@@ -1,10 +1,7 @@
 import torch
 
 # Model parameters
-loss_type = 'ContrastiveMSE'  # ['HeightDiff', 'MSE', 'GuidedAttention', 'KL-Divergence', 
-                               # 'Dice', 'Wasserstein', 'SoftCrossEntropy', 
-                               # 'DiagonalAlignment', 'CombinedAlignment', 'MSEWithDiagonalReg',
-                               # 'ContrastiveMSE']  # <-- NEW: Contrastive loss for letter classification
+loss_type = 'ContrastiveSoftDTW'  # ['MSE', 'ContrastiveSoftDTW']
 model_arch = 'CNN' # ['CNN-Transformer', 'CNN', 'dinov2', 'Transformer']
 normalize_type = 'average' # ['min_max', 'mean_std', 'average']
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -20,48 +17,45 @@ vector_size = 128
 lang = 'Arabic' # ['English', 'Arabic']
 
 # ============================================================================
-# OPTIMIZATION 4: Sliding Window with Overlap
+# Sliding Window with Overlap
 # ============================================================================
 # Using overlap creates redundant patches that make letter features more robust.
 # stride_ratio = 0.5 means 50% overlap (stride = window_size // 2)
 # stride_ratio = 0.25 means 75% overlap (stride = window_size // 4)
-# Effect: Creates smoother sequences, letters won't be cut in half
 stride_ratio = 0.5  # Recommended: 0.5 (50% overlap) or 0.25 (75% overlap)
 
 # ============================================================================
-# ARCHITECTURE OPTIMIZATION FLAGS
+# ARCHITECTURE FLAGS
 # ============================================================================
-# OPTIMIZATION 1: Positional Encoding (Critical for Transformers)
+# Positional Encoding (Critical for Transformers)
 use_positional_encoding = True
 positional_encoding_type = 'learnable'  # ['learnable', 'sinusoidal']
 
-# OPTIMIZATION 3: BiLSTM for local sequence context
+# BiLSTM for local sequence context
 use_bilstm = True
 bilstm_layers = 2
 
-# OPTIMIZATION 2: Diagonal/Monotonic constraint weights (used in CombinedAlignment loss)
-diagonal_constraint_weight = 0.3
-monotonic_constraint_weight = 0.2
-mse_weight = 1.0
-
 # ============================================================================
-# OPTIMIZATION 5: Space/Black Patch Handling
+# Space/Black Patch Handling
 # ============================================================================
 # When enabled, black patches (spaces between words) are detected and mapped
 # to a special <SPACE> embedding instead of being processed by CNN.
-# This guarantees 100% accuracy for space detection.
 use_space_gate = True           # Enable black patch detection gate
 space_threshold = 0.05          # Patches with mean pixel intensity < threshold are "space"
 include_spaces = True           # Include space characters in text embeddings
 
-#a
 # ============================================================================
-# OPTIMIZATION 6: Contrastive Learning Parameters
+# Contrastive Soft-DTW Parameters (CUDA-accelerated)
 # ============================================================================
-# Used when loss_type = 'ContrastiveMSE'
-# Teaches model to distinguish correct letter from wrong letters in batch
-contrastive_margin = 0.3        # Margin for contrastive loss (how far apart negatives should be)
-contrastive_weight = 0.5        # Weight of contrastive loss relative to MSE
+# Used when loss_type = 'ContrastiveSoftDTW'
+# Combines Soft-DTW with InfoNCE-style contrastive learning
+# Uses CUDA-accelerated Soft-DTW from soft-dtw-cuda.py
+# All contrastive logic is inside the loss function - no special training loop needed
+contrastive_soft_dtw_gamma = 0.1            # Soft-DTW smoothing (gamma -> 0: hard DTW, gamma -> inf: average)
+contrastive_soft_dtw_temperature = 0.1      # InfoNCE temperature (lower = sharper distinction between pairs)
+contrastive_soft_dtw_mse_weight = 1.0       # Weight for MSE reconstruction loss
+contrastive_soft_dtw_contrastive_weight = 0.5  # Weight for contrastive DTW loss
+# Note: Normalization is disabled because image and text have different sequence lengths
 
 # Dropout for regularization
 model_dropout = 0.0
@@ -70,11 +64,4 @@ model_dropout = 0.0
 debug = True # Set to True to save patches and heatmaps for debugging
 debug_wandb = True # Set to True to log training to Weights & Biases
 show_gradients = False # Set to True to print gradients for debugging
-preprocess = 'none' # Set to True to normalize before loss computation
-                    # ['none', 'Normalize', 'ExtractPatches']
-Regular_ScoreMatrix_Load = False  # Set to True to load regular score matrices, False to load diff NW matrices
-
-# Needleman-Wunsch parameters
-matchScore = 1
-mismatchScore = -3
-gapScore = -1
+preprocess = 'none' # ['none', 'Normalize', 'ExtractPatches']
