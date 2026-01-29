@@ -30,50 +30,36 @@ def word2Vec(textLine, img_width):
     return word_vector
 
 class TextLineModern(Dataset):
-    def __init__(self, regularScoreMatrix=True, new_dataset=None, transform=None):
-        self.regularMatrix = regularScoreMatrix
+    def __init__(self, new_dataset=None, transform=None):
         self.new_dataset = new_dataset
         self.transform = transform
 
         if new_dataset:
             # Reduce dataset size for memory testing
             self.image_pairs = [
-                (f"img1_{i}.png", f"img2_{i}.png", f"scoreMatrix_{i}.npy", 
-                 f"diffNWMatrix_{i}.npy", f"similarityMatrix_{i}.npy", 
+                (f"img1_{i}.png", f"img2_{i}.png", f"similarityMatrix_{i}.npy", 
                  f"text1_{i}.txt", f"text2_{i}.txt") for i in
-                range(1, 3001)]  # Reduced from 3001 to 101
+                range(1, 10001)]  # Reduced from 3001 to 101
 
     def __len__(self):
         return len(self.image_pairs)
 
-    def ScoreMapping(self, tensor):
-        return torch.where(tensor == 1, torch.tensor(matchScore), 
-                           torch.where(tensor == 0, torch.tensor(mismatchScore), 
-                            tensor))
-
 
     def __getitem__(self, idx):
         if self.new_dataset:
-            img1_name, img2_name, score_matrix_name, diffmatrix_name, similarity_matrix_name, text1, text2 = self.image_pairs[idx]
+            img1_name, img2_name, similarity_matrix_name, text1, text2 = self.image_pairs[idx]
 
             img1_path = os.path.join(self.new_dataset['images'], img1_name)
             img2_path = os.path.join(self.new_dataset['images'], img2_name)
-            if self.regularMatrix:
-                ScoreMatrix = os.path.join(self.new_dataset['matrices'], score_matrix_name)
-            else:
-                ScoreMatrix = os.path.join(self.new_dataset['diffNWmatrices'], diffmatrix_name)
+
             SimilarityMatrix = os.path.join(self.new_dataset['similarity_matrices'], similarity_matrix_name)
 
             img1 = Image.open(img1_path).convert("RGB")
             img2 = Image.open(img2_path).convert("RGB")
 
-            # Load matrices
-            score_matrix = np.load(ScoreMatrix)
-            score_matrix = torch.tensor(score_matrix, dtype=torch.float32)
 
             similar_matrix = np.load(SimilarityMatrix)
             similar_matrix = torch.tensor(similar_matrix, dtype=torch.float32)
-            # similar_matrix = self.ScoreMapping(similar_matrix)
             
             if self.transform:
                 img1 = self.transform(img1)
@@ -87,6 +73,6 @@ class TextLineModern(Dataset):
             with open(text2_path, 'r') as f:
                 text_line2 = f.read().strip()
                 # text_line2 = text_line2.replace(' ', '')
-            return img1, img2, score_matrix, similar_matrix, text_line1, text_line2, img1_name, img2_name
+            return img1, img2, similar_matrix, text_line1, text_line2
         else:
             raise NotImplementedError("Handling for non-NewDataSet is not included.")

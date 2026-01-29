@@ -72,18 +72,14 @@ def check_grad(grad):
         print(f"Gradient flowing... Sum: {grad.sum().item():.5f}")
 
 # second line of parameters is for saving visualizations during debugging 
-def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, NWTextGT, textSimilar, 
-                       DiffNWAlgo, criterion, similarityTransformer=None,
-                       epoch=0, batch_idx=0, dataloader_length=0, 
-                       debug=False, use_contrastive=False):
+def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, textSimilar, 
+                       criterion, similarityTransformer1, similarityTransformer2,
+                       epoch=0, batch_idx=0, dataloader_length=0, debug=False):
     """
-    Compute batch loss with optional contrastive learning.
+    Compute batch loss for text-image alignment.
     
-    When use_contrastive=True, computes additional negative pairs from the batch:
-    - Positive pairs: (image1, text1), (image2, text2)
-    - Negative pairs: (image1, text2), (image2, text1)
-    
-    This teaches the model that image patches should only match their correct letters.
+    For ContrastiveSoftDTW loss type, all contrastive learning is handled inside
+    the loss function - no special handling needed here.
     """
 
     # Image Embedding and Token Extraction    
@@ -102,80 +98,36 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, NWTe
     normalized_tokens_a = F.normalize(flip_tokens_a, p=2, dim=-1)  # Shape: (batch_size, seq_len, vector_size)
     normalized_tokens_b = F.normalize(flip_tokens_b, p=2, dim=-1)
                                       
-    # Compute similarity matrices using shared Transformer model (or fallback to bmm)
-    # The transformer takes image strokes with context from previous strokes to predict letters
-    # Using the same transformer for both pairs ensures consistent feature extraction
-    if similarityTransformer is not None:
-        img1_txt1_similarity = similarityTransformer(normalized_text1, normalized_tokens_a)
-        img2_txt2_similarity = similarityTransformer(normalized_text2, normalized_tokens_b)
-        
-        # For contrastive learning: compute cross-similarities (wrong pairs)
-        if use_contrastive:
-            img1_txt2_similarity = similarityTransformer(normalized_text2, normalized_tokens_a)  # Wrong: text2 with image1
-            img2_txt1_similarity = similarityTransformer(normalized_text1, normalized_tokens_b)  # Wrong: text1 with image2
-    else:
-        # Fallback to simple matrix multiplication
-        img1_txt1_similarity = torch.bmm(normalized_text1, normalized_tokens_a.transpose(1, 2))
-        img2_txt2_similarity = torch.bmm(normalized_text2, normalized_tokens_b.transpose(1, 2))
-        
-        # For contrastive learning: compute cross-similarities (wrong pairs)
-        if use_contrastive:
-            img1_txt2_similarity = torch.bmm(normalized_text2, normalized_tokens_a.transpose(1, 2))
-            img2_txt1_similarity = torch.bmm(normalized_text1, normalized_tokens_b.transpose(1, 2))
+    # Compute similarity matrices using Transformer model
+    img1_txt1_similarity = similarityTransformer1(normalized_text1, normalized_tokens_a)
+    img2_txt2_similarity = similarityTransformer1(normalized_text2, normalized_tokens_b)
 
     normalized_img1_txt1_similarity = F.normalize(img1_txt1_similarity, p=2, dim=-1)
     normalized_img2_txt2_similarity = F.normalize(img2_txt2_similarity, p=2, dim=-1)
-
+  
     # Multiplying score matrices
     finalSimilarityMatrix = torch.bmm(normalized_img1_txt1_similarity, normalized_img2_txt2_similarity.transpose(1, 2))
     
-    # Interpolate finalSimilarityMatrix to match textSimilar shape if they differ
-    # This handles cases where text embeddings include spaces but ground truth doesn't
-    if finalSimilarityMatrix.shape != textSimilar.shape:
-        target_shape = (textSimilar.shape[1], textSimilar.shape[2])
-        finalSimilarityMatrix = interpolate_NW_matrix(finalSimilarityMatrix, target_shape)
 #---------------------------------------------------------------------------------------------------------
     
     # Loss computation - handle different loss types
-    if loss_type == 'HeightDiff':
-        loss = criterion(finalSimilarityMatrix, NWTextGT, lamda=1.0)
-        loss_value = loss.item()
-    elif loss_type == 'CombinedAlignment':
-        # CombinedAlignment returns (loss, loss_dict)
-        loss, loss_dict = criterion(finalSimilarityMatrix, textSimilar)
-        loss_value = loss_dict['total']
-    elif loss_type == 'DiagonalAlignment':
-        # DiagonalAlignment with target
-        loss = criterion(finalSimilarityMatrix, target=textSimilar)
-        loss_value = loss.item()
-    elif loss_type == 'MSEWithDiagonalReg':
-        # MSE on final matrix + diagonal regularization on text-image similarity matrices
+    if loss_type == 'ContrastiveSoftDTW':
+        # Contrastive Soft-DTW: InfoNCE-style contrastive learning with CUDA Soft-DTW
+        # All contrastive learning is handled inside the loss function
+        # We pass the embeddings and the loss computes all pairwise alignments
         loss, loss_dict = criterion(
             final_pred=finalSimilarityMatrix,
             target=textSimilar,
-            img_txt_sim1=img1_txt1_similarity,  # Before normalization for regularization
-            img_txt_sim2=img2_txt2_similarity
+            img_embeddings=normalized_tokens_a,  # Image embeddings [B, N, D]
+            txt_embeddings=normalized_text1       # Text embeddings [B, M, D]
         )
         loss_value = loss_dict['total']
-    elif loss_type == 'ContrastiveMSE':
-        # Contrastive MSE loss with positive and negative pairs
-        # Positive: average of correct text-image similarity matrices
-        positive_sim = (img1_txt1_similarity + img2_txt2_similarity) / 2
-        
-        # Negative: list of wrong text-image similarity matrices
-        if use_contrastive:
-            negative_sims = [img1_txt2_similarity, img2_txt1_similarity]
-        else:
-            negative_sims = []
-        
-        loss, loss_dict = criterion(
-            final_pred=finalSimilarityMatrix,
-            target=textSimilar,
-            positive_sim=positive_sim,
-            negative_sims=negative_sims
-        )
-        loss_value = loss_dict['total']
+    elif loss_type == 'MSE':
+        # Simple MSE loss
+        loss = criterion(finalSimilarityMatrix, textSimilar)
+        loss_value = loss.item()
     else:
+        # Default: try calling criterion directly
         loss = criterion(finalSimilarityMatrix, textSimilar)
         loss_value = loss.item() if hasattr(loss, 'item') else loss
     
@@ -186,12 +138,10 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, NWTe
         debug_imgText2 = normalized_img2_txt2_similarity
 
         save_debug_visualizations(
-            imageEmbed,
-            text1, text2,
-            image1, image2,
+            imageEmbed, 
+            text1, text2, image1, image2,
             textSimilar, finalSimilarityMatrix,
-            debug_imgText1,
-            debug_imgText2,
+            debug_imgText1, debug_imgText2,
             epoch, batch_idx
         )
         
@@ -211,16 +161,19 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, NWTe
 
 
 
-def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, DiffNW, criterion,
-          similarityTransformer=None):
+def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
+          similarityTransformer1=None, similarityTransformer2=None):
     imageEmbedding.train()
     textEmbedding.eval()
     
     # Collect all trainable parameters
     params_to_train = list(imageEmbedding.parameters())
-    if similarityTransformer is not None:
-        similarityTransformer.train()
-        params_to_train += list(similarityTransformer.parameters())
+    if similarityTransformer1 is not None:
+        similarityTransformer1.train()
+        params_to_train += list(similarityTransformer1.parameters())
+    if similarityTransformer2 is not None:
+        similarityTransformer2.train()
+        params_to_train += list(similarityTransformer2.parameters())
     
     optimizer = optim.Adam(params_to_train, lr=learning_rate)
     loss_lst = []
@@ -232,32 +185,30 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, DiffNW, crite
     for epoch in range(epochs):
         # Ensure models are in training mode at start of each epoch
         imageEmbedding.train()
-        if similarityTransformer is not None:
-            similarityTransformer.train()
+        if similarityTransformer1 is not None:
+            similarityTransformer1.train()
+        if similarityTransformer2 is not None:
+            similarityTransformer2.train()
             
         train_loss = 0.0
         train_accuracy = 0.0
 
-        for batch_idx, (image1, image2, scoreMatrix, textSimilar, text1, text2, image1_name, image2_name) in enumerate(trainLoader):
+        for batch_idx, (image1, image2, textSimilar, text1, text2) in enumerate(trainLoader):
             # Ensure all data is on correct device
             image1 = image1.to(device, non_blocking=True)
             image2 = image2.to(device, non_blocking=True)
-            scoreMatrix = scoreMatrix.to(device, non_blocking=True)
             textSimilar = textSimilar.to(device, non_blocking=True)
             text1 = list(text1)
             text2 = list(text2)
             optimizer.zero_grad()
             
             # Compute loss using shared function
-            # Enable contrastive learning for ContrastiveMSE loss type
-            use_contrastive = (loss_type == 'ContrastiveMSE')
-            
             path_loss, loss_value, NWTextFinal, NWImageFinal = compute_batch_loss(
                 imageEmbedding, textEmbedding, text1, text2, image1, image2, 
-                scoreMatrix, textSimilar, DiffNW, 
-                criterion, similarityTransformer=similarityTransformer,
+                textSimilar, criterion, 
+                similarityTransformer1=similarityTransformer1, similarityTransformer2=None,
                 epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader),
-                debug=debug, use_contrastive=use_contrastive
+                debug=debug
             )
             
             # Compute accuracy
@@ -293,25 +244,18 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, DiffNW, crite
         val_loss = 0.0
         val_accuracy = 0.0
         with torch.no_grad():
-            for batch_idx, (image1, image2, NWTextGT, textSimilar, text1, text2, image1_name, image2_name) in enumerate(validLoader):
+            for batch_idx, (image1, image2, textSimilar, text1, text2) in enumerate(validLoader):
                 # Ensure all data is on correct device
                 image1 = image1.to(device)
                 image2 = image2.to(device)
-                NWTextGT = NWTextGT.to(device)
                 textSimilar = textSimilar.to(device)
                 
                 # Compute loss using shared function
-                # Enable contrastive learning for ContrastiveMSE loss type
-                use_contrastive = (loss_type == 'ContrastiveMSE')
-                
                 _, loss_value, NWTextFinal, NWImageFinal = compute_batch_loss(
                     imageEmbedding, textEmbedding,
-                    text1, text2, 
-                    image1, image2, 
-                    NWTextGT, textSimilar, 
-                    DiffNW, criterion,
-                    similarityTransformer=similarityTransformer,
-                    use_contrastive=use_contrastive
+                    text1, text2, image1, image2, 
+                    textSimilar, criterion,
+                    similarityTransformer1=similarityTransformer1, similarityTransformer2=None
                 )
                 
                 # Compute accuracy
@@ -371,10 +315,18 @@ if __name__ == '__main__':
     # Initialize TextEmbedding with space token support
     textEmbedding = TextEmbedding(embedding_dim=vector_size, include_spaces=include_spaces)
 
-    # Initialize SimilarityTransformer model for image-text similarity computation
-    # The transformer takes image strokes with context from previous strokes to predict which letter
-    # Using a single shared transformer for both image-text pairs for parameter efficiency
-    similarityTransformer = SimilarityTransformer(
+    # Initialize two separate SimilarityTransformer models for image-text similarity computation
+    # The transformers take image strokes with context from previous strokes to predict which letter
+    # Using different transformers allows specialized learning for different text patterns
+    similarityTransformer1 = SimilarityTransformer(
+        embed_dim=vector_size,
+        hidden_dim=128,
+        num_heads=4,
+        num_layers=2,
+        dropout=model_dropout
+    ).to(device)
+    
+    similarityTransformer2 = SimilarityTransformer(
         embed_dim=vector_size,
         hidden_dim=128,
         num_heads=4,
@@ -383,14 +335,13 @@ if __name__ == '__main__':
     ).to(device)
 
     if show_gradients:
-        for param in model.parameters():
+        for param in imageEmbedding.parameters():
             param.register_hook(check_grad)
+        for param in similarityTransformer1.parameters():
+            param.register_hook(check_grad)
+        # for param in similarityTransformer2.parameters():
+        #     param.register_hook(check_grad)
 
-    DiffNW = DiffNWAlgo(
-        match_score=matchScore, 
-        miss_score=mismatchScore, 
-        gap=gapScore,
-    )
     
     criterion = Loss_choice(loss_type)
     
@@ -412,9 +363,9 @@ if __name__ == '__main__':
         textEmbedding,
         train_dataloader,
         valid_dataloader,
-        DiffNW,
         criterion,
-        similarityTransformer=similarityTransformer
+        similarityTransformer1=similarityTransformer1,
+        similarityTransformer2=similarityTransformer2
     )
     
     if debug_wandb:

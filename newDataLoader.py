@@ -32,8 +32,7 @@ transform = transforms.Compose([
 ])
 
 # Create the full dataset
-full_dataset = TextLineModern(
-    regularScoreMatrix=Regular_ScoreMatrix_Load,  # Not used for NewDataSet
+full_dataset = TextLineModern(  # Not used for NewDataSet
     new_dataset=new_dataset,
     transform=transform
 )
@@ -97,43 +96,27 @@ def custom_collate_fn(batch):
     """Custom collate function"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    images_a, images_b, matrices, similar_matrix, texts1, texts2, images1_names, images2_names = zip(*batch)
+    images_a, images_b, similarMatrices, texts1, texts2= zip(*batch)
 
     # Stack on CPU first, then move to device
     images_a = torch.stack(images_a, dim=0)
     images_b = torch.stack(images_b, dim=0)
-    
-    # Convert matrices to tensors on CPU
-    matrices_cpu = []
-    similar_matrix_cpu = []
-    
-    for matrix, sim_mat in zip(matrices, similar_matrix):
-        if not isinstance(matrix, torch.Tensor):
-            matrix = torch.tensor(matrix, dtype=torch.float32)
-        if not isinstance(sim_mat, torch.Tensor):
-            sim_mat = torch.tensor(sim_mat, dtype=torch.float32)
-            
-        matrices_cpu.append(matrix)
-        similar_matrix_cpu.append(sim_mat)
-    matrices = torch.stack(matrices_cpu, dim=0)
-    similar_matrix = torch.stack(similar_matrix_cpu, dim=0)
-    # Pad matrices (still on CPU)
-    # matrices = pad_matrices(matrices_cpu, smooth=False)
-    # similar_matrix = pad_matrices(similar_matrix_cpu, smooth=False)
-    
+
     # Now move everything to device at once
     images_a = images_a.to(device, non_blocking=True)
     images_b = images_b.to(device, non_blocking=True)
-    matrices = matrices.to(device, non_blocking=True)
-    similar_matrix = similar_matrix.to(device, non_blocking=True)
+    # Use pad_matrices to handle variable-sized matrices
+    # Convert all to tensors if not already
+    similarMatrices = [torch.as_tensor(m, dtype=torch.float32) for m in similarMatrices]
+    similarMatrices = pad_matrices(similarMatrices)
+    similarMatrices = similarMatrices.to(device, non_blocking=True)
     
     # Set requires_grad only after moving to device
     images_a.requires_grad_(True)
     images_b.requires_grad_(True)
-    matrices.requires_grad_(True)
-    similar_matrix.requires_grad_(True)
+    similarMatrices.requires_grad_(True)
 
-    return images_a, images_b, matrices, similar_matrix, texts1, texts2, images1_names, images2_names
+    return images_a, images_b, similarMatrices, texts1, texts2
 
 
 # Create DataLoaders for training and testing
