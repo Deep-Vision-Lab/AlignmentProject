@@ -104,23 +104,47 @@ class SimilarityTransformer(nn.Module):
     
     Returns:
         - similarity_matrix: [B, seq_len_text, seq_len_img] - similarity scores for alignment
+    
+    Label-Aware Design:
+        When context_free_text=True, text embeddings are NOT passed through self-attention.
+        This ensures that the SAME letter (e.g., 'Alif') always produces the SAME embedding
+        regardless of its position in the text. This is crucial for handling repeated letters:
+        - If text is "A B A", both 'A' positions will have identical embeddings
+        - The Soft-DTW loss can then correctly align image patches to ALL matching positions
+        - Prevents the model from being confused by "negative" examples that are actually the same letter
     """
     
-    def __init__(self, embed_dim, hidden_dim=128, num_heads=4, num_layers=2, dropout=0.1):
+    def __init__(self, embed_dim, hidden_dim=128, num_heads=4, num_layers=2, dropout=0.1,
+                 context_free_text=True):
+        """
+        Args:
+            embed_dim: Input embedding dimension
+            hidden_dim: Hidden dimension for transformer
+            num_heads: Number of attention heads
+            num_layers: Number of transformer layers
+            dropout: Dropout rate
+            context_free_text: If True (default), text embeddings are NOT contextualized.
+                              This ensures same letter = same embedding (Label-Aware design).
+                              If False, text goes through self-attention (legacy behavior).
+        """
         super(SimilarityTransformer, self).__init__()
         
         self.embed_dim = embed_dim
         self.hidden_dim = hidden_dim
+        self.context_free_text = context_free_text
         
         # Input projections to hidden dimension
         self.text_input_proj = nn.Linear(embed_dim, hidden_dim)
         self.image_input_proj = nn.Linear(embed_dim, hidden_dim)
         
         # Positional encodings
+        # For context-free text, we still add positional encoding for position awareness
+        # but without mixing embeddings between positions
         self.text_pos_encoding = PositionalEncoding(hidden_dim, dropout=dropout)
         self.image_pos_encoding = PositionalEncoding(hidden_dim, dropout=dropout)
         
         # Stroke context encoder - encodes each stroke with context from previous strokes
+        # (Image NEEDS context to understand stroke sequences)
         self.stroke_context_encoder = StrokeContextEncoder(
             embed_dim=hidden_dim,
             num_heads=num_heads,
@@ -129,15 +153,26 @@ class SimilarityTransformer(nn.Module):
         )
         
         # Text encoder - self-attention over text sequence
-        text_encoder_layer = nn.TransformerEncoderLayer(
-            d_model=hidden_dim,
-            nhead=num_heads,
-            dim_feedforward=hidden_dim * 4,
-            dropout=dropout,
-            activation='gelu',
-            batch_first=True
-        )
-        self.text_encoder = nn.TransformerEncoder(text_encoder_layer, num_layers=num_layers)
+        # Only used when context_free_text=False
+        if not context_free_text:
+            text_encoder_layer = nn.TransformerEncoderLayer(
+                d_model=hidden_dim,
+                nhead=num_heads,
+                dim_feedforward=hidden_dim * 4,
+                dropout=dropout,
+                activation='gelu',
+                batch_first=True
+            )
+            self.text_encoder = nn.TransformerEncoder(text_encoder_layer, num_layers=num_layers)
+        else:
+            # For context-free text, use a simple MLP instead of self-attention
+            # This transforms the embedding but keeps each position independent
+            self.text_encoder = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim * 2),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim * 2, hidden_dim)
+            )
         
         # Cross-attention: text queries, image keys/values
         # This helps predict which letter each stroke belongs to
@@ -174,6 +209,8 @@ class SimilarityTransformer(nn.Module):
             text_embeddings: [B, seq_len_text, embed_dim] - character/letter embeddings
             image_tokens: [B, seq_len_img, embed_dim] - stroke embeddings from image patches
             use_cross_attention: If True, use cross-attention for richer representations
+                                 NOTE: When context_free_text=True, cross-attention only flows
+                                 from image->text, not text->image (to preserve label-aware property)
         
         Returns:
             similarity_matrix: [B, seq_len_text, seq_len_img]
@@ -187,14 +224,22 @@ class SimilarityTransformer(nn.Module):
         image_hidden = self.image_input_proj(image_tokens)   # [B, seq_len_img, hidden_dim]
         
         # Add positional encodings
+        # For context-free text: positional encoding adds position info but doesn't mix embeddings
         text_hidden = self.text_pos_encoding(text_hidden)
         image_hidden = self.image_pos_encoding(image_hidden)
         
-        # Encode text with self-attention
-        text_encoded = self.text_encoder(text_hidden)  # [B, seq_len_text, hidden_dim]
+        # Encode text
+        if self.context_free_text:
+            # Context-free: simple MLP transformation, each position is independent
+            # Same letter at different positions will have same embedding + different position encoding
+            text_encoded = self.text_encoder(text_hidden)  # [B, seq_len_text, hidden_dim]
+        else:
+            # Legacy: self-attention over text (mixes context between positions)
+            text_encoded = self.text_encoder(text_hidden)  # [B, seq_len_text, hidden_dim]
         
         # Encode image strokes with context from previous strokes (causal attention)
         # This allows each stroke to "see" the strokes that came before it
+        # (Image NEEDS context to distinguish strokes and understand the writing sequence)
         image_encoded = self.stroke_context_encoder(image_hidden, causal_mask=True)  # [B, seq_len_img, hidden_dim]
         
         if use_cross_attention:
@@ -208,13 +253,17 @@ class SimilarityTransformer(nn.Module):
             # Residual connection
             image_encoded = image_encoded + image_cross
             
-            # Also let text attend to image strokes for bidirectional context
-            text_cross, _ = self.cross_attention(
-                query=text_encoded,
-                key=image_encoded,
-                value=image_encoded
-            )
-            text_encoded = text_encoded + text_cross
+            if not self.context_free_text:
+                # Only apply text->image cross-attention when NOT using context-free text
+                # (otherwise we would re-introduce context mixing through the image branch)
+                text_cross, _ = self.cross_attention(
+                    query=text_encoded,
+                    key=image_encoded,
+                    value=image_encoded
+                )
+                text_encoded = text_encoded + text_cross
+            # When context_free_text=True, we skip text->image cross-attention
+            # This preserves the "label-aware" property: same letter = same text embedding
         
         # Apply layer norms
         text_encoded = self.text_norm(text_encoded)

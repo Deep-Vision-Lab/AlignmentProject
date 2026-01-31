@@ -210,7 +210,7 @@ class EmbeddingModel(nn.Module):
             window_size: Size of sliding window for patch extraction
             stride: Stride for sliding window
             vector_size: Dimension of output feature vectors
-            model_arch: Architecture type ('CNN', 'CNN-Transformer', 'dinov2', 'Transformer')
+            model_arch: Architecture type ('CNN', 'CNN-Transformer', 'Transformer')
             device: Device to run on ('cuda' or 'cpu')
             use_bilstm: Enable BiLSTM for sequence context
             use_positional_encoding: Enable positional encoding
@@ -239,15 +239,6 @@ class EmbeddingModel(nn.Module):
             self.space_embedding = nn.Parameter(torch.zeros(vector_size))
             # Initialize to small random values so it can be learned
             nn.init.normal_(self.space_embedding, mean=0.0, std=0.02)
-        
-        if model_arch == 'dinov2':
-            self.dinov2 = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
-            self.dinov2 = self.dinov2.to(device)
-            # dinov2_vits14 outputs 384 features
-            self.feature_proj = nn.Linear(384, vector_size).to(device)
-            self.dinov2_batch_size = 32  # Process patches in mini-batches to save memory
-            # CNN to merge batch and windows dimensions instead of reshape
-            self.patch_conv = nn.Conv2d(3, 1,kernel_size=3, padding=1).to(device)
 
         if model_arch == 'CNN-Transformer' or model_arch == 'CNN':
             self.cnn_encoder = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)
@@ -304,15 +295,15 @@ class EmbeddingModel(nn.Module):
         """
         Detect which patches are "black" (empty/space) based on pixel intensity.
         
-        Black patches have very low pixel values (near 0) and should map to the
-        <SPACE> token in text alignment. This creates a hard gate that bypasses
-        the CNN for empty regions.
+        Uses a soft threshold (sigmoid) for differentiability. Patches with very 
+        low pixel values will get values close to 1.0, while normal patches get 
+        values close to 0.0.
         
         Args:
             patches: [B, num_patches, C, H, W] - extracted image patches
         
         Returns:
-            is_black: [B, num_patches] - boolean mask, True where patch is black/space
+            space_weight: [B, num_patches] - soft weight in [0, 1], higher = more likely space
         """
         if not self.use_space_gate:
             return None
@@ -322,43 +313,42 @@ class EmbeddingModel(nn.Module):
         # We want mean across channels, height, width -> [B, num_patches]
         patch_means = patches.abs().mean(dim=(2, 3, 4))  # Use abs() for normalized images
         
-        # Black patches have very low mean intensity
-        is_black = patch_means < self.space_threshold
+        # Soft threshold using sigmoid: smooth transition around threshold
+        # Lower patch_means -> higher space_weight (more likely to be space)
+        # temperature controls sharpness: lower = sharper transition
+        temperature = 0.02  # Controls how sharp the transition is
+        space_weight = torch.sigmoid((self.space_threshold - patch_means) / temperature)
         
-        return is_black
+        return space_weight
     
-    def apply_space_gate(self, features, is_black_mask):
+    def apply_space_gate(self, features, space_weight):
         """
-        Replace features of black patches with the learned space embedding.
+        Blend CNN features with learned space embedding based on soft space weights.
         
-        This is the "gating" mechanism that forces black patches to output
-        a consistent space vector, regardless of what the CNN produces.
+        This is fully differentiable - gradients flow through both the CNN path
+        and the space embedding path, weighted by how "black" each patch is.
         
         Args:
             features: [B, num_patches, vector_size] - CNN output features
-            is_black_mask: [B, num_patches] - boolean mask for black patches
+            space_weight: [B, num_patches] - soft weight in [0, 1], higher = more space-like
         
         Returns:
-            gated_features: [B, num_patches, vector_size] - features with space injection
+            blended_features: [B, num_patches, vector_size] - soft blend of features and space
         """
-        if is_black_mask is None or not self.use_space_gate:
+        if space_weight is None or not self.use_space_gate:
             return features
         
-        # Clone to avoid modifying original
-        gated_features = features.clone()
-        
         # Expand space embedding for broadcasting: [vector_size] -> [1, 1, vector_size]
-        # Ensure it's on the same device as features
         space_vec = self.space_embedding.to(features.device).view(1, 1, -1)
         
-        # Create mask for broadcasting: [B, num_patches] -> [B, num_patches, 1]
-        mask_expanded = is_black_mask.unsqueeze(-1).float().to(features.device)
+        # Expand weight for broadcasting: [B, num_patches] -> [B, num_patches, 1]
+        weight_expanded = space_weight.unsqueeze(-1)
         
-        # Blend: where mask is 1 (black), use space_embedding; otherwise use CNN features
-        # This is differentiable thanks to soft masking
-        gated_features = (1 - mask_expanded) * features + mask_expanded * space_vec
+        # Soft blend: weighted average of CNN features and space embedding
+        # weight=0 -> pure CNN features, weight=1 -> pure space embedding
+        blended_features = (1 - weight_expanded) * features + weight_expanded * space_vec
         
-        return gated_features
+        return blended_features
         
     def _process_cnn_branch(self, tokens_a, tokens_b, show_dims=False):
         """Process CNN branch"""
@@ -436,54 +426,6 @@ class EmbeddingModel(nn.Module):
         
         return featured_tokens_a, featured_tokens_b
 
-    def _process_dinov2_branch(self, tokens_a, tokens_b, show_dims=False):
-        """Process DINOv2 branch"""
-        batches_num, windows_num, Channels, H, W = tokens_a.shape
-        
-        # Use CNN to process patches - flatten batch and windows, apply conv, then process
-        # First flatten to [B*W, C, H, W] using view (preserves gradients)
-        tokens_a = tokens_a.reshape(batches_num * windows_num, Channels, H, W)
-        tokens_b = tokens_b.reshape(batches_num * windows_num, Channels, H, W)
-        if show_dims:
-            print(f"Patches after reshaping: {tokens_a.shape}, {tokens_b.shape}")
-        # # Apply learnable CNN projection
-        # tokens_a = self.patch_conv(tokens_a).squeeze()
-        # tokens_b = self.patch_conv(tokens_b).squeeze()
-        # if show_dims: 
-        #     print(f"Patches after patch conv: {tokens_a.shape}, {tokens_b.shape}")
-
-        # # Reshape back to [B, W, H, W] for further processing
-        # tokens_a = tokens_a.reshape(batches_num, windows_num, H, W)
-        # tokens_b = tokens_b.reshape(batches_num, windows_num, H, W)
-
-        # DINOv2 requires input dimensions to be multiples of 14 (patch size)
-        # Resize patches to nearest multiple of 14 that's >= current size
-        target_size = max(14, ((max(H, W) + 13) // 14) * 14)
-        tokens_a = F.interpolate(tokens_a, size=(target_size, target_size), mode='bilinear', align_corners=False)
-        tokens_b = F.interpolate(tokens_b, size=(target_size, target_size), mode='bilinear', align_corners=False)
-        
-        if show_dims:
-            print(f"Patches after resizing for DINOv2: {tokens_a.shape}, {tokens_b.shape}")
-        
-        # Run DINOv2
-        feat_a = self.dinov2(tokens_a)
-        feat_b = self.dinov2(tokens_b)
-        
-        # Project to desired vector size
-        featured_tokens_a = self.feature_proj(feat_a)
-        featured_tokens_b = self.feature_proj(feat_b)
-        
-        if show_dims:
-            print(f"After DINOv2: {featured_tokens_a.shape}, {featured_tokens_b.shape}")
-        
-        # Reshape to [batch, windows, vector_size]
-        features_vector_a = featured_tokens_a.reshape(batches_num, windows_num, self.vector_size)
-        features_vector_b = featured_tokens_b.reshape(batches_num, windows_num, self.vector_size)
-        
-        del featured_tokens_a, featured_tokens_b
-        
-        return features_vector_a, features_vector_b
-
     def forward(self, image_a, image_b, show_dims=False, debug=False):
         # Extract patches
         tokens_a = sliding_window(image_a, self.window_size, self.stride, debug_mode=debug).to(device)
@@ -547,11 +489,6 @@ class EmbeddingModel(nn.Module):
             encoded_tokens_a, encoded_tokens_b, batches_num, windows_num = self._process_transformer_branch(
                 tokens_a, tokens_b, show_dims
             )
-        elif self.model_arch == 'dinov2':
-            # DINOv2 model processing
-            features_vector_a, features_vector_b = self._process_dinov2_branch(
-                tokens_a, tokens_b, show_dims
-            )
         # CNN-Transformer or Transformer: process through transformer encoder
         if self.model_arch == 'CNN-Transformer' or self.model_arch == 'Transformer':
             featured_tokens_a, featured_tokens_b = self._process_transformer_encoder(
@@ -571,8 +508,8 @@ if __name__ == "__main__":
         window_size=16,
         stride=8, 
         vector_size=64,
-        model_arch='dinov2'
-    ).to('cuda') # ['CNN-Transformer','CNN', 'dinov2', 'Transformer']
+        model_arch='CNN'
+    ).to('cuda') # ['CNN-Transformer','CNN', 'Transformer']
 
     # Forward pass: get token sequences for both images
     tokens_a, tokens_b = model(image_a, image_b,  show_dims=True)
