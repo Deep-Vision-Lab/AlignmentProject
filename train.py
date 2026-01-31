@@ -16,7 +16,7 @@ from embeddingModel import *
 from embeddingModel import *
 from NormalizeFuncs import *
 from LossFunctionWithHelpers import *
-from SimilarityTransformer import SimilarityTransformer
+# SimilarityTransformer removed - using direct cosine similarity between CNN+BiLSTM and text embeddings
 
 import os
 import gc
@@ -72,63 +72,69 @@ def check_grad(grad):
         print(f"Gradient flowing... Sum: {grad.sum().item():.5f}")
 
 # second line of parameters is for saving visualizations during debugging 
-def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, textSimilar, 
-                       criterion, similarityTransformer1, similarityTransformer2,
+def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1_txt2_similar_GT, 
+                       criterion,
                        epoch=0, batch_idx=0, dataloader_length=0, debug=False):
     """
     Compute batch loss for text-image alignment.
     
-    For ContrastiveSoftDTW loss type, all contrastive learning is handled inside
-    the loss function - no special handling needed here.
+    Architecture: CNN + BiLSTM for images, simple nn.Embedding for text.
+    - Image embeddings have context (BiLSTM sees neighboring strokes)
+    - Text embeddings are context-free (same letter = same embedding)
+    
+    This "Label-Aware" design ensures repeated letters (e.g., "A B A") 
+    have identical embeddings, allowing Soft-DTW to correctly align 
+    image patches to ALL matching text positions.
     """
 
-    # Image Embedding and Token Extraction    
+    # Image Embedding and Token Extraction (CNN + BiLSTM)
     tokens_a, tokens_b = imageEmbed(image1, image2, show_dims=False)
     
     flip_tokens_a = torch.flip(tokens_a, dims=[-2]) # Shape: (batch_size, seq_len, vector_size)
     flip_tokens_b = torch.flip(tokens_b, dims=[-2]) # Shape: (batch_size, seq_len, vector_size)
     # -----------------------------------------------------------------------------------------
-    # Text Embedding
+    # Text Embedding (context-free: same letter = same embedding)
     embedded_text1 = textEmbed(text1)  # Shape: (batch_size, seq_len, embedding_dim)
     embedded_text2 = textEmbed(text2)  # Shape: (batch_size, seq_len, embedding_dim)
 
-    # Normalize Vetors
+    # Normalize vectors for cosine similarity
     normalized_text1 = F.normalize(embedded_text1, p=2, dim=-1)  # Shape: (batch_size, seq_len, embedding_dim)
     normalized_text2 = F.normalize(embedded_text2, p=2, dim=-1)  # Shape: (batch_size, seq_len, embedding_dim)
     normalized_tokens_a = F.normalize(flip_tokens_a, p=2, dim=-1)  # Shape: (batch_size, seq_len, vector_size)
     normalized_tokens_b = F.normalize(flip_tokens_b, p=2, dim=-1)
                                       
-    # Compute similarity matrices using Transformer model
-    img1_txt1_similarity = similarityTransformer1(normalized_text1, normalized_tokens_a)
-    img2_txt2_similarity = similarityTransformer1(normalized_text2, normalized_tokens_b)
+    # Compute similarity matrices using direct cosine similarity (no Transformer)
+    # img1_txt1_similarity: [B, seq_len_text, seq_len_img]
+    img1_txt1_similarity = torch.bmm(normalized_text1, normalized_tokens_a.transpose(1, 2))
+    img2_txt2_similarity = torch.bmm(normalized_text2, normalized_tokens_b.transpose(1, 2))
 
     normalized_img1_txt1_similarity = F.normalize(img1_txt1_similarity, p=2, dim=-1)
     normalized_img2_txt2_similarity = F.normalize(img2_txt2_similarity, p=2, dim=-1)
   
     # Multiplying score matrices
-    finalSimilarityMatrix = torch.bmm(normalized_img1_txt1_similarity, normalized_img2_txt2_similarity.transpose(1, 2))
+    txt1_txt2_similar = torch.bmm(normalized_img1_txt1_similarity, normalized_img2_txt2_similarity.transpose(1, 2))
     
 #---------------------------------------------------------------------------------------------------------
     
     # Loss computation - handle different loss types
     if loss_type == 'ContrastiveSoftDTW':
-        # Contrastive Soft-DTW: InfoNCE-style contrastive learning with CUDA Soft-DTW
-        # All contrastive learning is handled inside the loss function
-        # We pass the embeddings and the loss computes all pairwise alignments
+        # Contrastive Soft-DTW: uses pre-computed similarity matrices
+        # img1_txt1_similarity: [B, N_txt, N_img] - similarity between text1 and image1
+        # DTW encourages alignment structure (staircase pattern)
         loss, loss_dict = criterion(
-            final_pred=finalSimilarityMatrix,
-            target=textSimilar,
-            img_embeddings=normalized_tokens_a,  # Image embeddings [B, N, D]
-            txt_embeddings=normalized_text1       # Text embeddings [B, M, D]
+            img_txt_sim1=img1_txt1_similarity,           # Similarity matrix for pair 1
+            img_txt_sim2=img2_txt2_similarity,           # Similarity matrix for pair 2
+            final_pred=txt1_txt2_similar,                # Final prediction for MSE
+            target=txt1_txt2_similar_GT                  # Ground truth for MSE
         )
         loss_value = loss_dict['total']
     elif loss_type == 'MSE':
         # Simple MSE loss
-        loss = criterion(finalSimilarityMatrix, textSimilar)
+        loss = criterion(txt1_txt2_similar, txt1_txt2_similar_GT)
         loss_value = loss.item()
     else:
         # Default: try calling criterion directly
-        loss = criterion(finalSimilarityMatrix, textSimilar)
+        loss = criterion(txt1_txt2_similar, txt1_txt2_similar_GT)
         loss_value = loss.item() if hasattr(loss, 'item') else loss
     
     ######################################################################################################################################
@@ -140,7 +146,7 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, text
         save_debug_visualizations(
             imageEmbed, 
             text1, text2, image1, image2,
-            textSimilar, finalSimilarityMatrix,
+            txt1_txt2_similar_GT, txt1_txt2_similar,
             debug_imgText1, debug_imgText2,
             epoch, batch_idx
         )
@@ -157,23 +163,22 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, text
     del flip_tokens_a, flip_tokens_b
     torch.cuda.empty_cache()
     
-    return loss, loss_value, textSimilar, finalSimilarityMatrix
+    return loss, loss_value, txt1_txt2_similar_GT, txt1_txt2_similar
 
 
 
-def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
-          similarityTransformer1=None, similarityTransformer2=None):
+def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
+    """
+    Train the image-text alignment model.
+    
+    Architecture: CNN + BiLSTM for images, simple nn.Embedding for text.
+    No Transformer - direct cosine similarity between embeddings.
+    """
     imageEmbedding.train()
     textEmbedding.eval()
     
-    # Collect all trainable parameters
+    # Collect all trainable parameters (only image embedding is trained)
     params_to_train = list(imageEmbedding.parameters())
-    if similarityTransformer1 is not None:
-        similarityTransformer1.train()
-        params_to_train += list(similarityTransformer1.parameters())
-    if similarityTransformer2 is not None:
-        similarityTransformer2.train()
-        params_to_train += list(similarityTransformer2.parameters())
     
     optimizer = optim.Adam(params_to_train, lr=learning_rate)
     loss_lst = []
@@ -183,12 +188,8 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
         torch.cuda.reset_peak_memory_stats()
     
     for epoch in range(epochs):
-        # Ensure models are in training mode at start of each epoch
+        # Ensure model is in training mode at start of each epoch
         imageEmbedding.train()
-        if similarityTransformer1 is not None:
-            similarityTransformer1.train()
-        if similarityTransformer2 is not None:
-            similarityTransformer2.train()
             
         train_loss = 0.0
         train_accuracy = 0.0
@@ -205,8 +206,7 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
             # Compute loss using shared function
             path_loss, loss_value, NWTextFinal, NWImageFinal = compute_batch_loss(
                 imageEmbedding, textEmbedding, text1, text2, image1, image2, 
-                textSimilar, criterion, 
-                similarityTransformer1=similarityTransformer1, similarityTransformer2=None,
+                textSimilar, criterion,
                 epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader),
                 debug=debug
             )
@@ -254,8 +254,7 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
                 _, loss_value, NWTextFinal, NWImageFinal = compute_batch_loss(
                     imageEmbedding, textEmbedding,
                     text1, text2, image1, image2, 
-                    textSimilar, criterion,
-                    similarityTransformer1=similarityTransformer1, similarityTransformer2=None
+                    textSimilar, criterion
                 )
                 
                 # Compute accuracy
@@ -313,49 +312,29 @@ if __name__ == '__main__':
     )
 
     # Initialize TextEmbedding with space token support
+    # Text embeddings are context-free: same letter = same embedding (Label-Aware design)
     textEmbedding = TextEmbedding(embedding_dim=vector_size, include_spaces=include_spaces)
-
-    # Initialize two separate SimilarityTransformer models for image-text similarity computation
-    # The transformers take image strokes with context from previous strokes to predict which letter
-    # Using different transformers allows specialized learning for different text patterns
-    similarityTransformer1 = SimilarityTransformer(
-        embed_dim=vector_size,
-        hidden_dim=128,
-        num_heads=4,
-        num_layers=2,
-        dropout=model_dropout
-    ).to(device)
-    
-    similarityTransformer2 = SimilarityTransformer(
-        embed_dim=vector_size,
-        hidden_dim=128,
-        num_heads=4,
-        num_layers=2,
-        dropout=model_dropout
-    ).to(device)
 
     if show_gradients:
         for param in imageEmbedding.parameters():
             param.register_hook(check_grad)
-        for param in similarityTransformer1.parameters():
-            param.register_hook(check_grad)
-        # for param in similarityTransformer2.parameters():
-        #     param.register_hook(check_grad)
 
     
     criterion = Loss_choice(loss_type)
     
     # Log architecture optimizations
-    print(f"\n=== Architecture Optimizations ===")
+    print(f"\n=== Architecture: CNN + BiLSTM (No Transformer) ===")
     print(f"[OPT 1] Positional Encoding: {use_positional_encoding} ({positional_encoding_type})")
     print(f"[OPT 2] Loss Type: {loss_type}")
     print(f"[OPT 3] BiLSTM Context: {use_bilstm} (layers={bilstm_layers})")
     print(f"[OPT 4] Sliding Window Overlap: stride_ratio={stride_ratio}")
     print(f"[OPT 5] Space Gate: {use_space_gate} (threshold={space_threshold})")
     print(f"[OPT 6] Text Spaces: include_spaces={include_spaces}")
+    print(f"[OPT 7] Context-Free Text (Label-Aware): ENABLED")
+    print(f"        -> Same letter = Same embedding (no context mixing)")
     if loss_type == 'ContrastiveMSE':
-        print(f"[OPT 7] Contrastive Learning: ENABLED")
-    print(f"==================================\n")
+        print(f"[OPT 8] Contrastive Learning: ENABLED")
+    print(f"================================================\n")
     
     # try:
     loss_lst = Train(
@@ -363,9 +342,7 @@ if __name__ == '__main__':
         textEmbedding,
         train_dataloader,
         valid_dataloader,
-        criterion,
-        similarityTransformer1=similarityTransformer1,
-        similarityTransformer2=similarityTransformer2
+        criterion
     )
     
     if debug_wandb:

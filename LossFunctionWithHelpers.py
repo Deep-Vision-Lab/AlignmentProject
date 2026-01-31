@@ -33,36 +33,22 @@ SoftDTW = soft_dtw_cuda.SoftDTW
 
 class ContrastiveSoftDTW(nn.Module):
     """
-    Contrastive Soft-DTW Loss with InfoNCE-style contrastive learning.
+    Contrastive Soft-DTW Loss that takes pre-computed similarity matrices.
     
-    This loss function combines Soft-DTW alignment with contrastive learning in a single
-    unified loss. It computes ALL pairwise alignments within a batch and uses InfoNCE
-    (cross-entropy) to enforce that:
-    - Correct image-text pairs (diagonal) have low DTW cost (high similarity)
-    - Incorrect image-text pairs (off-diagonal) have high DTW cost (low similarity)
+    This loss computes Soft-DTW alignment on the similarity matrices between
+    image and text pairs, encouraging proper alignment structure (staircase pattern).
     
-    The contrastive learning is built-in, so no special handling is needed in the
-    training loop. Just pass image and text embeddings, and it handles everything.
-    
-    Uses CUDA-accelerated Soft-DTW from soft_dtw_cuda.py for efficient computation.
-    
-    Mathematical formulation:
-    1. Compute pairwise similarity matrices: S[i,j] = Image[i] @ Text[j].T for all i,j
-    2. Compute Soft-DTW energy for each pair: E[i,j] = -SoftDTW(-S[i,j])
-    3. Apply InfoNCE loss: L = CrossEntropy(E / temperature, labels)
-       where labels = [0, 1, 2, ..., B-1] (diagonal indices)
+    Label-Aware Design:
+        Since text embeddings are context-free (same letter = same embedding),
+        repeated letters in text will have identical columns in the similarity matrix.
+        Soft-DTW naturally handles this by finding optimal alignment paths that
+        can match image patches to ANY of the matching text positions.
     
     Args:
-        gamma (float): Soft-DTW smoothing parameter (temperature for DTW)
-                       gamma -> 0: hard DTW, gamma -> inf: average pooling
-        temperature (float): Temperature for contrastive loss (InfoNCE temperature)
-                            Lower = sharper distinctions between pairs
-        use_cuda (bool): Whether to use CUDA acceleration for Soft-DTW
-        bandwidth (int): Sakoe-Chiba bandwidth for pruning (None for global alignment)
-    
-    Note:
-        Normalization is disabled because image and text sequences have different lengths.
-        The SoftDTW normalization requires computing self-DTW which needs same-length sequences.
+        gamma (float): Soft-DTW smoothing parameter (gamma -> 0: hard DTW)
+        temperature (float): Temperature for contrastive loss
+        use_cuda (bool): Use CUDA acceleration
+        bandwidth (int): Sakoe-Chiba bandwidth for pruning
     """
     
     def __init__(self, gamma=0.1, temperature=0.1, use_cuda=True, bandwidth=None):
@@ -70,111 +56,95 @@ class ContrastiveSoftDTW(nn.Module):
         self.gamma = gamma
         self.temperature = temperature
         self.use_cuda = use_cuda
+        self.bandwidth = bandwidth
         
         # Initialize the CUDA-accelerated Soft-DTW function
         # IMPORTANT: normalize=False because image and text sequences have different lengths
-        # Normalization requires computing self-DTW which needs same-length sequences
         self.dtw_func = SoftDTW(use_cuda=use_cuda, gamma=gamma, normalize=False, bandwidth=bandwidth)
     
-    def forward(self, image_embeddings, text_embeddings, final_pred=None, target=None, 
-                mse_weight=1.0, contrastive_weight=0.5):
+    def _compute_dtw_on_similarity(self, sim_matrix: "torch.Tensor") -> "torch.Tensor":
         """
-        Compute Contrastive Soft-DTW loss.
+        Compute Soft-DTW directly on a pre-computed similarity matrix.
+        
+        The SoftDTW expects distance matrices (lower = more similar).
+        We convert similarity to distance: dist = 1 - sim
+        This ensures non-negative distances (0 = perfect match, 2 = worst match for cosine sim).
         
         Args:
-            image_embeddings (torch.Tensor): Image patch embeddings [Batch, N, Dim]
-            text_embeddings (torch.Tensor): Text token embeddings [Batch, M, Dim]
-            final_pred (torch.Tensor, optional): Final similarity matrix for MSE [B, H, W]
-            target (torch.Tensor, optional): Ground truth for MSE [B, H, W]
+            sim_matrix: [B, N, M] similarity matrices (higher = more similar, typically in [-1, 1])
+        
+        Returns:
+            DTW costs [B] as torch.Tensor
+        """
+        # Convert similarity to distance (1 - sim)
+        # For cosine similarity in [-1, 1]: distance will be in [0, 2]
+        # sim_matrix: [B, N, M] -> dist_matrix: [B, N, M]
+        dist_matrix = 1.0 - sim_matrix
+        
+        # Use the SoftDTW _SoftDTW function directly with pre-computed distances
+        # The _SoftDTW.apply expects [B, N, M] distance matrix
+        _SoftDTW = soft_dtw_cuda._SoftDTW
+        _SoftDTWCUDA = soft_dtw_cuda._SoftDTWCUDA
+        
+        if self.use_cuda and dist_matrix.is_cuda:
+            dtw_costs = _SoftDTWCUDA.apply(dist_matrix, self.gamma, self.bandwidth if self.bandwidth else 0)
+        else:
+            dtw_costs = _SoftDTW.apply(dist_matrix, self.gamma, self.bandwidth if self.bandwidth else 0)
+        
+        # Cast to Tensor for type checker (apply() returns Tensor at runtime)
+        assert isinstance(dtw_costs, torch.Tensor)
+        return dtw_costs  # [B]
+    
+    def forward(self, img_txt_sim1, img_txt_sim2, final_pred=None, target=None, 
+                mse_weight=1.0, dtw_weight=0.5):
+        """
+        Compute combined loss using pre-computed similarity matrices.
+        
+        Args:
+            img_txt_sim1 (torch.Tensor): Similarity matrix between text1 and image1 [B, N_txt, N_img]
+            img_txt_sim2 (torch.Tensor): Similarity matrix between text2 and image2 [B, M_txt, M_img]
+            final_pred (torch.Tensor, optional): Final predicted similarity matrix for MSE [B, H, W]
+            target (torch.Tensor, optional): Ground truth similarity matrix for MSE [B, H, W]
             mse_weight (float): Weight for MSE reconstruction loss
-            contrastive_weight (float): Weight for contrastive DTW loss
+            dtw_weight (float): Weight for DTW alignment loss
         
         Returns:
             tuple: (total_loss, loss_dict) with individual loss components
         """
-        batch_size = image_embeddings.size(0)
-        device = image_embeddings.device
-        N = image_embeddings.size(1)  # Image sequence length
-        M = text_embeddings.size(1)   # Text sequence length
-        D = image_embeddings.size(2)  # Embedding dimension
+        batch_size = img_txt_sim1.size(0)
+        device = img_txt_sim1.device
         
         # ====================================================================
-        # Step 1: Compute ALL pairwise similarity matrices at once
+        # Step 1: Compute Soft-DTW costs on both similarity matrices
         # ====================================================================
-        # Broadcast: (Batch, 1, N, D) @ (1, Batch, D, M) -> (Batch, Batch, N, M)
-        # This creates a matrix of Image[i] vs Text[j] for ALL i, j pairs
+        # DTW on img_txt_sim1: encourages proper alignment between text1 and image1
+        dtw_costs1 = self._compute_dtw_on_similarity(img_txt_sim1)  # [B]
         
-        img_expanded = image_embeddings.unsqueeze(1)      # [B, 1, N, D]
-        txt_expanded = text_embeddings.unsqueeze(0)       # [1, B, M, D]
-        txt_expanded = txt_expanded.transpose(-1, -2)     # [1, B, D, M]
+        # DTW on img_txt_sim2: encourages proper alignment between text2 and image2
+        dtw_costs2 = self._compute_dtw_on_similarity(img_txt_sim2)  # [B]
         
-        # Giant Matrix Multiplication: all_sim[i,j] = sim(Image_i, Text_j)
-        all_sim_matrices = torch.matmul(img_expanded, txt_expanded)  # [B, B, N, M]
-        
-        # ====================================================================
-        # Step 2: Compute Soft-DTW costs for ALL pairs using CUDA-accelerated DTW
-        # ====================================================================
-        # We need to compute DTW for each (i, j) pair
-        # The SoftDTW expects sequences of shape [batch, seq_len, dims]
-        # We'll iterate over pairs or reshape cleverly
-        
-        # Flatten to process all B*B pairs
-        # Reshape similarity matrices to be "sequences" for DTW
-        # all_sim_matrices: [B, B, N, M] -> we need to compute DTW on each [N, M] matrix
-        
-        # For DTW, we treat the similarity matrix as distance by negating
-        # Then compute DTW cost for each pair
-        
-        dtw_costs = []
-        for i in range(batch_size):
-            for j in range(batch_size):
-                # Get similarity matrix for pair (i, j): [N, M]
-                sim_matrix = all_sim_matrices[i, j]  # [N, M]
-                
-                # Convert to distance matrix (negate similarity)
-                # Reshape for DTW: treat as sequences where each row/col is a "timestep"
-                # We'll use the similarity matrix directly as pre-computed distances
-                
-                # Create dummy sequences that give us the distance matrix we want
-                # The SoftDTW.dist_func computes ||x_i - y_j||^2
-                # But we want to use our pre-computed similarity as distance
-                
-                # Trick: Pass the similarity as negative distance directly
-                # We create sequences where the pairwise distance IS our cost
-                # Actually, let's use the underlying function directly
-                
-                # The SoftDTW expects X, Y as [batch, seq, dim]
-                # We'll pass the image and text embeddings directly for this pair
-                img_seq = image_embeddings[i:i+1]  # [1, N, D]
-                txt_seq = text_embeddings[j:j+1]   # [1, M, D]
-                
-                # Compute DTW (returns distance, lower = more similar)
-                cost = self.dtw_func(img_seq, txt_seq)  # [1]
-                dtw_costs.append(cost)
-        
-        # Stack all costs: [B*B]
-        dtw_costs = torch.cat(dtw_costs, dim=0)
-        
-        # Reshape to [B, B] energy matrix
-        # energy_matrix[i, j] = -DTW_cost(Image_i, Text_j)
-        # Negate because lower DTW cost = better match = higher "energy"
-        energy_matrix = -dtw_costs.view(batch_size, batch_size)
+        # Average DTW costs across both pairs
+        dtw_loss1 = dtw_costs1.mean()
+        dtw_loss2 = dtw_costs2.mean()
+        dtw_loss = (dtw_loss1 + dtw_loss2) / 2.0
         
         # ====================================================================
-        # Step 3: InfoNCE Contrastive Loss
+        # Step 2: Compute alignment quality metrics for monitoring
         # ====================================================================
-        # We want diagonal (correct pairs) to have highest energy
-        # Labels are simply [0, 1, 2, ...] - the diagonal indices
-        labels = torch.arange(batch_size, device=device)
-        
-        # Scale by temperature
-        logits = energy_matrix / self.temperature
-        
-        # Cross-entropy loss (automatically does log_softmax)
-        contrastive_loss = F.cross_entropy(logits, labels)
+        # Use mean of max similarities as proxy for alignment quality
+        with torch.no_grad():
+            # For sim1: average max similarity per text position
+            max_sim1_per_txt = img_txt_sim1.max(dim=2)[0]  # [B, N_txt]
+            alignment_score1 = max_sim1_per_txt.mean()
+            
+            # For sim2: average max similarity per text position
+            max_sim2_per_txt = img_txt_sim2.max(dim=2)[0]  # [B, M_txt]
+            alignment_score2 = max_sim2_per_txt.mean()
+            
+            avg_alignment_score = (alignment_score1 + alignment_score2) / 2.0
         
         # ====================================================================
-        # Step 4: Optional MSE loss on final similarity matrix
+        # Step 3: MSE loss on final similarity matrix
         # ====================================================================
         if final_pred is not None and target is not None:
             mse_loss = F.mse_loss(final_pred, target)
@@ -182,173 +152,42 @@ class ContrastiveSoftDTW(nn.Module):
             mse_loss = torch.tensor(0.0, device=device)
         
         # ====================================================================
-        # Combined Loss
+        # Combined Loss: MSE + DTW
         # ====================================================================
-        total_loss = mse_weight * mse_loss + contrastive_weight * contrastive_loss
-        
-        # Compute accuracy for monitoring (how often correct pair has highest energy)
-        predictions = logits.argmax(dim=1)
-        accuracy = (predictions == labels).float().mean().item()
+        total_loss = mse_weight * mse_loss + dtw_weight * dtw_loss
         
         loss_dict = {
             'mse': mse_loss.item() if torch.is_tensor(mse_loss) else mse_loss,
-            'contrastive_dtw': contrastive_loss.item(),
-            'contrastive_accuracy': accuracy,
+            'dtw': dtw_loss.item(),
+            'dtw1': dtw_loss1.item(),
+            'dtw2': dtw_loss2.item(),
+            'alignment_score': avg_alignment_score.item(),
             'total': total_loss.item()
         }
         
         return total_loss, loss_dict
 
 
-class ContrastiveSoftDTWFast(nn.Module):
-    """
-    Fast Contrastive Soft-DTW Loss - Batched computation for efficiency.
-    
-    This version computes DTW in a more efficient batched manner by
-    leveraging the CUDA kernel's ability to process multiple sequences at once.
-    
-    Uses a custom distance function to pass pre-computed similarity matrices.
-    """
-    
-    def __init__(self, gamma=0.1, temperature=0.1, use_cuda=True, normalize=True, bandwidth=None):
-        super(ContrastiveSoftDTWFast, self).__init__()
-        self.gamma = gamma
-        self.temperature = temperature
-        self.use_cuda = use_cuda
-        self.normalize = normalize
-        self.bandwidth = bandwidth
-        
-        # We'll create DTW func on-the-fly with custom distance
-    
-    def _identity_dist(self, x, y):
-        """
-        Identity distance function - assumes x already contains the distance/cost matrix.
-        x: [B, N, M] - pre-computed distance matrices
-        y: [B, N, M] - dummy, same as x
-        Returns: x (the pre-computed distances)
-        """
-        return x
-    
-    def forward(self, image_embeddings, text_embeddings, final_pred=None, target=None, 
-                mse_weight=1.0, contrastive_weight=0.5):
-        """
-        Compute Contrastive Soft-DTW loss with batched DTW computation.
-        """
-        batch_size = image_embeddings.size(0)
-        device = image_embeddings.device
-        N = image_embeddings.size(1)
-        M = text_embeddings.size(1)
-        D = image_embeddings.size(2)
-        
-        # ====================================================================
-        # Step 1: Compute ALL pairwise distance matrices
-        # ====================================================================
-        # Using Euclidean distance: ||img_i - txt_j||^2
-        # Expand for broadcasting: [B, 1, N, 1, D] vs [1, B, 1, M, D]
-        
-        img_exp = image_embeddings.view(batch_size, 1, N, 1, D)
-        txt_exp = text_embeddings.view(1, batch_size, 1, M, D)
-        
-        # Pairwise squared Euclidean distance: [B, B, N, M]
-        all_dist_matrices = torch.sum((img_exp - txt_exp) ** 2, dim=-1)  # [B, B, N, M]
-        
-        # ====================================================================
-        # Step 2: Compute Soft-DTW for all pairs
-        # ====================================================================
-        # Flatten to [B*B, N, M] and treat as batch
-        flat_dists = all_dist_matrices.view(batch_size * batch_size, N, M)
-        
-        # Create SoftDTW with identity distance (we already have distances)
-        dtw_func = SoftDTW(
-            use_cuda=self.use_cuda, 
-            gamma=self.gamma, 
-            normalize=self.normalize,
-            bandwidth=self.bandwidth,
-            dist_func=lambda x, y: x  # Identity - x is already the distance matrix
-        )
-        
-        # We need to reshape for DTW input format
-        # DTW expects [batch, seq_len, dims] for X and Y
-        # We'll create dummy sequences and use custom dist_func
-        
-        # Create dummy tensors with the right shape
-        # The distance function will receive these and should return our pre-computed distances
-        dummy_x = flat_dists.unsqueeze(-1)  # [B*B, N, 1] - dummy dim
-        dummy_y = torch.zeros(batch_size * batch_size, M, 1, device=device)  # [B*B, M, 1]
-        
-        # Custom distance function that returns our pre-computed matrix
-        def custom_dist(x, y):
-            # x: [B*B, N, 1], y: [B*B, M, 1]
-            # We want to return flat_dists: [B*B, N, M]
-            return flat_dists
-        
-        # Create a new DTW with our custom distance
-        dtw_custom = SoftDTW(
-            use_cuda=self.use_cuda,
-            gamma=self.gamma,
-            normalize=self.normalize,
-            bandwidth=self.bandwidth,
-            dist_func=custom_dist
-        )
-        
-        # Compute DTW costs
-        dtw_costs = dtw_custom(dummy_x, dummy_y)  # [B*B]
-        
-        # Reshape to [B, B] energy matrix
-        energy_matrix = -dtw_costs.view(batch_size, batch_size)
-        
-        # ====================================================================
-        # Step 3: InfoNCE Contrastive Loss
-        # ====================================================================
-        labels = torch.arange(batch_size, device=device)
-        logits = energy_matrix / self.temperature
-        contrastive_loss = F.cross_entropy(logits, labels)
-        
-        # ====================================================================
-        # Step 4: Optional MSE loss
-        # ====================================================================
-        if final_pred is not None and target is not None:
-            mse_loss = F.mse_loss(final_pred, target)
-        else:
-            mse_loss = torch.tensor(0.0, device=device)
-        
-        # Combined Loss
-        total_loss = mse_weight * mse_loss + contrastive_weight * contrastive_loss
-        
-        # Accuracy
-        predictions = logits.argmax(dim=1)
-        accuracy = (predictions == labels).float().mean().item()
-        
-        loss_dict = {
-            'mse': mse_loss.item() if torch.is_tensor(mse_loss) else mse_loss,
-            'contrastive_dtw': contrastive_loss.item(),
-            'contrastive_accuracy': accuracy,
-            'total': total_loss.item()
-        }
-        
-        return total_loss, loss_dict
-
-
-def contrastive_soft_dtw_alignment_loss(final_pred, target, 
-                                         img_embeddings, txt_embeddings,
+def contrastive_soft_dtw_alignment_loss(img_txt_sim1, img_txt_sim2, 
+                                         final_pred=None, target=None,
                                          gamma=0.1, temperature=0.1,
-                                         mse_weight=1.0, contrastive_weight=0.5,
+                                         mse_weight=1.0, dtw_weight=0.5,
                                          use_cuda=True):
     """
     Functional interface for Contrastive Soft-DTW loss.
     
-    This combines MSE reconstruction loss with InfoNCE-style contrastive learning
-    using CUDA-accelerated Soft-DTW as the similarity measure.
+    This combines MSE reconstruction loss with Soft-DTW alignment loss
+    using CUDA-accelerated Soft-DTW.
     
     Args:
+        img_txt_sim1 (torch.Tensor): Similarity matrix between text1 and image1 [B, N_txt, N_img]
+        img_txt_sim2 (torch.Tensor): Similarity matrix between text2 and image2 [B, M_txt, M_img]
         final_pred (torch.Tensor): Final predicted similarity matrix [B, H, W]
         target (torch.Tensor): Ground truth similarity matrix [B, H, W]
-        img_embeddings (torch.Tensor): Image patch embeddings [B, N, D]
-        txt_embeddings (torch.Tensor): Text token embeddings [B, M, D]
         gamma (float): Soft-DTW smoothing parameter
-        temperature (float): Temperature for InfoNCE contrastive loss
+        temperature (float): Temperature (not used in current implementation)
         mse_weight (float): Weight for MSE loss
-        contrastive_weight (float): Weight for contrastive loss
+        dtw_weight (float): Weight for DTW alignment loss
         use_cuda (bool): Use CUDA acceleration
     
     Returns:
@@ -359,8 +198,8 @@ def contrastive_soft_dtw_alignment_loss(final_pred, target,
         temperature=temperature, 
         use_cuda=use_cuda
     )
-    return criterion(img_embeddings, txt_embeddings, final_pred, target, 
-                    mse_weight=mse_weight, contrastive_weight=contrastive_weight)
+    return criterion(img_txt_sim1, img_txt_sim2, final_pred, target, 
+                    mse_weight=mse_weight, dtw_weight=dtw_weight)
 
 
 # ============================================================================
@@ -380,17 +219,14 @@ def Loss_choice(loss_type):
     if loss_type == 'MSE':
         criterion = nn.MSELoss(reduction='mean')
     elif loss_type == 'ContrastiveSoftDTW':
-        # Contrastive Soft-DTW: InfoNCE-style contrastive learning with CUDA Soft-DTW
-        # All contrastive learning is handled inside the loss function
-        # No special handling needed in training loop - just pass embeddings
-        from Parameters import (contrastive_soft_dtw_gamma, contrastive_soft_dtw_temperature,
-                                contrastive_soft_dtw_mse_weight, contrastive_soft_dtw_contrastive_weight)
-        criterion = partial(contrastive_soft_dtw_alignment_loss,
-                          gamma=contrastive_soft_dtw_gamma,
-                          temperature=contrastive_soft_dtw_temperature,
-                          mse_weight=contrastive_soft_dtw_mse_weight,
-                          contrastive_weight=contrastive_soft_dtw_contrastive_weight,
-                          use_cuda=True)
+        # Contrastive Soft-DTW: takes similarity matrices directly
+        # Computes DTW on both similarity matrices + MSE on final prediction
+        from Parameters import contrastive_soft_dtw_gamma, contrastive_soft_dtw_temperature
+        criterion = ContrastiveSoftDTW(
+            gamma=contrastive_soft_dtw_gamma,
+            temperature=contrastive_soft_dtw_temperature,
+            use_cuda=True
+        )
     else:
         raise ValueError(f"Unknown loss type: {loss_type}. Available: ['MSE', 'ContrastiveSoftDTW']")
     return criterion
@@ -398,28 +234,32 @@ def Loss_choice(loss_type):
 
 if __name__ == "__main__":
     # Test the ContrastiveSoftDTW loss
-    print("Testing ContrastiveSoftDTW loss...")
+    print("Testing ContrastiveSoftDTW loss with similarity matrices...")
     
     batch_size = 4
-    N = 20  # Image sequence length
-    M = 15  # Text sequence length  
-    D = 64  # Embedding dimension
+    N_txt = 15  # Text sequence length
+    N_img = 20  # Image sequence length
     
-    # Create dummy data
+    # Create dummy similarity matrices
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    image_embeddings = torch.randn(batch_size, N, D, device=device, requires_grad=True)
-    text_embeddings = torch.randn(batch_size, M, D, device=device)
+    img_txt_sim1 = torch.randn(batch_size, N_txt, N_img, device=device, requires_grad=True)
+    img_txt_sim2 = torch.randn(batch_size, N_txt, N_img, device=device, requires_grad=True)
+    
+    # Create dummy final prediction and target
+    final_pred = torch.randn(batch_size, N_txt, N_txt, device=device, requires_grad=True)
+    target = torch.randn(batch_size, N_txt, N_txt, device=device)
     
     # Test the loss
     criterion = ContrastiveSoftDTW(gamma=0.1, temperature=0.1, use_cuda=torch.cuda.is_available())
-    loss, loss_dict = criterion(image_embeddings, text_embeddings)
+    loss, loss_dict = criterion(img_txt_sim1, img_txt_sim2, final_pred, target)
     
     print(f"Loss: {loss.item():.4f}")
     print(f"Loss dict: {loss_dict}")
     
     # Test backward pass
     loss.backward()
-    if image_embeddings.grad is not None:
-        print(f"Gradient computed successfully. Grad norm: {image_embeddings.grad.norm().item():.4f}")
-    else:
-        print("Warning: No gradient computed")
+    print(f"Gradient computed successfully.")
+    if img_txt_sim1.grad is not None:
+        print(f"  img_txt_sim1 grad norm: {img_txt_sim1.grad.norm().item():.4f}")
+    if img_txt_sim2.grad is not None:
+        print(f"  img_txt_sim2 grad norm: {img_txt_sim2.grad.norm().item():.4f}")

@@ -51,7 +51,7 @@ include_spaces = True           # Include space characters in text embeddings
 # Combines Soft-DTW with InfoNCE-style contrastive learning
 # Uses CUDA-accelerated Soft-DTW from soft-dtw-cuda.py
 # All contrastive logic is inside the loss function - no special training loop needed
-contrastive_soft_dtw_gamma = 0.1            # Soft-DTW smoothing (gamma -> 0: hard DTW, gamma -> inf: average)
+contrastive_soft_dtw_gamma = 0.001            # Soft-DTW smoothing (gamma -> 0: hard DTW, gamma -> inf: average)
 contrastive_soft_dtw_temperature = 0.1      # InfoNCE temperature (lower = sharper distinction between pairs)
 contrastive_soft_dtw_mse_weight = 1.0       # Weight for MSE reconstruction loss
 contrastive_soft_dtw_contrastive_weight = 0.5  # Weight for contrastive DTW loss
