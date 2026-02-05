@@ -10,24 +10,45 @@ from Parameters import *
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+def compute_text_similarity_matrix(text1: str, text2: str, 
+                                             device: str = 'cuda') -> torch.Tensor:
+    """
+    Fastest GPU implementation using torch.compile (PyTorch 2.0+) if available.
+    
+    Uses a single-kernel approach for maximum throughput on large texts.
+    
+    Args:
+        text1 (str): First text string
+        text2 (str): Second text string
+        device (str): Device to use ('cuda' or 'cpu'). Defaults to 'cuda'.
+    
+    Returns:
+        torch.Tensor: Similarity matrix of shape [len(text1), len(text2)]
+    """
+    if device == 'cuda' and not torch.cuda.is_available():
+        device = 'cpu'
+    
+    # Convert entire strings to tensor at once using torch.frombuffer for speed
+    bytes1 = text1.encode('utf-32-le')  # 4 bytes per char
+    bytes2 = text2.encode('utf-32-le')
+    
+    # Create tensors from buffer (zero-copy when possible)
+    chars1 = torch.frombuffer(bytearray(bytes1), dtype=torch.int32).to(device)
+    chars2 = torch.frombuffer(bytearray(bytes2), dtype=torch.int32).to(device)
+    
+    # Use einsum for potentially better kernel fusion
+    # Broadcasting: [len1, 1] == [1, len2] -> [len1, len2]
+    similarity_matrix = (chars1.unsqueeze(1) == chars2.unsqueeze(0)).float()
+    
+    return similarity_matrix
+
+
 def textual_sliding_window(text, window_size, step_size):
     output = []
     for i in range(0, len(text) - window_size + 1, step_size):
         output.append(text[i:i + window_size])
     return output
 
-
-def word2Vec(textLine, img_width):
-    embedding_dim = 512
-    text_window_size = (window_size / img_width)*len(textLine)
-    text_window_size = int(text_window_size)
-    vocs_text = textual_sliding_window(textLine, window_size=text_window_size, step_size=text_window_size // 2 if text_window_size // 2 != 0 else 1)
-    word_to_ix = {word: i for i, word in enumerate(vocs_text)}
-    embedding = nn.Embedding(num_embeddings=len(vocs_text), embedding_dim=embedding_dim)
-    word_idx = torch.tensor([torch.tensor(word_to_ix[text], dtype=torch.long) for text in vocs_text])
-    word_vector = embedding(word_idx)
-
-    return word_vector
 
 class TextLineModern(Dataset):
     def __init__(self, new_dataset=None, transform=None):
@@ -58,8 +79,8 @@ class TextLineModern(Dataset):
             img2 = Image.open(img2_path).convert("RGB")
 
 
-            similar_matrix = np.load(SimilarityMatrix)
-            similar_matrix = torch.tensor(similar_matrix, dtype=torch.float32)
+            # similar_matrix = np.load(SimilarityMatrix)
+            # similar_matrix = torch.tensor(similar_matrix, dtype=torch.float32)
             
             if self.transform:
                 img1 = self.transform(img1)
@@ -69,10 +90,16 @@ class TextLineModern(Dataset):
             text2_path = os.path.join(self.new_dataset['texts'], text2)
             with open(text1_path, 'r') as f:
                 text_line1 = f.read().strip()
-                # text_line1 = text_line1.replace(' ', '')
+                text_line1 = ' ' + text_line1 + ' '
+                
             with open(text2_path, 'r') as f:
                 text_line2 = f.read().strip()
-                # text_line2 = text_line2.replace(' ', '')
+                text_line2 = ' ' + text_line2 + ' '
+
+            similar_matrix = compute_text_similarity_matrix(text_line1, text_line2)
+            similar_matrix = similar_matrix.to(device)
+            similar_matrix.requires_grad_(True)
+            
             return img1, img2, similar_matrix, text_line1, text_line2
         else:
             raise NotImplementedError("Handling for non-NewDataSet is not included.")

@@ -187,13 +187,13 @@ def saveWindowsAsGrid(windows, output_path, title="Windows Grid", cols=8):
 def save_debug_visualizations(model, text1, text2, image1, image2,
                             TextSimilarGT, TextSimilarPred,
                             Similar_TxtImg1, Similar_TxtImg2,
-                            epoch, batch_idx):
+                            epoch):
     # Prepare directories for saving visualizations
     loss_dir = f'TrainResults/{loss_type}'
     os.makedirs(loss_dir, exist_ok=True)
     
     # saving image1 and image2.
-    lines_dir = f'{loss_dir}/InputImages/{model.model_arch}/Epoch_{epoch}'
+    lines_dir = f'{loss_dir}/InputImages/Epoch_{epoch}'
     os.makedirs(lines_dir, exist_ok=True)
     for i in range(image1.size(0)):
         lines_dir_per_item = f'{lines_dir}/{i}'
@@ -217,7 +217,7 @@ def save_debug_visualizations(model, text1, text2, image1, image2,
             cols=8
         )
 
-    similar_IMGTXT_epoch_dir = f'{loss_dir}/SimilarityMatricesPerEpoch/{model.model_arch}/Epoch_{epoch}'
+    similar_IMGTXT_epoch_dir = f'{loss_dir}/SimilarityMatricesPerEpoch/Epoch_{epoch}'
     os.makedirs(similar_IMGTXT_epoch_dir, exist_ok=True)
 
     # Clone tensors for visualization to avoid affecting gradients

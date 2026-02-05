@@ -13,7 +13,7 @@ from pathExtractor import *
 from Visualization import *
 from textEmbedding import *
 from embeddingModel import *
-from embeddingModel import *
+from embeddingModel import img_embed_timer
 from NormalizeFuncs import *
 from LossFunctionWithHelpers import *
 # SimilarityTransformer removed - using direct cosine similarity between CNN+BiLSTM and text embeddings
@@ -26,7 +26,96 @@ import warnings
 
 from wandb_config import init_wandb, update_wandb
 
-warnings.filterwarnings("ignore")    
+warnings.filterwarnings("ignore")
+
+
+# ============================================================================
+# GPU TIMING PROFILER - Measures execution time of each phase
+# ============================================================================
+class GPUTimer:
+    """
+    GPU-aware timer that uses CUDA events for accurate GPU timing.
+    Falls back to CPU timing if CUDA is not available.
+    
+    Usage:
+        timer = GPUTimer(enabled=True)
+        timer.start('phase_name')
+        # ... do work ...
+        timer.stop('phase_name')
+        timer.print_summary()
+    """
+    def __init__(self, enabled=True, device='cuda'):
+        self.enabled = enabled
+        self.device = device
+        self.use_cuda = torch.cuda.is_available() and 'cuda' in device
+        self.timings = {}  # {name: [durations]}
+        self.starts = {}   # {name: start_event or start_time}
+        
+    def start(self, name):
+        if not self.enabled:
+            return
+        if self.use_cuda:
+            # Use CUDA events for accurate GPU timing
+            start_event = torch.cuda.Event(enable_timing=True)
+            start_event.record()
+            self.starts[name] = start_event
+        else:
+            self.starts[name] = time.time()
+    
+    def stop(self, name):
+        if not self.enabled or name not in self.starts:
+            return
+        if self.use_cuda:
+            end_event = torch.cuda.Event(enable_timing=True)
+            end_event.record()
+            torch.cuda.synchronize()  # Wait for GPU to finish
+            duration_ms = self.starts[name].elapsed_time(end_event)  # milliseconds
+        else:
+            duration_ms = (time.time() - self.starts[name]) * 1000  # convert to ms
+        
+        if name not in self.timings:
+            self.timings[name] = []
+        self.timings[name].append(duration_ms)
+        del self.starts[name]
+    
+    def get_avg(self, name):
+        if name in self.timings and len(self.timings[name]) > 0:
+            return sum(self.timings[name]) / len(self.timings[name])
+        return 0.0
+    
+    def get_total(self, name):
+        if name in self.timings:
+            return sum(self.timings[name])
+        return 0.0
+    
+    def reset(self):
+        self.timings = {}
+        self.starts = {}
+    
+    def print_summary(self, title="Timing Summary"):
+        if not self.enabled or not self.timings:
+            return
+        print(f"\n{'='*60}")
+        print(f"{title}")
+        print(f"{'='*60}")
+        print(f"{'Phase':<30} {'Avg (ms)':<12} {'Total (ms)':<12} {'Count':<8}")
+        print(f"{'-'*60}")
+        
+        total_time = 0
+        for name, durations in self.timings.items():
+            avg = sum(durations) / len(durations)
+            total = sum(durations)
+            total_time += total
+            print(f"{name:<30} {avg:<12.2f} {total:<12.2f} {len(durations):<8}")
+        
+        print(f"{'-'*60}")
+        print(f"{'TOTAL':<30} {'':<12} {total_time:<12.2f}")
+        print(f"{'='*60}\n")
+        return self.timings
+
+
+# Global timer instance (set enabled=True to profile, False to disable overhead)
+global_timer = GPUTimer(enabled=True)  # Set to True to enable profiling    
 
 def interpolate_NW_matrix(NWTensor, target_shape):
     if NWTensor.dim() == 2:
@@ -74,7 +163,7 @@ def check_grad(grad):
 # second line of parameters is for saving visualizations during debugging 
 def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1_txt2_similar_GT, 
                        criterion,
-                       epoch=0, batch_idx=0, dataloader_length=0, debug=False):
+                       epoch=0, batch_idx=0, dataloader_length=0, debug=False, timer=None):
     """
     Compute batch loss for text-image alignment.
     
@@ -86,37 +175,54 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1
     have identical embeddings, allowing Soft-DTW to correctly align 
     image patches to ALL matching text positions.
     """
+    # Use global timer if none provided
+    if timer is None:
+        timer = global_timer
 
-    # Image Embedding and Token Extraction (CNN + BiLSTM)
-    tokens_a, tokens_b = imageEmbed(image1, image2, show_dims=False)
+    # ==================== PHASE 1: Image Embedding (CNN + BiLSTM) ====================
+    timer.start('1_image_embedding_total')
+    tokens_a, tokens_b = imageEmbed(image1, image2, show_dims=False, timer=timer)
+    timer.stop('1_image_embedding_total')
     
+    timer.start('2_flip_tokens')
     flip_tokens_a = torch.flip(tokens_a, dims=[-2]) # Shape: (batch_size, seq_len, vector_size)
     flip_tokens_b = torch.flip(tokens_b, dims=[-2]) # Shape: (batch_size, seq_len, vector_size)
-    # -----------------------------------------------------------------------------------------
-    # Text Embedding (context-free: same letter = same embedding)
+    timer.stop('2_flip_tokens')
+    
+    # ==================== PHASE 2: Text Embedding ====================
+    timer.start('3_text_embedding')
     embedded_text1 = textEmbed(text1)  # Shape: (batch_size, seq_len, embedding_dim)
     embedded_text2 = textEmbed(text2)  # Shape: (batch_size, seq_len, embedding_dim)
+    timer.stop('3_text_embedding')
 
-    # Normalize vectors for cosine similarity
+    # ==================== PHASE 3: Normalization ====================
+    timer.start('4_normalization')
     normalized_text1 = F.normalize(embedded_text1, p=2, dim=-1)  # Shape: (batch_size, seq_len, embedding_dim)
     normalized_text2 = F.normalize(embedded_text2, p=2, dim=-1)  # Shape: (batch_size, seq_len, embedding_dim)
     normalized_tokens_a = F.normalize(flip_tokens_a, p=2, dim=-1)  # Shape: (batch_size, seq_len, vector_size)
     normalized_tokens_b = F.normalize(flip_tokens_b, p=2, dim=-1)
+    timer.stop('4_normalization')
                                       
-    # Compute similarity matrices using direct cosine similarity (no Transformer)
-    # img1_txt1_similarity: [B, seq_len_text, seq_len_img]
+    # ==================== PHASE 4: Similarity Matrix (BMM) ====================
+    timer.start('5_bmm_img_txt_similarity')
     img1_txt1_similarity = torch.bmm(normalized_text1, normalized_tokens_a.transpose(1, 2))
     img2_txt2_similarity = torch.bmm(normalized_text2, normalized_tokens_b.transpose(1, 2))
+    timer.stop('5_bmm_img_txt_similarity')
 
+    timer.start('6_normalize_similarity')
     normalized_img1_txt1_similarity = F.normalize(img1_txt1_similarity, p=2, dim=-1)
     normalized_img2_txt2_similarity = F.normalize(img2_txt2_similarity, p=2, dim=-1)
-  
-    # Multiplying score matrices
+    timer.stop('6_normalize_similarity')
+    
+    # ==================== PHASE 5: Final Score Matrix Multiplication ====================
+    timer.start('7_bmm_final_similarity')
     txt1_txt2_similar = torch.bmm(normalized_img1_txt1_similarity, normalized_img2_txt2_similarity.transpose(1, 2))
+    timer.stop('7_bmm_final_similarity')
     
 #---------------------------------------------------------------------------------------------------------
     
-    # Loss computation - handle different loss types
+    # ==================== PHASE 6: Loss Computation ====================
+    timer.start('8_loss_computation')
     if loss_type == 'ContrastiveSoftDTW':
         # Contrastive Soft-DTW: uses pre-computed similarity matrices
         # img1_txt1_similarity: [B, N_txt, N_img] - similarity between text1 and image1
@@ -124,18 +230,20 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1
         loss, loss_dict = criterion(
             img_txt_sim1=img1_txt1_similarity,           # Similarity matrix for pair 1
             img_txt_sim2=img2_txt2_similarity,           # Similarity matrix for pair 2
-            final_pred=txt1_txt2_similar,                # Final prediction for MSE
-            target=txt1_txt2_similar_GT                  # Ground truth for MSE
+            final_pred=txt1_txt2_similar,                # Final prediction for CS
+            target=txt1_txt2_similar_GT                  # Ground truth for CS
         )
+
         loss_value = loss_dict['total']
-    elif loss_type == 'MSE':
-        # Simple MSE loss
+    elif loss_type == 'CrossEntropy':
+        # Simple Cross-Entropy loss
         loss = criterion(txt1_txt2_similar, txt1_txt2_similar_GT)
         loss_value = loss.item()
     else:
         # Default: try calling criterion directly
         loss = criterion(txt1_txt2_similar, txt1_txt2_similar_GT)
         loss_value = loss.item() if hasattr(loss, 'item') else loss
+    timer.stop('8_loss_computation')
     
     ######################################################################################################################################
     # Debugging: Save visualizations for the last batch every 10 epochs
@@ -143,16 +251,24 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1
         debug_imgText1 = normalized_img1_txt1_similarity
         debug_imgText2 = normalized_img2_txt2_similarity
 
+        # indexing only the first 2 samples in the batch for visualization
+        text1_subset = [text1[i] for i in range(min(2, len(text1)))]
+        text2_subset = [text2[i] for i in range(min(2, len(text2)))]
+        image1_subset = image1[:min(2, image1.size(0))]
+        image2_subset = image2[:min(2, image2.size(0))]
+        TextSimilarGT_subset = txt1_txt2_similar_GT[:min(2, txt1_txt2_similar_GT.size(0))]
+        txt1_txt2_similar_subset = txt1_txt2_similar[:min(2, txt1_txt2_similar.size(0))]
+        similar_TxtImg1 = normalized_img1_txt1_similarity[:min(2, normalized_img1_txt1_similarity.size(0))]
+        similar_TxtImg2 = normalized_img2_txt2_similarity[:min(2, normalized_img2_txt2_similarity.size(0))]
         save_debug_visualizations(
             imageEmbed, 
-            text1, text2, image1, image2,
-            txt1_txt2_similar_GT, txt1_txt2_similar,
-            debug_imgText1, debug_imgText2,
-            epoch, batch_idx
+            text1_subset, text2_subset, image1_subset, image2_subset,
+            TextSimilarGT_subset, txt1_txt2_similar_subset,
+            similar_TxtImg1, similar_TxtImg2,
+            epoch
         )
         
         del debug_imgText1, debug_imgText2
-        
         # Save model weights
         save_model_weights(imageEmbed, epoch)
 
@@ -188,27 +304,36 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
         torch.cuda.reset_peak_memory_stats()
     
     for epoch in range(epochs):
+        # Start epoch timer
+        epoch_start_time = time.time()
+        
         # Ensure model is in training mode at start of each epoch
         imageEmbedding.train()
+        
+        # Reset timer for this epoch
+        global_timer.reset()
             
         train_loss = 0.0
         train_accuracy = 0.0
 
         for batch_idx, (image1, image2, textSimilar, text1, text2) in enumerate(trainLoader):
-            # Ensure all data is on correct device
+            # Timing: Data transfer to GPU
+            global_timer.start('0_data_to_gpu')
             image1 = image1.to(device, non_blocking=True)
             image2 = image2.to(device, non_blocking=True)
             textSimilar = textSimilar.to(device, non_blocking=True)
             text1 = list(text1)
             text2 = list(text2)
-            optimizer.zero_grad()
+            global_timer.stop('0_data_to_gpu')
             
-            # Compute loss using shared function
+            optimizer.zero_grad()
+  
+            # Compute loss using shared function (timing is inside)
             path_loss, loss_value, NWTextFinal, NWImageFinal = compute_batch_loss(
                 imageEmbedding, textEmbedding, text1, text2, image1, image2, 
                 textSimilar, criterion,
                 epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader),
-                debug=debug
+                debug=debug, timer=global_timer
             )
             
             # Compute accuracy
@@ -219,8 +344,13 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
             train_loss += loss_value
 
             # Backpropagation and optimizer step
+            global_timer.start('9_backward')
             path_loss.backward()
+            global_timer.stop('9_backward')
+            
+            global_timer.start('10_optimizer_step')
             optimizer.step()
+            global_timer.stop('10_optimizer_step')
 
             print(f"Epoch {epoch+1}, Batch {batch_idx+1}, Loss: {train_loss / (batch_idx + 1):.4f}", flush=True)
             # Optionally print gradients for debugging
@@ -238,6 +368,9 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
         train_loss = train_loss / len(trainLoader)
         train_accuracy = train_accuracy / len(trainLoader)
         print(f'Epoch {epoch+1} - Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}', flush=True)
+        
+        # Print timing summary for this epoch (only if profiling is enabled)
+        global_timer.print_summary(f"Epoch {epoch+1} Timing Summary (Training)")
         
         # Validation phase
         imageEmbedding.eval()
@@ -272,6 +405,14 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
         val_accuracy = val_accuracy / len(validLoader)
         print(f'Epoch {epoch+1} - Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.4f}', flush=True)
         
+        # Calculate and print epoch duration
+        epoch_end_time = time.time()
+        epoch_duration = epoch_end_time - epoch_start_time
+        epoch_minutes = int(epoch_duration // 60)
+        epoch_seconds = epoch_duration % 60
+        print(f'Epoch {epoch+1} completed in {epoch_minutes}m {epoch_seconds:.2f}s', flush=True)
+        print('=' * 60, flush=True)
+        
         # Log train and validation losses and accuracies to wandb
         if debug_wandb:
             update_wandb(
@@ -294,11 +435,17 @@ if __name__ == '__main__':
     stride = max(1, int(window_size * stride_ratio))
     print(f"Using window_size={window_size}, stride={stride} ({int((1-stride_ratio)*100)}% overlap)")
 
+    # Initialize TextEmbedding FIRST (needed for space token in image embedding)
+    # Text embeddings are context-free: same letter = same embedding (Label-Aware design)
+    textEmbedding = TextEmbedding(embedding_dim=vector_size, include_spaces=include_spaces)
+    textEmbedding = textEmbedding.to(device)
+    # create the space token vector (detach to avoid graph retention across batches)
+    space_vector = textEmbedding(' ').detach()
+
     imageEmbedding = EmbeddingModel(
         window_size=window_size,
         stride=stride,  # Now uses calculated overlap stride
         vector_size=vector_size,
-        model_arch=model_arch,
         device=device,
         # OPTIMIZATION 1 & 3: Enable BiLSTM and Positional Encoding
         use_bilstm=use_bilstm,
@@ -308,12 +455,9 @@ if __name__ == '__main__':
         dropout=model_dropout,
         # OPTIMIZATION 5: Space Gate for black patch detection
         use_space_gate=use_space_gate,
-        space_threshold=space_threshold
+        space_threshold=space_threshold,
+        space_vector=space_vector
     )
-
-    # Initialize TextEmbedding with space token support
-    # Text embeddings are context-free: same letter = same embedding (Label-Aware design)
-    textEmbedding = TextEmbedding(embedding_dim=vector_size, include_spaces=include_spaces)
 
     if show_gradients:
         for param in imageEmbedding.parameters():
