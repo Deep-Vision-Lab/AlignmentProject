@@ -96,16 +96,16 @@ class ContrastiveSoftDTW(nn.Module):
         return dtw_costs  # [B]
     
     def forward(self, img_txt_sim1, img_txt_sim2, final_pred=None, target=None, 
-                mse_weight=1.0, dtw_weight=0.5):
+                cs_weight=1.0, dtw_weight=0.5):
         """
         Compute combined loss using pre-computed similarity matrices.
         
         Args:
             img_txt_sim1 (torch.Tensor): Similarity matrix between text1 and image1 [B, N_txt, N_img]
             img_txt_sim2 (torch.Tensor): Similarity matrix between text2 and image2 [B, M_txt, M_img]
-            final_pred (torch.Tensor, optional): Final predicted similarity matrix for MSE [B, H, W]
-            target (torch.Tensor, optional): Ground truth similarity matrix for MSE [B, H, W]
-            mse_weight (float): Weight for MSE reconstruction loss
+            final_pred (torch.Tensor, optional): Final predicted similarity matrix for Cross-Entropy [B, H, W]
+            target (torch.Tensor, optional): Ground truth similarity matrix for Cross-Entropy [B, H, W]
+            cs_weight (float): Weight for Cross-Entropy reconstruction loss
             dtw_weight (float): Weight for DTW alignment loss
         
         Returns:
@@ -144,20 +144,20 @@ class ContrastiveSoftDTW(nn.Module):
             avg_alignment_score = (alignment_score1 + alignment_score2) / 2.0
         
         # ====================================================================
-        # Step 3: MSE loss on final similarity matrix
+        # Step 3: Cross-Entropy loss on final similarity matrix
         # ====================================================================
         if final_pred is not None and target is not None:
-            mse_loss = F.mse_loss(final_pred, target)
+            cs_loss = F.cross_entropy(final_pred, target)
         else:
-            mse_loss = torch.tensor(0.0, device=device)
+            cs_loss = torch.tensor(0.0, device=device)
         
         # ====================================================================
-        # Combined Loss: MSE + DTW
+        # Combined Loss: Cross-Entropy + DTW
         # ====================================================================
-        total_loss = mse_weight * mse_loss + dtw_weight * dtw_loss
+        total_loss = cs_weight * cs_loss + dtw_weight * dtw_loss
         
         loss_dict = {
-            'mse': mse_loss.item() if torch.is_tensor(mse_loss) else mse_loss,
+            'cross_entropy': cs_loss.item() if torch.is_tensor(cs_loss) else cs_loss,
             'dtw': dtw_loss.item(),
             'dtw1': dtw_loss1.item(),
             'dtw2': dtw_loss2.item(),

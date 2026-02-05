@@ -32,8 +32,9 @@ class TextEmbedding(nn.Module):
         # Initialize the SPACE token embedding to a distinct learned vector
         # This will be matched against black patches in images
         with torch.no_grad():
-            # Initialize space embedding to zeros (neutral) - will be learned
-            self.embedding.weight[self.SPACE_TOKEN_IDX] = torch.zeros(embedding_dim)
+            # Initialize space embedding to small random values so it has a direction
+            # that can be learned and normalized (zeros would cause NaN after L2 norm)
+            self.embedding.weight[self.SPACE_TOKEN_IDX].normal_(0, 0.02)
             # Initialize padding to zeros
             self.embedding.weight[self.PAD_TOKEN_IDX] = torch.zeros(embedding_dim)
     
