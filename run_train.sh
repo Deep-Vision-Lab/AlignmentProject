@@ -9,10 +9,8 @@ echo "====================================="
 
 # Extract loss_type and model_arch from Parameters.py
 LOSS_TYPE=$(python3 -c "import Parameters; print(Parameters.loss_type)")
-MODEL_ARCH=$(python3 -c "import Parameters; print(Parameters.model_arch)")
 
 echo "Loss Type: ${LOSS_TYPE}"
-echo "Model Architecture: ${MODEL_ARCH}"
 echo ""
 
 # Check if debug mode is enabled
@@ -24,7 +22,7 @@ if [ "${DEBUG_MODE}" = "True" ]; then
     echo "====================================="
 
     # Run clean_dirs_train.sh
-    bash ./Clean/clean_dirs_train.sh "${LOSS_TYPE}" "${MODEL_ARCH}"
+    bash ./Clean/clean_dirs_train.sh "${LOSS_TYPE}"
 
     echo ""
     echo "====================================="
@@ -32,7 +30,7 @@ if [ "${DEBUG_MODE}" = "True" ]; then
     echo "====================================="
 
     # Run clean_weights.sh
-    bash ./Clean/clean_weights.sh "${LOSS_TYPE}" "${MODEL_ARCH}"
+    bash ./Clean/clean_weights.sh "${LOSS_TYPE}"
 
     echo ""
     echo "Cleaning completed!"

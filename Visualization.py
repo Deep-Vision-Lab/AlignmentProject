@@ -185,7 +185,6 @@ def saveWindowsAsGrid(windows, output_path, title="Windows Grid", cols=8):
 
 
 def save_debug_visualizations(model, text1, text2, image1, image2,
-                            TextSimilarGT, TextSimilarPred,
                             Similar_TxtImg1, Similar_TxtImg2,
                             epoch):
     # Prepare directories for saving visualizations
@@ -223,8 +222,6 @@ def save_debug_visualizations(model, text1, text2, image1, image2,
     # Clone tensors for visualization to avoid affecting gradients
     debug_image1 = image1.detach().cpu()
     debug_image2 = image2.detach().cpu()
-    debug_NWTextGT = TextSimilarGT.detach().cpu()
-    debug_diffNWPred = TextSimilarPred.detach().cpu()
     debug_Similar_TxtImg1 = Similar_TxtImg1.detach().cpu()
     debug_Similar_TxtImg2 = Similar_TxtImg2.detach().cpu()
 
@@ -233,12 +230,10 @@ def save_debug_visualizations(model, text1, text2, image1, image2,
         text1, text2,
         debug_image1, debug_image2,
         similar_IMGTXT_epoch_dir,
-        debug_diffNWPred, debug_NWTextGT,
         debug_Similar_TxtImg1, debug_Similar_TxtImg2,
     )
 
     del debug_image1, debug_image2
-    del debug_diffNWPred, debug_NWTextGT
     del similar_IMGTXT_epoch_dir
     del debug_Similar_TxtImg1, debug_Similar_TxtImg2
 
@@ -247,7 +242,6 @@ def save_debug_visualizations(model, text1, text2, image1, image2,
 
 def saveHeatmapPlots(text1, text2, image1, image2, 
                     similarity_epoch_dir,
-                    debug_similarTextPred, debug_similarTextGT, 
                     debug_Similar_TxtImg1, debug_Similar_TxtImg2):
     
     for i in range(image1.size(0)): # Iterate through items in the current batch
@@ -316,32 +310,6 @@ def saveHeatmapPlots(text1, text2, image1, image2,
             cur_patches_y=x_text_sim2, # Corrected to Text2
             cur_patches_x=x_image
         )
-
-        # Select labels for Text-Text Similarity matrices
-        # debug_similarTextPred is [Text1, Text2]
-        pred_h, pred_w = debug_similarTextPred[i].shape
-        y_text_pred = get_labels(pred_h, y_text_full, y_text_stripped)
-        x_text_pred = get_labels(pred_w, x_text_full, x_text_stripped)
-
-        gt_h, gt_w = debug_similarTextGT[i].shape
-        y_text_gt = get_labels(gt_h, y_text_full, y_text_stripped)
-        x_text_gt = get_labels(gt_w, x_text_full, x_text_stripped)
-
-        VisualizeMatrixWithAxis(
-            matrix_data=debug_similarTextPred[i],
-            image_path=f"{similarity_dir_per_batch}/Txt1_Txt2_Similarity_Predicted.png",
-            title="Predicted Similarity Heatmap",
-            cur_patches_y=y_text_pred,
-            cur_patches_x=x_text_pred
-        )
-        VisualizeMatrixWithAxis(
-            matrix_data=debug_similarTextGT[i],
-            image_path=f"{similarity_dir_per_batch}/Txt1_Txt2_Similarity_GT.png",
-            title="Ground Truth Similarity Heatmap",
-            cur_patches_y=y_text_gt,
-            cur_patches_x=x_text_gt
-        )
-
 
         del windows_img1, windows_img2, y_image, x_image
         del image1_i, image2_i

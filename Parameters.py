@@ -3,7 +3,7 @@ import torch
 # Model parameters
 loss_type = 'ContrastiveSoftDTW'  # ['MSE', 'ContrastiveSoftDTW']
 model_arch = 'CNN' # ['CNN-Transformer', 'CNN', 'dinov2', 'Transformer']
-normalize_type = 'average' # ['min_max', 'mean_std', 'average']
+normalize_type = 'mean_std' # ['min_max', 'mean_std', 'average']
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Training parameters
@@ -42,7 +42,7 @@ bilstm_layers = 2
 # ============================================================================
 # When enabled, black patches (spaces between words) are detected and mapped
 # to a special <SPACE> embedding instead of being processed by CNN.
-use_space_gate = True           # Enable black patch detection gate
+use_space_gate = False           # Enable black patch detection gate
 space_threshold = 0.03          # Patches with mean pixel intensity < threshold are "space"
 include_spaces = True           # Include space characters in text embeddings
 
@@ -54,9 +54,7 @@ include_spaces = True           # Include space characters in text embeddings
 # Uses CUDA-accelerated Soft-DTW from soft-dtw-cuda.py
 # All contrastive logic is inside the loss function - no special training loop needed
 contrastive_soft_dtw_gamma = 0.001            # Soft-DTW smoothing (gamma -> 0: hard DTW, gamma -> inf: average)
-contrastive_soft_dtw_temperature = 0.05      # InfoNCE temperature (lower = sharper distinction between pairs)
-contrastive_soft_dtw_mse_weight = 1.0       # Weight for MSE reconstruction loss
-contrastive_soft_dtw_contrastive_weight = 0.5  # Weight for contrastive DTW loss
+contrastive_soft_dtw_temperature = 0.05      # InfoBCE temperature (lower = sharper distinction between pairs)
 # Note: Normalization is disabled because image and text have different sequence lengths
 
 # Dropout for regularization
