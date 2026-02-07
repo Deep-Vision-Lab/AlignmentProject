@@ -205,19 +205,23 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1
                                       
     # ==================== PHASE 4: Similarity Matrix (BMM) ====================
     timer.start('5_bmm_img_txt_similarity')
-    img1_txt1_similarity = torch.bmm(normalized_text1, normalized_tokens_a.transpose(1, 2))
-    img2_txt2_similarity = torch.bmm(normalized_text2, normalized_tokens_b.transpose(1, 2))
+    similarity_1_1 = torch.bmm(normalized_text1, normalized_tokens_a.transpose(1, 2)) # Match
+    similarity_2_2 = torch.bmm(normalized_text2, normalized_tokens_b.transpose(1, 2)) # Match
+    similarity_1_2 = torch.bmm(normalized_text1, normalized_tokens_b.transpose(1, 2)) # Mismatch
+    similarity_2_1 = torch.bmm(normalized_text2, normalized_tokens_a.transpose(1, 2)) # Mismatch
     timer.stop('5_bmm_img_txt_similarity')
 
     timer.start('6_normalize_similarity')
-    normalized_img1_txt1_similarity = F.normalize(img1_txt1_similarity, p=2, dim=-1)
-    normalized_img2_txt2_similarity = F.normalize(img2_txt2_similarity, p=2, dim=-1)
+    normalized_img1_txt1_similarity = F.normalize(similarity_1_1, p=2, dim=-1)
+    normalized_img2_txt2_similarity = F.normalize(similarity_2_2, p=2, dim=-1)
+    normalized_img1_txt2_similarity = F.normalize(similarity_1_2, p=2, dim=-1)
+    normalized_img2_txt1_similarity = F.normalize(similarity_2_1, p=2, dim=-1)
     timer.stop('6_normalize_similarity')
     
-    # ==================== PHASE 5: Final Score Matrix Multiplication ====================
-    timer.start('7_bmm_final_similarity')
-    txt1_txt2_similar = torch.bmm(normalized_img1_txt1_similarity, normalized_img2_txt2_similarity.transpose(1, 2))
-    timer.stop('7_bmm_final_similarity')
+    # # ==================== PHASE 5: Final Score Matrix Multiplication ====================
+    # timer.start('7_bmm_final_similarity')
+    # txt1_txt2_similar = torch.bmm(normalized_img1_txt1_similarity, normalized_img2_txt2_similarity.transpose(1, 2))
+    # timer.stop('7_bmm_final_similarity')
     
 #---------------------------------------------------------------------------------------------------------
     
@@ -228,21 +232,13 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1
         # img1_txt1_similarity: [B, N_txt, N_img] - similarity between text1 and image1
         # DTW encourages alignment structure (staircase pattern)
         loss, loss_dict = criterion(
-            img_txt_sim1=img1_txt1_similarity,           # Similarity matrix for pair 1
-            img_txt_sim2=img2_txt2_similarity,           # Similarity matrix for pair 2
-            final_pred=txt1_txt2_similar,                # Final prediction for CS
-            target=txt1_txt2_similar_GT                  # Ground truth for CS
+            normalized_img1_txt1_similarity,
+            normalized_img2_txt2_similarity,
+            normalized_img1_txt2_similarity,
+            normalized_img2_txt1_similarity
         )
 
         loss_value = loss_dict['total']
-    elif loss_type == 'CrossEntropy':
-        # Simple Cross-Entropy loss
-        loss = criterion(txt1_txt2_similar, txt1_txt2_similar_GT)
-        loss_value = loss.item()
-    else:
-        # Default: try calling criterion directly
-        loss = criterion(txt1_txt2_similar, txt1_txt2_similar_GT)
-        loss_value = loss.item() if hasattr(loss, 'item') else loss
     timer.stop('8_loss_computation')
     
     ######################################################################################################################################
@@ -257,13 +253,11 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1
         image1_subset = image1[:min(2, image1.size(0))]
         image2_subset = image2[:min(2, image2.size(0))]
         TextSimilarGT_subset = txt1_txt2_similar_GT[:min(2, txt1_txt2_similar_GT.size(0))]
-        txt1_txt2_similar_subset = txt1_txt2_similar[:min(2, txt1_txt2_similar.size(0))]
         similar_TxtImg1 = normalized_img1_txt1_similarity[:min(2, normalized_img1_txt1_similarity.size(0))]
         similar_TxtImg2 = normalized_img2_txt2_similarity[:min(2, normalized_img2_txt2_similarity.size(0))]
         save_debug_visualizations(
             imageEmbed, 
             text1_subset, text2_subset, image1_subset, image2_subset,
-            TextSimilarGT_subset, txt1_txt2_similar_subset,
             similar_TxtImg1, similar_TxtImg2,
             epoch
         )
@@ -279,7 +273,7 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1
     del flip_tokens_a, flip_tokens_b
     torch.cuda.empty_cache()
     
-    return loss, loss_value, txt1_txt2_similar_GT, txt1_txt2_similar
+    return loss, loss_value
 
 
 
@@ -329,16 +323,12 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
             optimizer.zero_grad()
   
             # Compute loss using shared function (timing is inside)
-            path_loss, loss_value, NWTextFinal, NWImageFinal = compute_batch_loss(
+            path_loss, loss_value = compute_batch_loss(
                 imageEmbedding, textEmbedding, text1, text2, image1, image2, 
                 textSimilar, criterion,
                 epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader),
                 debug=debug, timer=global_timer
             )
-            
-            # Compute accuracy
-            batch_accuracy = compute_accuracy(NWImageFinal, NWTextFinal)
-            train_accuracy += batch_accuracy
             
 
             train_loss += loss_value
@@ -361,7 +351,6 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
             # Final cleanup
             del path_loss
             del image1, image2
-            del NWTextFinal, NWImageFinal
             torch.cuda.empty_cache()
 
         print(f"Epoch {epoch+1} completed. Average Loss: {train_loss / len(trainLoader):.4f}", flush=True)
@@ -384,17 +373,12 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
                 textSimilar = textSimilar.to(device)
                 
                 # Compute loss using shared function
-                _, loss_value, NWTextFinal, NWImageFinal = compute_batch_loss(
+                _, loss_value = compute_batch_loss(
                     imageEmbedding, textEmbedding,
                     text1, text2, image1, image2, 
                     textSimilar, criterion
                 )
                 
-                # Compute accuracy
-                batch_accuracy = compute_accuracy(NWImageFinal, NWTextFinal)
-                val_accuracy += batch_accuracy
-                
-                del NWTextFinal, NWImageFinal
                 val_loss += loss_value
 
                 # Final cleanup
