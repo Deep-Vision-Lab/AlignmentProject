@@ -328,6 +328,24 @@ class SoftDTW(torch.nn.Module):
         y = y.unsqueeze(1).expand(-1, n, m, d)
         return torch.pow(x - y, 2).sum(3)
 
+    @staticmethod
+    def _cosine_dist_func(x, y):
+        """
+        Calculates the cosine distance (1 - cosine_similarity) between each element in x and y per timestep.
+        Cosine distance ranges from 0 (identical) to 2 (opposite).
+        """
+        # Normalize along the feature dimension
+        x_norm = x / (x.norm(dim=2, keepdim=True) + 1e-8)
+        y_norm = y / (y.norm(dim=2, keepdim=True) + 1e-8)
+        
+        # Compute cosine similarity matrix: [batch, n, m]
+        # x_norm: [batch, n, d], y_norm: [batch, m, d]
+        cosine_sim = torch.bmm(x_norm, y_norm.transpose(1, 2))
+        
+        # Convert to distance (1 - similarity), so 0 = identical, 2 = opposite
+        return 1.0 - cosine_sim
+
+
     def forward(self, X, Y):
         """
         Compute the soft-DTW value between X and Y

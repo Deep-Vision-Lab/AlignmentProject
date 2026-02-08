@@ -1,16 +1,23 @@
 #!/bin/bash
 
 # Script to clean directories and run training
-# Reads parameters from Parameters.py
+# Usage: ./run_train.sh <loss_type> <job_id>
+
+# Check if both parameters are provided
+if [ -z "$1" ] || [ -z "$2" ]; then
+    echo "Error: loss_type and job_id are required"
+    echo "Usage: ./run_train.sh <loss_type> <job_id>"
+    exit 1
+fi
+
+LOSS_TYPE=$1
+JOB_ID=$2
 
 echo "====================================="
-echo "Reading parameters from Parameters.py"
+echo "Parameters"
 echo "====================================="
-
-# Extract loss_type and model_arch from Parameters.py
-LOSS_TYPE=$(python3 -c "import Parameters; print(Parameters.loss_type)")
-
 echo "Loss Type: ${LOSS_TYPE}"
+echo "Job ID: ${JOB_ID}"
 echo ""
 
 # Check if debug mode is enabled
@@ -44,8 +51,8 @@ echo "Starting training..."
 echo "====================================="
 echo ""
 
-# Run the training script
-python3 train.py
+# Run the training script with job_id
+python3 train.py --job_id "${JOB_ID}"
 
 echo ""
 echo "====================================="
