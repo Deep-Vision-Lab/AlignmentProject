@@ -1,17 +1,13 @@
 #!/bin/bash
 
 # Script to clean directories and run training
-# Usage: ./run_train.sh <loss_type> <job_id>
+# Usage: ./run_train.sh [job_id]
+# If job_id is not provided, defaults to "localRun"
 
-# Check if both parameters are provided
-if [ -z "$1" ] || [ -z "$2" ]; then
-    echo "Error: loss_type and job_id are required"
-    echo "Usage: ./run_train.sh <loss_type> <job_id>"
-    exit 1
-fi
+JOB_ID=${1:-localRun}
 
-LOSS_TYPE=$1
-JOB_ID=$2
+# Extract loss_type from Parameters.py
+LOSS_TYPE=$(python3 -c "import Parameters; print(Parameters.loss_type)")
 
 echo "====================================="
 echo "Parameters"

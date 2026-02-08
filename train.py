@@ -154,7 +154,7 @@ def compute_accuracy(pred_path, target_path, threshold=0.5):
 
 
 def save_model_weights(model, epoch, job_id):
-    weights_dir = os.path.join(os.path.dirname(__file__), "Weights", job_id)
+    weights_dir = os.path.join(os.path.dirname(__file__), "Weights", loss_type, job_id)
     os.makedirs(weights_dir, exist_ok=True)
     weights_path = os.path.join(weights_dir, f"model_epoch_{epoch}.pth")
     torch.save(model.state_dict(), weights_path)
@@ -204,10 +204,10 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1
 
     # ==================== PHASE 3: Normalization ====================
     timer.start('4_normalization')
-    normalized_text1 = F.normalize(embedded_text1, p=2, dim=-1)  # Shape: (batch_size, seq_len, embedding_dim)
-    normalized_text2 = F.normalize(embedded_text2, p=2, dim=-1)  # Shape: (batch_size, seq_len, embedding_dim)
-    normalized_tokens_a = F.normalize(flip_tokens_a, p=2, dim=-1)  # Shape: (batch_size, seq_len, vector_size)
-    normalized_tokens_b = F.normalize(flip_tokens_b, p=2, dim=-1)
+    normalized_text1 = normalize_func(embedded_text1)  # Shape: (batch_size, seq_len, embedding_dim)
+    normalized_text2 = normalize_func(embedded_text2)  # Shape: (batch_size, seq_len, embedding_dim)
+    normalized_tokens_a = normalize_func(flip_tokens_a)  # Shape: (batch_size, seq_len, vector_size)
+    normalized_tokens_b = normalize_func(flip_tokens_b)
     timer.stop('4_normalization')
                                       
     # ==================== PHASE 4: Similarity Matrix (BMM) ====================
@@ -217,13 +217,6 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1
     similarity_1_2 = torch.bmm(normalized_text1, normalized_tokens_b.transpose(1, 2)) # Mismatch
     similarity_2_1 = torch.bmm(normalized_text2, normalized_tokens_a.transpose(1, 2)) # Mismatch
     timer.stop('5_bmm_img_txt_similarity')
-
-    timer.start('6_normalize_similarity')
-    normalized_img1_txt1_similarity = F.normalize(similarity_1_1, p=2, dim=-1)
-    normalized_img2_txt2_similarity = F.normalize(similarity_2_2, p=2, dim=-1)
-    normalized_img1_txt2_similarity = F.normalize(similarity_1_2, p=2, dim=-1)
-    normalized_img2_txt1_similarity = F.normalize(similarity_2_1, p=2, dim=-1)
-    timer.stop('6_normalize_similarity')
     
     # # ==================== PHASE 5: Final Score Matrix Multiplication ====================
     # timer.start('7_bmm_final_similarity')
@@ -233,26 +226,21 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1
 #---------------------------------------------------------------------------------------------------------
     
     # ==================== PHASE 6: Loss Computation ====================
-    timer.start('8_loss_computation')
-    if loss_type == 'ContrastiveSoftDTW':
-        # Contrastive Soft-DTW: uses pre-computed similarity matrices
-        # img1_txt1_similarity: [B, N_txt, N_img] - similarity between text1 and image1
-        # DTW encourages alignment structure (staircase pattern)
-        loss, loss_dict = criterion(
-            normalized_img1_txt1_similarity,
-            normalized_img2_txt2_similarity,
-            normalized_img1_txt2_similarity,
-            normalized_img2_txt1_similarity
-        )
-
-        loss_value = loss_dict['total']
-    timer.stop('8_loss_computation')
+    timer.start('7_loss_computation')
+    loss, loss_dict = criterion(
+        similarity_1_1,
+        similarity_2_2,
+        similarity_1_2,
+        similarity_2_1
+    )
+    loss_value = loss_dict['total']
+    timer.stop('7_loss_computation')
     
     ######################################################################################################################################
     # Debugging: Save visualizations for the last batch every 10 epochs
     if debug and batch_idx == 0 and epoch % 10 == 0:
-        debug_imgText1 = normalized_img1_txt1_similarity
-        debug_imgText2 = normalized_img2_txt2_similarity
+        debug_imgText1 = similarity_1_1
+        debug_imgText2 = similarity_2_2
 
         # indexing only the first 2 samples in the batch for visualization
         text1_subset = [text1[i] for i in range(min(2, len(text1)))]
@@ -260,8 +248,8 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1
         image1_subset = image1[:min(2, image1.size(0))]
         image2_subset = image2[:min(2, image2.size(0))]
         TextSimilarGT_subset = txt1_txt2_similar_GT[:min(2, txt1_txt2_similar_GT.size(0))]
-        similar_TxtImg1 = normalized_img1_txt1_similarity[:min(2, normalized_img1_txt1_similarity.size(0))]
-        similar_TxtImg2 = normalized_img2_txt2_similarity[:min(2, normalized_img2_txt2_similarity.size(0))]
+        similar_TxtImg1 = similarity_1_1[:min(2, similarity_1_1.size(0))]
+        similar_TxtImg2 = similarity_2_2[:min(2, similarity_2_2.size(0))]
         save_debug_visualizations(
             imageEmbed, 
             text1_subset, text2_subset, image1_subset, image2_subset,

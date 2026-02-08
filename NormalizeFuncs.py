@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-
+import Parameters as params
 
 
 
@@ -32,28 +32,6 @@ def smooth_path(mask, kernel_size=5, sigma=1):
 
     return smoothed_mask.squeeze(1)
 
-
-
-def normalize_func(matrix, normalize_type):
-    """
-    Optionally smooth and normalize the alignment output tensor.
-    Args:
-        matrix (torch.Tensor): The alignment output tensor.
-        normalize_type (str): Normalization type: 'min_max', 'mean_std', or ''.
-    Returns:
-        torch.Tensor: Smoothed and normalized alignment output.
-    """
-    # matrix = smooth_path(matrix)
-    if normalize_type == 'min_max':
-        matrix = min_max_normalize(matrix)
-    elif normalize_type == 'mean_std':
-        matrix = mean_std_normalize(matrix)
-    elif normalize_type == 'average':
-        matrix = average_normalize(matrix)
-    return matrix
-
-
-
 def min_max_normalize(tensor):
     """
     Min-max normalize the input tensor to the range [0, 1].
@@ -63,8 +41,8 @@ def min_max_normalize(tensor):
     Returns:
         torch.Tensor: Min-max normalized tensor.
     """
-    tensor_min = tensor.amin(dim=(-2, -1), keepdim=True)
-    tensor_max = tensor.amax(dim=(-2, -1), keepdim=True)
+    tensor_min = tensor.amin(dim=(-1), keepdim=True)
+    tensor_max = tensor.amax(dim=(-1), keepdim=True)
     normalized_tensor = (tensor - tensor_min) / (tensor_max - tensor_min + 1e-8)
     return normalized_tensor
 
@@ -79,8 +57,8 @@ def mean_std_normalize(tensor):
     Returns:
         torch.Tensor: Standard score normalized tensor.
     """
-    tensor_mean = tensor.mean(dim=(-2, -1), keepdim=True)
-    tensor_std = tensor.std(dim=(-2, -1), keepdim=True)
+    tensor_mean = tensor.mean(dim=(-1), keepdim=True)
+    tensor_std = tensor.std(dim=(-1), keepdim=True)
     normalized_tensor = (tensor - tensor_mean) / (tensor_std + 1e-8)
     return normalized_tensor
 
@@ -95,10 +73,34 @@ def average_normalize(tensor, eps=1e-8):
     Returns:
         torch.Tensor: Average normalized tensor.
     """
-    tensor_sum = tensor.sum(dim=(1, 2), keepdim=True)
+    tensor_sum = tensor.sum(dim=(-1), keepdim=True)
     normalized_tensor = tensor / (tensor_sum + eps)
     return normalized_tensor
 
+def l2_normalize(tensor):
+    # Normalize along the feature dimension (dim=-1)
+    return F.normalize(tensor, p=2, dim=-1)
+
+
+def normalize_func(matrix):
+    """
+    Optionally smooth and normalize the alignment output tensor.
+    Args:
+        matrix (torch.Tensor): The alignment output tensor.
+        normalize_type (str): Normalization type: 'min_max', 'mean_std', 'average', or 'l2'.
+    Returns:
+        torch.Tensor: Smoothed and normalized alignment output.
+    """
+    # matrix = smooth_path(matrix)
+    if params.normalize_type == 'min_max':
+        matrix = min_max_normalize(matrix)
+    elif params.normalize_type == 'mean_std':
+        matrix = mean_std_normalize(matrix)
+    elif params.normalize_type == 'average':
+        matrix = average_normalize(matrix)
+    elif params.normalize_type == 'l2':
+        matrix = l2_normalize(matrix)
+    return matrix
 
 
 

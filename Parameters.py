@@ -3,7 +3,7 @@ import torch
 # Model parameters
 loss_type = 'ContrastiveSoftDTW'  # ['MSE', 'ContrastiveSoftDTW']
 model_arch = 'CNN' # ['CNN-Transformer', 'CNN', 'dinov2', 'Transformer']
-normalize_type = 'mean_std' # ['min_max', 'mean_std', 'average']
+normalize_type = 'min_max' # ['min_max', 'mean_std', 'average', 'l2']
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Training parameters

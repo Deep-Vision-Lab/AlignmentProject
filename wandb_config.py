@@ -38,8 +38,8 @@ def upload_artifacts_to_wandb(job_id, epoch):
     """
     global _weights_artifact, _results_artifact
     
-    weights_dir = os.path.join(os.path.dirname(__file__), "Weights", job_id)
-    results_dir = os.path.join(os.path.dirname(__file__), "TrainResults", job_id)
+    weights_dir = os.path.join(os.path.dirname(__file__), "Weights", loss_type, job_id)
+    results_dir = os.path.join(os.path.dirname(__file__), "TrainResults", loss_type, job_id)
     
     # Upload weights artifact (update existing)
     if os.path.exists(weights_dir):
