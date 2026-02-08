@@ -23,8 +23,15 @@ import gc
 import time
 import wandb
 import warnings
+import argparse
 
-from wandb_config import init_wandb, update_wandb
+# Parse command line arguments
+parser = argparse.ArgumentParser(description='Train the alignment model')
+parser.add_argument('--job_id', type=str, required=True, help='Job ID for saving results')
+args = parser.parse_args()
+job_id = args.job_id
+
+from wandb_config import init_wandb, update_wandb, upload_artifacts_to_wandb
 
 warnings.filterwarnings("ignore")
 
@@ -146,8 +153,8 @@ def compute_accuracy(pred_path, target_path, threshold=0.5):
     return accuracy
 
 
-def save_model_weights(model, epoch):
-    weights_dir = os.path.join(os.path.dirname(__file__), "Weights", loss_type, model_arch)
+def save_model_weights(model, epoch, job_id):
+    weights_dir = os.path.join(os.path.dirname(__file__), "Weights", job_id)
     os.makedirs(weights_dir, exist_ok=True)
     weights_path = os.path.join(weights_dir, f"model_epoch_{epoch}.pth")
     torch.save(model.state_dict(), weights_path)
@@ -259,12 +266,13 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1
             imageEmbed, 
             text1_subset, text2_subset, image1_subset, image2_subset,
             similar_TxtImg1, similar_TxtImg2,
-            epoch
+            epoch,
+            job_id
         )
         
         del debug_imgText1, debug_imgText2
         # Save model weights
-        save_model_weights(imageEmbed, epoch)
+        save_model_weights(imageEmbed, epoch, job_id)
 
     ######################################################################################################################################
 
@@ -405,6 +413,9 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
                 train_accuracy, 
                 val_accuracy
             )
+            # Upload artifacts every 10 epochs
+            if epoch % 10 == 0:
+                upload_artifacts_to_wandb(job_id, epoch)
         loss_lst.append(train_loss)
 
     return loss_lst
