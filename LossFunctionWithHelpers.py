@@ -44,11 +44,16 @@ class ContrastiveSoftDTW(nn.Module):
         self.temperature = temperature
         self.use_cuda = use_cuda
         self.bandwidth = bandwidth
-        self.BCE_loss = nn.BCEWithLogitsLoss()
         
         # Initialize the CUDA-accelerated Soft-DTW function
         # IMPORTANT: normalize=False because image and text sequences have different lengths
-        self.dtw_func = soft_dtw_cuda.SoftDTW(use_cuda=use_cuda, gamma=gamma, normalize=False, bandwidth=bandwidth)
+        self.dtw_func = soft_dtw_cuda.SoftDTW(
+            use_cuda=use_cuda, 
+            gamma=gamma, 
+            normalize=False, 
+            bandwidth=bandwidth,
+            dist_func=soft_dtw_cuda.SoftDTW._cosine_dist_func
+        )
     
     def _compute_dtw_on_similarity(self, sim_matrix: "torch.Tensor") -> "torch.Tensor":
         """

@@ -188,7 +188,7 @@ def save_debug_visualizations(model, text1, text2, image1, image2,
                             Similar_TxtImg1, Similar_TxtImg2,
                             epoch, job_id):
     # Prepare directories for saving visualizations
-    job_dir = f'TrainResults/{job_id}'
+    job_dir = f'TrainResults/{loss_type}/{job_id}'
     os.makedirs(job_dir, exist_ok=True)
     
     # saving image1 and image2.
@@ -201,20 +201,20 @@ def save_debug_visualizations(model, text1, text2, image1, image2,
         saveImageTensorAsPNG(image2[i], f'{lines_dir_per_item}/Image2.png')
         
         # Save sliding windows for image1 and image2
-        saveSlidingWindowsWithOverlap(
-            image=image1[i],
-            output_path=f'{lines_dir_per_item}/Image1_SlidingWindows.png',
-            window_size=model.window_size,
-            title="Image1 Sliding Windows (Half Overlap)",
-            cols=8
-        )
-        saveSlidingWindowsWithOverlap(
-            image=image2[i],
-            output_path=f'{lines_dir_per_item}/Image2_SlidingWindows.png',
-            window_size=model.window_size,
-            title="Image2 Sliding Windows (Half Overlap)",
-            cols=8
-        )
+        # saveSlidingWindowsWithOverlap(
+        #     image=image1[i],
+        #     output_path=f'{lines_dir_per_item}/Image1_SlidingWindows.png',
+        #     window_size=model.window_size,
+        #     title="Image1 Sliding Windows (Half Overlap)",
+        #     cols=8
+        # )
+        # saveSlidingWindowsWithOverlap(
+        #     image=image2[i],
+        #     output_path=f'{lines_dir_per_item}/Image2_SlidingWindows.png',
+        #     window_size=model.window_size,
+        #     title="Image2 Sliding Windows (Half Overlap)",
+        #     cols=8
+        # )
 
     similar_IMGTXT_epoch_dir = f'{job_dir}/similarityMatricesPerEpoch/Epoch_{epoch}'
     os.makedirs(similar_IMGTXT_epoch_dir, exist_ok=True)
