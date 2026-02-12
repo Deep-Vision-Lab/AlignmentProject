@@ -98,8 +98,8 @@ class ContrastiveSoftDTW(nn.Module):
         cost_pos_2 = self._compute_dtw_on_similarity(img_txt_sim2)
         
         # 2. NEGATIVE PAIRS (We want HIGH cost / LOW similarity)
-        cost_neg_1 = self._compute_dtw_on_similarity(text1_image2_sim)
-        cost_neg_2 = self._compute_dtw_on_similarity(text2_image1_sim)
+        cost_neg_1 = self._compute_dtw_on_similarity(text2_image1_sim)
+        cost_neg_2 = self._compute_dtw_on_similarity(text1_image2_sim)
         
         # 3. CONTRASTIVE LOSS (Triplet-style or InfoNCE)
         # "Positive cost should be lower than Negative cost by at least 'margin'"

@@ -229,7 +229,7 @@ def calculate_conv_output_size(input_size, kernel_size, stride, padding):
 
 class EmbeddingModel(nn.Module):
     def __init__(self, window_size=128, stride=64, vector_size=512,
-                  device='cuda', use_bilstm=True, use_positional_encoding=True, 
+                  device='cuda', use_flip=True ,use_bilstm=True, use_positional_encoding=True, 
                   positional_encoding_type='learnable', bilstm_layers=2, dropout=0.1,
                   use_space_gate=True, space_threshold=0.05,
                   space_vector=None):
@@ -258,6 +258,7 @@ class EmbeddingModel(nn.Module):
         # ============================================================================
         # SPACE GATE: Detect black patches and inject space embedding from text model
         # ============================================================================
+        self.use_flip = use_flip
         self.use_space_gate = use_space_gate
         self.space_threshold = space_threshold  # Patches with mean pixel < threshold are "space"
         self.space_vector = space_vector  # Embedding vector for space character from text model
@@ -395,16 +396,22 @@ class EmbeddingModel(nn.Module):
         
         batches_num, windows_num = tokens_a.shape[:2]
         
+        if self.use_flip:
+            # Flip tokens to have shape [B, num_patches, C, H, W] for CNN processing
+            tokens_a = torch.flip(tokens_a, dims=[1])
+            tokens_b = torch.flip(tokens_b, dims=[1])
+
         # ==================== PHASE: Space Gate Detection ====================
-        t.start('img_1b_space_detection')
-        self.is_black_a = self.detect_black_patches(tokens_a) if self.use_space_gate else None
-        self.is_black_b = self.detect_black_patches(tokens_b) if self.use_space_gate else None
-        t.stop('img_1b_space_detection')
+        if self.use_space_gate:
+            t.start('img_1b_space_detection')
+            self.is_black_a = self.detect_black_patches(tokens_a) if self.use_space_gate else None
+            self.is_black_b = self.detect_black_patches(tokens_b) if self.use_space_gate else None
+            t.stop('img_1b_space_detection')
         
-        if show_dims and self.use_space_gate:
-            num_black_a = self.is_black_a.sum().item()
-            num_black_b = self.is_black_b.sum().item()
-            print(f"Black patches detected: A={num_black_a}, B={num_black_b}")
+            if show_dims:
+                num_black_a = self.is_black_a.sum().item()
+                num_black_b = self.is_black_b.sum().item()
+                print(f"Black patches detected: A={num_black_a}, B={num_black_b}")
         
         # ==================== PHASE: CNN Encoding ====================
         t.start('img_1c_cnn_encoding')
@@ -420,7 +427,7 @@ class EmbeddingModel(nn.Module):
         
         # ==================== PHASE: Space Gate Application ====================
         t.start('img_1d_space_gate_apply')
-        if self.use_space_gate:
+        if self.use_space_gate and self.space_vector is not None:
             features_vector_a = self.apply_space_gate(features_vector_a, self.is_black_a)
             features_vector_b = self.apply_space_gate(features_vector_b, self.is_black_b)
         t.stop('img_1d_space_gate_apply')
