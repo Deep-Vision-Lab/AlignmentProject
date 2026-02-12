@@ -234,7 +234,7 @@ def main():
     # Default configuration parameters
     image_path = 'DataSet/Synthetic_Arabic/images/img1_1.png'
     text_path = 'DataSet/Synthetic_Arabic/texts/text1_1.txt'
-    output_path = 'Results/patch_letter_heatmap.png'
+    output_path = 'test_scripts/Results/patch_letter_heatmap.png'
     
     # Heatmap settings
     max_patches = 50
@@ -267,12 +267,11 @@ def main():
         window_size=window_size,
         stride=window_size,
         vector_size=vector_size,
-        model_arch=model_arch,
         device=device
     ).to(device)
     
     # Load weights if available
-    weights_path = os.path.join(os.path.dirname(__file__), '..', 'Weights', loss_type, model_arch, 'model_epoch_70.pth')
+    weights_path = os.path.join(os.path.dirname(__file__), '..', 'Weights', loss_type, '14586433', 'model_epoch_130.pth')
     if os.path.exists(weights_path):
         print(f"Loading weights from {weights_path}")
         model_cnn.load_state_dict(torch.load(weights_path, map_location=device))

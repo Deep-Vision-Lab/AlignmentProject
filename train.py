@@ -191,42 +191,33 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1
     tokens_a, tokens_b = imageEmbed(image1, image2, show_dims=False, timer=timer)
     timer.stop('1_image_embedding_total')
     
-    timer.start('2_flip_tokens')
-    flip_tokens_a = torch.flip(tokens_a, dims=[-2]) # Shape: (batch_size, seq_len, vector_size)
-    flip_tokens_b = torch.flip(tokens_b, dims=[-2]) # Shape: (batch_size, seq_len, vector_size)
-    timer.stop('2_flip_tokens')
     
     # ==================== PHASE 2: Text Embedding ====================
-    timer.start('3_text_embedding')
+    timer.start('2_text_embedding')
     embedded_text1 = textEmbed(text1)  # Shape: (batch_size, seq_len, embedding_dim)
     embedded_text2 = textEmbed(text2)  # Shape: (batch_size, seq_len, embedding_dim)
-    timer.stop('3_text_embedding')
+    timer.stop('2_text_embedding')
 
     # ==================== PHASE 3: Normalization ====================
-    timer.start('4_normalization')
+    timer.start('3_normalization')
     normalized_text1 = normalize_func(embedded_text1)  # Shape: (batch_size, seq_len, embedding_dim)
     normalized_text2 = normalize_func(embedded_text2)  # Shape: (batch_size, seq_len, embedding_dim)
-    normalized_tokens_a = normalize_func(flip_tokens_a)  # Shape: (batch_size, seq_len, vector_size)
-    normalized_tokens_b = normalize_func(flip_tokens_b)
-    timer.stop('4_normalization')
+    normalized_tokens_a = normalize_func(tokens_a)  # Shape: (batch_size, seq_len, vector_size)
+    normalized_tokens_b = normalize_func(tokens_b)
+    timer.stop('3_normalization')
                                       
     # ==================== PHASE 4: Similarity Matrix (BMM) ====================
-    timer.start('5_bmm_img_txt_similarity')
-    similarity_1_1 = torch.bmm(normalized_text1, normalized_tokens_a.transpose(1, 2)) # Match
-    similarity_2_2 = torch.bmm(normalized_text2, normalized_tokens_b.transpose(1, 2)) # Match
-    similarity_1_2 = torch.bmm(normalized_text1, normalized_tokens_b.transpose(1, 2)) # Mismatch
-    similarity_2_1 = torch.bmm(normalized_text2, normalized_tokens_a.transpose(1, 2)) # Mismatch
-    timer.stop('5_bmm_img_txt_similarity')
-    
-    # # ==================== PHASE 5: Final Score Matrix Multiplication ====================
-    # timer.start('7_bmm_final_similarity')
-    # txt1_txt2_similar = torch.bmm(normalized_img1_txt1_similarity, normalized_img2_txt2_similarity.transpose(1, 2))
-    # timer.stop('7_bmm_final_similarity')
+    timer.start('4_bmm_img_txt_similarity')
+    similarity_1_1 = -1 * torch.bmm(normalized_text1, normalized_tokens_a.transpose(1, 2)) # Match
+    similarity_2_2 = -1 * torch.bmm(normalized_text2, normalized_tokens_b.transpose(1, 2)) # Match
+    similarity_1_2 = -1 * torch.bmm(normalized_text1, normalized_tokens_b.transpose(1, 2)) # Mismatch
+    similarity_2_1 = -1 * torch.bmm(normalized_text2, normalized_tokens_a.transpose(1, 2)) # Mismatch
+    timer.stop('4_bmm_img_txt_similarity')
     
 #---------------------------------------------------------------------------------------------------------
     
-    # ==================== PHASE 6: Loss Computation ====================
-    timer.start('7_loss_computation')
+    # ==================== PHASE 7: Loss Computation ====================
+    timer.start('5_loss_computation')
     loss, loss_dict = criterion(
         similarity_1_1,
         similarity_2_2,
@@ -234,7 +225,7 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1
         similarity_2_1
     )
     loss_value = loss_dict['total']
-    timer.stop('7_loss_computation')
+    timer.stop('5_loss_computation')
     
     ######################################################################################################################################
     # Debugging: Save visualizations for the last batch every 10 epochs
@@ -266,7 +257,6 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1
 
     # Delete tensors to free memory
     del tokens_a, tokens_b
-    del flip_tokens_a, flip_tokens_b
     torch.cuda.empty_cache()
     
     return loss, loss_value
