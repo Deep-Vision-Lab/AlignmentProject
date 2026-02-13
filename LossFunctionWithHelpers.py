@@ -105,10 +105,10 @@ class ContrastiveSoftDTW(nn.Module):
         # "Positive cost should be lower than Negative cost by at least 'margin'"
         margin = 1.0 
         
-        loss_1 = torch.clamp(cost_pos_1 - cost_neg_1 + margin, min=0)
-        loss_2 = torch.clamp(cost_pos_2 - cost_neg_2 + margin, min=0)
+        loss_1 = F.relu(cost_pos_1 - cost_neg_1 + margin)
+        loss_2 = F.relu(cost_pos_2 - cost_neg_2 + margin)
         
-        total_loss = (loss_1.sum() + loss_2.sum()) / 2
+        total_loss = loss_1.sum() + loss_2.sum()
         
         loss_dict = {
             'cost_pos_1': cost_pos_1.sum().item(),
