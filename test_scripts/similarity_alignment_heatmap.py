@@ -96,8 +96,8 @@ def patch_to_image(patch: torch.Tensor) -> np.ndarray:
     return img
 
 
-def add_patch_images_to_axis(ax, patches: torch.Tensor, axis: str = 'x', 
-                              zoom: float = 0.4, highlighted_indices: set = None):
+def add_patch_images_to_axis(ax, patches: torch.Tensor, axis: str, 
+                              zoom: float, highlighted_indices: set):
     """
     Add patch images as labels along an axis.
     
@@ -158,8 +158,8 @@ def visualize_similarity_with_patches(
     image2_path: str,
     patches_a: torch.Tensor,
     patches_b: torch.Tensor,
-    path: list = None,
-    save_path: str = None,
+    path: list,
+    save_path: str,
     title: str = "Cosine Similarity Matrix",
     show: bool = True,
     cmap: str = 'hot',
@@ -249,7 +249,7 @@ def visualize_score_matrix_with_patches_and_path(
     image2_path: str,
     patches_a: torch.Tensor,
     patches_b: torch.Tensor,
-    save_path: str = None,
+    save_path: str,
     title: str = "NW Alignment Score Matrix",
     show: bool = True,
     cmap: str = 'viridis',
@@ -349,7 +349,7 @@ def visualize_aligned_patches(
     similarity_matrix: torch.Tensor,
     image1_path: str,
     image2_path: str,
-    save_path: str = None,
+    save_path: str,
     title: str = "Aligned Patch Pairs",
     show: bool = True,
     max_pairs: int = 200
