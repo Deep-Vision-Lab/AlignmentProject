@@ -168,7 +168,7 @@ def check_grad(grad):
         print(f"Gradient flowing... Sum: {grad.sum().item():.5f}")
 
 # second line of parameters is for saving visualizations during debugging 
-def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1_txt2_similar_GT, 
+def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, 
                        criterion,
                        epoch=0, batch_idx=0, dataloader_length=0, debug=False, timer=None):
     """
@@ -238,7 +238,7 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, txt1
         text2_subset = [text2[i] for i in range(min(2, len(text2)))]
         image1_subset = image1[:min(2, image1.size(0))]
         image2_subset = image2[:min(2, image2.size(0))]
-        TextSimilarGT_subset = txt1_txt2_similar_GT[:min(2, txt1_txt2_similar_GT.size(0))]
+        # Skip TextSimilarGT_subset for contrastive learning (when txt1_txt2_similar_GT is None)
         similar_TxtImg1 = similarity_1_1[:min(2, similarity_1_1.size(0))]
         similar_TxtImg2 = similarity_2_2[:min(2, similarity_2_2.size(0))]
         save_debug_visualizations(
@@ -296,12 +296,13 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
         train_loss = 0.0
         train_accuracy = 0.0
 
-        for batch_idx, (image1, image2, textSimilar, text1, text2) in enumerate(trainLoader):
+        for batch_idx, (text1, image1, text2, image2) in enumerate(trainLoader):
             # Timing: Data transfer to GPU
+            # Note: text1/image1 are aligned (from sample i - positive pair)
+            #       text2/image2 are from sample j (j ≠ i - negative pair for contrastive learning)
             global_timer.start('0_data_to_gpu')
             image1 = image1.to(device, non_blocking=True)
             image2 = image2.to(device, non_blocking=True)
-            textSimilar = textSimilar.to(device, non_blocking=True)
             text1 = list(text1)
             text2 = list(text2)
             global_timer.stop('0_data_to_gpu')
@@ -309,9 +310,11 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
             optimizer.zero_grad()
   
             # Compute loss using shared function (timing is inside)
+            # Note: No textSimilar matrix for contrastive learning
             path_loss, loss_value = compute_batch_loss(
-                imageEmbedding, textEmbedding, text1, text2, image1, image2, 
-                textSimilar, criterion,
+                imageEmbedding, textEmbedding, 
+                text1, text2, image1, image2, 
+                criterion,
                 epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader),
                 debug=debug, timer=global_timer
             )
@@ -352,17 +355,18 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
         val_loss = 0.0
         val_accuracy = 0.0
         with torch.no_grad():
-            for batch_idx, (image1, image2, textSimilar, text1, text2) in enumerate(validLoader):
+            for batch_idx, (text1, image1, text2, image2) in enumerate(validLoader):
                 # Ensure all data is on correct device
                 image1 = image1.to(device)
                 image2 = image2.to(device)
-                textSimilar = textSimilar.to(device)
+                text1 = list(text1)
+                text2 = list(text2)
                 
                 # Compute loss using shared function
                 _, loss_value = compute_batch_loss(
                     imageEmbedding, textEmbedding,
                     text1, text2, image1, image2, 
-                    textSimilar, criterion
+                    criterion=criterion
                 )
                 
                 val_loss += loss_value
