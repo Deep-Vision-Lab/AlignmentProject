@@ -93,30 +93,30 @@ def pad_matrices(matrices, smooth=False, kernel_size=5, sigma=1.0):
 
 # Define a custom collate function to handle variable-sized smith matrices
 def custom_collate_fn(batch):
-    """Custom collate function"""
+    """
+    Custom collate function for contrastive learning.
+    Each sample contains:
+    - text1, img1 from sample i (aligned - positive pair)
+    - text2, img2 from sample j where j ≠ i (not aligned - negative pair)
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    images_a, images_b, similarMatrices, texts1, texts2= zip(*batch)
+    # Unpack batch: text1, img1, text2, img2
+    texts_1, images_1, texts_2, images_2 = zip(*batch)
 
-    # Stack on CPU first, then move to device
-    images_a = torch.stack(images_a, dim=0)
-    images_b = torch.stack(images_b, dim=0)
+    # Stack images on CPU first, then move to device
+    images_1 = torch.stack(images_1, dim=0)
+    images_2 = torch.stack(images_2, dim=0)
 
-    # Now move everything to device at once
-    images_a = images_a.to(device, non_blocking=True)
-    images_b = images_b.to(device, non_blocking=True)
-    # Use pad_matrices to handle variable-sized matrices
-    # Convert all to tensors if not already
-    similarMatrices = [torch.as_tensor(m, dtype=torch.float32) for m in similarMatrices]
-    similarMatrices = pad_matrices(similarMatrices)
-    similarMatrices = similarMatrices.to(device, non_blocking=True)
+    # Move to device
+    images_1 = images_1.to(device, non_blocking=True)
+    images_2 = images_2.to(device, non_blocking=True)
     
-    # Set requires_grad only after moving to device
-    images_a.requires_grad_(True)
-    images_b.requires_grad_(True)
-    similarMatrices.requires_grad_(True)
+    # Set requires_grad
+    images_1.requires_grad_(True)
+    images_2.requires_grad_(True)
 
-    return images_a, images_b, similarMatrices, texts1, texts2
+    return texts_1, images_1, texts_2, images_2
 
 
 # Create DataLoaders for training and testing
@@ -137,9 +137,11 @@ test_dataloader = DataLoader(
 if __name__ == "__main__":
     # Test the DataLoader
     for batch in train_dataloader:
-        images_a, images_b, NW_matrices, similar_matrix = batch
-        print(f'Batch images_a shape: {images_a.shape}')
-        print(f'Batch images_b shape: {images_b.shape}')
-        print(f'Batch NW_matrices shape: {NW_matrices.shape}')
-        print(f'Batch similar_matrix shape: {similar_matrix.shape}')
+        texts_1, images_1, texts_2, images_2 = batch
+        print(f'Batch texts_1 length: {len(texts_1)}')
+        print(f'Batch images_1 shape: {images_1.shape}')
+        print(f'Batch texts_2 length: {len(texts_2)}')
+        print(f'Batch images_2 shape: {images_2.shape}')
+        print(f'Note: text1/img1 are aligned (from sample i)')
+        print(f'      text2/img2 are from sample j (j ≠ i) - negative samples')
         break  # Just test one batch

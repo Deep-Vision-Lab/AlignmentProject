@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from PIL import Image
 from torch.utils.data import Dataset
+import random
 
 from Parameters import *
 
@@ -56,38 +57,48 @@ class TextLineModern(Dataset):
         self.transform = transform
 
         if new_dataset:
-            # Reduce dataset size for memory testing
-            self.image_pairs = [
-                (f"img1_{i}.png", f"img2_{i}.png", f"similarityMatrix_{i}.npy", 
-                 f"text1_{i}.txt", f"text2_{i}.txt") for i in
-                range(1, 10001)]  # Reduced from 3001 to 101
+            num_samples = 10000
+            # Pre-generate contrastive pairs for efficiency
+            # For each sample i, randomly select a different sample j (j ≠ i) for negative pairing
+            
+            self.contrastive_pairs = []
+            for i in range(num_samples):
+                # Randomly select j where j ≠ i for negative sample
+                available_indices = [x for x in range(num_samples) if x != i]
+                j = random.choice(available_indices)
+                
+                # Store (img1_i, text1_i, img2_j, text2_j) where i ≠ j
+                self.contrastive_pairs.append((
+                    f"img1_{i+1}.png",   # img1 from sample i
+                    f"text1_{i+1}.txt",  # text1 from sample i (aligned with img1)
+                    f"img2_{j+1}.png",   # img2 from sample j (j ≠ i)
+                    f"text2_{j+1}.txt"   # text2 from sample j (not aligned with text1/img1)
+                ))
 
     def __len__(self):
-        return len(self.image_pairs)
+        return len(self.contrastive_pairs)
 
 
     def __getitem__(self, idx):
         if self.new_dataset:
-            img1_name, img2_name, similarity_matrix_name, text1, text2 = self.image_pairs[idx]
+            # Get pre-generated contrastive pair (no random selection needed)
+            img1_name, text1_name, img2_name, text2_name = self.contrastive_pairs[idx]
 
+            # Load images
             img1_path = os.path.join(self.new_dataset['images'], img1_name)
             img2_path = os.path.join(self.new_dataset['images'], img2_name)
 
-            SimilarityMatrix = os.path.join(self.new_dataset['similarity_matrices'], similarity_matrix_name)
-
             img1 = Image.open(img1_path).convert("RGB")
             img2 = Image.open(img2_path).convert("RGB")
-
-
-            # similar_matrix = np.load(SimilarityMatrix)
-            # similar_matrix = torch.tensor(similar_matrix, dtype=torch.float32)
             
             if self.transform:
                 img1 = self.transform(img1)
                 img2 = self.transform(img2)
 
-            text1_path = os.path.join(self.new_dataset['texts'], text1)
-            text2_path = os.path.join(self.new_dataset['texts'], text2)
+            # Load texts
+            text1_path = os.path.join(self.new_dataset['texts'], text1_name)
+            text2_path = os.path.join(self.new_dataset['texts'], text2_name)
+            
             with open(text1_path, 'r') as f:
                 text_line1 = f.read().strip()
                 text_line1 = ' ' + text_line1 + ' '
@@ -96,10 +107,9 @@ class TextLineModern(Dataset):
                 text_line2 = f.read().strip()
                 text_line2 = ' ' + text_line2 + ' '
 
-            similar_matrix = compute_text_similarity_matrix(text_line1, text_line2)
-            similar_matrix = similar_matrix.to(device)
-            similar_matrix.requires_grad_(True)
-            
-            return img1, img2, similar_matrix, text_line1, text_line2
+            # Return for contrastive learning:
+            # text1, img1 from sample i (aligned - positive pair)
+            # text2, img2 from sample j where j ≠ i (not aligned - negative pair)
+            return text_line1, img1, text_line2, img2
         else:
             raise NotImplementedError("Handling for non-NewDataSet is not included.")
