@@ -77,9 +77,9 @@ def average_normalize(tensor, eps=1e-8):
     normalized_tensor = tensor / (tensor_sum + eps)
     return normalized_tensor
 
-def l2_normalize(tensor):
+def l2_normalize(tensor, eps=1e-8):
     # Normalize along the feature dimension (dim=-1)
-    return F.normalize(tensor, p=2, dim=-1)
+    return F.normalize(tensor, p=2, dim=-1, eps=eps)
 
 
 def normalize_func(matrix):
