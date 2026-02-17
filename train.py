@@ -208,10 +208,10 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2,
                                       
     # ==================== PHASE 4: Similarity Matrix (BMM) ====================
     timer.start('4_bmm_img_txt_similarity')
-    similarity_1_1 = -1 * torch.bmm(normalized_text1, normalized_tokens_a.transpose(1, 2)) # Match
-    similarity_2_2 = -1 * torch.bmm(normalized_text2, normalized_tokens_b.transpose(1, 2)) # Match
-    similarity_1_2 = -1 * torch.bmm(normalized_text1, normalized_tokens_b.transpose(1, 2)) # Mismatch
-    similarity_2_1 = -1 * torch.bmm(normalized_text2, normalized_tokens_a.transpose(1, 2)) # Mismatch
+    similarity_1_1 = torch.bmm(normalized_text1, normalized_tokens_a.transpose(1, 2)) # Match
+    similarity_2_2 = torch.bmm(normalized_text2, normalized_tokens_b.transpose(1, 2)) # Match
+    similarity_1_2 = torch.bmm(normalized_text1, normalized_tokens_b.transpose(1, 2)) # Mismatch
+    similarity_2_1 = torch.bmm(normalized_text2, normalized_tokens_a.transpose(1, 2)) # Mismatch
     timer.stop('4_bmm_img_txt_similarity')
     
 #---------------------------------------------------------------------------------------------------------
@@ -444,17 +444,11 @@ if __name__ == '__main__':
     criterion = Loss_choice(loss_type)
     
     # Log architecture optimizations
-    print(f"\n=== Architecture: CNN + BiLSTM (No Transformer) ===")
-    print(f"[OPT 1] Positional Encoding: {use_positional_encoding} ({positional_encoding_type})")
+    print(f"\n=== Architecture: CNN + BiLSTM ===")
+    print(f"[OPT 1] job_id: {job_id}")
     print(f"[OPT 2] Loss Type: {loss_type}")
     print(f"[OPT 3] BiLSTM Context: {use_bilstm} (layers={bilstm_layers})")
     print(f"[OPT 4] Sliding Window Overlap: stride_ratio={stride_ratio}")
-    print(f"[OPT 5] Space Gate: {use_space_gate} (threshold={space_threshold})")
-    print(f"[OPT 6] Text Spaces: include_spaces={include_spaces}")
-    print(f"[OPT 7] Context-Free Text (Label-Aware): ENABLED")
-    print(f"        -> Same letter = Same embedding (no context mixing)")
-    if loss_type == 'ContrastiveMSE':
-        print(f"[OPT 8] Contrastive Learning: ENABLED")
     print(f"================================================\n")
     
     # try:

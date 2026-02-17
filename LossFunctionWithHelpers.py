@@ -11,6 +11,7 @@ import importlib.util
 import sys
 import os
 import soft_dtw_cuda as soft_dtw_cuda
+from Parameters import *
 
 
 # ============================================================================
@@ -32,29 +33,18 @@ class ContrastiveSoftDTW(nn.Module):
         can match image patches to ANY of the matching text positions.
     
     Args:
-        gamma (float): Soft-DTW smoothing parameter (gamma -> 0: hard DTW)
-        temperature (float): Temperature for contrastive loss
+        gamma (float): Soft-DTW smoothing parameter (gamma -> 0: hard DTW)ss
         use_cuda (bool): Use CUDA acceleration
         bandwidth (int): Sakoe-Chiba bandwidth for pruning
     """
     
-    def __init__(self, gamma=0.1, temperature=0.1, use_cuda=True, bandwidth=None):
+    def __init__(self, gamma=0.1, use_cuda=True, bandwidth=None):
         super(ContrastiveSoftDTW, self).__init__()
         self.gamma = gamma
-        self.temperature = temperature
         self.use_cuda = use_cuda
         self.bandwidth = bandwidth
-        
-        # Initialize the CUDA-accelerated Soft-DTW function
-        # IMPORTANT: normalize=False because image and text sequences have different lengths
-        self.dtw_func = soft_dtw_cuda.SoftDTW(
-            use_cuda=use_cuda, 
-            gamma=gamma, 
-            normalize=False, 
-            bandwidth=bandwidth,
-            dist_func=soft_dtw_cuda.SoftDTW._cosine_dist_func
-        )
     
+
     def _compute_dtw_on_similarity(self, sim_matrix: "torch.Tensor") -> "torch.Tensor":
         """
         Compute Soft-DTW directly on a pre-computed similarity matrix.
@@ -78,7 +68,7 @@ class ContrastiveSoftDTW(nn.Module):
         # The _SoftDTW.apply expects [B, N, M] distance matrix
         _SoftDTW = soft_dtw_cuda._SoftDTW
         _SoftDTWCUDA = soft_dtw_cuda._SoftDTWCUDA
-        
+
         if self.use_cuda and dist_matrix.is_cuda:
             dtw_costs = _SoftDTWCUDA.apply(dist_matrix, self.gamma, self.bandwidth if self.bandwidth else 0)
         else:
@@ -89,8 +79,7 @@ class ContrastiveSoftDTW(nn.Module):
         return dtw_costs  # [B]
     
 
-    def forward(self, img_txt_sim1, img_txt_sim2, 
-            text1_image2_sim, text2_image1_sim): # <--- You need these mismatched pairs
+    def forward(self, img_txt_sim1, img_txt_sim2, text1_image2_sim, text2_image1_sim): # <--- You need these mismatched pairs
         
         # 1. POSITIVE PAIRS (We want LOW cost / HIGH similarity)
         # Remember to use the "Cost = -Similarity" fix we discussed!
@@ -123,9 +112,7 @@ class ContrastiveSoftDTW(nn.Module):
 
 def contrastive_soft_dtw_alignment_loss(img_txt_sim1, img_txt_sim2, 
                                          final_pred=None, target=None,
-                                         gamma=0.1, temperature=0.1,
-                                         mse_weight=1.0, dtw_weight=0.5,
-                                         use_cuda=True):
+                                         gamma=0.1, use_cuda=True):
     """
     Functional interface for Contrastive Soft-DTW loss.
     
@@ -138,21 +125,17 @@ def contrastive_soft_dtw_alignment_loss(img_txt_sim1, img_txt_sim2,
         final_pred (torch.Tensor): Final predicted similarity matrix [B, H, W]
         target (torch.Tensor): Ground truth similarity matrix [B, H, W]
         gamma (float): Soft-DTW smoothing parameter
-        temperature (float): Temperature (not used in current implementation)
-        mse_weight (float): Weight for MSE loss
-        dtw_weight (float): Weight for DTW alignment loss
         use_cuda (bool): Use CUDA acceleration
     
     Returns:
         tuple: (total_loss, loss_dict)
     """
+    
     criterion = ContrastiveSoftDTW(
-        gamma=gamma, 
-        temperature=temperature, 
+        gamma=gamma,
         use_cuda=use_cuda
     )
-    return criterion(img_txt_sim1, img_txt_sim2, final_pred, target, 
-                    mse_weight=mse_weight, dtw_weight=dtw_weight)
+    return criterion(img_txt_sim1, img_txt_sim2, final_pred, target)
 
 
 # ============================================================================
@@ -174,10 +157,8 @@ def Loss_choice(loss_type):
     elif loss_type == 'ContrastiveSoftDTW':
         # Contrastive Soft-DTW: takes similarity matrices directly
         # Computes DTW on both similarity matrices + MSE on final prediction
-        from Parameters import contrastive_soft_dtw_gamma, contrastive_soft_dtw_temperature
         criterion = ContrastiveSoftDTW(
             gamma=contrastive_soft_dtw_gamma,
-            temperature=contrastive_soft_dtw_temperature,
             use_cuda=True
         )
     else:
@@ -203,7 +184,7 @@ if __name__ == "__main__":
     target = torch.randn(batch_size, N_txt, N_txt, device=device)
     
     # Test the loss
-    criterion = ContrastiveSoftDTW(gamma=0.1, temperature=0.1, use_cuda=torch.cuda.is_available())
+    criterion = ContrastiveSoftDTW(gamma=0.001, use_cuda=torch.cuda.is_available())
     loss, loss_dict = criterion(img_txt_sim1, img_txt_sim2, final_pred, target)
     
     print(f"Loss: {loss.item():.4f}")
