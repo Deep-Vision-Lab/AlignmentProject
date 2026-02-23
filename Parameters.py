@@ -30,20 +30,11 @@ stride_ratio = 0.5  # Recommended: 0.5 (50% overlap) or 0.25 (75% overlap)
 # Keeping this ON would break staircase for repeated letters since
 # static text embeddings don't have position info
 use_positional_encoding = False
-positional_encoding_type = 'learnable'  # ['learnable', 'sinusoidal']
+positional_encoding_type = 'sinusoidal'  # ['learnable', 'sinusoidal']
 
 # BiLSTM for local sequence context
 use_bilstm = True
 bilstm_layers = 2
-
-# ============================================================================
-# Space/Black Patch Handling
-# ============================================================================
-# When enabled, black patches (spaces between words) are detected and mapped
-# to a special <SPACE> embedding instead of being processed by CNN.
-use_space_gate = False           # Enable black patch detection gate
-space_threshold = 0.03          # Patches with mean pixel intensity < threshold are "space"
-include_spaces = True           # Include space characters in text embeddings
 
 # ============================================================================
 # Contrastive Soft-DTW Parameters (CUDA-accelerated)
@@ -52,7 +43,13 @@ include_spaces = True           # Include space characters in text embeddings
 # Combines Soft-DTW with InfoNCE-style contrastive learning
 # Uses CUDA-accelerated Soft-DTW from soft-dtw-cuda.py
 # All contrastive logic is inside the loss function - no special training loop needed
-contrastive_soft_dtw_gamma = 1            # Soft-DTW smoothing (gamma -> 0: hard DTW, gamma -> inf: average)
+contrastive_soft_dtw_gamma = 0.1          # Soft-DTW smoothing (gamma -> 0: hard DTW, gamma -> inf: average)
+
+# Sakoe-Chiba Band: restricts DTW warping path to a diagonal band
+# Prevents distant identical letters from being incorrectly aligned
+# Set as a fraction of sequence length (e.g., 0.2 = 20% of image width)
+sakoe_chiba_bandwidth_ratio = 0.0        # Bandwidth as fraction of sequence length (0 = no band constraint)
+
 
 # Dropout for regularization
 model_dropout = 0.0

@@ -31,53 +31,46 @@ from numba import cuda
 import math
 
 # ----------------------------------------------------------------------------------------------------------------------
+
 @cuda.jit
 def compute_softdtw_cuda(D, gamma, bandwidth, max_i, max_j, n_passes, R):
-    """
-    :param seq_len: The length of the sequence (both inputs are assumed to be of the same size)
-    :param n_passes: 2 * seq_len - 1 (The number of anti-diagonals)
-    """
-    # Each block processes one pair of examples
     b = cuda.blockIdx.x
-    # We have as many threads as seq_len, because the most number of threads we need
-    # is equal to the number of elements on the largest anti-diagonal
     tid = cuda.threadIdx.x
-    
-    # print(f'b = {b}, tid = {tid}')
-
-    # Compute I, J, the indices from [0, seq_len)
-
-    # The row index is always the same as tid
     I = tid
-
     inv_gamma = 1.0 / gamma
 
-    # Go over each anti-diagonal. Only process threads that fall on the current on the anti-diagonal
     for p in range(n_passes):
-
-        # The index is actually 'p - tid' but need to force it in-bounds
         J = max(0, min(p - tid, max_j - 1))
-
-        # For simplicity, we define i, j which start from 1 (offset from I, J)
         i = I + 1
         j = J + 1
 
-        # Only compute if element[i, j] is on the current anti-diagonal, and also is within bounds
         if I + J == p and (I < max_i and J < max_j):
-            # Don't compute if outside bandwidth
             if not (abs(i - j) > bandwidth > 0):
-                r0 = -R[b, i - 1, j - 1] * inv_gamma
-                r2 = -R[b, i, j - 1] * inv_gamma
+                # 1. Get neighbors (D3TW Topology: Match & Stay)
+                # We negate them because we want Soft-Min, not Soft-Max
+                val_match = R[b, i - 1, j - 1]
+                val_stay  = R[b, i, j - 1]
+                
+                r0 = -val_match * inv_gamma
+                r2 = -val_stay * inv_gamma
+                
+                # 2. Find maximum for stability
                 rmax = max(r0, r2)
+                
+                # =========================================================
+                # THE FIX: THE INFINITY GATE
+                # If rmax is -inf, it means BOTH neighbors are +inf (unreachable).
+                # We CANNOT do math on them. Just set current cell to inf.
+                # -1e20 is a safe threshold for "negative infinity"
+                # =========================================================
                 if rmax < -1e20:
                     R[b, i, j] = math.inf
                 else:
+                    # Safe to proceed: at least one path is valid
                     rsum = math.exp(r0 - rmax) + math.exp(r2 - rmax)
                     softmin = -gamma * (math.log(rsum) + rmax)
                     R[b, i, j] = D[b, i - 1, j - 1] + softmin
 
-
-        # Wait for other threads in this block
         cuda.syncthreads()
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -85,34 +78,40 @@ def compute_softdtw_cuda(D, gamma, bandwidth, max_i, max_j, n_passes, R):
 def compute_softdtw_backward_cuda(D, R, inv_gamma, bandwidth, max_i, max_j, n_passes, E):
     k = cuda.blockIdx.x
     tid = cuda.threadIdx.x
-
-    # Indexing logic is the same as above, however, the anti-diagonal needs to
-    # progress backwards
     I = tid
 
     for p in range(n_passes):
-        # Reverse the order to make the loop go backward
         rev_p = n_passes - p - 1
-
-        # convert tid to I, J, then i, j
         J = max(0, min(rev_p - tid, max_j - 1))
-
         i = I + 1
         j = J + 1
 
-        # Only compute if element[i, j] is on the current anti-diagonal, and also is within bounds
         if I + J == rev_p and (I < max_i and J < max_j):
-
+            # 1. Initialize gradient to 0
+            E[k, i, j] = 0.0
+            
+            # 2. Safety Check: If this cell was unreachable in forward pass, 
+            # it has no gradient. Skip it.
             if math.isinf(R[k, i, j]):
-                R[k, i, j] = -math.inf
+                # Do nothing, E[k,i,j] remains 0.0
+                pass
+            
+            elif not (abs(i - j) > bandwidth > 0):
+                # 3. Check Child 1: Right (Stay) -> corresponds to R[i, j+1]
+                # We only receive gradient if the child was reachable (not inf)
+                val_stay = R[k, i, j + 1]
+                if not math.isinf(val_stay):
+                    # Formula: exp( (R_child - R_current - D_child) / gamma )
+                    # This calculates the probability of the path going this way.
+                    b = math.exp((val_stay - R[k, i, j] - D[k, i, j + 1]) * inv_gamma)
+                    E[k, i, j] += E[k, i, j + 1] * b
 
-            # Don't compute if outside bandwidth
-            if not (abs(i - j) > bandwidth > 0):
-                b = math.exp((R[k, i, j + 1] - R[k, i, j] - D[k, i, j + 1]) * inv_gamma)
-                c = math.exp((R[k, i + 1, j + 1] - R[k, i, j] - D[k, i + 1, j + 1]) * inv_gamma)
-                E[k, i, j] = E[k, i, j + 1] * b + E[k, i + 1, j + 1] * c
+                # 4. Check Child 2: Diagonal (Match) -> corresponds to R[i+1, j+1]
+                val_match = R[k, i + 1, j + 1]
+                if not math.isinf(val_match):
+                    c = math.exp((val_match - R[k, i, j] - D[k, i + 1, j + 1]) * inv_gamma)
+                    E[k, i, j] += E[k, i + 1, j + 1] * c
 
-        # Wait for other threads in this block
         cuda.syncthreads()
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -139,9 +138,6 @@ class _SoftDTWCUDA(Function):
         R = torch.ones((B, N + 2, M + 2), device=dev, dtype=dtype) * math.inf
         R[:, 0, 0] = 0
         
-        # print("--- D Matrix Debug (Inside CUDA Wrapper) ---")
-        # print(D)
-        # print("----------------------------------------")
         sys.stdout.flush()
 
         # Run the CUDA kernel.
@@ -151,15 +147,6 @@ class _SoftDTWCUDA(Function):
                                                    gamma.item(), bandwidth.item(), N, M, 
                                                    n_passes, cuda.as_cuda_array(R))
         ctx.save_for_backward(D, R.clone(), gamma, bandwidth)
-        print('========================================================================================')
-        print('D Matrix:')
-        print(D.shape)
-        print(D)
-        print('========================================================================================')
-        print('R Matrix:')
-        print(R.shape)
-        print(R[:,-2,-2])
-        print('========================================================================================')
         return R[:, -2, -2]
 
     @staticmethod
@@ -200,6 +187,7 @@ class _SoftDTWCUDA(Function):
 # I've added support for batching and pruning.
 #
 # ----------------------------------------------------------------------------------------------------------------------
+
 @jit(nopython=True, parallel=True)
 def compute_softdtw(D, gamma, bandwidth):
     B = D.shape[0]
@@ -207,17 +195,22 @@ def compute_softdtw(D, gamma, bandwidth):
     M = D.shape[2]
     R = np.ones((B, N + 2, M + 2)) * np.inf
     R[:, 0, 0] = 0
+    
     for b in prange(B):
         for j in range(1, M + 1):
             for i in range(1, N + 1):
-
-                # Check the pruning condition
                 if 0 < bandwidth < np.abs(i - j):
                     continue
-
+                
+                # Get negated values
                 r0 = -R[b, i - 1, j - 1] / gamma
                 r2 = -R[b, i, j - 1] / gamma
+                
                 rmax = max(r0, r2)
+                
+                # =========================================================
+                # THE FIX: THE INFINITY GATE
+                # =========================================================
                 if rmax < -1e20:
                     R[b, i, j] = np.inf
                 else:
@@ -236,25 +229,38 @@ def compute_softdtw_backward(D_, R, gamma, bandwidth):
     E = np.zeros((B, N + 2, M + 2))
     D[:, 1:N + 1, 1:M + 1] = D_
     E[:, -1, -1] = 1
+    
+    # Boundary cleanup
     R[:, :, -1] = -np.inf
     R[:, -1, :] = -np.inf
     R[:, -1, -1] = R[:, -2, -2]
+    
     for k in prange(B):
         for j in range(M, 0, -1):
             for i in range(N, 0, -1):
-
+                
+                # --- FIX 1: If forward was Inf, Gradient is 0 ---
                 if np.isinf(R[k, i, j]):
-                    R[k, i, j] = -np.inf
-
-                # Check the pruning condition
-                if 0 < bandwidth < np.abs(i - j):
+                    E[k, i, j] = 0.0
                     continue
 
-                b0 = (R[k, i, j + 1] - R[k, i, j] - D[k, i, j + 1]) / gamma
-                c0 = (R[k, i + 1, j + 1] - R[k, i, j] - D[k, i + 1, j + 1]) / gamma
-                b = np.exp(b0)
-                c = np.exp(c0)
-                E[k, i, j] = E[k, i, j + 1] * b + E[k, i + 1, j + 1] * c
+                if 0 < bandwidth < np.abs(i - j):
+                    continue
+                
+                # --- FIX 2: Check neighbors before subtraction ---
+                
+                # Child 1: Stay (i, j+1)
+                val_stay = R[k, i, j + 1]
+                if not np.isinf(val_stay):
+                    b0 = (val_stay - R[k, i, j] - D[k, i, j + 1]) / gamma
+                    E[k, i, j] += E[k, i, j + 1] * np.exp(b0)
+
+                # Child 2: Match (i+1, j+1)
+                val_match = R[k, i + 1, j + 1]
+                if not np.isinf(val_match):
+                    c0 = (val_match - R[k, i, j] - D[k, i + 1, j + 1]) / gamma
+                    E[k, i, j] += E[k, i + 1, j + 1] * np.exp(c0)
+                    
     return E[:, 1:N + 1, 1:M + 1]
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -312,9 +318,9 @@ class SoftDTW(torch.nn.Module):
 
         # Set the distance function
         if dist_func is None:
-            self.dist_func = SoftDTW._cosine_dist_func
-        else:
             self.dist_func = SoftDTW._euclidean_dist_func
+        else:
+            self.dist_func = SoftDTW._cosine_dist_func
 
     def _get_func_dtw(self, x, y):
         """
@@ -381,9 +387,6 @@ class SoftDTW(torch.nn.Module):
             x = torch.cat([X, X, Y])
             y = torch.cat([Y, X, Y])
             D = self.dist_func(x, y)
-            # print("--- Dist Matrix Debug ---")
-            # print(D)
-            # print("-------------------------")
             out = func_dtw(D, self.gamma, self.bandwidth)
             out_xy, out_xx, out_yy = torch.split(out, X.shape[0])
             sys.stdout.flush() 
@@ -466,5 +469,5 @@ if __name__ == "__main__":
     torch.manual_seed(1234)
 
     profile(1, 15, 17, 2, tol_backward=1e-6)
-    # profile(512, 64, 64, 2, tol_backward=1e-4)
+    profile(512, 64, 64, 2, tol_backward=1e-4)
     # profile(512, 256, 256, 2, tol_backward=1e-3)

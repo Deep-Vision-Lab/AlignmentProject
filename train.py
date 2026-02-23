@@ -168,7 +168,8 @@ def check_grad(grad):
         print(f"Gradient flowing... Sum: {grad.sum().item():.5f}")
 
 # second line of parameters is for saving visualizations during debugging 
-def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2, 
+def compute_batch_loss(imageEmbed, textEmbed, 
+                       text1, text2, image1, image2, 
                        criterion,
                        epoch=0, batch_idx=0, dataloader_length=0, debug=False, timer=None):
     """
@@ -205,13 +206,14 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2,
     normalized_tokens_a = normalize_func(tokens_a)  # Shape: (batch_size, seq_len, vector_size)
     normalized_tokens_b = normalize_func(tokens_b)
     timer.stop('3_normalization')
-                                      
+    # print(f'normalized_text1 shape: {normalized_text1.sum(dim=0)}, normalized_tokens_a: {normalized_tokens_a.sum(dim=0)}', flush=True)
+    # print(f'normalized_text2 shape: {normalized_text2.sum(dim=0)}, normalized_tokens_b: {normalized_tokens_b.sum(dim=0)}', flush=True)
     # ==================== PHASE 4: Similarity Matrix (BMM) ====================
     timer.start('4_bmm_img_txt_similarity')
-    similarity_1_1 = torch.bmm(normalized_text1, normalized_tokens_a.transpose(1, 2)) # Match
-    similarity_2_2 = torch.bmm(normalized_text2, normalized_tokens_b.transpose(1, 2)) # Match
-    similarity_1_2 = torch.bmm(normalized_text1, normalized_tokens_b.transpose(1, 2)) # Mismatch
-    similarity_2_1 = torch.bmm(normalized_text2, normalized_tokens_a.transpose(1, 2)) # Mismatch
+    similarity_img1_pos = torch.bmm(normalized_text1, normalized_tokens_a.transpose(1, 2)) # Match
+    similarity_img2_pos = torch.bmm(normalized_text2, normalized_tokens_b.transpose(1, 2)) # Match
+    similarity_img1_neg = torch.bmm(normalized_text2, normalized_tokens_a.transpose(1, 2)) # Mismatch
+    similarity_img2_neg = torch.bmm(normalized_text1, normalized_tokens_b.transpose(1, 2)) # Mismatch
     timer.stop('4_bmm_img_txt_similarity')
     
 #---------------------------------------------------------------------------------------------------------
@@ -219,10 +221,10 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2,
     # ==================== PHASE 7: Loss Computation ====================
     timer.start('5_loss_computation')
     loss, loss_dict = criterion(
-        similarity_1_1,
-        similarity_2_2,
-        similarity_1_2,
-        similarity_2_1
+        similarity_img1_pos,
+        similarity_img2_pos,
+        similarity_img1_neg,
+        similarity_img2_neg
     )
     loss_value = loss_dict['total']
     timer.stop('5_loss_computation')
@@ -230,8 +232,8 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2,
     ######################################################################################################################################
     # Debugging: Save visualizations for the last batch every 10 epochs
     if debug and batch_idx == 0 and epoch % 10 == 0:
-        debug_imgText1 = similarity_1_1
-        debug_imgText2 = similarity_2_2
+        debug_imgText1 = similarity_img1_pos
+        debug_imgText2 = similarity_img2_pos
 
         # indexing only the first 2 samples in the batch for visualization
         text1_subset = [text1[i] for i in range(min(2, len(text1)))]
@@ -239,8 +241,8 @@ def compute_batch_loss(imageEmbed, textEmbed, text1, text2, image1, image2,
         image1_subset = image1[:min(2, image1.size(0))]
         image2_subset = image2[:min(2, image2.size(0))]
         # Skip TextSimilarGT_subset for contrastive learning (when txt1_txt2_similar_GT is None)
-        similar_TxtImg1 = similarity_1_1[:min(2, similarity_1_1.size(0))]
-        similar_TxtImg2 = similarity_2_2[:min(2, similarity_2_2.size(0))]
+        similar_TxtImg1 = debug_imgText1[:min(2, debug_imgText1.size(0))]
+        similar_TxtImg2 = debug_imgText2[:min(2, debug_imgText2.size(0))]
         save_debug_visualizations(
             imageEmbed, 
             text1_subset, text2_subset, image1_subset, image2_subset,
@@ -406,7 +408,7 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
 
 if __name__ == '__main__':
     if debug_wandb:
-        init_wandb()
+        init_wandb(job_id)
 
     # Calculate stride from window_size and stride_ratio (OPTIMIZATION 4: Overlap)
     stride = max(1, int(window_size * stride_ratio))
@@ -414,7 +416,7 @@ if __name__ == '__main__':
 
     # Initialize TextEmbedding FIRST (needed for space token in image embedding)
     # Text embeddings are context-free: same letter = same embedding (Label-Aware design)
-    textEmbedding = TextEmbedding(embedding_dim=vector_size, include_spaces=include_spaces)
+    textEmbedding = TextEmbedding(embedding_dim=vector_size)
     textEmbedding = textEmbedding.to(device)
     # create the space token vector (detach to avoid graph retention across batches)
     space_vector = textEmbedding(' ').detach()
@@ -429,11 +431,7 @@ if __name__ == '__main__':
         use_positional_encoding=use_positional_encoding,
         positional_encoding_type=positional_encoding_type,
         bilstm_layers=bilstm_layers,
-        dropout=model_dropout,
-        # OPTIMIZATION 5: Space Gate for black patch detection
-        use_space_gate=use_space_gate,
-        space_threshold=space_threshold,
-        space_vector=space_vector
+        dropout=model_dropout
     )
 
     if show_gradients:
@@ -449,6 +447,8 @@ if __name__ == '__main__':
     print(f"[OPT 2] Loss Type: {loss_type}")
     print(f"[OPT 3] BiLSTM Context: {use_bilstm} (layers={bilstm_layers})")
     print(f"[OPT 4] Sliding Window Overlap: stride_ratio={stride_ratio}")
+    print(f"[OPT 5] Sakoe-Chiba Bandwidth: ratio={sakoe_chiba_bandwidth_ratio}")
+    print(f"[OPT 6] Positional Encoding: {use_positional_encoding} (type={positional_encoding_type}, applied BEFORE BiLSTM)")
     print(f"================================================\n")
     
     # try:

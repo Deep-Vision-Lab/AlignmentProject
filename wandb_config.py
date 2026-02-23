@@ -6,11 +6,11 @@ from Parameters import *
 _weights_artifact = None
 _results_artifact = None
 
-def init_wandb():
+def init_wandb(job_id):
     wandb.init(
             # set the wandb project where this run will be logged
             project="AlignmentProject",
-            name=f"Train model {window_size} - {loss_type} - {normalize_type}",
+            name=f"{job_id}",
             # track hyperparameters and run metadata
             config={
                 "learning_rate": learning_rate,

@@ -15,7 +15,7 @@ class TextEmbedding(nn.Module):
     SPACE_TOKEN_IDX = 0  # Space character - maps to black patches in images
     PAD_TOKEN_IDX = 1    # Padding token for batching
     
-    def __init__(self, embedding_dim, vocab_size=65536, include_spaces=True):
+    def __init__(self, embedding_dim, vocab_size=65536):
         """
         Args:
             embedding_dim: Dimension of the character embedding vectors
@@ -27,7 +27,6 @@ class TextEmbedding(nn.Module):
         self.embedding = nn.Embedding(vocab_size, embedding_dim).to(device)
         self.vocab_size = vocab_size
         self.embedding_dim = embedding_dim
-        self.include_spaces = include_spaces
         
         # Initialize the SPACE token embedding to a distinct learned vector
         # This will be matched against black patches in images
@@ -63,12 +62,7 @@ class TextEmbedding(nn.Module):
         Convert a string to a tensor of character indices.
         Handles spaces based on include_spaces setting.
         """
-        if self.include_spaces:
-            # Keep spaces - they will map to SPACE_TOKEN_IDX
-            indices = [self.char_to_index(char) for char in text]
-        else:
-            # Strip spaces (legacy behavior)
-            indices = [self.char_to_index(char) for char in text if char != ' ']
+        indices = [self.char_to_index(char) for char in text if char != ' ']
         
         return torch.tensor(indices, dtype=torch.long, device=device)
 
@@ -114,7 +108,7 @@ if __name__ == "__main__":
     print("Testing TextEmbedding with space handling...")
     
     # Test with spaces included (new behavior)
-    model = TextEmbedding(embedding_dim=128, include_spaces=True)
+    model = TextEmbedding(embedding_dim=128)
     sample_text = "Hello World"
     embedded = model(sample_text)
     print(f"Embedded shape for '{sample_text}' (with space): {embedded.shape}")
@@ -126,7 +120,7 @@ if __name__ == "__main__":
     print(f"Space embedding at index {space_idx}: norm = {space_embedding.norm().item():.4f}")
     
     # Test without spaces (legacy behavior)
-    model_no_spaces = TextEmbedding(embedding_dim=128, include_spaces=False)
+    model_no_spaces = TextEmbedding(embedding_dim=128)
     embedded_no_spaces = model_no_spaces(sample_text)
     print(f"Embedded shape for '{sample_text}' (no space): {embedded_no_spaces.shape}")
     print(f"  -> Should be (10, 128) - 10 chars without space")
