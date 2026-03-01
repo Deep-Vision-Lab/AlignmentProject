@@ -57,59 +57,45 @@ class TextLineModern(Dataset):
         self.transform = transform
 
         if new_dataset:
-            num_samples = 10000
-            # Pre-generate contrastive pairs for efficiency
-            # For each sample i, randomly select a different sample j (j ≠ i) for negative pairing
-            
-            self.contrastive_pairs = []
-            for i in range(num_samples):
-                # Randomly select j where j ≠ i for negative sample
-                available_indices = [x for x in range(num_samples) if x != i]
-                j = random.choice(available_indices)
-                
-                # Store (img1_i, text1_i, img2_j, text2_j) where i ≠ j
-                self.contrastive_pairs.append((
-                    f"img1_{i+1}.png",   # img1 from sample i
-                    f"text1_{i+1}.txt",  # text1 from sample i (aligned with img1)
-                    f"img2_{j+1}.png",   # img2 from sample j (j ≠ i)
-                    f"text2_{j+1}.txt"   # text2 from sample j (not aligned with text1/img1)
-                ))
+            self.num_samples = 10000
+            # Each sample is a positive pair (text1, img1)
+            # Negative sampling is done in the collate function (in-batch negatives)
 
     def __len__(self):
-        return len(self.contrastive_pairs)
+        return self.num_samples if self.new_dataset else 0
 
 
     def __getitem__(self, idx):
         if self.new_dataset:
-            # Get pre-generated contrastive pair (no random selection needed)
-            img1_name, text1_name, img2_name, text2_name = self.contrastive_pairs[idx]
+            sample_idx = idx + 1  # 1-based file naming
 
-            # Load images
-            img1_path = os.path.join(self.new_dataset['images'], img1_name)
-            img2_path = os.path.join(self.new_dataset['images'], img2_name)
-
-            img1 = Image.open(img1_path).convert("RGB")
-            img2 = Image.open(img2_path).convert("RGB")
+            # Load positive pair (text1, img1) - aligned
+            img1_name = f"img1_{sample_idx}.png"
+            text1_name = f"text1_{sample_idx}.txt"
             
+            img2_name = f"img2_{sample_idx}.png"
+            text2_name = f"text2_{sample_idx}.txt"
+
+            img1_path = os.path.join(self.new_dataset['images'], img1_name)
+            img1 = Image.open(img1_path).convert("RGB")
             if self.transform:
                 img1 = self.transform(img1)
+
+            text1_path = os.path.join(self.new_dataset['texts'], text1_name)
+            with open(text1_path, 'r') as f:
+                text1 = f.read().strip()
+                text1 = ' ' + text1 + ' '
+
+            img2_path = os.path.join(self.new_dataset['images'], img2_name)
+            img2 = Image.open(img2_path).convert("RGB")
+            if self.transform:
                 img2 = self.transform(img2)
 
-            # Load texts
-            text1_path = os.path.join(self.new_dataset['texts'], text1_name)
             text2_path = os.path.join(self.new_dataset['texts'], text2_name)
-            
-            with open(text1_path, 'r') as f:
-                text_line1 = f.read().strip()
-                text_line1 = ' ' + text_line1 + ' '
-                
             with open(text2_path, 'r') as f:
-                text_line2 = f.read().strip()
-                text_line2 = ' ' + text_line2 + ' '
+                text2 = f.read().strip()
+                text2 = ' ' + text2 + ' '
 
-            # Return for contrastive learning:
-            # text1, img1 from sample i (aligned - positive pair)
-            # text2, img2 from sample j where j ≠ i (not aligned - negative pair)
-            return text_line1, img1, text_line2, img2
+            return text1, img1, text2, img2
         else:
             raise NotImplementedError("Handling for non-NewDataSet is not included.")

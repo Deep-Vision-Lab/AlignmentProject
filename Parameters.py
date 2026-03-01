@@ -1,14 +1,13 @@
 import torch
 
 # Model parameters
-loss_type = 'ContrastiveSoftDTW'  # ['MSE', 'ContrastiveSoftDTW']
 normalize_type = 'l2' # ['min_max', 'mean_std', 'average', 'l2']
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Training parameters
 batch_size = 64
 epochs = 300
-learning_rate = 1e-3
+learning_rate = 1e-4
 
 # Data parameters
 window_size = 16
@@ -44,15 +43,21 @@ bilstm_layers = 2
 # Uses CUDA-accelerated Soft-DTW from soft-dtw-cuda.py
 # All contrastive logic is inside the loss function - no special training loop needed
 contrastive_soft_dtw_gamma = 0.1          # Soft-DTW smoothing (gamma -> 0: hard DTW, gamma -> inf: average)
+contrastive_soft_dtw_gamma_min = 0.001    # Minimum gamma after annealing
+contrastive_soft_dtw_gamma_decay = 0.95   # Multiplicative decay per epoch
 
 # Sakoe-Chiba Band: restricts DTW warping path to a diagonal band
 # Prevents distant identical letters from being incorrectly aligned
 # Set as a fraction of sequence length (e.g., 0.2 = 20% of image width)
 sakoe_chiba_bandwidth_ratio = 0.0        # Bandwidth as fraction of sequence length (0 = no band constraint)
+contrastive_margin = 10.0                 # Margin for triplet loss: forces pos_cost to beat neg_cost by this amount
 
 
 # Dropout for regularization
 model_dropout = 0.0
+
+# Negative sampling
+num_negatives = 20  # Number of negative samples per positive pair (in-batch negatives)
 
 # Debugging and visualization parameters
 debug = True # Set to True to save patches and heatmaps for debugging

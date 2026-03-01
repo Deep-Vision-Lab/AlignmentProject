@@ -60,9 +60,9 @@ class TextEmbedding(nn.Module):
     def text_to_indices(self, text):
         """
         Convert a string to a tensor of character indices.
-        Handles spaces based on include_spaces setting.
+        Spaces are preserved and mapped to SPACE_TOKEN_IDX.
         """
-        indices = [self.char_to_index(char) for char in text if char != ' ']
+        indices = [self.char_to_index(char) for char in text]
         
         return torch.tensor(indices, dtype=torch.long, device=device)
 

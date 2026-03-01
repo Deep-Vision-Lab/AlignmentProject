@@ -1,16 +1,16 @@
 #!/bin/bash
-# Check if loss_type argument is provided
+# Check if JOB_ID argument is provided
 if [ -z "$1" ]; then
-  echo "Usage: $0 <loss_type>"
+  echo "Usage: $0 <JOB_ID>"
   exit 1
 fi
-LOSS_TYPE="$1"
+JOB_ID="$1"
 
 echo " "
-echo "Cleaning the following directories under Weights/${LOSS_TYPE}:"
+echo "Cleaning the following directories under Weights/${JOB_ID}:"
 
 
 # Pattern to match files
 PATTERN="model_epoch_*.pth"
 # Find and delete matching files
-find "Weights/${LOSS_TYPE}" -type f -name "${PATTERN}" -exec rm -v {} \;
+find "Weights/${JOB_ID}" -type f -name "${PATTERN}" -exec rm -v {} \;

@@ -20,9 +20,9 @@ DIRS_TO_CLEAN=(
   "VectorsSub_plots"
 )
 
-echo "Cleaning the following directories under Results/${LOSS_TYPE}:"
+echo "Cleaning the following directories under Results:"
 for dir in "${DIRS_TO_CLEAN[@]}"; do
-  echo " - Results/${LOSS_TYPE}/${dir}"
+  echo " - Results/${dir}"
 done
 
 read -p "Are you sure you want to delete all contents in these directories? (y/n): " confirm
@@ -33,7 +33,7 @@ if [[ "$confirm" != "y" ]]; then
 fi
 
 for dir in "${DIRS_TO_CLEAN[@]}"; do
-  full_path="Results/${LOSS_TYPE}/${dir}"
+  full_path="Results/${dir}"
   if [ -d "$full_path" ]; then
     echo "Cleaning $full_path..."
     rm -rf "$full_path"/*

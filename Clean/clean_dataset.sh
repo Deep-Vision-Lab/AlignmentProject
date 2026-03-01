@@ -15,9 +15,9 @@ DIRS_TO_CLEAN=(
   "texts"
 )
 
-echo "Cleaning the following directories under Results/${LOSS_TYPE}:"
+echo "Cleaning the following directories under DataSet:"
 for dir in "${DIRS_TO_CLEAN[@]}"; do
-  echo " - DataSet/${LOSS_TYPE}/${dir}"
+  echo " - DataSet/${dir}"
 done
 
 read -p "Are you sure you want to delete all contents in these directories? (y/n): " confirm
@@ -28,7 +28,7 @@ if [[ "$confirm" != "y" ]]; then
 fi
 
 for dir in "${DIRS_TO_CLEAN[@]}"; do
-  full_path="DataSet/${LOSS_TYPE}/${dir}"
+  full_path="DataSet/${dir}"
   if [ -d "$full_path" ]; then
     echo "Cleaning $full_path..."
     rm -rf "$full_path"/*

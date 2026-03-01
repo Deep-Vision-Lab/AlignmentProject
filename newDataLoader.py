@@ -1,4 +1,5 @@
 import torch
+import random
 import torch.nn.functional as F # Added for interpolate and conv2d
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
@@ -94,29 +95,56 @@ def pad_matrices(matrices, smooth=False, kernel_size=5, sigma=1.0):
 # Define a custom collate function to handle variable-sized smith matrices
 def custom_collate_fn(batch):
     """
-    Custom collate function for contrastive learning.
-    Each sample contains:
-    - text1, img1 from sample i (aligned - positive pair)
-    - text2, img2 from sample j where j ≠ i (not aligned - negative pair)
+    Custom collate function for contrastive learning with in-batch negative sampling.
+    
+    Each dataset sample is a positive pair (text, img).
+    This collate function samples `num_negatives` in-batch negatives per sample.
+    
+    Returns:
+        texts: tuple of B strings (positive texts)
+        images: [B, C, H, W] tensor (positive images, on GPU)
+        neg_texts: list of B lists, each containing num_negatives negative text strings
+        neg_indices: [B, num_negatives] tensor of indices into the batch for negative images
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Unpack batch: text1, img1, text2, img2
-    texts_1, images_1, texts_2, images_2 = zip(*batch)
+    # Unpack batch: each sample is (text, img)
+    texts1, images1, texts2, images2 = zip(*batch)
 
     # Stack images on CPU first, then move to device
-    images_1 = torch.stack(images_1, dim=0)
-    images_2 = torch.stack(images_2, dim=0)
+    images = torch.stack(images1, dim=0)
+    images = images.to(device, non_blocking=True)
+    images.requires_grad_(True)
 
-    # Move to device
-    images_1 = images_1.to(device, non_blocking=True)
-    images_2 = images_2.to(device, non_blocking=True)
+    # Use actual batch size (last batch may be smaller than the global batch_size)
+    actual_batch_size = len(texts1)
+
+    # Sample num_negatives negative indices per sample (in-batch negatives)
+    neg_indices = []
+    for i in range(actual_batch_size):
+        available = [j for j in range(actual_batch_size) if j != i]
+        n_avail = len(available)
+        if n_avail >= num_negatives:
+            sampled = random.sample(available, num_negatives)
+        else:
+            # If batch is too small, sample with replacement
+            sampled = [random.choice(available) for _ in range(num_negatives)]
+        neg_indices.append(sampled)
     
-    # Set requires_grad
-    images_1.requires_grad_(True)
-    images_2.requires_grad_(True)
 
-    return texts_1, images_1, texts_2, images_2
+    pos_texts = texts1  # Positive texts are the original batch texts
+    # Gather negative texts using the sampled indices, with random cropping for length diversity
+    def _maybe_crop(text):
+        """Randomly crop negative text to 50-100% of its length to create length diversity."""
+        if random.random() < 0.3 and len(text) > 3:  # 30% chance of cropping
+            crop_ratio = random.uniform(0.5, 0.9)
+            crop_len = max(2, int(len(text) * crop_ratio))
+            start = random.randint(0, len(text) - crop_len)
+            return text[start:start + crop_len]
+        return text
+    neg_texts = [[_maybe_crop(texts1[j]) for j in list(neg_indices[i])] for i in range(actual_batch_size)]
+
+    return images, pos_texts, neg_texts
 
 
 # Create DataLoaders for training and testing
@@ -137,11 +165,11 @@ test_dataloader = DataLoader(
 if __name__ == "__main__":
     # Test the DataLoader
     for batch in train_dataloader:
-        texts_1, images_1, texts_2, images_2 = batch
-        print(f'Batch texts_1 length: {len(texts_1)}')
-        print(f'Batch images_1 shape: {images_1.shape}')
-        print(f'Batch texts_2 length: {len(texts_2)}')
-        print(f'Batch images_2 shape: {images_2.shape}')
-        print(f'Note: text1/img1 are aligned (from sample i)')
-        print(f'      text2/img2 are from sample j (j ≠ i) - negative samples')
+        texts, images, neg_texts, neg_indices = batch
+        print(f'Batch texts length: {len(texts)}')
+        print(f'Batch images shape: {images.shape}')
+        print(f'Neg texts per sample: {len(neg_texts[0])} (num_negatives={num_negatives})')
+        print(f'Neg indices shape: {neg_indices.shape}')
+        print(f'Note: texts/images are aligned positive pairs')
+        print(f'      neg_texts/neg_indices are in-batch negative samples')
         break  # Just test one batch

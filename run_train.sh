@@ -6,13 +6,10 @@
 
 JOB_ID=${1:-localRun}
 
-# Extract loss_type from Parameters.py
-LOSS_TYPE=$(python3 -c "import Parameters; print(Parameters.loss_type)")
 
 echo "====================================="
 echo "Parameters"
 echo "====================================="
-echo "Loss Type: ${LOSS_TYPE}"
 echo "Job ID: ${JOB_ID}"
 echo ""
 
@@ -25,7 +22,7 @@ if [ "${DEBUG_MODE}" = "True" ]; then
     echo "====================================="
 
     # Run clean_dirs_train.sh
-    bash ./Clean/clean_dirs_train.sh "${LOSS_TYPE}"
+    bash ./Clean/clean_dirs_train.sh "${JOB_ID}"
 
     echo ""
     echo "====================================="
@@ -33,7 +30,7 @@ if [ "${DEBUG_MODE}" = "True" ]; then
     echo "====================================="
 
     # Run clean_weights.sh
-    bash ./Clean/clean_weights.sh "${LOSS_TYPE}"
+    bash ./Clean/clean_weights.sh "${JOB_ID}"
 
     echo ""
     echo "Cleaning completed!"

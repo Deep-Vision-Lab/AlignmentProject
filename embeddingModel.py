@@ -274,8 +274,6 @@ class EmbeddingModel(nn.Module):
                 dropout=dropout,
                 bidirectional=True
             ).to(device)
-        else:
-            self.bilstm_context = None
         
         # ============================================================================
         # OPTIMIZATION 1: Positional Encoding (after BiLSTM, before Transformer)
@@ -300,74 +298,67 @@ class EmbeddingModel(nn.Module):
 
 
         
-    def _process_cnn_branch(self, tokens_a, tokens_b, show_dims=False):
+    def _process_cnn_branch(self, tokens_a, show_dims=False):
         """Process CNN branch"""
         batches_num, windows_num, Channels, H, W = tokens_a.shape
         
         # Reshape patches
         reshaped_tokens_a = tokens_a.reshape(batches_num * windows_num, Channels, H, W)
-        reshaped_tokens_b = tokens_b.reshape(batches_num * windows_num, Channels, H, W)
         if show_dims: 
-            print(f"Patches after reshaping: {reshaped_tokens_a.shape}, {reshaped_tokens_b.shape}")
+            print(f"Patches after reshaping: {reshaped_tokens_a.shape}")
         
-        del tokens_a, tokens_b
+        del tokens_a
     
         # Standard forward pass
         encoded_tokens_a = self.cnn_encoder(reshaped_tokens_a)
-        encoded_tokens_b = self.cnn_encoder(reshaped_tokens_b)
 
         if show_dims: 
-            print(f"Tokens after CNN: {encoded_tokens_a.shape}, {encoded_tokens_b.shape}")
+            print(f"Tokens after CNN: {encoded_tokens_a.shape}")
         
-        del reshaped_tokens_a, reshaped_tokens_b
+        del reshaped_tokens_a
         
-        return encoded_tokens_a, encoded_tokens_b, batches_num, windows_num
+        return encoded_tokens_a, batches_num, windows_num
 
-    def forward(self, image_a, image_b, show_dims=False, debug=False, timer=None):
+    def forward(self, image_a, show_dims=False, debug=False, timer=None):
         # Use provided timer or global timer
         t = timer if timer is not None else img_embed_timer
         
         # ==================== PHASE: Sliding Window (Patch Extraction) ====================
         t.start('img_1a_sliding_window')
         tokens_a = sliding_window(image_a, self.window_size, self.stride, debug_mode=debug).to(device)
-        tokens_b = sliding_window(image_b, self.window_size, self.stride, debug_mode=debug).to(device)
         t.stop('img_1a_sliding_window')
         
         if show_dims: 
-            print(f"Patches: {tokens_a.shape}, {tokens_b.shape}")
+            print(f"Patches: {tokens_a.shape}")
         
         batches_num, windows_num = tokens_a.shape[:2]
         
         if self.use_flip:
             # Flip tokens to have shape [B, num_patches, C, H, W] for CNN processing
             tokens_a = torch.flip(tokens_a, dims=[1])
-            tokens_b = torch.flip(tokens_b, dims=[1])
         
         # ==================== PHASE: CNN Encoding ====================
         t.start('img_1c_cnn_encoding')
-        encoded_tokens_a, encoded_tokens_b, batches_num, windows_num = self._process_cnn_branch(
-            tokens_a, tokens_b, show_dims
+        encoded_tokens_a, batches_num, windows_num = self._process_cnn_branch(
+            tokens_a, show_dims
         )
         t.stop('img_1c_cnn_encoding')
         
         # Reshape to final output
         features_vector_a = encoded_tokens_a.view(batches_num, windows_num, self.vector_size)
-        features_vector_b = encoded_tokens_b.view(batches_num, windows_num, self.vector_size)
-        del encoded_tokens_a, encoded_tokens_b
+        del encoded_tokens_a
         
         # ==================== PHASE: Positional Encoding (BEFORE BiLSTM) ====================
         # Inject position info so BiLSTM can distinguish "1st alif" from "3rd alif"
         t.start('img_1e_positional_encoding')
         if self.use_positional_encoding:
             features_vector_a = self.positional_encoding(features_vector_a)
-            features_vector_b = self.positional_encoding(features_vector_b)
         t.stop('img_1e_positional_encoding')
         
         # ==================== PHASE: BiLSTM Context ====================
         t.start('img_1f_bilstm')
         if self.use_bilstm:
             features_vector_a = self.bilstm_context(features_vector_a)
-            features_vector_b = self.bilstm_context(features_vector_b)
         t.stop('img_1f_bilstm')
         
-        return features_vector_a, features_vector_b
+        return features_vector_a

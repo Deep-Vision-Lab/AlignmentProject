@@ -154,7 +154,7 @@ def compute_accuracy(pred_path, target_path, threshold=0.5):
 
 
 def save_model_weights(model, epoch, job_id):
-    weights_dir = os.path.join(os.path.dirname(__file__), "Weights", loss_type, job_id)
+    weights_dir = os.path.join(os.path.dirname(__file__), "Weights", job_id)
     os.makedirs(weights_dir, exist_ok=True)
     weights_path = os.path.join(weights_dir, f"model_epoch_{epoch}.pth")
     torch.save(model.state_dict(), weights_path)
@@ -169,99 +169,107 @@ def check_grad(grad):
 
 # second line of parameters is for saving visualizations during debugging 
 def compute_batch_loss(imageEmbed, textEmbed, 
-                       text1, text2, image1, image2, 
+                       images, pos_texts, neg_texts,
                        criterion,
                        epoch=0, batch_idx=0, dataloader_length=0, debug=False, timer=None):
     """
-    Compute batch loss for text-image alignment.
+    Compute batch loss for text-image alignment with multiple in-batch negatives.
     
     Architecture: CNN + BiLSTM for images, simple nn.Embedding for text.
     - Image embeddings have context (BiLSTM sees neighboring strokes)
     - Text embeddings are context-free (same letter = same embedding)
     
-    This "Label-Aware" design ensures repeated letters (e.g., "A B A") 
-    have identical embeddings, allowing Soft-DTW to correctly align 
-    image patches to ALL matching text positions.
+    For each positive pair (text_i, img_i), we compute:
+    - Positive: sim(text_i, img_i) → DTW cost should be LOW
+    - Negative (wrong img): sim(text_i, img_j) → DTW cost should be HIGH  (x num_negatives)
+    - Negative (wrong txt): sim(text_j, img_i) → DTW cost should be HIGH  (x num_negatives)
+    
+    VRAM Efficiency: All images are embedded ONCE via CNN+BiLSTM. Negative image
+    embeddings are gathered by index (no extra CNN forward pass).
     """
     # Use global timer if none provided
     if timer is None:
         timer = global_timer
 
     # ==================== PHASE 1: Image Embedding (CNN + BiLSTM) ====================
-    timer.start('1_image_embedding_total')
-    tokens_a, tokens_b = imageEmbed(image1, image2, show_dims=False, timer=timer)
-    timer.stop('1_image_embedding_total')
-    
+    # Embed ALL images in the batch ONCE — negatives reuse these via indexing
+    timer.start('1_image_embedding')
+    img_emb = imageEmbed(images, show_dims=False, timer=timer)  # [B, seq_len, vec_size]
+    timer.stop('1_image_embedding')
     
     # ==================== PHASE 2: Text Embedding ====================
     timer.start('2_text_embedding')
-    embedded_text1 = textEmbed(text1)  # Shape: (batch_size, seq_len, embedding_dim)
-    embedded_text2 = textEmbed(text2)  # Shape: (batch_size, seq_len, embedding_dim)
+    pos_text_emb = textEmbed(list(pos_texts))  # [B, text_len, vec_size]
     timer.stop('2_text_embedding')
 
     # ==================== PHASE 3: Normalization ====================
     timer.start('3_normalization')
-    normalized_text1 = normalize_func(embedded_text1)  # Shape: (batch_size, seq_len, embedding_dim)
-    normalized_text2 = normalize_func(embedded_text2)  # Shape: (batch_size, seq_len, embedding_dim)
-    normalized_tokens_a = normalize_func(tokens_a)  # Shape: (batch_size, seq_len, vector_size)
-    normalized_tokens_b = normalize_func(tokens_b)
+    norm_pos_text = normalize_func(pos_text_emb)    # [B, text_len, vec_size]
+    norm_img = normalize_func(img_emb)      # [B, seq_len, vec_size]
     timer.stop('3_normalization')
-    # print(f'normalized_text1 shape: {normalized_text1.sum(dim=0)}, normalized_tokens_a: {normalized_tokens_a.sum(dim=0)}', flush=True)
-    # print(f'normalized_text2 shape: {normalized_text2.sum(dim=0)}, normalized_tokens_b: {normalized_tokens_b.sum(dim=0)}', flush=True)
-    # ==================== PHASE 4: Similarity Matrix (BMM) ====================
-    timer.start('4_bmm_img_txt_similarity')
-    similarity_img1_pos = torch.bmm(normalized_text1, normalized_tokens_a.transpose(1, 2)) # Match
-    similarity_img2_pos = torch.bmm(normalized_text2, normalized_tokens_b.transpose(1, 2)) # Match
-    similarity_img1_neg = torch.bmm(normalized_text2, normalized_tokens_a.transpose(1, 2)) # Mismatch
-    similarity_img2_neg = torch.bmm(normalized_text1, normalized_tokens_b.transpose(1, 2)) # Mismatch
-    timer.stop('4_bmm_img_txt_similarity')
-    
-#---------------------------------------------------------------------------------------------------------
-    
-    # ==================== PHASE 7: Loss Computation ====================
-    timer.start('5_loss_computation')
-    loss, loss_dict = criterion(
-        similarity_img1_pos,
-        similarity_img2_pos,
-        similarity_img1_neg,
-        similarity_img2_neg
-    )
-    loss_value = loss_dict['total']
-    timer.stop('5_loss_computation')
-    
-    ######################################################################################################################################
-    # Debugging: Save visualizations for the last batch every 10 epochs
-    if debug and batch_idx == 0 and epoch % 10 == 0:
-        debug_imgText1 = similarity_img1_pos
-        debug_imgText2 = similarity_img2_pos
 
-        # indexing only the first 2 samples in the batch for visualization
-        text1_subset = [text1[i] for i in range(min(2, len(text1)))]
-        text2_subset = [text2[i] for i in range(min(2, len(text2)))]
-        image1_subset = image1[:min(2, image1.size(0))]
-        image2_subset = image2[:min(2, image2.size(0))]
-        # Skip TextSimilarGT_subset for contrastive learning (when txt1_txt2_similar_GT is None)
-        similar_TxtImg1 = debug_imgText1[:min(2, debug_imgText1.size(0))]
-        similar_TxtImg2 = debug_imgText2[:min(2, debug_imgText2.size(0))]
+    # ==================== PHASE 4: Positive Similarity ====================
+    timer.start('4_positive_similarity')
+    sim_pos = torch.einsum('btv,bsv->bts', norm_pos_text, norm_img)  # [B, text_len, seq_len]
+    timer.stop('4_positive_similarity')
+
+    # ==================== PHASE 5: Negative Similarities (stack + single einsum) ====================
+    timer.start('5_negative_similarities')
+
+    # 5a. Embed & normalize all negatives
+    neg_text_embs = []   # list of [B, neg_text_len_k, vec_size]
+    for k in range(num_negatives):
+        kth_neg_texts = [neg_texts[i][k] for i in range(len(neg_texts))]
+        neg_text_emb_k = textEmbed(kth_neg_texts)            # [B, neg_text_len_k, vec_size]
+        norm_neg_text_k = normalize_func(neg_text_emb_k)     # [B, neg_text_len_k, vec_size]
+        neg_text_embs.append(norm_neg_text_k)
+        del kth_neg_texts, neg_text_emb_k
+    # 5b. Stack all negatives: [B, K, neg_text_len, vec_size]
+    stacked_neg = torch.stack(neg_text_embs, dim=1)
+    # 5c. Single einsum over all negatives at once
+    sim_neg_all = torch.einsum('bktv,bsv->bkts', stacked_neg, norm_img)  # [B, K, neg_text_len, seq_len]
+    # 5d. Compute loss with hardest-negative mining (pass all K negatives at once)
+    total_loss, loss_dict = criterion(sim_pos, sim_neg_all)  # sim_neg_all: [B, K, neg_text_len, seq_len]
+
+    del neg_text_embs, stacked_neg, sim_neg_all
+    torch.cuda.empty_cache()
+
+    timer.stop('5_negative_similarities')
+
+    # ==================== PHASE 6: Loss ====================================================
+    timer.start('6_loss_computation')
+    loss_value = total_loss.item()
+    timer.stop('6_loss_computation')
+    
+    # Log cost breakdown for diagnosing collapse
+    if batch_idx % 10 == 0:
+        print(f"  [DTW-NLL] pos={loss_dict['cost_pos']:.2f}  neg={loss_dict['cost_neg']:.2f}  "
+              f"norm_pos={loss_dict['norm_pos']:.4f}  norm_neg={loss_dict['norm_neg']:.4f}  "
+              f"gap={loss_dict['gap']:.4f}  active={loss_dict['active_triplets']:.2%}  "
+              f"loss={loss_value:.4f}", flush=True)
+
+    ######################################################################################################################################
+    # Debugging: Save visualizations for the first batch every 10 epochs
+    if debug and batch_idx == 0 and epoch % 10 == 0:
+        # Use positive similarity for visualization
         save_debug_visualizations(
-            imageEmbed, 
-            text1_subset, text2_subset, image1_subset, image2_subset,
-            similar_TxtImg1, similar_TxtImg2,
+            imageEmbed,
+            pos_texts,
+            images, 
+            sim_pos,
             epoch,
-            job_id
+            job_id=job_id
         )
-        
-        del debug_imgText1, debug_imgText2
+
         # Save model weights
         save_model_weights(imageEmbed, epoch, job_id)
-
     ######################################################################################################################################
 
-    # Delete tensors to free memory
-    del tokens_a, tokens_b
+    # Cleanup to free VRAM
+    del img_emb, pos_text_emb, norm_pos_text, norm_img, sim_pos
     torch.cuda.empty_cache()
-    
-    return loss, loss_value
+
+    return total_loss
 
 
 
@@ -279,6 +287,13 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
     params_to_train = list(imageEmbedding.parameters())
     
     optimizer = optim.Adam(params_to_train, lr=learning_rate)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=5, verbose=True
+    )
+    
+    # Gamma annealing for Soft-DTW
+    current_gamma = contrastive_soft_dtw_gamma
+    
     loss_lst = []
     
     # Enable memory monitoring
@@ -289,6 +304,11 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
         # Start epoch timer
         epoch_start_time = time.time()
         
+        # Update gamma for Soft-DTW annealing
+        if hasattr(criterion, 'gamma'):
+            criterion.gamma = current_gamma
+            print(f"Epoch {epoch+1} - Soft-DTW gamma: {current_gamma:.6f}", flush=True)
+        
         # Ensure model is in training mode at start of each epoch
         imageEmbedding.train()
         
@@ -298,53 +318,50 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
         train_loss = 0.0
         train_accuracy = 0.0
 
-        for batch_idx, (text1, image1, text2, image2) in enumerate(trainLoader):
+        for batch_idx, (images, pos_texts, neg_texts) in enumerate(trainLoader):
             # Timing: Data transfer to GPU
-            # Note: text1/image1 are aligned (from sample i - positive pair)
-            #       text2/image2 are from sample j (j ≠ i - negative pair for contrastive learning)
+            # Note: images are already on GPU from collate, but ensure non_blocking
             global_timer.start('0_data_to_gpu')
-            image1 = image1.to(device, non_blocking=True)
-            image2 = image2.to(device, non_blocking=True)
-            text1 = list(text1)
-            text2 = list(text2)
+            images = images.to(device, non_blocking=True)
+            pos_texts = list(pos_texts)
+            neg_texts = list(neg_texts)
             global_timer.stop('0_data_to_gpu')
             
             optimizer.zero_grad()
   
-            # Compute loss using shared function (timing is inside)
-            # Note: No textSimilar matrix for contrastive learning
-            path_loss, loss_value = compute_batch_loss(
+            # Compute loss with in-batch negatives
+            loss = compute_batch_loss(
                 imageEmbedding, textEmbedding, 
-                text1, text2, image1, image2, 
+                images, pos_texts, neg_texts,
                 criterion,
                 epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader),
                 debug=debug, timer=global_timer
             )
             
 
-            train_loss += loss_value
+            train_loss += loss.item()
 
             # Backpropagation and optimizer step
             global_timer.start('9_backward')
-            path_loss.backward()
+            loss.backward()
             global_timer.stop('9_backward')
             
             global_timer.start('10_optimizer_step')
             optimizer.step()
             global_timer.stop('10_optimizer_step')
 
-            print(f"Epoch {epoch+1}, Batch {batch_idx+1}, Loss: {train_loss / (batch_idx + 1):.4f}", flush=True)
+
+            print(f"Epoch {epoch+1}, Batch {batch_idx+1}, Loss: {loss.item():.4f}", flush=True)
             # Optionally print gradients for debugging
             if show_gradients:
-                if image1.grad is not None and image2.grad is not None:
-                    print(f"Epoch {epoch+1}, Batch {batch_idx+1} - image1 gradient: {image1.grad.sum():.4f}, image2 gradient: {image2.grad.sum():.4f}", flush=True)
+                if images.grad is not None:
+                    print(f"Epoch {epoch+1}, Batch {batch_idx+1} - images gradient: {images.grad.sum():.4f}", flush=True)
 
             # Final cleanup
-            del path_loss
-            del image1, image2
+            del images
+            del loss
             torch.cuda.empty_cache()
 
-        print(f"Epoch {epoch+1} completed. Average Loss: {train_loss / len(trainLoader):.4f}", flush=True)
         train_loss = train_loss / len(trainLoader)
         train_accuracy = train_accuracy / len(trainLoader)
         print(f'Epoch {epoch+1} - Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}', flush=True)
@@ -357,24 +374,23 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
         val_loss = 0.0
         val_accuracy = 0.0
         with torch.no_grad():
-            for batch_idx, (text1, image1, text2, image2) in enumerate(validLoader):
+            for batch_idx, (images, pos_texts, neg_texts) in enumerate(validLoader):
                 # Ensure all data is on correct device
-                image1 = image1.to(device)
-                image2 = image2.to(device)
-                text1 = list(text1)
-                text2 = list(text2)
+                images = images.to(device)
+                pos_texts = list(pos_texts)
+                neg_texts = list(neg_texts)
                 
                 # Compute loss using shared function
-                _, loss_value = compute_batch_loss(
+                loss = compute_batch_loss(
                     imageEmbedding, textEmbedding,
-                    text1, text2, image1, image2, 
+                    images, pos_texts, neg_texts,
                     criterion=criterion
                 )
                 
-                val_loss += loss_value
+                val_loss += loss.item()
 
                 # Final cleanup
-                del image1, image2
+                del images
                 torch.cuda.empty_cache()
         
         val_loss = val_loss / len(validLoader)
@@ -388,6 +404,12 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
         epoch_seconds = epoch_duration % 60
         print(f'Epoch {epoch+1} completed in {epoch_minutes}m {epoch_seconds:.2f}s', flush=True)
         print('=' * 60, flush=True)
+        
+        # Step the LR scheduler based on validation loss
+        scheduler.step(val_loss)
+        
+        # Decay gamma for next epoch
+        current_gamma = max(contrastive_soft_dtw_gamma_min, current_gamma * contrastive_soft_dtw_gamma_decay)
         
         # Log train and validation losses and accuracies to wandb
         if debug_wandb:
@@ -418,8 +440,6 @@ if __name__ == '__main__':
     # Text embeddings are context-free: same letter = same embedding (Label-Aware design)
     textEmbedding = TextEmbedding(embedding_dim=vector_size)
     textEmbedding = textEmbedding.to(device)
-    # create the space token vector (detach to avoid graph retention across batches)
-    space_vector = textEmbedding(' ').detach()
 
     imageEmbedding = EmbeddingModel(
         window_size=window_size,
@@ -439,16 +459,16 @@ if __name__ == '__main__':
             param.register_hook(check_grad)
 
     
-    criterion = Loss_choice(loss_type)
+    criterion = Loss_choice()
     
     # Log architecture optimizations
     print(f"\n=== Architecture: CNN + BiLSTM ===")
     print(f"[OPT 1] job_id: {job_id}")
-    print(f"[OPT 2] Loss Type: {loss_type}")
-    print(f"[OPT 3] BiLSTM Context: {use_bilstm} (layers={bilstm_layers})")
-    print(f"[OPT 4] Sliding Window Overlap: stride_ratio={stride_ratio}")
-    print(f"[OPT 5] Sakoe-Chiba Bandwidth: ratio={sakoe_chiba_bandwidth_ratio}")
-    print(f"[OPT 6] Positional Encoding: {use_positional_encoding} (type={positional_encoding_type}, applied BEFORE BiLSTM)")
+    print(f"[OPT 2] BiLSTM Context: {use_bilstm} (layers={bilstm_layers})")
+    print(f"[OPT 3] Sliding Window Overlap: stride_ratio={stride_ratio}")
+    print(f"[OPT 4] Sakoe-Chiba Bandwidth: ratio={sakoe_chiba_bandwidth_ratio}")
+    print(f"[OPT 5] Positional Encoding: {use_positional_encoding} (type={positional_encoding_type}, applied BEFORE BiLSTM)")
+    print(f"[OPT 6] In-Batch Negatives: num_negatives={num_negatives}")
     print(f"================================================\n")
     
     # try:
