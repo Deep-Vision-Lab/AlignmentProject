@@ -5,7 +5,7 @@ Test script for Soft-DTW Loss implementation.
 
 import torch
 import torch.nn.functional as F
-from LossFunctionWithHelpers import SoftDTWLoss, soft_dtw_loss, soft_dtw_alignment_loss
+from LossFunctionWithHelpers import *
 
 def test_soft_dtw_basic():
     """Test basic Soft-DTW functionality."""

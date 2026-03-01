@@ -506,8 +506,7 @@ def main():
         stride=window_size,
         vector_size=vector_size,
         device=use_device,
-        use_flip=False,
-        use_space_gate=False  # Disable space gate for inference without text model
+        use_flip=False
     ).to(use_device)
     
     # Load weights if provided
@@ -532,7 +531,8 @@ def main():
     # Compute embeddings
     print("\n[3/5] Computing patch embeddings...")
     with torch.no_grad():
-        embeddings_a, embeddings_b = model(image1, image2, show_dims=True)
+        embeddings_a = model(image1, show_dims=True)
+        embeddings_b = model(image2, show_dims=True)
         patches_a = sliding_window(image1, window_size, window_size).squeeze(0)
         patches_b = sliding_window(image2, window_size, window_size).squeeze(0)
     
@@ -564,7 +564,7 @@ def main():
         print(f"  Applying threshold: {args.threshold}")
         sim_for_alignment = torch.where(
             similarity_matrix > args.threshold,
-            similarity_matrix,
+            1.0,
             torch.tensor(0.0, device=use_device)
         )
     else:
@@ -666,4 +666,4 @@ if __name__ == "__main__":
     main()
 
 
-# python test_scripts/similarity_alignment_heatmap.py --image1 DataSet/Synthetic_Arabic/images/img1_1.png --image2 DataSet/Synthetic_Arabic/images/img2_1.png --output-dir Results/SimilarityMatrices --threshold 0.5
+# python test_scripts/AlignmentTestVisualize.py --image1 DataSet/Synthetic_Arabic/images/img1_1.png --image2 DataSet/Synthetic_Arabic/images/img2_1.png --output-dir Results/AlignmentVisualize --threshold 0.5

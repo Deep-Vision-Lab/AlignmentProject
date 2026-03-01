@@ -19,6 +19,10 @@ import matplotlib.pyplot as plt
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 import argparse
 import os
+import sys
+
+# Add parent directory to path to allow imports from root
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from Parameters import *
 from embeddingModel import EmbeddingModel, sliding_window
@@ -138,7 +142,6 @@ def compute_similarity_matrix_for_pair(
     image2_path: str,
     stride: int = window_size,
     vector_size: int = 128,
-    model_arch: str = 'CNN',
     model: EmbeddingModel = None,
     device: str = 'cuda'
 ) -> tuple:
@@ -171,12 +174,10 @@ def compute_similarity_matrix_for_pair(
     
     # Create or use provided embedding model
     if model is None:
-        print(f"Creating embedding model with architecture: {model_arch}")
         model = EmbeddingModel(
             window_size=window_size,
             stride=window_size,
             vector_size=vector_size,
-            model_arch=model_arch,
             device=device
         ).to(device)
         model.eval()
@@ -184,7 +185,9 @@ def compute_similarity_matrix_for_pair(
     # Get embeddings for both images
     print(f"Computing embeddings...")
     with torch.no_grad():
-        embeddings_a, embeddings_b = model(image1, image2, show_dims=True)
+        # Process images separately
+        embeddings_a = model(image1, show_dims=True)
+        embeddings_b = model(image2, show_dims=True)
         
         # Extract patches for visualization
         patches_a = sliding_window(image1, window_size, window_size).squeeze(0)
@@ -396,18 +399,16 @@ def main():
     print(f"  Image 1: {image1_path}")
     print(f"  Image 2: {image2_path}")
     print(f"  Window size: {args.window_size}")
-    print(f"  Stride: {window_size}")
+    print(f"  Stride: {args.window_size}")
     print(f"  Model architecture: {args.model_arch}")
     
     # Compute similarity matrix
     similarity_matrix, patches_a, patches_b = compute_similarity_matrix_for_pair(
         image1_path=image1_path,
         image2_path=image2_path,
-        window_size=window_size,
-        stride=window_size,
-        vector_size=vector_size,
-        model_arch=model_arch,
-        device=device
+        stride=args.window_size,
+        vector_size=args.vector_size,
+        device=args.device
     )
     
     num_patches_1 = patches_a.shape[0]
@@ -452,7 +453,7 @@ def main():
         
         print("Computing NW score matrix...")
         # compute_nw_score_matrix returns [N+1, M+1]
-        H_full = compute_nw_score_matrix(sim_thresholded, gap_penalty=gapScore)
+        H_full = compute_nw_score_matrix(sim_thresholded, gap_penalty=-10)
         # Get the matrix used for alignment visualization and path extraction (N x M)
         H_vis = H_full[1:, 1:]
         
@@ -460,10 +461,10 @@ def main():
         # compute_traceback_path expects (score_matrix, similarity_matrix, ...)
         path, _ = compute_traceback_path(
             H_vis, 
-            sim_thresholded, 
-            match_score=matchScore, 
-            miss_score=mismatchScore, 
-            gap_penalty=gapScore
+            sim_thresholded,
+            match_score=10,
+            miss_score=-27,
+            gap_penalty=-10
         )
         
         # Visualize Score Matrix and Path

@@ -184,65 +184,50 @@ def saveWindowsAsGrid(windows, output_path, title="Windows Grid", cols=8):
     print(f"Saved windows grid to {output_path}")
 
 
-def save_debug_visualizations(model, text1, text2, image1, image2,
-                            Similar_TxtImg1, Similar_TxtImg2,
-                            epoch, job_id):
+def save_debug_visualizations(model, text1, image1, Similar_TxtImg1, epoch, job_id, max_samples=2):
     # Prepare directories for saving visualizations
-    job_dir = f'TrainResults/{loss_type}/{job_id}'
+    job_dir = f'TrainResults/{job_id}'
     os.makedirs(job_dir, exist_ok=True)
+    
+    # Limit to max_samples
+    n = min(image1.size(0), max_samples)
+    image1 = image1[:n]
+    text1 = text1[:n]
+    Similar_TxtImg1 = Similar_TxtImg1[:n]
     
     # saving image1 and image2.
     lines_dir = f'{job_dir}/InputImages/Epoch_{epoch}'
     os.makedirs(lines_dir, exist_ok=True)
-    for i in range(image1.size(0)):
+    for i in range(n):
         lines_dir_per_item = f'{lines_dir}/{i}'
         os.makedirs(lines_dir_per_item, exist_ok=True)
         saveImageTensorAsPNG(image1[i], f'{lines_dir_per_item}/Image1.png')
-        saveImageTensorAsPNG(image2[i], f'{lines_dir_per_item}/Image2.png')
-        
-        # Save sliding windows for image1 and image2
-        # saveSlidingWindowsWithOverlap(
-        #     image=image1[i],
-        #     output_path=f'{lines_dir_per_item}/Image1_SlidingWindows.png',
-        #     window_size=model.window_size,
-        #     title="Image1 Sliding Windows (Half Overlap)",
-        #     cols=8
-        # )
-        # saveSlidingWindowsWithOverlap(
-        #     image=image2[i],
-        #     output_path=f'{lines_dir_per_item}/Image2_SlidingWindows.png',
-        #     window_size=model.window_size,
-        #     title="Image2 Sliding Windows (Half Overlap)",
-        #     cols=8
-        # )
 
     similar_IMGTXT_epoch_dir = f'{job_dir}/similarityMatricesPerEpoch/Epoch_{epoch}'
     os.makedirs(similar_IMGTXT_epoch_dir, exist_ok=True)
 
     # Clone tensors for visualization to avoid affecting gradients
     debug_image1 = image1.detach().cpu()
-    debug_image2 = image2.detach().cpu()
     debug_Similar_TxtImg1 = Similar_TxtImg1.detach().cpu()
-    debug_Similar_TxtImg2 = Similar_TxtImg2.detach().cpu()
 
     # Save heatmap visualizations
     saveHeatmapPlots(
-        text1, text2,
-        debug_image1, debug_image2,
+        text1,
+        debug_image1,
         similar_IMGTXT_epoch_dir,
-        debug_Similar_TxtImg1, debug_Similar_TxtImg2,
+        debug_Similar_TxtImg1,
     )
 
-    del debug_image1, debug_image2
+    del debug_image1
     del similar_IMGTXT_epoch_dir
-    del debug_Similar_TxtImg1, debug_Similar_TxtImg2
+    del debug_Similar_TxtImg1
 
 
 
 
-def saveHeatmapPlots(text1, text2, image1, image2, 
+def saveHeatmapPlots(text1, image1, 
                     similarity_epoch_dir,
-                    debug_Similar_TxtImg1, debug_Similar_TxtImg2):
+                    debug_Similar_TxtImg1):
     
     for i in range(image1.size(0)): # Iterate through items in the current batch
         similarity_dir_per_batch = f'{similarity_epoch_dir}/{i}'
@@ -250,7 +235,6 @@ def saveHeatmapPlots(text1, text2, image1, image2,
 
         # Generate patches for visualization
         image1_i = image1[i].unsqueeze(0)
-        image2_i = image2[i].unsqueeze(0)
         
         # Calculate stride using the same logic as in train.py to match model output dimensions
         # Use stride_ratio if available from Parameters.py, otherwise default to 1.0 (no overlap)
@@ -261,18 +245,12 @@ def saveHeatmapPlots(text1, text2, image1, image2,
         # print(f"DEBUG: Visualization using window={model_window_size}, stride={model_stride}")
         
         windows_img1 = sliding_window(image1_i, model_window_size, model_stride).squeeze(0)
-        windows_img2 = sliding_window(image2_i, model_window_size, model_stride).squeeze(0)
 
         y_image = torch.flip(windows_img1, dims=[0]) # From image1, for Y-axis
-        # Flip x-axis patches vertically (dim 2) in addition to sequence reversal (dim 0)
-        # matches user request to "make a flip for the image patches on the x-axis"
-        x_image = torch.flip(windows_img2, dims=[0]) # From image2, for X-axis
 
         # Prepare text labels (Full and Stripped versions)
         y_text_full = list(text1[i])
-        x_text_full = list(text2[i])
         y_text_stripped = list(text1[i].replace(" ", ""))
-        x_text_stripped = list(text2[i].replace(" ", ""))
 
         # Helper to select correct labels based on matrix dimension
         def get_labels(dim_len, full_labels, stripped_labels):
@@ -287,14 +265,6 @@ def saveHeatmapPlots(text1, text2, image1, image2,
         h_sim1, _ = debug_Similar_TxtImg1[i].shape
         y_text_sim1 = get_labels(h_sim1, y_text_full, y_text_stripped)
         
-        h_sim2, _ = debug_Similar_TxtImg2[i].shape
-        y_text_sim2 = get_labels(h_sim2, y_text_full, y_text_stripped) # Using y_text_full/stripped because logic below used y_text?
-        # WAIT: In original code:
-        # VisualizeMatrixWithAxis(... cur_patches_y=y_text, cur_patches_x=y_image) for Image1-Text1
-        # VisualizeMatrixWithAxis(... cur_patches_y=y_text, cur_patches_x=x_image) for Image2-Text2
-        # Use x_text for Image2-Text2 (Text2 maps to Image2)
-        x_text_sim2 = get_labels(h_sim2, x_text_full, x_text_stripped)
-
         # Visualize similarity matrix instead of raw matrices
         VisualizeMatrixWithAxis(
             matrix_data=debug_Similar_TxtImg1[i],
@@ -303,16 +273,9 @@ def saveHeatmapPlots(text1, text2, image1, image2,
             cur_patches_y=y_text_sim1,
             cur_patches_x=y_image
         )
-        VisualizeMatrixWithAxis(
-            matrix_data=debug_Similar_TxtImg2[i],
-            image_path=f"{similarity_dir_per_batch}/IMG_TXT_Similarity_Image2_Text2.png",
-            title="Image2-Text2 Similarity Heatmap",
-            cur_patches_y=x_text_sim2, # Corrected to Text2
-            cur_patches_x=x_image
-        )
 
-        del windows_img1, windows_img2, y_image, x_image
-        del image1_i, image2_i
+        del windows_img1, y_image
+        del image1_i
 
 
 

@@ -38,20 +38,25 @@ class ContrastiveSoftDTW(nn.Module):
         bandwidth (int): Sakoe-Chiba bandwidth for pruning
     """
     
-    def __init__(self, gamma=0.1, use_cuda=True, bandwidth=0.0):
+    def __init__(self, gamma=0.1, use_cuda=True, bandwidth=0.0, margin=10.0):
         super(ContrastiveSoftDTW, self).__init__()
         self.gamma = gamma
         self.use_cuda = use_cuda
         self.bandwidth = bandwidth
+        self.margin = margin
     
 
     def _compute_dtw_on_similarity(self, sim_matrix: "torch.Tensor") -> "torch.Tensor":
         """
         Compute Soft-DTW directly on a pre-computed similarity matrix.
         
-        The SoftDTW expects distance matrices (lower = more similar).
-        We convert similarity to distance: dist = 1 - sim
-        This ensures non-negative distances (0 = perfect match, 2 = worst match for cosine sim).
+        The SoftDTW expects distance/cost matrices (lower = more similar).
+        We convert similarity to negative log-likelihood:
+            p(img_m | text_n) = softmax(sim[b, n, :], dim=-1)
+            dist = -log(p) = -log_softmax(sim, dim=-1)
+        
+        This gives a proper probabilistic cost: aligned pairs have low NLL,
+        misaligned pairs have high NLL.
         
         Args:
             sim_matrix: [B, N, M] similarity matrices (higher = more similar, typically in [-1, 1])
@@ -59,10 +64,10 @@ class ContrastiveSoftDTW(nn.Module):
         Returns:
             DTW costs [B] as torch.Tensor
         """
-        # Convert similarity to distance (1 - sim)
-        # For cosine similarity in [-1, 1]: distance will be in [0, 2]
+        # Convert similarity to negative log-likelihood
+        # log_softmax is numerically stable: -log(softmax(x)) = -x + logsumexp(x)
         # sim_matrix: [B, N, M] -> dist_matrix: [B, N, M]
-        dist_matrix = - sim_matrix
+        dist_matrix = -F.log_softmax(sim_matrix, dim=-1)
         # Use the SoftDTW _SoftDTW function directly with pre-computed distances
         # The _SoftDTW.apply expects [B, N, M] distance matrix
         _SoftDTW = soft_dtw_cuda._SoftDTW
@@ -78,52 +83,57 @@ class ContrastiveSoftDTW(nn.Module):
         return dtw_costs  # [B]
     
 
-    def forward(self, sim_img1_post, sim_img2_pos, sim_img1_neg, sim_img2_neg): # <--- You need these mismatched pairs
+    def forward(self, sim_pos, sim_neg_all):
+        # sim_pos: [B, text_len, seq_len]
+        # sim_neg_all: [B, K, neg_text_len, seq_len]
         
-        # 1. POSITIVE PAIRS (We want LOW cost / HIGH similarity)
-        # Remember to use the "Cost = -Similarity" fix we discussed!
-        cost_pos_1 = self._compute_dtw_on_similarity(sim_img1_post) 
-        cost_pos_2 = self._compute_dtw_on_similarity(sim_img2_pos)
-        # 2. NEGATIVE PAIRS (We want HIGH cost / LOW similarity)
-        cost_neg_1 = self._compute_dtw_on_similarity(sim_img1_neg)
-        cost_neg_2 = self._compute_dtw_on_similarity(sim_img2_neg)
+        B, K = sim_neg_all.shape[0], sim_neg_all.shape[1]
         
-        # 3. CONTRASTIVE LOSS (Triplet-style)
-        # "Positive cost should be lower than Negative cost by at least 'margin'"
-        margin = 1.0 
+        # 1. Calculate positive DTW cost
+        # Returns pos_cost: [B]
+        pos_cost = self._compute_dtw_on_similarity(sim_pos) 
         
-        loss_1 = F.relu(cost_pos_1 - cost_neg_1 + margin)
-        loss_2 = F.relu(cost_pos_2 - cost_neg_2 + margin)
+        # 2. Calculate DTW cost for ALL K negatives
+        # We must reshape sim_neg_all to merge B and K so the DTW function can process them in parallel
+        sim_neg_flat = sim_neg_all.view(B * K, sim_neg_all.shape[2], sim_neg_all.shape[3])
         
-        total_loss = loss_1.sum() + loss_2.sum()
+        # Returns neg_cost_flat: [B * K]
+        neg_cost_flat = self._compute_dtw_on_similarity(sim_neg_flat) 
         
+        # Reshape back to [B, K]
+        neg_costs = neg_cost_flat.view(B, K)
+        
+        # 3. SEQUENCE LENGTH NORMALIZATION
+        seq_len = max(sim_pos.size(1), sim_pos.size(2))
+        norm_pos_cost = pos_cost / seq_len          # [B]
+        norm_neg_costs = neg_costs / seq_len         # [B, K]
+
+        # 4. SUM-ALL MARGIN LOSS over all K negatives
+        # For each sample, sum max(norm_pos - norm_neg_k + margin, 0) over all K
+        raw_loss = norm_pos_cost.unsqueeze(1) - norm_neg_costs + self.margin  # [B, K]
+        per_neg_loss = torch.clamp(raw_loss, min=0.0)           # [B, K]
+        loss = per_neg_loss.sum(dim=1)                           # [B]
+        
+        avg_norm_gap = (norm_pos_cost.unsqueeze(1) - norm_neg_costs).mean().item()
         loss_dict = {
-            'cost_pos_1': cost_pos_1.sum().item(),
-            'cost_pos_2': cost_pos_2.sum().item(),
-            'cost_neg_1': cost_neg_1.sum().item(),
-            'cost_neg_2': cost_neg_2.sum().item(),
-            'total': total_loss.item()
+            'cost_pos': pos_cost.mean().item(),
+            'cost_neg': neg_costs.mean().item(),
+            'gap': avg_norm_gap,
+            'norm_pos': norm_pos_cost.mean().item(),
+            'norm_neg': norm_neg_costs.mean().item(),
+            'active_triplets': (per_neg_loss > 0).float().mean().item(),
         }
-        
-        return total_loss, loss_dict
+        return loss.mean(), loss_dict
 
 
-def contrastive_soft_dtw_alignment_loss(sim_img1_post, sim_img2_pos, sim_img1_neg, sim_img2_neg,
-                                         final_pred=None, target=None,
+def contrastive_soft_dtw_alignment_loss(sim_pos, sim_neg,
                                          gamma=0.1, use_cuda=True):
     """
-    Functional interface for Contrastive Soft-DTW loss.
-    
-    This combines MSE reconstruction loss with Soft-DTW alignment loss
-    using CUDA-accelerated Soft-DTW.
+    Functional interface for Contrastive Soft-DTW loss with multiple negatives.
     
     Args:
-        sim_img1_post (torch.Tensor): Similarity matrix between text1 and image1 [B, N_txt, N_img]
-        sim_img2_pos (torch.Tensor): Similarity matrix between text2 and image2 [B, M_txt, M_img]
-        sim_img1_neg (torch.Tensor): Similarity matrix between text1 and image2 [B, N_txt, N_img]
-        sim_img2_neg (torch.Tensor): Similarity matrix between text2 and image1 [B, M_txt, M_img]
-        final_pred (torch.Tensor): Final predicted similarity matrix [B, H, W]
-        target (torch.Tensor): Ground truth similarity matrix [B, H, W]
+        sim_pos (torch.Tensor): Positive similarity matrix [B, N_txt, N_img]
+        sim_neg (torch.Tensor): Negative similarity matrix [B, N_txt, N_img]
         gamma (float): Soft-DTW smoothing parameter
         use_cuda (bool): Use CUDA acceleration
     
@@ -135,35 +145,22 @@ def contrastive_soft_dtw_alignment_loss(sim_img1_post, sim_img2_pos, sim_img1_ne
         gamma=gamma,
         use_cuda=use_cuda
     )
-    return criterion(sim_img1_post, sim_img2_pos, sim_img1_neg, sim_img2_neg)
+    return criterion(sim_pos, sim_neg)
 
 
 # ============================================================================
 # LOSS FUNCTION FACTORY
 # ============================================================================
 
-def Loss_choice(loss_type):
-    """
-    Factory function to create the appropriate loss function.
-    
-    Args:
-        loss_type (str): Type of loss function to create
-        
-    Returns:
-        Loss function (criterion)
-    """
-    if loss_type == 'MSE':
-        criterion = nn.MSELoss(reduction='mean')
-    elif loss_type == 'ContrastiveSoftDTW':
-        # Contrastive Soft-DTW: takes similarity matrices directly
-        # Computes DTW on both similarity matrices + MSE on final prediction
-        criterion = ContrastiveSoftDTW(
-            gamma=contrastive_soft_dtw_gamma,
-            use_cuda=True,
-            bandwidth=sakoe_chiba_bandwidth_ratio
-        )
-    else:
-        raise ValueError(f"Unknown loss type: {loss_type}. Available: ['MSE', 'ContrastiveSoftDTW']")
+def Loss_choice():
+    # Contrastive Soft-DTW: takes similarity matrices directly
+    # Computes DTW on both similarity matrices + MSE on final prediction
+    criterion = ContrastiveSoftDTW(
+        gamma=contrastive_soft_dtw_gamma,
+        use_cuda=True,
+        bandwidth=sakoe_chiba_bandwidth_ratio,
+        margin=contrastive_margin
+    )
     return criterion
 
 
@@ -184,9 +181,18 @@ if __name__ == "__main__":
     final_pred = torch.randn(batch_size, N_txt, N_txt, device=device, requires_grad=True)
     target = torch.randn(batch_size, N_txt, N_txt, device=device)
     
-    # Test the loss
+    # Test the loss with multiple negatives
     criterion = ContrastiveSoftDTW(gamma=0.001, use_cuda=torch.cuda.is_available())
-    loss, loss_dict = criterion(img_txt_sim1, img_txt_sim2, img_txt_sim1, img_txt_sim2)
+    
+    # Create positive similarity matrix
+    sim_pos = torch.randn(batch_size, N_txt, N_img, device=device, requires_grad=True)
+    
+    # Create lists of negative similarity matrices (10 negatives)
+    num_neg = 10
+    neg_sim_img_list = [torch.randn(batch_size, N_txt, N_img, device=device, requires_grad=True) for _ in range(num_neg)]
+    neg_sim_txt_list = [torch.randn(batch_size, N_txt, N_img, device=device, requires_grad=True) for _ in range(num_neg)]
+    
+    loss, loss_dict = criterion(sim_pos, neg_sim_img_list, neg_sim_txt_list)
     
     print(f"Loss: {loss.item():.4f}")
     print(f"Loss dict: {loss_dict}")
@@ -194,7 +200,7 @@ if __name__ == "__main__":
     # Test backward pass
     loss.backward()
     print(f"Gradient computed successfully.")
-    if img_txt_sim1.grad is not None:
-        print(f"  img_txt_sim1 grad norm: {img_txt_sim1.grad.norm().item():.4f}")
-    if img_txt_sim2.grad is not None:
-        print(f"  img_txt_sim2 grad norm: {img_txt_sim2.grad.norm().item():.4f}")
+    if sim_pos.grad is not None:
+        print(f"  sim_pos grad norm: {sim_pos.grad.norm().item():.4f}")
+    if neg_sim_img_list[0].grad is not None:
+        print(f"  neg_sim_img_list[0] grad norm: {neg_sim_img_list[0].grad.norm().item():.4f}")

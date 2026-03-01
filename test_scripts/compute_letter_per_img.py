@@ -271,7 +271,7 @@ def main():
     ).to(device)
     
     # Load weights if available
-    weights_path = os.path.join(os.path.dirname(__file__), '..', 'Weights', loss_type, '14586433', 'model_epoch_130.pth')
+    weights_path = os.path.join(os.path.dirname(__file__), '..', 'Weights', '14586433', 'model_epoch_130.pth')
     if os.path.exists(weights_path):
         print(f"Loading weights from {weights_path}")
         model_cnn.load_state_dict(torch.load(weights_path, map_location=device))
