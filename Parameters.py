@@ -50,14 +50,14 @@ contrastive_soft_dtw_gamma_decay = 0.95   # Multiplicative decay per epoch
 # Prevents distant identical letters from being incorrectly aligned
 # Set as a fraction of sequence length (e.g., 0.2 = 20% of image width)
 sakoe_chiba_bandwidth_ratio = 0.0        # Bandwidth as fraction of sequence length (0 = no band constraint)
-contrastive_margin = 10.0                 # Margin for triplet loss: forces pos_cost to beat neg_cost by this amount
+contrastive_margin = 100.0                 # Margin for triplet loss: forces pos_cost to beat neg_cost by this amount
 
 
 # Dropout for regularization
 model_dropout = 0.0
 
 # Negative sampling
-num_negatives = 20  # Number of negative samples per positive pair (in-batch negatives)
+num_negatives = 10  # Number of negative samples per positive pair (in-batch negatives)
 
 # Debugging and visualization parameters
 debug = True # Set to True to save patches and heatmaps for debugging
