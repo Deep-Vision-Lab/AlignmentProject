@@ -27,7 +27,7 @@ from PIL import Image
 from torchvision import transforms
 
 from Parameters import window_size, vector_size, device
-from embeddingModel import EmbeddingModel, sliding_window
+from embeddingModel import *
 from DiffNWAlgo import compute_nw_score_matrix
 from pathExtractor import compute_diff_traceback_path, compute_traceback_path
 
@@ -503,10 +503,15 @@ def main():
     print("\n[2/5] Creating embedding model...")
     model = EmbeddingModel(
         window_size=window_size,
-        stride=window_size,
+        stride=window_size,  # Now uses calculated overlap stride
         vector_size=vector_size,
-        device=use_device,
-        use_flip=False
+        device=device,
+        # OPTIMIZATION 1 & 3: Enable BiLSTM and Positional Encoding
+        use_bilstm=use_bilstm,
+        use_positional_encoding=use_positional_encoding,
+        positional_encoding_type=positional_encoding_type,
+        bilstm_layers=bilstm_layers,
+        dropout=model_dropout
     ).to(use_device)
     
     # Load weights if provided

@@ -90,9 +90,8 @@ def compute_patch_letter_similarity(patches, letters=ARABIC_LETTERS, image_path=
         ])
         img_tensor = transform(img).unsqueeze(0).to(device)
         
-        # Get tokens from CNN (image_a, image_b are needed due to model interface)
-        # We'll use the same image twice
-        tokens, _ = model_cnn(img_tensor, img_tensor)
+        # Get tokens from CNN
+        tokens = model_cnn(img_tensor)
         tokens = tokens[0]  # [num_patches, vector_size]
         
         # Flip tokens along the patch dimension as done in train.py (Arabic RTL support)
@@ -114,14 +113,14 @@ def compute_patch_letter_similarity(patches, letters=ARABIC_LETTERS, image_path=
         # tokens: [num_patches, vector_size], letter_embeddings: [num_letters, vector_size]
         similarity = torch.mm(tokens, letter_embeddings.transpose(0, 1)) # [num_patches, num_letters]
         
-        result = similarity
-        # # Find closest letter (highest dot product)
-        # max_indices = similarity.argmax(dim=1)
+        # result = similarity
+        # Find closest letter (highest dot product)
+        max_indices = similarity.argmax(dim=1)
         
-        # # Create a result matrix that highlights the closest letter
-        # result = torch.zeros_like(similarity)
-        # for i, idx in enumerate(max_indices):
-        #     result[i, idx] = similarity[i, idx]
+        # Create a result matrix that highlights the closest letter
+        result = torch.zeros_like(similarity)
+        for i, idx in enumerate(max_indices):
+            result[i, idx] = similarity[i, idx]
             
         return result.cpu().numpy()
 
@@ -234,7 +233,7 @@ def main():
     # Default configuration parameters
     image_path = 'DataSet/Synthetic_Arabic/images/img1_1.png'
     text_path = 'DataSet/Synthetic_Arabic/texts/text1_1.txt'
-    output_path = 'test_scripts/Results/patch_letter_heatmap.png'
+    output_path = 'Results/StrokePerLetter/patch_letter_heatmap.png'
     
     # Heatmap settings
     max_patches = 50
@@ -265,13 +264,19 @@ def main():
     print("Loading models...")
     model_cnn = EmbeddingModel(
         window_size=window_size,
-        stride=window_size,
+        stride=window_size,  # Now uses calculated overlap stride
         vector_size=vector_size,
-        device=device
+        device=device,
+        # OPTIMIZATION 1 & 3: Enable BiLSTM and Positional Encoding
+        use_bilstm=use_bilstm,
+        use_positional_encoding=use_positional_encoding,
+        positional_encoding_type=positional_encoding_type,
+        bilstm_layers=bilstm_layers,
+        dropout=model_dropout
     ).to(device)
     
     # Load weights if available
-    weights_path = os.path.join(os.path.dirname(__file__), '..', 'Weights', '14586433', 'model_epoch_130.pth')
+    weights_path = os.path.join(os.path.dirname(__file__), '..', 'model_epoch_80.pth')
     if os.path.exists(weights_path):
         print(f"Loading weights from {weights_path}")
         model_cnn.load_state_dict(torch.load(weights_path, map_location=device))

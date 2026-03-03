@@ -25,7 +25,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from Parameters import *
-from embeddingModel import EmbeddingModel, sliding_window
+from embeddingModel import *
 from DiffNWAlgo import compute_nw_score_matrix
 from pathExtractor import compute_traceback_path
 
@@ -176,9 +176,15 @@ def compute_similarity_matrix_for_pair(
     if model is None:
         model = EmbeddingModel(
             window_size=window_size,
-            stride=window_size,
+            stride=window_size,  # Now uses calculated overlap stride
             vector_size=vector_size,
-            device=device
+            device=device,
+            # OPTIMIZATION 1 & 3: Enable BiLSTM and Positional Encoding
+            use_bilstm=use_bilstm,
+            use_positional_encoding=use_positional_encoding,
+            positional_encoding_type=positional_encoding_type,
+            bilstm_layers=bilstm_layers,
+            dropout=model_dropout
         ).to(device)
         model.eval()
     

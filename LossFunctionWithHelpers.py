@@ -112,7 +112,7 @@ class ContrastiveSoftDTW(nn.Module):
         # For each sample, sum max(norm_pos - norm_neg_k + margin, 0) over all K
         raw_loss = norm_pos_cost.unsqueeze(1) - norm_neg_costs + self.margin  # [B, K]
         per_neg_loss = torch.clamp(raw_loss, min=0.0)           # [B, K]
-        loss = per_neg_loss.sum(dim=1)                           # [B]
+        loss = per_neg_loss.mean(dim=1)                           # [B]
         
         avg_norm_gap = (norm_pos_cost.unsqueeze(1) - norm_neg_costs).mean().item()
         loss_dict = {
