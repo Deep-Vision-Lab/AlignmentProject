@@ -119,30 +119,68 @@ def custom_collate_fn(batch):
     # Use actual batch size (last batch may be smaller than the global batch_size)
     actual_batch_size = len(texts1)
 
-    # Sample num_negatives negative indices per sample (in-batch negatives)
-    neg_indices = []
-    for i in range(actual_batch_size):
-        available = [j for j in range(actual_batch_size) if j != i]
-        n_avail = len(available)
-        if n_avail >= num_negatives:
-            sampled = random.sample(available, num_negatives)
-        else:
-            # If batch is too small, sample with replacement
-            sampled = [random.choice(available) for _ in range(num_negatives)]
-        neg_indices.append(sampled)
-    
-
     pos_texts = texts1  # Positive texts are the original batch texts
-    # Gather negative texts using the sampled indices, with random cropping for length diversity
+
+    # ---- Hard Negative Generators (applied to the POSITIVE text) ----
+    def _hard_neg_crop(text):
+        """Return the first ~50% of the positive text (by words)."""
+        words = text.split()
+        if len(words) < 2:
+            return text
+        cutoff = max(1, len(words) // 2)
+        return ' '.join(words[:cutoff])
+
+    def _hard_neg_drop(text):
+        """Delete one random word from the positive text."""
+        words = text.split()
+        if len(words) < 2:
+            return text
+        idx = random.randint(0, len(words) - 1)
+        return ' '.join(words[:idx] + words[idx + 1:])
+
+    def _hard_neg_shuffle(text):
+        """Swap two random words in the positive text."""
+        words = text.split()
+        if len(words) < 2:
+            return text
+        i, j = random.sample(range(len(words)), 2)
+        words[i], words[j] = words[j], words[i]
+        return ' '.join(words)
+
+    _hard_neg_fns = [_hard_neg_crop, _hard_neg_drop, _hard_neg_shuffle]
+
+    # ---- Random in-batch negative with optional length crop ----
     def _maybe_crop(text):
-        """Randomly crop negative text to 50-100% of its length to create length diversity."""
-        if random.random() < 0.3 and len(text) > 3:  # 30% chance of cropping
+        """Randomly crop negative text to 50-100% of its length."""
+        if random.random() < 0.3 and len(text) > 3:
             crop_ratio = random.uniform(0.5, 0.9)
             crop_len = max(2, int(len(text) * crop_ratio))
             start = random.randint(0, len(text) - crop_len)
             return text[start:start + crop_len]
         return text
-    neg_texts = [[_maybe_crop(texts1[j]) for j in list(neg_indices[i])] for i in range(actual_batch_size)]
+
+    # ---- Build negatives: 2 hard + (num_negatives-2) random in-batch ----
+    num_hard = min(2, num_negatives)
+    num_random = num_negatives - num_hard
+
+    neg_texts = []
+    for i in range(actual_batch_size):
+        sample_negs = []
+        # Hard negatives (derived from positive text)
+        for h in range(num_hard):
+            fn = random.choice(_hard_neg_fns)
+            sample_negs.append(fn(pos_texts[i]))
+        # Random in-batch negatives
+        available = [j for j in range(actual_batch_size) if j != i]
+        if not available:
+            available = [i]
+        if len(available) >= num_random:
+            sampled = random.sample(available, num_random)
+        else:
+            sampled = [random.choice(available) for _ in range(num_random)]
+        for j in sampled:
+            sample_negs.append(_maybe_crop(texts1[j]))
+        neg_texts.append(sample_negs)
 
     return images, pos_texts, neg_texts
 

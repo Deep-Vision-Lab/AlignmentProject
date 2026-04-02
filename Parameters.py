@@ -5,7 +5,7 @@ normalize_type = 'l2' # ['min_max', 'mean_std', 'average', 'l2']
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Training parameters
-batch_size = 64
+batch_size = 32
 epochs = 300
 learning_rate = 1e-4
 
@@ -54,10 +54,30 @@ contrastive_margin = 100.0                 # Margin for triplet loss: forces pos
 
 
 # Dropout for regularization
-model_dropout = 0.0
+model_dropout = 0.3
+
+# Differential learning rates
+cnn_lr = 1e-5       # Low LR for pre-trained ResNet backbone
+bilstm_lr = 1e-3    # Higher LR for BiLSTM + projection heads
 
 # Negative sampling
 num_negatives = 10  # Number of negative samples per positive pair (in-batch negatives)
+
+# Needleman-Wunsch / alignment scoring parameters
+matchScore    =  10    # reward for a matching character/patch
+mismatchScore = -27    # penalty for a mismatch
+gapScore      = -10    # penalty per gap step
+
+# ============================================================================
+# MULTI-SCALE ALIGNMENT (Multi-Resolution Loss)
+# ============================================================================
+# Computes Contrastive Soft-DTW at two window sizes simultaneously:
+#   - Large window (macro): learns global structure (word spacing, ascenders)
+#   - Small window (micro): learns fine-grained details (dots, diacritics)
+# Loss_total = Loss_norm(macro) + alpha * Loss_norm(micro)
+multi_scale_enabled = True
+multi_scale_window_sizes = [16, 8]   # [macro_window, micro_window]
+multi_scale_alpha = 0.5              # Weight for micro-scale loss (start at 0.5, tune later)
 
 # Debugging and visualization parameters
 debug = True # Set to True to save patches and heatmaps for debugging
