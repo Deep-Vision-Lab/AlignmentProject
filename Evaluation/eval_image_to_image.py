@@ -73,8 +73,9 @@ def align_two_images(model, img1_path: str, img2_path: str):
     emb1 = get_image_embedding(model, img1_path, device)   # [1, S1, D]
     emb2 = get_image_embedding(model, img2_path, device)   # [1, S2, D]
     sim  = compute_sim_matrix(emb2, emb1)                  # [S1, S2]
-    path = dtw_path(sim, gap_penalty=-10.0, match_score=10.0, mismatch_score=-27.0)
-    return sim, path, emb1.shape[1], emb2.shape[1]
+    # S1 is vertical (text1/img1), S2 is horizontal (text2/img2)
+    path, H = dtw_path(sim, gap_penalty=-10.0, match_score=10.0, mismatch_score=-27.0)
+    return sim, path, H, emb1.shape[1], emb2.shape[1]
 
 
 # ---------------------------------------------------------------------------
@@ -158,9 +159,9 @@ def word_sim_score(p_start: int, p_end: int, path: list,
 def visualise_pair(model, img1_path: str, img2_path: str,
                    text1: str, text2: str,
                    output_path: str,
-                   sim_threshold: float = 0.3):
+                   sim_threshold: float = 0.5):
 
-    sim, path, S1, S2 = align_two_images(model, img1_path, img2_path)
+    sim, path, H_mat, S1, S2 = align_two_images(model, img1_path, img2_path)
     sim_np = sim.detach().cpu().numpy() if hasattr(sim, 'detach') else np.array(sim)
 
     img1_arr = np.array(Image.open(img1_path).convert('RGB'))
@@ -168,25 +169,27 @@ def visualise_pair(model, img1_path: str, img2_path: str,
     H1, W1   = img1_arr.shape[:2]
     H2, W2   = img2_arr.shape[:2]
 
-    words1    = word_patch_ranges(text1, S1)
+    words1 = word_patch_ranges(text1, S1)
     n_words   = len(words1)
     img2_ranges  = [map_word_to_img2(ps, pe, path, S2)
                     for (_, ps, pe) in words1]
     word_scores  = [word_sim_score(ps, pe, path, sim_np)
                     for (_, ps, pe) in words1]
 
-    # ── figure: img1 / connectors / img2 ────────────────────────────────
-    fig = plt.figure(figsize=(14, 7))
+    # ── figure: img1 / connectors / img2 / heatmap ──────────────────────
+    fig = plt.figure(figsize=(14, 11))
     fig.suptitle(
-        f"Word-Level Image Alignment  —  "
-        f"{os.path.basename(img1_path)}  ↔  {os.path.basename(img2_path)}",
-        fontsize=11, fontweight='bold', y=1.01
+        f"Word-Level Image Alignment (NW) — "
+        f"{os.path.basename(img1_path)} ↔ {os.path.basename(img2_path)}",
+        fontsize=11, fontweight='bold', y=0.98
     )
-    gs = fig.add_gridspec(3, 1, height_ratios=[2.5, 0.8, 2.5], hspace=0.05)
+    # gs = fig.add_gridspec(3, 1, height_ratios=[2.5, 0.8, 2.5], hspace=0.05)
+    gs = fig.add_gridspec(4, 1, height_ratios=[2.0, 0.6, 2.0, 3.5], hspace=0.15)
 
     ax1   = fig.add_subplot(gs[0])
     ax_cn = fig.add_subplot(gs[1])
     ax2   = fig.add_subplot(gs[2])
+    ax_hm = fig.add_subplot(gs[3])
 
     for ax in (ax1, ax2, ax_cn):
         ax.set_xticks([]); ax.set_yticks([])
@@ -218,7 +221,7 @@ def visualise_pair(model, img1_path: str, img2_path: str,
         _, ps, pe = words1[wi]
         ms, me    = img2_ranges[wi]
 
-        # Mirror patch centres to normalised [0,1] image coords
+        # Mirror patch centres for RTL
         x_top = 1.0 - ((ps + pe) / 2 + 0.5) / S1
         x_bot = 1.0 - ((ms + me) / 2 + 0.5) / S2
         ax_cn.add_line(Line2D(
@@ -235,7 +238,6 @@ def visualise_pair(model, img1_path: str, img2_path: str,
         if word_scores[wi] < sim_threshold:
             continue                       # skip low-similarity pairs
         col      = PALETTE[wi % len(PALETTE)]
-        word     = words1[wi][0]
         ms, me   = img2_ranges[wi]
 
         x0, x1_w = _patch_to_pixels(ms, me, S2, W2)
@@ -243,10 +245,25 @@ def visualise_pair(model, img1_path: str, img2_path: str,
             (x0, 2), max(x1_w - x0, 2), H2 - 4,
             linewidth=2, edgecolor=col, facecolor=col, alpha=0.28
         ))
+        # ADD THE WORD TEXT BAG TO IMG2 TOO
+        word = words1[wi][0]
         ax2.text((x0 + x1_w) / 2, H2 * 0.5, word,
                  ha='center', va='center', fontsize=7,
                  color='white', fontweight='bold',
                  bbox=dict(facecolor=col, alpha=0.65, pad=1, boxstyle='round'))
+
+    # ── Heatmap ──────────────────────────────────────────────────────────
+    im_hm = ax_hm.imshow(H_mat.T, aspect='auto', cmap='magma', origin='lower')
+    ax_hm.set_title("NW Score Matrix & Optimal Path", fontsize=9, pad=5)
+    ax_hm.set_xlabel("img1 patches", fontsize=8)
+    ax_hm.set_ylabel("img2 patches", fontsize=8)
+    plt.colorbar(im_hm, ax=ax_hm, fraction=0.046, pad=0.04).ax.tick_params(labelsize=7)
+
+    # Plot the path on top of the heatmap
+    px = [p[0] for p in path]
+    py = [p[1] for p in path]
+    ax_hm.plot(px, py, color='cyan', linewidth=1.5, alpha=0.8, label='Optimal Path')
+    ax_hm.legend(fontsize=7, loc='upper left')
 
     os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.',
                 exist_ok=True)
@@ -272,7 +289,7 @@ def mean_matched_similarity(sim, path):
 
 
 def batch_evaluate(weights_path, data_dir, n_samples=200,
-                   output_dir=None, save_figures=False):
+                   output_dir=None, save_figures=False, sim_threshold=0.5):
     print("Loading model …")
     model = load_image_model(weights_path, device)
     pairs = list(load_test_pairs(data_dir, split='test', n_samples=n_samples))
@@ -280,7 +297,7 @@ def batch_evaluate(weights_path, data_dir, n_samples=200,
 
     devs, sims, costs = [], [], []
     for img1_path, text1, img2_path, text2 in tqdm(pairs, desc='Pairs'):
-        sim, path, S1, S2 = align_two_images(model, img1_path, img2_path)
+        sim, path, H_mat, S1, S2 = align_two_images(model, img1_path, img2_path)
         devs.append(diagonal_deviation(path, S1, S2))
         sims.append(mean_matched_similarity(sim, path))
         costs.append(hard_dtw_cost(sim, gap_penalty=-10.0, match_score=10.0, mismatch_score=-27.0))
@@ -288,7 +305,8 @@ def batch_evaluate(weights_path, data_dir, n_samples=200,
         if save_figures and output_dir:
             i_num = os.path.basename(img1_path).replace('img1_', '').replace('.png', '')
             visualise_pair(model, img1_path, img2_path, text1, text2,
-                           os.path.join(output_dir, f'pair_{i_num}.png'))
+                           os.path.join(output_dir, f'pair_{i_num}.png'),
+                           sim_threshold=sim_threshold)
 
     print("\n=====================================================")
     print("     Image-to-Image Alignment Batch Results         ")
@@ -334,6 +352,8 @@ def main():
     parser.add_argument('--n-samples',  type=int,  default=200)
     parser.add_argument('--output-dir', type=str,  default='Results/Evaluation/ImageToImage')
     parser.add_argument('--save-figs',  action='store_true')
+    parser.add_argument('--sim-threshold', type=float, default=0.5,
+                        help='Minimum word similarity to draw connectors (default: 0.5)')
     args = parser.parse_args()
 
     img_dir = os.path.join(args.data_dir, 'images')
@@ -341,7 +361,8 @@ def main():
 
     if args.batch:
         batch_evaluate(args.weights, args.data_dir, args.n_samples,
-                       args.output_dir, args.save_figs)
+                       args.output_dir, args.save_figs,
+                       sim_threshold=args.sim_threshold)
     else:
         idx       = args.index or 1
         img1_path = os.path.join(img_dir, f'img1_{idx}.png')
@@ -356,7 +377,8 @@ def main():
         model = load_image_model(args.weights, device)
         visualise_pair(model, img1_path, img2_path,
                        _read_text(txt1_path), _read_text(txt2_path),
-                       args.output)
+                       args.output,
+                       sim_threshold=args.sim_threshold)
 
 
 if __name__ == '__main__':

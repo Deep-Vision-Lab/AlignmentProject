@@ -160,7 +160,7 @@ def save_text_to_file(text, filepath):
 
 if __name__ == "__main__":
     # --- Configuration ---
-    num_samples_to_generate = 3000
+    num_samples_to_generate = 10000
     base_output_directory = "DataSet/NewSynthetic"  # Main output directory
     EMPTY_AUGMENT_PROBABILITY = 0.2 # Probability that an augmenting phrase will be empty
 
@@ -278,44 +278,56 @@ if __name__ == "__main__":
         return random.choice(phrases_list)
 
     for i in tqdm(range(1, num_samples_to_generate + 1), desc="Generating Samples"):
-        # --- New sentence generation logic for multiple aligned phrases ---
-        if len(base_arabic_phrases) >= 2:
-            common_phrases = random.sample(base_arabic_phrases, 2)
-            common_phrase1 = common_phrases[0]
-            common_phrase2 = common_phrases[1]
-        elif len(base_arabic_phrases) == 1:
-            common_phrase1 = base_arabic_phrases[0]
-            common_phrase2 = base_arabic_phrases[0] # Repeat if only one base phrase available
-        else:
-            # Fallback if no base phrases are available (should not happen with current data)
-            print("Warning: Not enough base phrases. Using placeholders.")
-            common_phrase1 = "عبارة أساسية واحدة"
-            common_phrase2 = "عبارة أساسية اثنان"
+        # --- Sentence generation: aligned phrase at START of sentence 1,
+        #     END of sentence 2.
+        #
+        # Arabic is RTL, so:
+        #   "start of sentence"  = rightmost region of the image  = patch 0
+        #   "end of sentence"    = leftmost  region of the image  = patch S-1
+        #
+        # Layout:
+        #   sentence1:  [ common_phrase ]  [ aug_tail1 ]
+        #   sentence2:  [ aug_head2 ]  [ common_phrase ]
+        #
+        # LENGTH VARIATION: each sentence gets a *random* number of
+        # augmenting phrases (between 1 and 4) so the two sentences
+        # end up with genuinely different lengths most of the time.
+        # -----------------------------------------------------------
+        common_phrase = random.choice(base_arabic_phrases)
 
-        # Augmenting phrases for sentence 1
-        aug1_prefix = get_augment_phrase(augmenting_arabic_phrases, EMPTY_AUGMENT_PROBABILITY)
-        aug1_middle = get_augment_phrase(augmenting_arabic_phrases, EMPTY_AUGMENT_PROBABILITY)
-        aug1_suffix = get_augment_phrase(augmenting_arabic_phrases, EMPTY_AUGMENT_PROBABILITY)
+        # --- Random number of augmenting parts per sentence (1-4) ---
+        num_aug_tail1 = random.randint(1, 4)
+        num_aug_head2 = random.randint(1, 4)
 
-        # Augmenting phrases for sentence 2
-        aug2_prefix = get_augment_phrase(augmenting_arabic_phrases, EMPTY_AUGMENT_PROBABILITY)
-        aug2_middle = get_augment_phrase(augmenting_arabic_phrases, EMPTY_AUGMENT_PROBABILITY)
-        aug2_suffix = get_augment_phrase(augmenting_arabic_phrases, EMPTY_AUGMENT_PROBABILITY)
+        # Extra context appended AFTER the common phrase in sentence 1
+        aug_tail1_parts = [
+            get_augment_phrase(augmenting_arabic_phrases, EMPTY_AUGMENT_PROBABILITY)
+            for _ in range(num_aug_tail1)
+        ]
+        # Force at least one non-empty tail so there is genuinely extra content
+        while not any(p.strip() for p in aug_tail1_parts):
+            aug_tail1_parts = [random.choice(augmenting_arabic_phrases)] + [
+                get_augment_phrase(augmenting_arabic_phrases, EMPTY_AUGMENT_PROBABILITY)
+                for _ in range(num_aug_tail1 - 1)
+            ]
 
-        sentence1_parts = [aug1_prefix, common_phrase1, aug1_middle, common_phrase2, aug1_suffix]
-        sentence2_parts = [aug2_prefix, common_phrase1, aug2_middle, common_phrase2, aug2_suffix]
+        # Extra context prepended BEFORE the common phrase in sentence 2
+        aug_head2_parts = [
+            get_augment_phrase(augmenting_arabic_phrases, EMPTY_AUGMENT_PROBABILITY)
+            for _ in range(num_aug_head2)
+        ]
+        while not any(p.strip() for p in aug_head2_parts):
+            aug_head2_parts = [random.choice(augmenting_arabic_phrases)] + [
+                get_augment_phrase(augmenting_arabic_phrases, EMPTY_AUGMENT_PROBABILITY)
+                for _ in range(num_aug_head2 - 1)
+            ]
+
+        sentence1_parts = [common_phrase] + aug_tail1_parts
+        sentence2_parts = aug_head2_parts + [common_phrase]
 
         # Join parts, filtering out empty strings and stripping extra spaces
         arabic_sentence_1 = " ".join(part.strip() for part in sentence1_parts if part.strip())
         arabic_sentence_2 = " ".join(part.strip() for part in sentence2_parts if part.strip())
-
-        # Ensure sentences are not empty if all parts happened to be empty (highly unlikely with low empty_prob)
-        if not arabic_sentence_1: arabic_sentence_1 = common_phrase1 # Fallback
-        if not arabic_sentence_2: arabic_sentence_2 = common_phrase2 # Fallback
-
-        # Final random NWap to ensure that (e.g.) the shorter sentence isn't always sentence_1
-        if random.choice([True, False]):
-            arabic_sentence_1, arabic_sentence_2 = arabic_sentence_2, arabic_sentence_1
 
         # Define output file paths for images
         output_img_file_1 = os.path.join(output_images_dir, f"img1_{i}.png")

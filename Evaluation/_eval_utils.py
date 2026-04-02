@@ -30,7 +30,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from Parameters import device, window_size, vector_size
+from Parameters import *
 from embeddingModel import EmbeddingModel, sliding_window
 from textEmbedding import TextEmbedding
 from soft_dtw_cuda import compute_softdtw
@@ -44,10 +44,15 @@ def load_image_model(weights_path: str, dev: str = device) -> EmbeddingModel:
     """Load EmbeddingModel from a checkpoint file."""
     model = EmbeddingModel(
         window_size=window_size,
-        stride=window_size,
+        stride=window_size,  # Now uses calculated overlap stride
         vector_size=vector_size,
-        device=dev,
-        positional_encoding_type='sinusoidal',
+        device=device,
+        # OPTIMIZATION 1 & 3: Enable BiLSTM and Positional Encoding
+        use_bilstm=use_bilstm,
+        use_positional_encoding=use_positional_encoding,
+        positional_encoding_type=positional_encoding_type,
+        bilstm_layers=bilstm_layers,
+        dropout=model_dropout
     ).to(dev)
     checkpoint = torch.load(weights_path, map_location=dev)
     if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
@@ -217,7 +222,7 @@ def dtw_path(sim: torch.Tensor,
     while j > 0:
         path.append((0, j - 1)); j -= 1
 
-    return list(reversed(path))
+    return list(reversed(path)), H[1:, 1:]
 
 
 def dtw_path_classic(sim: torch.Tensor) -> list:

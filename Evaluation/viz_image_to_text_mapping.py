@@ -46,26 +46,35 @@ PALETTE = plt.cm.tab20.colors  # 20 distinct colours
 
 
 def _word_info(text: str):
-    """Return list of (word_str, char_start, char_end_inclusive) from text."""
+    """Return list of (word_str, char_start, char_end_inclusive_with_space) from text."""
     words = []
     char_pos = 0
-    for w in text.split():
+    raw_words = text.split()
+    for i, w in enumerate(raw_words):
         while char_pos < len(text) and text[char_pos] == ' ':
             char_pos += 1
-        words.append((w, char_pos, char_pos + len(w) - 1))
+        start = char_pos
         char_pos += len(w)
+        # Advance to include following spaces until next word (or end of text)
+        end = char_pos - 1
+        while char_pos < len(text) and text[char_pos] == ' ':
+            end = char_pos
+            char_pos += 1
+        words.append((w, start, end))
     return words
 
 
 def _word_patch_range(char_start, char_end, path, S, T):
     """Return (s_min, s_max, s_center) patch range for a word via DTW path."""
+    # Collect all s-indices in the path that correspond to t-indices in [char_start, char_end]
     s_vals = [s for (t, s) in path if char_start <= t <= char_end]
     if not s_vals:
+        # Fallback to proportional if path segment is missing
         s_vals = [
             round(char_start * (S - 1) / max(T - 1, 1)),
             round(char_end   * (S - 1) / max(T - 1, 1)),
         ]
-    return max(0, min(s_vals)), min(S - 1, max(s_vals)), int(np.median(s_vals))
+    return min(s_vals), max(s_vals), int(np.median(s_vals))
 
 
 # ---------------------------------------------------------------------------

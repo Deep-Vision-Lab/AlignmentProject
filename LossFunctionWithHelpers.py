@@ -126,6 +126,83 @@ class ContrastiveSoftDTW(nn.Module):
         return loss.mean(), loss_dict
 
 
+# ============================================================================
+# MULTI-SCALE CONTRASTIVE SOFT-DTW LOSS
+# ============================================================================
+
+class MultiScaleContrastiveSoftDTW(nn.Module):
+    """
+    Multi-Scale (Multi-Resolution) Contrastive Soft-DTW Loss.
+
+    Computes Contrastive Soft-DTW at two sliding-window scales and combines
+    them with a weighting factor alpha:
+
+        Loss_total = Loss_norm(macro) + alpha * Loss_norm(micro)
+
+    Both losses are independently sequence-length-normalised before
+    combination so the larger micro sequence does not dominate the gradient.
+
+    Args:
+        gamma:     Soft-DTW smoothing parameter.
+        use_cuda:  Use CUDA acceleration for DTW.
+        bandwidth: Sakoe-Chiba bandwidth (0 = unconstrained).
+        margin:    Contrastive margin for the triplet-style loss.
+        alpha:     Weight for the micro (finer) scale loss.
+    """
+
+    def __init__(self, gamma=0.1, use_cuda=True, bandwidth=0.0,
+                 margin=10.0, alpha=0.5):
+        super(MultiScaleContrastiveSoftDTW, self).__init__()
+        self.alpha = alpha
+        # A single shared inner loss module (the gamma attribute is mutated
+        # by the training loop for annealing, so one copy is fine).
+        self.inner = ContrastiveSoftDTW(
+            gamma=gamma,
+            use_cuda=use_cuda,
+            bandwidth=bandwidth,
+            margin=margin,
+        )
+
+    # Expose gamma so the training-loop annealing code keeps working
+    @property
+    def gamma(self):
+        return self.inner.gamma
+
+    @gamma.setter
+    def gamma(self, value):
+        self.inner.gamma = value
+
+    def forward(self,
+                sim_pos_macro,    sim_neg_all_macro,
+                sim_pos_micro,    sim_neg_all_micro):
+        """
+        Args:
+            sim_pos_macro:     [B, text_len, seq_len_macro]
+            sim_neg_all_macro: [B, K, neg_text_len, seq_len_macro]
+            sim_pos_micro:     [B, text_len, seq_len_micro]
+            sim_neg_all_micro: [B, K, neg_text_len, seq_len_micro]
+
+        Returns:
+            total_loss (scalar), loss_dict (dict)
+        """
+        loss_macro, dict_macro = self.inner(sim_pos_macro, sim_neg_all_macro)
+        loss_micro, dict_micro = self.inner(sim_pos_micro, sim_neg_all_micro)
+
+        total_loss = loss_macro + self.alpha * loss_micro
+
+        # Merge diagnostics from both scales
+        loss_dict = {}
+        for key, val in dict_macro.items():
+            loss_dict[f'macro_{key}'] = val
+        for key, val in dict_micro.items():
+            loss_dict[f'micro_{key}'] = val
+        loss_dict['loss_macro'] = loss_macro.item()
+        loss_dict['loss_micro'] = loss_micro.item()
+        loss_dict['alpha'] = self.alpha
+
+        return total_loss, loss_dict
+
+
 def contrastive_soft_dtw_alignment_loss(sim_pos, sim_neg,
                                          gamma=0.1, use_cuda=True):
     """
@@ -153,14 +230,23 @@ def contrastive_soft_dtw_alignment_loss(sim_pos, sim_neg,
 # ============================================================================
 
 def Loss_choice():
-    # Contrastive Soft-DTW: takes similarity matrices directly
-    # Computes DTW on both similarity matrices + MSE on final prediction
-    criterion = ContrastiveSoftDTW(
-        gamma=contrastive_soft_dtw_gamma,
-        use_cuda=True,
-        bandwidth=sakoe_chiba_bandwidth_ratio,
-        margin=contrastive_margin
-    )
+    if multi_scale_enabled:
+        # Multi-Scale Contrastive Soft-DTW: two window sizes, one loss
+        criterion = MultiScaleContrastiveSoftDTW(
+            gamma=contrastive_soft_dtw_gamma,
+            use_cuda=True,
+            bandwidth=sakoe_chiba_bandwidth_ratio,
+            margin=contrastive_margin,
+            alpha=multi_scale_alpha,
+        )
+    else:
+        # Single-scale fallback
+        criterion = ContrastiveSoftDTW(
+            gamma=contrastive_soft_dtw_gamma,
+            use_cuda=True,
+            bandwidth=sakoe_chiba_bandwidth_ratio,
+            margin=contrastive_margin
+        )
     return criterion
 
 

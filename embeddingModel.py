@@ -155,14 +155,14 @@ class BiLSTMContextEncoder(nn.Module):
         self.num_layers = num_layers
         self.input_dim = input_dim
         
-        # BiLSTM layer - disable cuDNN dropout to avoid training mode issues
-        # Set dropout=0 in LSTM and handle dropout separately
+        # BiLSTM layer - enable inter-layer dropout for regularization
+        # flatten_parameters() is called in forward() for cuDNN compatibility
         self.lstm = nn.LSTM(
             input_size=input_dim,
             hidden_size=hidden_dim,
             num_layers=num_layers,
             batch_first=True,
-            dropout=0,  # Disable internal dropout to avoid cuDNN training mode issues
+            dropout=dropout if num_layers > 1 else 0,
             bidirectional=bidirectional
         )
         
@@ -298,25 +298,41 @@ class EmbeddingModel(nn.Module):
 
 
         
-    def _process_cnn_branch(self, tokens_a, show_dims=False):
-        """Process CNN branch"""
-        batches_num, windows_num, Channels, H, W = tokens_a.shape
-        
-        # Reshape patches
-        reshaped_tokens_a = tokens_a.reshape(batches_num * windows_num, Channels, H, W)
-        if show_dims: 
-            print(f"Patches after reshaping: {reshaped_tokens_a.shape}")
-        
-        del tokens_a
-    
-        # Standard forward pass
-        encoded_tokens_a = self.cnn_encoder(reshaped_tokens_a)
+    # Maximum number of patches to push through the CNN in one shot.
+    # Keeps peak GPU allocation bounded when using multi-scale windows.
+    CNN_CHUNK_SIZE = 512
 
-        if show_dims: 
+    def _process_cnn_branch(self, tokens_a, show_dims=False):
+        """Process CNN branch (chunked to limit peak GPU memory)."""
+        batches_num, windows_num, Channels, H, W = tokens_a.shape
+        total_patches = batches_num * windows_num
+
+        # Reshape patches
+        reshaped_tokens_a = tokens_a.reshape(total_patches, Channels, H, W)
+        if show_dims:
+            print(f"Patches after reshaping: {reshaped_tokens_a.shape}")
+
+        del tokens_a
+
+        # --- Chunked CNN forward to cap peak memory ---
+        if total_patches <= self.CNN_CHUNK_SIZE:
+            encoded_tokens_a = self.cnn_encoder(reshaped_tokens_a)
+        else:
+            chunks = reshaped_tokens_a.split(self.CNN_CHUNK_SIZE, dim=0)
+            del reshaped_tokens_a          # free the big tensor early
+            encoded_chunks = []
+            for chunk in chunks:
+                encoded_chunks.append(self.cnn_encoder(chunk))
+            encoded_tokens_a = torch.cat(encoded_chunks, dim=0)
+            del encoded_chunks, chunks
+            reshaped_tokens_a = None       # already deleted above
+
+        if show_dims:
             print(f"Tokens after CNN: {encoded_tokens_a.shape}")
-        
-        del reshaped_tokens_a
-        
+
+        if reshaped_tokens_a is not None:
+            del reshaped_tokens_a
+
         return encoded_tokens_a, batches_num, windows_num
 
     def forward(self, image_a, show_dims=False, debug=False, timer=None):
@@ -361,4 +377,60 @@ class EmbeddingModel(nn.Module):
             features_vector_a = self.bilstm_context(features_vector_a)
         t.stop('img_1f_bilstm')
         
+        return features_vector_a
+
+    def forward_at_scale(self, image_a, scale_window_size, scale_stride,
+                         show_dims=False, debug=False, timer=None):
+        """
+        Forward pass at an arbitrary window/stride scale.
+        
+        Re-uses the SAME CNN, positional encoding, and BiLSTM weights —
+        only the sliding-window granularity changes, producing a different
+        sequence length for each scale.
+        
+        Args:
+            image_a:          [B, C, H, W] input images
+            scale_window_size: patch width for this scale
+            scale_stride:      stride for this scale
+        Returns:
+            features_vector_a: [B, seq_len_scale, vec_size]
+        """
+        t = timer if timer is not None else img_embed_timer
+
+        # ---- Sliding window at the requested scale ----
+        t.start(f'img_scale_{scale_window_size}_sw')
+        tokens_a = sliding_window(
+            image_a, scale_window_size, scale_stride, debug_mode=debug
+        ).to(self.device)
+        t.stop(f'img_scale_{scale_window_size}_sw')
+
+        batches_num, windows_num = tokens_a.shape[:2]
+
+        if self.use_flip:
+            tokens_a = torch.flip(tokens_a, dims=[1])
+
+        # ---- CNN encoding (shared weights) ----
+        t.start(f'img_scale_{scale_window_size}_cnn')
+        encoded_tokens_a, batches_num, windows_num = self._process_cnn_branch(
+            tokens_a, show_dims
+        )
+        t.stop(f'img_scale_{scale_window_size}_cnn')
+
+        features_vector_a = encoded_tokens_a.view(
+            batches_num, windows_num, self.vector_size
+        )
+        del encoded_tokens_a
+
+        # ---- Positional encoding (shared weights) ----
+        t.start(f'img_scale_{scale_window_size}_pe')
+        if self.use_positional_encoding:
+            features_vector_a = self.positional_encoding(features_vector_a)
+        t.stop(f'img_scale_{scale_window_size}_pe')
+
+        # ---- BiLSTM context (shared weights) ----
+        t.start(f'img_scale_{scale_window_size}_bilstm')
+        if self.use_bilstm:
+            features_vector_a = self.bilstm_context(features_vector_a)
+        t.stop(f'img_scale_{scale_window_size}_bilstm')
+
         return features_vector_a

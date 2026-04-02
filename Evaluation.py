@@ -1,4 +1,6 @@
 import warnings
+import numpy as np
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from saveDATA import *
@@ -9,135 +11,165 @@ from newDataLoader import test_dataloader
 from pathExtractor import *
 from LossFunctionWithHelpers import *
 
-# warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore")
 
-# def Evaluate(model, alignment_model, dataloader, criterion, window_size,loss_type, device, normalize_type):
-#     from embeddingModel import sliding_window # Import here to access model's window_size/stride easily
-#     torch.cuda.empty_cache()
-#     """Evaluates the model on the test set."""
-#     print(f"Using device: {device}")
+# ---------------------------------------------------------------------------
+# Retrieval metrics for training-loop evaluation
+# ---------------------------------------------------------------------------
 
+from tqdm import tqdm
+from soft_dtw_cuda import compute_softdtw
+from Parameters import device
 
-#     model.eval()
-#     alignment_model.eval()
+def compute_retrieval_metrics(imageEmbedding, textEmbedding,
+                              dataloader, n_samples: int = 64,
+                              gamma: float = 0.1):
+    """
+    Compute Recall@1, Recall@5, Recall@10 and MRR on a single batch
+    taken from *dataloader*.  Suitable for cheap per-epoch monitoring.
 
-#     test_loss = 0
-#     total_correct = 0
-#     total_elements = 0
+    Protocol
+    --------
+    - Sample up to n_samples (image, positive_text) pairs from the loader.
+    - Build an (N x N) soft-DTW cost matrix: cost[i,j] = dtw(img_i, txt_j).
+    - The correct match for image i is text i (diagonal).
+    - Rank image i's true text among all N texts; collect rank.
 
-#     print("Test DataLoader length:", len(dataloader))
+    Returns
+    -------
+    dict with keys: R1, R5, R10, MRR  (R@k already in %, MRR in [0,1])
+    """
+    imageEmbedding.eval()
+    textEmbedding.eval()
 
-#     vectors_similarity_file_path = f'Results/{loss_type}/Vectors_similarity/vec_similar_test.txt'
-#     open(vectors_similarity_file_path, 'w').close()
+    img_embs, txt_embs = [], []
 
-#     with torch.no_grad():  # Disable gradient computation for evaluation
-#         for batch_idx, (image_a, image_b, smith_matrix, seq1, seq2) in enumerate(dataloader):
-#             image_a, image_b, smith_matrix = image_a.to(device), image_b.to(device), smith_matrix.to(device)
-#             tokens_a, tokens_b = model(image_a, image_b)
-#             tokens_a, tokens_b = tokens_a.to(device), tokens_b.to(device)
-#             tokens_a = torch.flip(tokens_a, dims=[1])
-#             tokens_b = torch.flip(tokens_b, dims=[1])
+    with torch.no_grad():
+        pbar = tqdm(dataloader, desc='Embedding', unit='batch')
+        for batch in pbar:
+            images, pos_texts, _ = batch
+            images = images.to(device)
+            pbar.set_postfix(collected=len(img_embs), total=n_samples)
 
-#             alignment_output = alignment_model(tokens_a, tokens_b)
+            # Embed images  [B, S_img, D]
+            img_out = imageEmbedding(images)
+            for b in range(img_out.shape[0]):
+                img_embs.append(img_out[b])          # [S_img, D]
 
-#             ###################################################################################
-#             # Interpolation
-            
-#             # Ensure smith_matrix is [N, C, H, W]
-#             if smith_matrix.dim() == 2:
-#                 # [H, W] -> [1, 1, H, W]
-#                 smith_matrix = smith_matrix.unsqueeze(0).unsqueeze(0)
-#             elif smith_matrix.dim() == 3:
-#                 # [C, H, W] -> [1, C, H, W]
-#                 smith_matrix = smith_matrix.unsqueeze(0)
-#             # Resize to match alignment_output's H and W
-#             new_size = alignment_output.shape[-2:]  # get (H, W)
-#             smith_matrix = F.interpolate(smith_matrix, size=new_size, mode='nearest')
-#             # Optionally remove channel dimension
-#             smith_matrix = smith_matrix.squeeze(0).squeeze(0)
-#             assert smith_matrix.shape == alignment_output.shape, f"Shapes do not match! \
-#                                                         \nalignment_cuda shape: {alignment_output.shape} \
-#                                                         \nsmith_cuda shape: {smith_matrix.shape}"
+            # Embed positive texts  [B, S_txt, D]
+            for txt in pos_texts:
+                emb = textEmbedding(txt)              # [S_txt, D]
+                txt_embs.append(emb.to(device))
 
-#             ###################################################################################
-               
-#             # Compute loss
-#             path_loss = criterion(alignment_output, smith_matrix)
+            if len(img_embs) >= n_samples:
+                break
 
-#             # routes = makeTracerouteMatrix(alignment_output)
-#             for i, _ in enumerate(alignment_output):            
-#                 # Generate patches for visualization
-#                 # Ensure model has window_size and stride attributes, or pass them explicitly
-#                 # Assuming model is an instance of EmbeddingModel and has these attributes
-#                 current_img_a_for_patches = image_a[i].unsqueeze(0).cpu() # sliding_window expects batch
-#                 current_img_b_for_patches = image_b[i].unsqueeze(0).cpu()
-                
-#                 # Access window_size and stride from the model instance if they are attributes
-#                 # If not, you might need to pass them to Evaluate or get them from config
-#                 model_window_size = model.window_size
-#                 model_stride = model.stride
+    img_embs = img_embs[:n_samples]
+    txt_embs = txt_embs[:n_samples]
+    N = len(img_embs)
 
-#                 patches_a_for_viz = sliding_window(current_img_a_for_patches, model_window_size, model_stride).squeeze(0)
-#                 patches_b_for_viz = sliding_window(current_img_b_for_patches, model_window_size, model_stride).squeeze(0)
+    # Build N x N soft-DTW cost matrix
+    cost_matrix = torch.full((N, N), float('inf'))
 
-#                 # The heatmap axes correspond to the flipped tokens, so flip patches accordingly
-#                 patches_y_heatmap = torch.flip(patches_a_for_viz, dims=[0]) # From image_a, for Y-axis
-#                 patches_x_heatmap = torch.flip(patches_b_for_viz, dims=[0]) # From image_b, for X-axis
+    with torch.no_grad():
+        for i in tqdm(range(N), desc='Cost matrix', unit='query',
+                      postfix={'N': N}):
+            img = img_embs[i]                        # [S_img, D]
+            for j in range(N):
+                txt = txt_embs[j]                    # [S_txt, D]
+                # cosine similarity matrix [S_img, S_txt]
+                sim = F.cosine_similarity(
+                    img.unsqueeze(1),                # [S_img, 1, D]
+                    txt.unsqueeze(0),                # [1, S_txt, D]
+                    dim=-1
+                )
+                # soft-DTW on distance  D = 1 - sim  shape [1, S_img, S_txt]
+                D_np = (1.0 - sim).detach().cpu().numpy().astype('float32')[np.newaxis]  # [1, S_img, S_txt]
+                # compute_softdtw expects numpy, returns numpy R [1, S_img+2, S_txt+2]
+                R = compute_softdtw(D_np, gamma, 0)
+                raw_cost = float(R[0, -2, -2])
+                norm_cost = raw_cost / (img.shape[0] + txt.shape[0])
+                cost_matrix[i, j] = norm_cost
 
-#                 visualize_heatmaps(alignment_output[i].cpu(), smith_matrix[i].cpu(), # Pass tensors before path extraction
-#                                 f"Results/{loss_type}/Matrices_plots/heatmaps_epoch_batch_{batch_idx}_{i}.png",
-#                                     patches_y=patches_y_heatmap, patches_x=patches_x_heatmap)
-#                 visualize_heatmaps(alignment_output[i].cpu(), torch.tensor(routes[i]).cpu(), # Pass tensors before path extraction
-#                                 f"Results/{loss_type}/Matrices_plots/heatmaps_routes_epoch_batch_{batch_idx}_{i}.png",
-#                                     patches_y=patches_y_heatmap, patches_x=patches_x_heatmap)
-#                 buildAlignedImages(image_a[i], image_b[i], routes[i], window_size,
-#                                 f'Results/{loss_type}/Lines_plots/lines_{batch_idx}_{i}')
-            
-#             del alignment_output
-#             del image_a, image_b, smith_matrix, tokens_a, tokens_b  # Delete the tensors
-#             torch.cuda.empty_cache()
+    # Compute rank-based metrics
+    ranks = []
+    for i in range(N):
+        # ascending sort → rank 1 = lowest cost = best match
+        order = torch.argsort(cost_matrix[i])
+        rank  = int((order == i).nonzero(as_tuple=True)[0].item()) + 1
+        ranks.append(rank)
 
-#             # Print stats every 10 batches
-#             if batch_idx % 10 == 0:
-#                 print(f'Batch {batch_idx}, Loss: {path_loss.item()}')
-#             test_loss += path_loss.item()
-#             del path_loss
+    r1  = sum(r <= 1  for r in ranks) / N * 100
+    r5  = sum(r <= 5  for r in ranks) / N * 100
+    r10 = sum(r <= 10 for r in ranks) / N * 100
+    mrr = sum(1.0 / r for r in ranks) / N
 
-#         # Compute epoch accuracy
-#         test_loss = test_loss / len(dataloader)
-#         print(f'Loss: {test_loss:.4f}')
+    return dict(R1=r1, R5=r5, R10=r10, MRR=mrr)
 
 
-# from PIL import Image
-# from torchvision import transforms
+# ---------------------------------------------------------------------------
+# Standalone entry point
+# ---------------------------------------------------------------------------
 
-# if __name__ == '__main__':
-#     normalize_type = 'mean_std' # ['min_max', 'mean_std']
-#     loss_type = 'MSE'  # ['HeightDiff', 'MSE']
-#     model_arch = 'CNN' # ['CNN-Transformer','CNN','Transformer']
-#     window_size = 64
-#     vector_size = 128
+if __name__ == '__main__':
+    import argparse
+    from Parameters import window_size, vector_size, use_bilstm, \
+        use_positional_encoding, positional_encoding_type, bilstm_layers, \
+        model_dropout
+    from embeddingModel import EmbeddingModel
+    from textEmbedding import TextEmbedding
+    from newDataLoader import test_dataloader
 
-#     criterion = None
-#     if loss_type == 'HeightDiff':
-#         criterion = HeightDiff_loss
-#     elif loss_type == 'MSE':
-#         criterion = nn.MSELoss()
-#     elif loss_type == 'GuidedAttention':
-#         criterion = guided_attention_loss
-#     elif loss_type == 'CrossEntropy':
-#         criterion = kl_divergence_loss
-#     elif loss_type == 'Dice':
-#         criterion = dice_loss
-#     elif loss_type == 'Wasserstein':
-#         criterion = wasserstein_distance
-        
-#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#     cnn_transformer_model = EmbeddingModel(window_size=window_size, stride=window_size, 
-#                                            vector_size=vector_size,model_arch=model_arch).to(device)
-#     cnn_transformer_model.load_state_dict(torch.load(f"Weights/{loss_type}/model_epoch_100.pth",
-#                                                       map_location=device))
-#     NW = SmithWaterman(match_score=3, mismatch_penalty=-1, gap_penalty=-2).to(device)
+    parser = argparse.ArgumentParser(description='Retrieval evaluation (R@1, R@5, R@10, MRR)')
+    parser.add_argument('--weights',   type=str, default='model_epoch_80.pth',
+                        help='Path to model weights (.pth)')
+    parser.add_argument('--n-samples', type=int, default=200,
+                        help='Number of pairs to build the ranking pool from')
+    parser.add_argument('--gamma',     type=float, default=0.1,
+                        help='Soft-DTW smoothing parameter')
+    args = parser.parse_args()
 
-#     Evaluate(cnn_transformer_model, NW, test_dataloader, 
-#              criterion, window_size, loss_type, device, normalize_type)
+    # ── load models ───────────────────────────────────────────────────────
+    stride = max(1, int(window_size * 0.5))
+
+    img_model = EmbeddingModel(
+        window_size=window_size,
+        stride=stride,
+        vector_size=vector_size,
+        device=device,
+        use_bilstm=use_bilstm,
+        use_positional_encoding=use_positional_encoding,
+        positional_encoding_type=positional_encoding_type,
+        bilstm_layers=bilstm_layers,
+        dropout=model_dropout,
+    ).to(device)
+
+    checkpoint = torch.load(args.weights, map_location=device)
+    if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+        img_model.load_state_dict(checkpoint['state_dict'])
+    else:
+        img_model.load_state_dict(checkpoint)
+    img_model.eval()
+    print(f"Loaded weights: {args.weights}")
+
+    txt_model = TextEmbedding(embedding_dim=vector_size).to(device)
+    txt_model.eval()
+
+    # ── run evaluation ────────────────────────────────────────────────────
+    print(f"Building {args.n_samples}-way ranking pool from test set …")
+    metrics = compute_retrieval_metrics(
+        img_model, txt_model,
+        test_dataloader,
+        n_samples=args.n_samples,
+        gamma=args.gamma,
+    )
+
+    print("\n========================================")
+    print("        Retrieval Evaluation Results     ")
+    print("========================================")
+    print(f"  Pool size  : {args.n_samples}")
+    print(f"  Recall@1   : {metrics['R1']:.2f}%")
+    print(f"  Recall@5   : {metrics['R5']:.2f}%")
+    print(f"  Recall@10  : {metrics['R10']:.2f}%")
+    print(f"  MRR        : {metrics['MRR']:.4f}")
+    print("========================================\n")

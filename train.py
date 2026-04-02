@@ -191,32 +191,13 @@ def compute_batch_loss(imageEmbed, textEmbed,
     if timer is None:
         timer = global_timer
 
-    # ==================== PHASE 1: Image Embedding (CNN + BiLSTM) ====================
-    # Embed ALL images in the batch ONCE — negatives reuse these via indexing
-    timer.start('1_image_embedding')
-    img_emb = imageEmbed(images, show_dims=False, timer=timer)  # [B, seq_len, vec_size]
-    timer.stop('1_image_embedding')
-    
     # ==================== PHASE 2: Text Embedding ====================
     timer.start('2_text_embedding')
     pos_text_emb = textEmbed(list(pos_texts))  # [B, text_len, vec_size]
     timer.stop('2_text_embedding')
 
-    # ==================== PHASE 3: Normalization ====================
-    timer.start('3_normalization')
-    norm_pos_text = normalize_func(pos_text_emb)    # [B, text_len, vec_size]
-    norm_img = normalize_func(img_emb)      # [B, seq_len, vec_size]
-    timer.stop('3_normalization')
-
-    # ==================== PHASE 4: Positive Similarity ====================
-    timer.start('4_positive_similarity')
-    sim_pos = torch.einsum('btv,bsv->bts', norm_pos_text, norm_img)  # [B, text_len, seq_len]
-    timer.stop('4_positive_similarity')
-
-    # ==================== PHASE 5: Negative Similarities (stack + single einsum) ====================
-    timer.start('5_negative_similarities')
-
-    # 5a. Embed & normalize all negatives
+    # ==================== PHASE 2b: Negative Text Embeddings ====================
+    timer.start('2b_neg_text_embedding')
     neg_text_embs = []   # list of [B, neg_text_len_k, vec_size]
     for k in range(num_negatives):
         kth_neg_texts = [neg_texts[i][k] for i in range(len(neg_texts))]
@@ -224,29 +205,111 @@ def compute_batch_loss(imageEmbed, textEmbed,
         norm_neg_text_k = normalize_func(neg_text_emb_k)     # [B, neg_text_len_k, vec_size]
         neg_text_embs.append(norm_neg_text_k)
         del kth_neg_texts, neg_text_emb_k
-    # 5b. Stack all negatives: [B, K, neg_text_len, vec_size]
-    stacked_neg = torch.stack(neg_text_embs, dim=1)
-    # 5c. Single einsum over all negatives at once
-    sim_neg_all = torch.einsum('bktv,bsv->bkts', stacked_neg, norm_img)  # [B, K, neg_text_len, seq_len]
-    # 5d. Compute loss with hardest-negative mining (pass all K negatives at once)
-    total_loss, loss_dict = criterion(sim_pos, sim_neg_all)  # sim_neg_all: [B, K, neg_text_len, seq_len]
+    # Pad negatives to uniform length then stack: [B, K, max_neg_len, vec_size]
+    max_neg_len = max(t.size(1) for t in neg_text_embs)
+    for k in range(len(neg_text_embs)):
+        pad_amount = max_neg_len - neg_text_embs[k].size(1)
+        if pad_amount > 0:
+            neg_text_embs[k] = F.pad(neg_text_embs[k], (0, 0, 0, pad_amount))
+    stacked_neg = torch.stack(neg_text_embs, dim=1)  # [B, K, max_neg_len, vec_size]
+    del neg_text_embs
+    timer.stop('2b_neg_text_embedding')
 
-    del neg_text_embs, stacked_neg, sim_neg_all
-    torch.cuda.empty_cache()
+    # ==================== PHASE 3: Normalization (text) ====================
+    timer.start('3_normalization')
+    norm_pos_text = normalize_func(pos_text_emb)    # [B, text_len, vec_size]
+    timer.stop('3_normalization')
 
-    timer.stop('5_negative_similarities')
+    # ====================================================================
+    # MULTI-SCALE vs SINGLE-SCALE BRANCH
+    # ====================================================================
+    if multi_scale_enabled:
+        # ---------- helper: embed at one scale and build similarity matrices ----------
+        def _similarities_at_scale(ws, sr):
+            s = max(1, int(ws * sr))
+            img_emb_s = imageEmbed.forward_at_scale(images, ws, s,
+                                                     show_dims=False, timer=timer)
+            norm_img_s = normalize_func(img_emb_s)
+            sim_pos_s = torch.einsum('btv,bsv->bts', norm_pos_text, norm_img_s)
+            sim_neg_s = torch.einsum('bktv,bsv->bkts', stacked_neg, norm_img_s)
+            del img_emb_s, norm_img_s
+            return sim_pos_s, sim_neg_s
 
-    # ==================== PHASE 6: Loss ====================================================
-    timer.start('6_loss_computation')
-    loss_value = total_loss.item()
-    timer.stop('6_loss_computation')
-    
-    # Log cost breakdown for diagnosing collapse
-    if batch_idx % 10 == 0:
-        print(f"  [DTW-NLL] pos={loss_dict['cost_pos']:.2f}  neg={loss_dict['cost_neg']:.2f}  "
-              f"norm_pos={loss_dict['norm_pos']:.4f}  norm_neg={loss_dict['norm_neg']:.4f}  "
-              f"gap={loss_dict['gap']:.4f}  active={loss_dict['active_triplets']:.2%}  "
-              f"loss={loss_value:.4f}", flush=True)
+        macro_ws, micro_ws = multi_scale_window_sizes
+
+        timer.start('4_macro_scale')
+        sim_pos_macro, sim_neg_macro = _similarities_at_scale(macro_ws, stride_ratio)
+        timer.stop('4_macro_scale')
+
+        # Free cached GPU blocks before the heavier micro-scale pass
+        torch.cuda.empty_cache()
+
+        timer.start('4_micro_scale')
+        sim_pos_micro, sim_neg_micro = _similarities_at_scale(micro_ws, stride_ratio)
+        timer.stop('4_micro_scale')
+
+        # --- loss (MultiScaleContrastiveSoftDTW) ---
+        timer.start('5_loss_computation')
+        total_loss, loss_dict = criterion(
+            sim_pos_macro, sim_neg_macro,
+            sim_pos_micro, sim_neg_micro,
+        )
+        timer.stop('5_loss_computation')
+
+        # For debug visualizations, use macro-scale positive similarity
+        sim_pos_for_viz = sim_pos_macro
+
+        # Cleanup
+        del sim_pos_macro, sim_neg_macro, sim_pos_micro, sim_neg_micro
+        del stacked_neg
+        torch.cuda.empty_cache()
+
+        loss_value = total_loss.item()
+
+        # Log cost breakdown for diagnosing collapse (multi-scale)
+        if batch_idx % 10 == 0:
+            print(f"  [Multi-Scale DTW]  "
+                  f"macro_pos={loss_dict['macro_cost_pos']:.2f}  macro_neg={loss_dict['macro_cost_neg']:.2f}  "
+                  f"micro_pos={loss_dict['micro_cost_pos']:.2f}  micro_neg={loss_dict['micro_cost_neg']:.2f}  "
+                  f"L_macro={loss_dict['loss_macro']:.4f}  L_micro={loss_dict['loss_micro']:.4f}  "
+                  f"alpha={loss_dict['alpha']}  loss={loss_value:.4f}", flush=True)
+
+    else:
+        # ==================== SINGLE-SCALE (original path) ====================
+        timer.start('1_image_embedding')
+        img_emb = imageEmbed(images, show_dims=False, timer=timer)  # [B, seq_len, vec_size]
+        timer.stop('1_image_embedding')
+
+        timer.start('3b_norm_img')
+        norm_img = normalize_func(img_emb)      # [B, seq_len, vec_size]
+        timer.stop('3b_norm_img')
+
+        timer.start('4_positive_similarity')
+        sim_pos = torch.einsum('btv,bsv->bts', norm_pos_text, norm_img)
+        timer.stop('4_positive_similarity')
+
+        timer.start('5_negative_similarities')
+        sim_neg_all = torch.einsum('bktv,bsv->bkts', stacked_neg, norm_img)
+        total_loss, loss_dict = criterion(sim_pos, sim_neg_all)
+        del stacked_neg, sim_neg_all
+        torch.cuda.empty_cache()
+        timer.stop('5_negative_similarities')
+
+        timer.start('6_loss_computation')
+        loss_value = total_loss.item()
+        timer.stop('6_loss_computation')
+
+        sim_pos_for_viz = sim_pos
+
+        # Log cost breakdown for diagnosing collapse
+        if batch_idx % 10 == 0:
+            print(f"  [DTW-NLL] pos={loss_dict['cost_pos']:.2f}  neg={loss_dict['cost_neg']:.2f}  "
+                  f"norm_pos={loss_dict['norm_pos']:.4f}  norm_neg={loss_dict['norm_neg']:.4f}  "
+                  f"gap={loss_dict['gap']:.4f}  active={loss_dict['active_triplets']:.2%}  "
+                  f"loss={loss_value:.4f}", flush=True)
+
+        del img_emb, norm_img, sim_pos
+        torch.cuda.empty_cache()
 
     ######################################################################################################################################
     # Debugging: Save visualizations for the first batch every 10 epochs
@@ -256,7 +319,7 @@ def compute_batch_loss(imageEmbed, textEmbed,
             imageEmbed,
             pos_texts,
             images, 
-            sim_pos,
+            sim_pos_for_viz,
             epoch,
             job_id=job_id
         )
@@ -266,7 +329,7 @@ def compute_batch_loss(imageEmbed, textEmbed,
     ######################################################################################################################################
 
     # Cleanup to free VRAM
-    del img_emb, pos_text_emb, norm_pos_text, norm_img, sim_pos
+    del pos_text_emb, norm_pos_text, sim_pos_for_viz
     torch.cuda.empty_cache()
 
     return total_loss
@@ -283,10 +346,15 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
     imageEmbedding.train()
     textEmbedding.eval()
     
-    # Collect all trainable parameters (only image embedding is trained)
-    params_to_train = list(imageEmbedding.parameters())
+    # Differential learning rates: low LR for pre-trained CNN, higher for BiLSTM
+    cnn_params = list(imageEmbedding.cnn_encoder.parameters())
+    cnn_param_ids = set(id(p) for p in cnn_params)
+    other_params = [p for p in imageEmbedding.parameters() if id(p) not in cnn_param_ids]
     
-    optimizer = optim.Adam(params_to_train, lr=learning_rate)
+    optimizer = optim.Adam([
+        {'params': cnn_params,   'lr': cnn_lr},     # Pre-trained ResNet backbone
+        {'params': other_params, 'lr': bilstm_lr},   # BiLSTM + projection heads
+    ], lr=learning_rate)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=5, verbose=True
     )
@@ -469,6 +537,8 @@ if __name__ == '__main__':
     print(f"[OPT 4] Sakoe-Chiba Bandwidth: ratio={sakoe_chiba_bandwidth_ratio}")
     print(f"[OPT 5] Positional Encoding: {use_positional_encoding} (type={positional_encoding_type}, applied BEFORE BiLSTM)")
     print(f"[OPT 6] In-Batch Negatives: num_negatives={num_negatives}")
+    if multi_scale_enabled:
+        print(f"[OPT 7] Multi-Scale Alignment: windows={multi_scale_window_sizes}, alpha={multi_scale_alpha}")
     print(f"================================================\n")
     
     # try:
