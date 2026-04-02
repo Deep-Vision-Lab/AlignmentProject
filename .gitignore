@@ -26,5 +26,13 @@ __pycache__
 
 # log files
 *.log
-
 *.pdf
+
+
+# .pth files
+*.pth
+
+
+#*.txt files
+*.txt
+TestResults/*.txt
