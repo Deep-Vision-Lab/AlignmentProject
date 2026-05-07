@@ -110,9 +110,9 @@ class ContrastiveSoftDTW(nn.Module):
 
         # 4. SUM-ALL MARGIN LOSS over all K negatives
         # For each sample, sum max(norm_pos - norm_neg_k + margin, 0) over all K
-        raw_loss = norm_pos_cost.unsqueeze(1) - norm_neg_costs + self.margin  # [B, K]
-        per_neg_loss = torch.clamp(raw_loss, min=0.0)           # [B, K]
-        loss = per_neg_loss.mean(dim=1)                           # [B]
+        loss = norm_pos_cost.unsqueeze(1) - norm_neg_costs + self.margin  # [B, K]
+        # per_neg_loss = torch.clamp(raw_loss, min=0.0)                # [B, K]
+        # loss = per_neg_loss.mean(dim=1)                                    # [B]
         
         avg_norm_gap = (norm_pos_cost.unsqueeze(1) - norm_neg_costs).mean().item()
         loss_dict = {
@@ -121,8 +121,9 @@ class ContrastiveSoftDTW(nn.Module):
             'gap': avg_norm_gap,
             'norm_pos': norm_pos_cost.mean().item(),
             'norm_neg': norm_neg_costs.mean().item(),
-            'active_triplets': (per_neg_loss > 0).float().mean().item(),
+            # 'active_triplets': (per_neg_loss > 0).float().mean().item(),
         }
+        print(f"ContrastiveSoftDTW - pos_cost: {loss_dict['cost_pos']:.4f}, neg_cost: {loss_dict['cost_neg']:.4f}, gap: {loss_dict['gap']:.4f}")
         return loss.mean(), loss_dict
 
 
@@ -188,7 +189,7 @@ class MultiScaleContrastiveSoftDTW(nn.Module):
         loss_macro, dict_macro = self.inner(sim_pos_macro, sim_neg_all_macro)
         loss_micro, dict_micro = self.inner(sim_pos_micro, sim_neg_all_micro)
 
-        total_loss = loss_macro + self.alpha * loss_micro
+        total_loss = (1 - self.alpha) * loss_macro + self.alpha * loss_micro
 
         # Merge diagnostics from both scales
         loss_dict = {}
@@ -198,7 +199,6 @@ class MultiScaleContrastiveSoftDTW(nn.Module):
             loss_dict[f'micro_{key}'] = val
         loss_dict['loss_macro'] = loss_macro.item()
         loss_dict['loss_micro'] = loss_micro.item()
-        loss_dict['alpha'] = self.alpha
 
         return total_loss, loss_dict
 

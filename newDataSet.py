@@ -57,7 +57,7 @@ class TextLineModern(Dataset):
         self.transform = transform
 
         if new_dataset:
-            self.num_samples = 10000
+            self.num_samples = num_samples
             # Each sample is a positive pair (text1, img1)
             # Negative sampling is done in the collate function (in-batch negatives)
 

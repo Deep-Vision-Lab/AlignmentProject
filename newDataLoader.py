@@ -9,7 +9,8 @@ from Parameters import *
 from DiffNWAlgo import *
 
 
-data_dir = f'DataSet/Synthetic_{lang}'  # Directory for the new dataset
+data_dir = f'DataSet/Synthetic_{lang}_{num_samples}'
+# data_dir = 'DataSet/betaData'  # Updated to match the new dataset location
 # Define paths for NewDataSet
 new_dataset = {
     "images": os.path.join(data_dir, "images"),

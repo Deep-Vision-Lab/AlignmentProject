@@ -1,4 +1,5 @@
 import torch
+import os
 
 # Model parameters
 normalize_type = 'l2' # ['min_max', 'mean_std', 'average', 'l2']
@@ -6,13 +7,14 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Training parameters
 batch_size = 32
-epochs = 300
+epochs = 100
 learning_rate = 1e-4
 
 # Data parameters
 window_size = 16
 vector_size = 128
 lang = 'Arabic' # ['English', 'Arabic']
+num_samples = 100000  # [10000, 50000, 100000]
 
 # ============================================================================
 # Sliding Window with Overlap
@@ -25,15 +27,9 @@ stride_ratio = 0.5  # Recommended: 0.5 (50% overlap) or 0.25 (75% overlap)
 # ============================================================================
 # ARCHITECTURE FLAGS
 # ============================================================================
-# Positional Encoding (Disabled - BiLSTM provides relative position context)
-# Keeping this ON would break staircase for repeated letters since
-# static text embeddings don't have position info
-use_positional_encoding = False
-positional_encoding_type = 'sinusoidal'  # ['learnable', 'sinusoidal']
-
-# BiLSTM for local sequence context
+# BiLSTM for local sequence context (CRNN architecture)
 use_bilstm = True
-bilstm_layers = 2
+bilstm_layers = 1
 
 # ============================================================================
 # Contrastive Soft-DTW Parameters (CUDA-accelerated)
@@ -42,9 +38,7 @@ bilstm_layers = 2
 # Combines Soft-DTW with InfoNCE-style contrastive learning
 # Uses CUDA-accelerated Soft-DTW from soft-dtw-cuda.py
 # All contrastive logic is inside the loss function - no special training loop needed
-contrastive_soft_dtw_gamma = 0.1          # Soft-DTW smoothing (gamma -> 0: hard DTW, gamma -> inf: average)
-contrastive_soft_dtw_gamma_min = 0.001    # Minimum gamma after annealing
-contrastive_soft_dtw_gamma_decay = 0.95   # Multiplicative decay per epoch
+contrastive_soft_dtw_gamma = 1e-4          # Soft-DTW smoothing (gamma -> 0: hard DTW, gamma -> inf: average)
 
 # Sakoe-Chiba Band: restricts DTW warping path to a diagonal band
 # Prevents distant identical letters from being incorrectly aligned
@@ -55,10 +49,6 @@ contrastive_margin = 100.0                 # Margin for triplet loss: forces pos
 
 # Dropout for regularization
 model_dropout = 0.3
-
-# Differential learning rates
-cnn_lr = 1e-5       # Low LR for pre-trained ResNet backbone
-bilstm_lr = 1e-3    # Higher LR for BiLSTM + projection heads
 
 # Negative sampling
 num_negatives = 10  # Number of negative samples per positive pair (in-batch negatives)
@@ -75,7 +65,7 @@ gapScore      = -10    # penalty per gap step
 #   - Large window (macro): learns global structure (word spacing, ascenders)
 #   - Small window (micro): learns fine-grained details (dots, diacritics)
 # Loss_total = Loss_norm(macro) + alpha * Loss_norm(micro)
-multi_scale_enabled = True
+multi_scale_enabled = os.environ.get('MULTI_SCALE_ENABLED', 'True').lower() in ('true', '1', 't')
 multi_scale_window_sizes = [16, 8]   # [macro_window, micro_window]
 multi_scale_alpha = 0.5              # Weight for micro-scale loss (start at 0.5, tune later)
 

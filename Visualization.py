@@ -263,8 +263,8 @@ def saveHeatmapPlots(text1, image1,
         # Select labels for Image-Text Similarity matrices
         # debug_Similar_TxtImg1 is [Text, Image]
         h_sim1, _ = debug_Similar_TxtImg1[i].shape
-        y_text_sim1 = get_labels(h_sim1, y_text_full, y_text_stripped)
-        
+        # y_text_sim1 = get_labels(h_sim1, y_text_full, y_text_stripped)
+        y_text_sim1 = y_text_full
         # Visualize similarity matrix instead of raw matrices
         VisualizeMatrixWithAxis(
             matrix_data=debug_Similar_TxtImg1[i],
@@ -338,15 +338,15 @@ def VisualizeMatrixWithAxis(matrix_data, image_path, title,
     
     # Determine labels and if needs image drawing for Y-axis
     draw_y_imgs = False
-    if cur_patches_y is not None and len(cur_patches_y) == matrix_data.shape[0]:
-        # check if first element is tensor
-        if len(cur_patches_y) > 0 and (torch.is_tensor(cur_patches_y[0]) or isinstance(cur_patches_y[0], np.ndarray)):
-            label_y = list(range(matrix_data.shape[0]))
-            draw_y_imgs = True
-        else:
-            label_y = cur_patches_y
-    else:
+    # if cur_patches_y is not None and len(cur_patches_y) == matrix_data.shape[0]:
+    # check if first element is tensor
+    if len(cur_patches_y) > 0 and (torch.is_tensor(cur_patches_y[0]) or isinstance(cur_patches_y[0], np.ndarray)):
         label_y = list(range(matrix_data.shape[0]))
+        draw_y_imgs = True
+    else:
+        label_y = cur_patches_y
+    # else:
+    #     label_y = list(range(matrix_data.shape[0]))
 
     # Determine labels and if needs image drawing for X-axis
     draw_x_imgs = False
