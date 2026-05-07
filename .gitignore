@@ -36,3 +36,7 @@ __pycache__
 #*.txt files
 *.txt
 TestResults/*.txt
+
+
+#ablations
+Experiments/Phase1_Ablation/*.out
