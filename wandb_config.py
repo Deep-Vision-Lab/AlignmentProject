@@ -21,12 +21,10 @@ def init_wandb(job_id):
                 "normalizing method ": normalize_type
             })
     
-def update_wandb(train_loss, val_loss, train_accuracy, val_accuracy):
+def update_wandb(train_loss, val_loss):
     wandb.log({
     "train_loss": train_loss, 
     "val_loss": val_loss,
-    "train_accuracy": train_accuracy,
-    "val_accuracy": val_accuracy
     })
 
 def upload_artifacts_to_wandb(job_id, epoch):

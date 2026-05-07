@@ -141,22 +141,11 @@ def interpolate_NW_matrix(NWTensor, target_shape):
 
 
 
-def compute_accuracy(pred_path, target_path, threshold=0.5):
-    # Binarize the paths
-    pred_binary = (pred_path > threshold).float()
-    target_binary = (target_path > threshold).float()
-    
-    # Calculate accuracy as the percentage of matching positions
-    correct = (pred_binary == target_binary).float()
-    accuracy = correct.sum().item() / correct.numel()
-    
-    return accuracy
-
 
 def save_model_weights(model, epoch, job_id):
     weights_dir = os.path.join(os.path.dirname(__file__), "Weights", job_id)
     os.makedirs(weights_dir, exist_ok=True)
-    weights_path = os.path.join(weights_dir, f"model_epoch_{epoch}.pth")
+    weights_path = os.path.join(weights_dir, f"model_latest.pth")
     torch.save(model.state_dict(), weights_path)
 
 def check_grad(grad):
@@ -230,7 +219,7 @@ def compute_batch_loss(imageEmbed, textEmbed,
             img_emb_s = imageEmbed.forward_at_scale(images, ws, s,
                                                      show_dims=False, timer=timer)
             norm_img_s = normalize_func(img_emb_s)
-            sim_pos_s = torch.einsum('btv,bsv->bts', norm_pos_text, norm_img_s)
+            sim_pos_s = torch.einsum('bsv,btv->bst', norm_pos_text, norm_img_s)
             sim_neg_s = torch.einsum('bktv,bsv->bkts', stacked_neg, norm_img_s)
             del img_emb_s, norm_img_s
             return sim_pos_s, sim_neg_s
@@ -268,11 +257,11 @@ def compute_batch_loss(imageEmbed, textEmbed,
 
         # Log cost breakdown for diagnosing collapse (multi-scale)
         if batch_idx % 10 == 0:
-            print(f"  [Multi-Scale DTW]  "
+            print(f"[Multi-Scale DTW]  "
                   f"macro_pos={loss_dict['macro_cost_pos']:.2f}  macro_neg={loss_dict['macro_cost_neg']:.2f}  "
                   f"micro_pos={loss_dict['micro_cost_pos']:.2f}  micro_neg={loss_dict['micro_cost_neg']:.2f}  "
                   f"L_macro={loss_dict['loss_macro']:.4f}  L_micro={loss_dict['loss_micro']:.4f}  "
-                  f"alpha={loss_dict['alpha']}  loss={loss_value:.4f}", flush=True)
+                  f"loss={loss_value:.4f}", flush=True)
 
     else:
         # ==================== SINGLE-SCALE (original path) ====================
@@ -285,7 +274,7 @@ def compute_batch_loss(imageEmbed, textEmbed,
         timer.stop('3b_norm_img')
 
         timer.start('4_positive_similarity')
-        sim_pos = torch.einsum('btv,bsv->bts', norm_pos_text, norm_img)
+        sim_pos = torch.einsum('bsv,btv->bst', norm_pos_text, norm_img)
         timer.stop('4_positive_similarity')
 
         timer.start('5_negative_similarities')
@@ -303,10 +292,9 @@ def compute_batch_loss(imageEmbed, textEmbed,
 
         # Log cost breakdown for diagnosing collapse
         if batch_idx % 10 == 0:
-            print(f"  [DTW-NLL] pos={loss_dict['cost_pos']:.2f}  neg={loss_dict['cost_neg']:.2f}  "
+            print(f"[DTW-NLL] pos={loss_dict['cost_pos']:.2f}  neg={loss_dict['cost_neg']:.2f}  "
                   f"norm_pos={loss_dict['norm_pos']:.4f}  norm_neg={loss_dict['norm_neg']:.4f}  "
-                  f"gap={loss_dict['gap']:.4f}  active={loss_dict['active_triplets']:.2%}  "
-                  f"loss={loss_value:.4f}", flush=True)
+                  f"gap={loss_dict['gap']:.4f}  loss={loss_value:.4f}", flush=True)
 
         del img_emb, norm_img, sim_pos
         torch.cuda.empty_cache()
@@ -351,16 +339,10 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
     cnn_param_ids = set(id(p) for p in cnn_params)
     other_params = [p for p in imageEmbedding.parameters() if id(p) not in cnn_param_ids]
     
-    optimizer = optim.Adam([
-        {'params': cnn_params,   'lr': cnn_lr},     # Pre-trained ResNet backbone
-        {'params': other_params, 'lr': bilstm_lr},   # BiLSTM + projection heads
-    ], lr=learning_rate)
+    optimizer = optim.Adam(cnn_params + other_params, lr=learning_rate)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=5, verbose=True
     )
-    
-    # Gamma annealing for Soft-DTW
-    current_gamma = contrastive_soft_dtw_gamma
     
     loss_lst = []
     
@@ -374,8 +356,8 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
         
         # Update gamma for Soft-DTW annealing
         if hasattr(criterion, 'gamma'):
-            criterion.gamma = current_gamma
-            print(f"Epoch {epoch+1} - Soft-DTW gamma: {current_gamma:.6f}", flush=True)
+            criterion.gamma = contrastive_soft_dtw_gamma
+            print(f"Epoch {epoch+1} - Soft-DTW gamma: {contrastive_soft_dtw_gamma:.6f}", flush=True)
         
         # Ensure model is in training mode at start of each epoch
         imageEmbedding.train()
@@ -384,7 +366,6 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
         global_timer.reset()
             
         train_loss = 0.0
-        train_accuracy = 0.0
 
         for batch_idx, (images, pos_texts, neg_texts) in enumerate(trainLoader):
             # Timing: Data transfer to GPU
@@ -395,7 +376,7 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
             neg_texts = list(neg_texts)
             global_timer.stop('0_data_to_gpu')
             
-            optimizer.zero_grad()
+            optimizer.zero_grad() 
   
             # Compute loss with in-batch negatives
             loss = compute_batch_loss(
@@ -406,7 +387,6 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
                 debug=debug, timer=global_timer
             )
             
-
             train_loss += loss.item()
 
             # Backpropagation and optimizer step
@@ -431,8 +411,7 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
             torch.cuda.empty_cache()
 
         train_loss = train_loss / len(trainLoader)
-        train_accuracy = train_accuracy / len(trainLoader)
-        print(f'Epoch {epoch+1} - Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}', flush=True)
+        print(f'Epoch {epoch+1} - Train Loss: {train_loss:.4f}', flush=True)
         
         # Print timing summary for this epoch (only if profiling is enabled)
         global_timer.print_summary(f"Epoch {epoch+1} Timing Summary (Training)")
@@ -440,7 +419,6 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
         # Validation phase
         imageEmbedding.eval()
         val_loss = 0.0
-        val_accuracy = 0.0
         with torch.no_grad():
             for batch_idx, (images, pos_texts, neg_texts) in enumerate(validLoader):
                 # Ensure all data is on correct device
@@ -462,8 +440,7 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
                 torch.cuda.empty_cache()
         
         val_loss = val_loss / len(validLoader)
-        val_accuracy = val_accuracy / len(validLoader)
-        print(f'Epoch {epoch+1} - Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.4f}', flush=True)
+        print(f'Epoch {epoch+1} - Validation Loss: {val_loss:.4f}', flush=True)
         
         # Calculate and print epoch duration
         epoch_end_time = time.time()
@@ -476,16 +453,11 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
         # Step the LR scheduler based on validation loss
         scheduler.step(val_loss)
         
-        # Decay gamma for next epoch
-        current_gamma = max(contrastive_soft_dtw_gamma_min, current_gamma * contrastive_soft_dtw_gamma_decay)
-        
         # Log train and validation losses and accuracies to wandb
         if debug_wandb:
             update_wandb(
                 train_loss, 
-                val_loss, 
-                train_accuracy, 
-                val_accuracy
+                val_loss
             )
             # Upload artifacts every 10 epochs
             if epoch % 10 == 0:
@@ -511,15 +483,12 @@ if __name__ == '__main__':
 
     imageEmbedding = EmbeddingModel(
         window_size=window_size,
-        stride=stride,  # Now uses calculated overlap stride
+        stride=stride,
         vector_size=vector_size,
         device=device,
-        # OPTIMIZATION 1 & 3: Enable BiLSTM and Positional Encoding
         use_bilstm=use_bilstm,
-        use_positional_encoding=use_positional_encoding,
-        positional_encoding_type=positional_encoding_type,
         bilstm_layers=bilstm_layers,
-        dropout=model_dropout
+        dropout=model_dropout,
     )
 
     if show_gradients:
@@ -529,16 +498,14 @@ if __name__ == '__main__':
     
     criterion = Loss_choice()
     
-    # Log architecture optimizations
-    print(f"\n=== Architecture: CNN + BiLSTM ===")
+    # Log architecture
+    print(f"\n=== Architecture: CRNN (ResNet34 + BiLSTM) ===")
     print(f"[OPT 1] job_id: {job_id}")
     print(f"[OPT 2] BiLSTM Context: {use_bilstm} (layers={bilstm_layers})")
     print(f"[OPT 3] Sliding Window Overlap: stride_ratio={stride_ratio}")
-    print(f"[OPT 4] Sakoe-Chiba Bandwidth: ratio={sakoe_chiba_bandwidth_ratio}")
-    print(f"[OPT 5] Positional Encoding: {use_positional_encoding} (type={positional_encoding_type}, applied BEFORE BiLSTM)")
-    print(f"[OPT 6] In-Batch Negatives: num_negatives={num_negatives}")
+    print(f"[OPT 4] In-Batch Negatives: num_negatives={num_negatives}")
     if multi_scale_enabled:
-        print(f"[OPT 7] Multi-Scale Alignment: windows={multi_scale_window_sizes}, alpha={multi_scale_alpha}")
+        print(f"[OPT 5] Multi-Scale Alignment: windows={multi_scale_window_sizes}, alpha={multi_scale_alpha}")
     print(f"================================================\n")
     
     # try:

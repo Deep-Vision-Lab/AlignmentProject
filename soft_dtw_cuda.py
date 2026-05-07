@@ -29,6 +29,7 @@ from numba import jit, prange
 from torch.autograd import Function
 from numba import cuda
 import math
+import jax
 
 # ----------------------------------------------------------------------------------------------------------------------
 
@@ -147,6 +148,7 @@ class _SoftDTWCUDA(Function):
                                                    gamma.item(), bandwidth.item(), N, M, 
                                                    n_passes, cuda.as_cuda_array(R))
         ctx.save_for_backward(D, R.clone(), gamma, bandwidth)
+        # jax.debug.print("R = {}", R)
         return R[:, -2, -2]
 
     @staticmethod
