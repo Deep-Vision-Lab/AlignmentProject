@@ -6,7 +6,7 @@
 ################################################################################################
 #SBATCH --partition=jelsana		        ### specify partition name where to run a job. change only if you have a matching qos!! main: all nodes; gtx1080: 1080 gpu card nodes; rtx2080: 2080 nodes; teslap100: p100 nodes; titanrtx: titan nodes
 #SBATCH --time=03-00:00:00			### limit the time of job running. Make sure it is not greater than the partition time limit!! Format: D-H:MM:SS
-#SBATCH --output=%x_%J.out			### output log for running job - %x for job name, %J for job number
+#SBATCH --output=out/%x_%J.out			### output log for running job - %x for job name, %J for job number
 #SBATCH --gpus=rtx_6000:1
 #SBATCH --tasks=6
 

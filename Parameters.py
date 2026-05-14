@@ -28,7 +28,7 @@ stride_ratio = 0.5  # Recommended: 0.5 (50% overlap) or 0.25 (75% overlap)
 # ARCHITECTURE FLAGS
 # ============================================================================
 # BiLSTM for local sequence context (CRNN architecture)
-use_bilstm = True
+use_bilstm = False
 bilstm_layers = 1
 
 # ============================================================================
@@ -65,7 +65,7 @@ gapScore      = -10    # penalty per gap step
 #   - Large window (macro): learns global structure (word spacing, ascenders)
 #   - Small window (micro): learns fine-grained details (dots, diacritics)
 # Loss_total = Loss_norm(macro) + alpha * Loss_norm(micro)
-multi_scale_enabled = os.environ.get('MULTI_SCALE_ENABLED', 'True').lower() in ('true', '1', 't')
+multi_scale_enabled = os.environ.get('MULTI_SCALE_ENABLED', 'False').lower() in ('true', '1', 't')
 multi_scale_window_sizes = [16, 8]   # [macro_window, micro_window]
 multi_scale_alpha = 0.5              # Weight for micro-scale loss (start at 0.5, tune later)
 

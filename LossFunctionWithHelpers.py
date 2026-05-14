@@ -98,7 +98,7 @@ class ContrastiveSoftDTW(nn.Module):
         sim_neg_flat = sim_neg_all.view(B * K, sim_neg_all.shape[2], sim_neg_all.shape[3])
         
         # Returns neg_cost_flat: [B * K]
-        neg_cost_flat = self._compute_dtw_on_similarity(sim_neg_flat) 
+        neg_cost_flat = self._compute_dtw_on_similarity(sim_neg_flat)
         
         # Reshape back to [B, K]
         neg_costs = neg_cost_flat.view(B, K)
@@ -110,9 +110,9 @@ class ContrastiveSoftDTW(nn.Module):
 
         # 4. SUM-ALL MARGIN LOSS over all K negatives
         # For each sample, sum max(norm_pos - norm_neg_k + margin, 0) over all K
-        loss = norm_pos_cost.unsqueeze(1) - norm_neg_costs + self.margin  # [B, K]
-        # per_neg_loss = torch.clamp(raw_loss, min=0.0)                # [B, K]
-        # loss = per_neg_loss.mean(dim=1)                                    # [B]
+        raw_loss = norm_pos_cost.unsqueeze(1) - norm_neg_costs + self.margin  # [B, K]
+        per_neg_loss = torch.clamp(raw_loss, min=0.0)                # [B, K]
+        loss = per_neg_loss.mean(dim=1)                                    # [B]
         
         avg_norm_gap = (norm_pos_cost.unsqueeze(1) - norm_neg_costs).mean().item()
         loss_dict = {
@@ -123,7 +123,6 @@ class ContrastiveSoftDTW(nn.Module):
             'norm_neg': norm_neg_costs.mean().item(),
             # 'active_triplets': (per_neg_loss > 0).float().mean().item(),
         }
-        print(f"ContrastiveSoftDTW - pos_cost: {loss_dict['cost_pos']:.4f}, neg_cost: {loss_dict['cost_neg']:.4f}, gap: {loss_dict['gap']:.4f}")
         return loss.mean(), loss_dict
 
 

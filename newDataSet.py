@@ -52,14 +52,18 @@ def textual_sliding_window(text, window_size, step_size):
 
 
 class TextLineModern(Dataset):
-    def __init__(self, new_dataset=None, transform=None):
+    def __init__(self, new_dataset=None, transform=None, num_samples_override=None):
         self.new_dataset = new_dataset
         self.transform = transform
 
         if new_dataset:
-            self.num_samples = num_samples
-            # Each sample is a positive pair (text1, img1)
-            # Negative sampling is done in the collate function (in-batch negatives)
+            if num_samples_override is not None:
+                self.num_samples = num_samples_override
+            else:
+                # Auto-detect by counting img1_*.png files in the images directory
+                images_dir = new_dataset['images']
+                detected = len([f for f in os.listdir(images_dir) if f.startswith('img1_') and f.endswith('.png')])
+                self.num_samples = detected if detected > 0 else num_samples
 
     def __len__(self):
         return self.num_samples if self.new_dataset else 0
