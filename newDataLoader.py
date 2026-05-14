@@ -9,16 +9,7 @@ from Parameters import *
 from DiffNWAlgo import *
 
 
-data_dir = f'DataSet/Synthetic_{lang}_{num_samples}'
-# data_dir = 'DataSet/betaData'  # Updated to match the new dataset location
-# Define paths for NewDataSet
-new_dataset = {
-    "images": os.path.join(data_dir, "images"),
-    "matrices": os.path.join(data_dir, "matrices"),
-    "diffNWmatrices": os.path.join(data_dir, "diffNWmatrices"),
-    "similarity_matrices": os.path.join(data_dir, "similarity_matrices"),
-    "texts":  os.path.join(data_dir, "texts")
-}
+_default_data_dir = f'DataSet/Synthetic_{lang}_{num_samples}'
 
 class ToTensorWithGrad:
     def __call__(self, img):
@@ -26,24 +17,61 @@ class ToTensorWithGrad:
         return tensor.requires_grad_()
 
 
-# Define transformations for images
 transform = transforms.Compose([
     ToTensorWithGrad(),
     transforms.Resize((128, 1024)),
-    # ScoreMapping()
 ])
 
-# Create the full dataset
-full_dataset = TextLineModern(  # Not used for NewDataSet
-    new_dataset=new_dataset,
-    transform=transform
-)
 
-# Split the dataset into 80% training and 20% testing
+def build_dataloaders(data_dir=None):
+    """Build train/valid/test DataLoaders for the given dataset directory.
+
+    Args:
+        data_dir: Path to the dataset root (must contain images/ and texts/ subdirs).
+                  Defaults to DataSet/Synthetic_{lang}_{num_samples} from Parameters.py.
+
+    Returns:
+        (train_dataloader, valid_dataloader, test_dataloader)
+    """
+    if data_dir is None:
+        data_dir = _default_data_dir
+
+    dataset_paths = {
+        "images": os.path.join(data_dir, "images"),
+        "matrices": os.path.join(data_dir, "matrices"),
+        "diffNWmatrices": os.path.join(data_dir, "diffNWmatrices"),
+        "similarity_matrices": os.path.join(data_dir, "similarity_matrices"),
+        "texts": os.path.join(data_dir, "texts"),
+    }
+
+    full_dataset = TextLineModern(new_dataset=dataset_paths, transform=transform)
+
+    train_sz = int(0.6 * len(full_dataset))
+    valid_sz = int(0.2 * len(full_dataset))
+    test_sz = len(full_dataset) - train_sz - valid_sz
+
+    train_ds, valid_ds, test_ds = random_split(full_dataset, [train_sz, valid_sz, test_sz])
+
+    _train = DataLoader(train_ds, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn)
+    _valid = DataLoader(valid_ds, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn)
+    _test  = DataLoader(test_ds,  batch_size=batch_size, shuffle=True,  collate_fn=custom_collate_fn)
+    return _train, _valid, _test
+
+
+# Module-level defaults (used when newDataLoader is imported without a custom data_dir)
+new_dataset = {
+    "images": os.path.join(_default_data_dir, "images"),
+    "matrices": os.path.join(_default_data_dir, "matrices"),
+    "diffNWmatrices": os.path.join(_default_data_dir, "diffNWmatrices"),
+    "similarity_matrices": os.path.join(_default_data_dir, "similarity_matrices"),
+    "texts": os.path.join(_default_data_dir, "texts"),
+}
+
+full_dataset = TextLineModern(new_dataset=new_dataset, transform=transform)
+
 train_size = int(0.6 * len(full_dataset))
 valid_size = int(0.2 * len(full_dataset))
 test_size = len(full_dataset) - train_size - valid_size
-
 
 train_dataset, valid_dataset, test_dataset = random_split(full_dataset, [train_size, valid_size, test_size])
 

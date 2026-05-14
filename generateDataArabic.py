@@ -76,9 +76,26 @@ def create_similarity_matrix(seq1, seq2):
 def create_arabic_text_image(text_to_render, font_path_or_name, font_size_px, image_dimensions_px, output_image_path,
                              output_mask_path=None, substring_to_mask=None,
                              text_color="white", background_color="black", padding=20):
-    reshaped_text = arabic_reshaper.reshape(text_to_render)
+        # STEP 1: Clean the input text FIRST before reshaping
+    text_clean = remove_diacritics(text_to_render)
+    
+    # STEP 2: Configure the reshaper to be extremely strict
+    configuration = {
+        'delete_harakat': True,
+        'support_zwj': False,
+        'delete_at_sign': True,
+        'use_unshaped_instead_of_isolated': True # Helps some artistic fonts
+    }
+    
+    reshaper = arabic_reshaper.ArabicReshaper(configuration=configuration)
+    reshaped_text = reshaper.reshape(text_clean)
+    
+    # STEP 3: Aggressive removal of control characters (The Box Killers)
+    # This removes \u200c, \u200d, and other invisible boxes
+    reshaped_text = "".join(c for c in reshaped_text if c.isprintable() and ord(c) != 0x200C)
+
+    # STEP 4: Fix direction
     bidi_text = get_display(reshaped_text)
-    bidi_text = remove_diacritics(bidi_text)
 
     try:
         font = ImageFont.truetype(font_path_or_name, font_size_px)
@@ -147,22 +164,22 @@ def get_augment_phrase(phrases_list, empty_prob):
 
 
 if __name__ == "__main__":
+    font = "Arslan_Wessam_B.ttf"
+    font_to_use = f"Fonts/{font}"
     num_samples_to_generate = 100000
-    base_output_directory = f"DataSet/Synthetic_{lang}_{num_samples_to_generate}"
+    base_output_directory = f"DataSet/Synthetic_{lang}_{num_samples_to_generate}_{font}"
     EMPTY_AUGMENT_PROBABILITY = 0.2
 
     output_images_dir = os.path.join(base_output_directory, "images")
     output_masks_dir = os.path.join(base_output_directory, "masks")
     output_matrices_dir = os.path.join(base_output_directory, "matrices")
     output_similarity_matrices_dir = os.path.join(base_output_directory, "similarity_matrices")
-    output_diff_nw_matrices_dir = os.path.join(base_output_directory, "diff_nw_matrices")
     output_text_lines_dir = os.path.join(base_output_directory, "texts")
 
     os.makedirs(output_images_dir, exist_ok=True)
     os.makedirs(output_masks_dir, exist_ok=True)
     os.makedirs(output_matrices_dir, exist_ok=True)
     os.makedirs(output_similarity_matrices_dir, exist_ok=True)
-    os.makedirs(output_diff_nw_matrices_dir, exist_ok=True)
     os.makedirs(output_text_lines_dir, exist_ok=True)
     print(f"Output will be saved in: {os.path.abspath(base_output_directory)}")
 
@@ -313,7 +330,6 @@ if __name__ == "__main__":
         "بلا توقف أو كلل",
     ]
 
-    font_to_use = "Fonts/Amiri-Regular.ttf"
     text_font_size = 90
     img_width = 1024
     img_height = 128
@@ -409,7 +425,6 @@ if __name__ == "__main__":
         output_mask_file_2 = os.path.join(output_masks_dir, f"mask2_{i}.png")
         output_matrix_file = os.path.join(output_matrices_dir, f"scoreMatrix_{i}.npy")
         output_similarity_matrix_file = os.path.join(output_similarity_matrices_dir, f"similarityMatrix_{i}.npy")
-        output_diff_nw_matrix_file = os.path.join(output_diff_nw_matrices_dir, f"diffNWMatrix_{i}.npy")
         output_text_file_1 = os.path.join(output_text_lines_dir, f"text1_{i}.txt")
         output_text_file_2 = os.path.join(output_text_lines_dir, f"text2_{i}.txt")
 
@@ -441,7 +456,6 @@ if __name__ == "__main__":
             diff_nw_align = diff_nw_algo(similarity_matrix=scaled_sim, calc_cosine=False)
 
         diff_nw_matrix = diff_nw_align.squeeze(0).cpu().numpy()
-        save_matrix_to_file(diff_nw_matrix, output_diff_nw_matrix_file)
 
         save_text_to_file(s1, output_text_file_1)
         save_text_to_file(s2, output_text_file_2)

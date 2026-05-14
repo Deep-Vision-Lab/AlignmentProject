@@ -154,7 +154,7 @@ def calculate_conv_output_size(input_size, kernel_size, stride, padding):
 
 class EmbeddingModel(nn.Module):
     def __init__(self, window_size=128, stride=64, vector_size=512,
-                  device='cuda', use_flip=True, use_bilstm=True,
+                  device='cuda', use_flip=False, use_bilstm=True,
                   bilstm_layers=1, dropout=0.1):
         """
         Image embedding model: ResNet34 CNN + Bi-LSTM sequence encoder (CRNN).
@@ -197,6 +197,7 @@ class EmbeddingModel(nn.Module):
         self.window_size = window_size
         self.stride = stride
         self.vector_size = vector_size
+        self._flip_verified = False
 
 
 
@@ -253,6 +254,24 @@ class EmbeddingModel(nn.Module):
 
         if self.use_flip:
             tokens_a = torch.flip(tokens_a, dims=[1])
+
+        # One-shot sanity check: save patches[0] (rightmost patch after flip) and
+        # patches[-1] (leftmost patch after flip) so we can verify the flip maps
+        # patch index 0 to the first Arabic character (rightmost in the image).
+        if self.use_flip and not self._flip_verified:
+            import os, torchvision
+            os.makedirs("debug_flip", exist_ok=True)
+            # patches[0] after flip = was the RIGHTMOST patch (first Arabic char)
+            torchvision.utils.save_image(tokens_a[0, 0].float().cpu(), "debug_flip/patch0_after_flip.png")
+            # patches[-1] after flip = was the LEFTMOST patch (last Arabic char)
+            torchvision.utils.save_image(tokens_a[0, -1].float().cpu(), "debug_flip/patchLast_after_flip.png")
+            # Also save the full first image for reference
+            torchvision.utils.save_image(image_a[0].float().cpu(), "debug_flip/full_image_ref.png")
+            print(f"[FlipCheck] Saved debug_flip/patch0_after_flip.png  ← should show the FIRST Arabic character (rightmost in image)")
+            print(f"[FlipCheck] Saved debug_flip/patchLast_after_flip.png ← should show the LAST Arabic character (leftmost in image)")
+            print(f"[FlipCheck] Saved debug_flip/full_image_ref.png        ← original image for comparison")
+            print(f"[FlipCheck] tokens_a shape after flip: {tokens_a.shape}  (B, num_patches, C, H, W)")
+            self._flip_verified = True
 
         # ==================== PHASE: CNN Encoding ====================
         t.start('img_1c_cnn_encoding')

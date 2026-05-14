@@ -9,6 +9,7 @@ from Evaluation import *
 from DiffNWAlgo import *
 from wandb_config import *
 from newDataLoader import *
+from newDataLoader import build_dataloaders
 from pathExtractor import *
 from Visualization import *
 from textEmbedding import *
@@ -28,6 +29,11 @@ import argparse
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='Train the alignment model')
 parser.add_argument('--job_id', type=str, required=True, help='Job ID for saving results')
+parser.add_argument('--data_dir', type=str, default=None,
+                    help='Path to dataset root directory (overrides Parameters.py defaults). '
+                         'Must contain images/ and texts/ subdirectories with the standard naming.')
+parser.add_argument('--pretrained_weights', type=str, default=None,
+                    help='Path to a .pth weights file to load before training (for finetuning).')
 args = parser.parse_args()
 job_id = args.job_id
 
@@ -476,6 +482,13 @@ if __name__ == '__main__':
     stride = max(1, int(window_size * stride_ratio))
     print(f"Using window_size={window_size}, stride={stride} ({int((1-stride_ratio)*100)}% overlap)")
 
+    # Resolve dataset: use --data_dir if provided, otherwise use module-level defaults
+    if args.data_dir is not None:
+        print(f"Loading dataset from custom path: {args.data_dir}")
+        _train_dl, _valid_dl, _test_dl = build_dataloaders(args.data_dir)
+    else:
+        _train_dl, _valid_dl, _test_dl = train_dataloader, valid_dataloader, test_dataloader
+
     # Initialize TextEmbedding FIRST (needed for space token in image embedding)
     # Text embeddings are context-free: same letter = same embedding (Label-Aware design)
     textEmbedding = TextEmbedding(embedding_dim=vector_size)
@@ -491,13 +504,19 @@ if __name__ == '__main__':
         dropout=model_dropout,
     )
 
+    # Load pretrained weights for finetuning
+    if args.pretrained_weights is not None:
+        print(f"Loading pretrained weights from: {args.pretrained_weights}")
+        state_dict = torch.load(args.pretrained_weights, map_location=device)
+        imageEmbedding.load_state_dict(state_dict)
+        print("Pretrained weights loaded successfully.")
+
     if show_gradients:
         for param in imageEmbedding.parameters():
             param.register_hook(check_grad)
 
-    
     criterion = Loss_choice()
-    
+
     # Log architecture
     print(f"\n=== Architecture: CRNN (ResNet34 + BiLSTM) ===")
     print(f"[OPT 1] job_id: {job_id}")
@@ -506,14 +525,17 @@ if __name__ == '__main__':
     print(f"[OPT 4] In-Batch Negatives: num_negatives={num_negatives}")
     if multi_scale_enabled:
         print(f"[OPT 5] Multi-Scale Alignment: windows={multi_scale_window_sizes}, alpha={multi_scale_alpha}")
+    if args.pretrained_weights:
+        print(f"[FINETUNE] Pretrained weights: {args.pretrained_weights}")
+    if args.data_dir:
+        print(f"[FINETUNE] Dataset: {args.data_dir}")
     print(f"================================================\n")
-    
-    # try:
+
     loss_lst = Train(
         imageEmbedding,
         textEmbedding,
-        train_dataloader,
-        valid_dataloader,
+        _train_dl,
+        _valid_dl,
         criterion
     )
     
