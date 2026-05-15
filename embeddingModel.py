@@ -131,20 +131,24 @@ class BiLSTMEncoder(nn.Module):
 
 # Sliding window function to divide image into patches (subwindows)
 def sliding_window(image, window_size, stride, debug_mode=False, save_dir=False):
-    patches = []
-    # Unfolding the image into patches of size window_size
-    for i  in range(image.shape[0]):
-        image_windows = []
-        for j in range(0, image.shape[3] - window_size + 1, stride):
-            image_i = image[i, :, :, j:j + window_size]
-            image_windows.append(image_i)
-            if debug_mode:
-                torchvision.utils.save_image(image_i, f"{save_dir}/patch_b{i}_w{j}.png")
-        patches.append(torch.stack(image_windows, dim=0))
-        del image_windows
-    result = torch.stack(patches, dim=0)
-    del patches
-    return result
+    """Vectorized sliding window using torch.Tensor.unfold.
+
+    Args:
+        image: [B, C, H, W]
+    Returns:
+        patches: [B, num_windows, C, H, window_size]
+    """
+    # Unfold along the width dimension: [B, C, H, num_windows, window_size]
+    patches = image.unfold(dimension=3, size=window_size, step=stride)
+    # Reorder to [B, num_windows, C, H, window_size]
+    patches = patches.permute(0, 3, 1, 2, 4).contiguous()
+
+    if debug_mode and save_dir:
+        for i in range(patches.shape[0]):
+            for j in range(patches.shape[1]):
+                torchvision.utils.save_image(patches[i, j], f"{save_dir}/patch_b{i}_w{j * stride}.png")
+
+    return patches
 
 # CNN model for extracting features from sliding window patches
 def calculate_conv_output_size(input_size, kernel_size, stride, padding):
@@ -211,31 +215,31 @@ class EmbeddingModel(nn.Module):
 
         total_patches = batches_num * windows_num
 
-        # Reshape patches
+        # Reshape patches: [B, W, C, H, ws] -> [B*W, C, H, ws]
         reshaped_tokens_a = tokens_a.reshape(total_patches, Channels, H, W)
         if show_dims:
             print(f"Patches after reshaping: {reshaped_tokens_a.shape}")
-
-        del tokens_a
 
         # --- Chunked CNN forward to cap peak memory ---
         if total_patches <= self.CNN_CHUNK_SIZE:
             encoded_tokens_a = self.cnn_encoder(reshaped_tokens_a)
         else:
-            chunks = reshaped_tokens_a.split(self.CNN_CHUNK_SIZE, dim=0)
-            del reshaped_tokens_a          # free the big tensor early
-            encoded_chunks = []
-            for chunk in chunks:
-                encoded_chunks.append(self.cnn_encoder(chunk))
-            encoded_tokens_a = torch.cat(encoded_chunks, dim=0)
-            del encoded_chunks, chunks
-            reshaped_tokens_a = None       # already deleted above
+            # Pre-allocate output buffer to avoid the extra concat copy.
+            # Run a tiny first chunk to discover output dtype/shape, then fill.
+            first_chunk = reshaped_tokens_a[:self.CNN_CHUNK_SIZE]
+            first_out = self.cnn_encoder(first_chunk)
+            out_dim = first_out.shape[1]
+            encoded_tokens_a = torch.empty(
+                total_patches, out_dim,
+                device=first_out.device, dtype=first_out.dtype,
+            )
+            encoded_tokens_a[:self.CNN_CHUNK_SIZE] = first_out
+            for start in range(self.CNN_CHUNK_SIZE, total_patches, self.CNN_CHUNK_SIZE):
+                end = min(start + self.CNN_CHUNK_SIZE, total_patches)
+                encoded_tokens_a[start:end] = self.cnn_encoder(reshaped_tokens_a[start:end])
 
         if show_dims:
             print(f"Tokens after CNN: {encoded_tokens_a.shape}")
-
-        if reshaped_tokens_a is not None:
-            del reshaped_tokens_a
 
         return encoded_tokens_a, batches_num, windows_num
 
@@ -244,7 +248,7 @@ class EmbeddingModel(nn.Module):
 
         # ==================== PHASE: Sliding Window (Patch Extraction) ====================
         t.start('img_1a_sliding_window')
-        tokens_a = sliding_window(image_a, self.window_size, self.stride, debug_mode=debug).to(device)
+        tokens_a = sliding_window(image_a, self.window_size, self.stride, debug_mode=debug)
         t.stop('img_1a_sliding_window')
 
         if show_dims:
@@ -313,7 +317,7 @@ class EmbeddingModel(nn.Module):
         t.start(f'img_scale_{scale_window_size}_sw')
         tokens_a = sliding_window(
             image_a, scale_window_size, scale_stride, debug_mode=debug
-        ).to(self.device)
+        )
         t.stop(f'img_scale_{scale_window_size}_sw')
 
         batches_num, windows_num = tokens_a.shape[:2]

@@ -73,33 +73,15 @@ class TextLineModern(Dataset):
         if self.new_dataset:
             sample_idx = idx + 1  # 1-based file naming
 
-            # Load positive pair (text1, img1) - aligned
-            img1_name = f"img1_{sample_idx}.png"
-            text1_name = f"text1_{sample_idx}.txt"
-            
-            img2_name = f"img2_{sample_idx}.png"
-            text2_name = f"text2_{sample_idx}.txt"
-
-            img1_path = os.path.join(self.new_dataset['images'], img1_name)
+            img1_path = os.path.join(self.new_dataset['images'], f"img1_{sample_idx}.png")
             img1 = Image.open(img1_path).convert("RGB")
             if self.transform:
                 img1 = self.transform(img1)
 
-            text1_path = os.path.join(self.new_dataset['texts'], text1_name)
+            text1_path = os.path.join(self.new_dataset['texts'], f"text1_{sample_idx}.txt")
             with open(text1_path, 'r') as f:
-                text1 = f.read().strip()
-                text1 = ' ' + text1 + ' '
+                text1 = ' ' + f.read().strip() + ' '
 
-            img2_path = os.path.join(self.new_dataset['images'], img2_name)
-            img2 = Image.open(img2_path).convert("RGB")
-            if self.transform:
-                img2 = self.transform(img2)
-
-            text2_path = os.path.join(self.new_dataset['texts'], text2_name)
-            with open(text2_path, 'r') as f:
-                text2 = f.read().strip()
-                text2 = ' ' + text2 + ' '
-
-            return text1, img1, text2, img2
+            return text1, img1
         else:
             raise NotImplementedError("Handling for non-NewDataSet is not included.")

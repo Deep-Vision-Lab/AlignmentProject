@@ -36,6 +36,13 @@ class TextEmbedding(nn.Module):
             self.embedding.weight[self.SPACE_TOKEN_IDX].normal_(0, 0.02)
             # Initialize padding to zeros
             self.embedding.weight[self.PAD_TOKEN_IDX] = torch.zeros(embedding_dim)
+
+        # Text embedding is frozen during training (not in the optimizer).
+        # Why: training treats letters as context-free anchors; we want stable
+        # text targets while the image branch (CNN+BiLSTM) learns to match them.
+        # Freezing also drops the per-step gradient buffer for the full
+        # vocab_size x embedding_dim table — a real VRAM win.
+        self.embedding.weight.requires_grad_(False)
     
     def get_space_embedding(self):
         """
