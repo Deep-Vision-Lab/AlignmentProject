@@ -22,7 +22,12 @@ echo `date`
 echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
 echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n"
 echo -e "ENVIRONMENT:\t\t" $env
-echo -e "PROJECT:\t\t" $model_dir "\n\n"
+echo -e "PROJECT:\t\t" $model_dir
+echo -e "JOB_ID:\t\t\t" $JOB_ID
+echo -e "FINETUNE:\t\t" ${FINETUNE:-0}
+echo -e "DATA_DIR:\t\t" ${DATA_DIR:-<default>}
+echo -e "PRETRAINED_WEIGHTS:\t" ${PRETRAINED_WEIGHTS:-<none>}
+echo -e "RESUME:\t\t\t" ${RESUME:-<none>} "\n\n"
 ### Start your code below ####
 cd ~/BGU-Lab/$model_dir
 module load anaconda ### load anaconda module

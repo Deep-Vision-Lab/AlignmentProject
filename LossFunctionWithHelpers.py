@@ -38,36 +38,31 @@ class ContrastiveSoftDTW(nn.Module):
         bandwidth (int): Sakoe-Chiba bandwidth for pruning
     """
     
-    def __init__(self, gamma=0.1, use_cuda=True, bandwidth=0.0, margin=10.0):
+    def __init__(self, gamma=0.1, use_cuda=True, bandwidth=0.0, margin=10.0,
+                 temperature=0.07):
         super(ContrastiveSoftDTW, self).__init__()
         self.gamma = gamma
         self.use_cuda = use_cuda
         self.bandwidth = bandwidth
         self.margin = margin
-    
+        # Temperature for softmax over cosine similarities.
+        # Cosine sims live in [-1, 1]; without dividing by a small temperature
+        # the softmax is nearly uniform across image patches and -log_softmax
+        # saturates at log(seq_len), giving no gradient signal.
+        self.temperature = temperature
+
 
     def _compute_dtw_on_similarity(self, sim_matrix: "torch.Tensor") -> "torch.Tensor":
         """
         Compute Soft-DTW directly on a pre-computed similarity matrix.
-        
-        The SoftDTW expects distance/cost matrices (lower = more similar).
-        We convert similarity to negative log-likelihood:
-            p(img_m | text_n) = softmax(sim[b, n, :], dim=-1)
-            dist = -log(p) = -log_softmax(sim, dim=-1)
-        
-        This gives a proper probabilistic cost: aligned pairs have low NLL,
-        misaligned pairs have high NLL.
-        
         Args:
-            sim_matrix: [B, N, M] similarity matrices (higher = more similar, typically in [-1, 1])
-        
+            sim_matrix: [B, N, M] cosine similarity matrices, values in [-1, 1].
         Returns:
             DTW costs [B] as torch.Tensor
         """
-        # Convert similarity to negative log-likelihood
-        # log_softmax is numerically stable: -log(softmax(x)) = -x + logsumexp(x)
-        # sim_matrix: [B, N, M] -> dist_matrix: [B, N, M]
-        dist_matrix = -F.log_softmax(sim_matrix, dim=-1)
+        # Temperature-scaled NLL: softmax(sim/T) sharpens the distribution
+        # over image patches so the alignment signal isn't washed out.
+        dist_matrix = -F.log_softmax(sim_matrix / self.temperature, dim=-1)
         # Use the SoftDTW _SoftDTW function directly with pre-computed distances
         # The _SoftDTW.apply expects [B, N, M] distance matrix
         _SoftDTW = soft_dtw_cuda._SoftDTW
@@ -151,7 +146,7 @@ class MultiScaleContrastiveSoftDTW(nn.Module):
     """
 
     def __init__(self, gamma=0.1, use_cuda=True, bandwidth=0.0,
-                 margin=10.0, alpha=0.5):
+                 margin=10.0, alpha=0.5, temperature=0.07):
         super(MultiScaleContrastiveSoftDTW, self).__init__()
         self.alpha = alpha
         # A single shared inner loss module (the gamma attribute is mutated
@@ -161,6 +156,7 @@ class MultiScaleContrastiveSoftDTW(nn.Module):
             use_cuda=use_cuda,
             bandwidth=bandwidth,
             margin=margin,
+            temperature=temperature,
         )
 
     # Expose gamma so the training-loop annealing code keeps working
@@ -237,6 +233,7 @@ def Loss_choice():
             bandwidth=sakoe_chiba_bandwidth_ratio,
             margin=contrastive_margin,
             alpha=multi_scale_alpha,
+            temperature=contrastive_temperature,
         )
     else:
         # Single-scale fallback
@@ -244,7 +241,8 @@ def Loss_choice():
             gamma=contrastive_soft_dtw_gamma,
             use_cuda=True,
             bandwidth=sakoe_chiba_bandwidth_ratio,
-            margin=contrastive_margin
+            margin=contrastive_margin,
+            temperature=contrastive_temperature,
         )
     return criterion
 

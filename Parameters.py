@@ -17,6 +17,18 @@ lang = 'Arabic' # ['English', 'Arabic']
 num_samples = 100000  # [10000, 50000, 100000]
 
 # ============================================================================
+# Fine-tuning parameters
+# ============================================================================
+# Used when train.py is launched with --finetune. The dataset must follow the
+# same DataSet/Synthetic_{lang}_{num_samples}/ layout (images/, texts/, ...).
+# Override these on the fly by passing --data_dir to train.py.
+finetune_lang = 'English'                # Language of the finetune dataset
+finetune_num_samples = 10000             # Size of the finetune dataset
+finetune_data_dir = f'DataSet/Synthetic_{finetune_lang}_{finetune_num_samples}'
+finetune_learning_rate = 1e-5            # Typically 1/10 of pretraining LR
+finetune_epochs = 30                     # Usually fewer epochs than pretraining
+
+# ============================================================================
 # Sliding Window with Overlap
 # ============================================================================
 # Using overlap creates redundant patches that make letter features more robust.
@@ -28,7 +40,7 @@ stride_ratio = 0.5  # Recommended: 0.5 (50% overlap) or 0.25 (75% overlap)
 # ARCHITECTURE FLAGS
 # ============================================================================
 # BiLSTM for local sequence context (CRNN architecture)
-use_bilstm = False
+use_bilstm = True
 bilstm_layers = 1
 
 # ============================================================================
@@ -38,13 +50,18 @@ bilstm_layers = 1
 # Combines Soft-DTW with InfoNCE-style contrastive learning
 # Uses CUDA-accelerated Soft-DTW from soft-dtw-cuda.py
 # All contrastive logic is inside the loss function - no special training loop needed
-contrastive_soft_dtw_gamma = 1e-4          # Soft-DTW smoothing (gamma -> 0: hard DTW, gamma -> inf: average)
+contrastive_soft_dtw_gamma = 0.1          # Soft-DTW smoothing (gamma -> 0: hard DTW, gamma -> inf: average)
 
 # Sakoe-Chiba Band: restricts DTW warping path to a diagonal band
 # Prevents distant identical letters from being incorrectly aligned
 # Set as a fraction of sequence length (e.g., 0.2 = 20% of image width)
 sakoe_chiba_bandwidth_ratio = 0.0        # Bandwidth as fraction of sequence length (0 = no band constraint)
-contrastive_margin = 100.0                 # Margin for triplet loss: forces pos_cost to beat neg_cost by this amount
+contrastive_margin = 1.0                  # Margin for triplet loss on length-normalized DTW costs
+# Softmax temperature for converting cosine similarity (range [-1, 1]) into a
+# peaked distribution over image patches. Without this, softmax is nearly
+# uniform over ~100+ patches and the NLL distance saturates at log(N),
+# erasing the alignment gradient signal.
+contrastive_temperature = 0.07
 
 
 # Dropout for regularization

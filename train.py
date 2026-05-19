@@ -33,7 +33,15 @@ parser.add_argument('--data_dir', type=str, default=None,
                     help='Path to dataset root directory (overrides Parameters.py defaults). '
                          'Must contain images/ and texts/ subdirectories with the standard naming.')
 parser.add_argument('--pretrained_weights', type=str, default=None,
-                    help='Path to a .pth weights file to load before training (for finetuning).')
+                    help='Path to a .pth weights file to load before training (for finetuning). '
+                         'Loads model weights only; optimizer/epoch state is fresh.')
+parser.add_argument('--finetune', action='store_true',
+                    help='Switch to the finetune dataset configured in Parameters.py '
+                         '(finetune_data_dir, finetune_learning_rate, finetune_epochs). '
+                         '--data_dir, if also set, takes precedence over finetune_data_dir.')
+parser.add_argument('--resume', type=str, default=None,
+                    help='Path to a checkpoint .pth (saved by this script) to resume from. '
+                         'Restores model, optimizer, scheduler, scaler, and epoch counter.')
 args = parser.parse_args()
 job_id = args.job_id
 
@@ -128,11 +136,34 @@ class GPUTimer:
 global_timer = GPUTimer(enabled=ENABLE_PROFILING)
 
 
+def _weights_dir(job_id):
+    path = os.path.join(os.path.dirname(__file__), "Weights", job_id)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def save_model_weights(model, epoch, job_id):
-    weights_dir = os.path.join(os.path.dirname(__file__), "Weights", job_id)
-    os.makedirs(weights_dir, exist_ok=True)
-    weights_path = os.path.join(weights_dir, f"model_latest.pth")
+    weights_path = os.path.join(_weights_dir(job_id), "model_latest.pth")
     torch.save(model.state_dict(), weights_path)
+
+
+def save_checkpoint(model, optimizer, scheduler, scaler, epoch, job_id):
+    """Save full training state so --resume can pick up exactly where we left off."""
+    ckpt = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
+    }
+    torch.save(ckpt, os.path.join(_weights_dir(job_id), "checkpoint_latest.pth"))
+
+
+def _extract_model_state(loaded):
+    """Accept either a raw state_dict or a checkpoint dict wrapping one."""
+    if isinstance(loaded, dict) and 'model_state_dict' in loaded:
+        return loaded['model_state_dict']
+    return loaded
 
 
 def check_grad(grad):
@@ -268,32 +299,53 @@ def compute_batch_loss(imageEmbed, textEmbed,
     return total_loss
 
 
-def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
+def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
+          lr=None, total_epochs=None, resume_path=None):
     """Train the image-text alignment model (CRNN: ResNet34 + BiLSTM)."""
     imageEmbedding.train()
     textEmbedding.eval()
+
+    if lr is None:
+        lr = learning_rate
+    if total_epochs is None:
+        total_epochs = epochs
 
     # Differential learning rates: low LR for pre-trained CNN, higher for BiLSTM
     cnn_params = list(imageEmbedding.cnn_encoder.parameters())
     cnn_param_ids = set(id(p) for p in cnn_params)
     other_params = [p for p in imageEmbedding.parameters() if id(p) not in cnn_param_ids]
 
-    optimizer = optim.Adam(cnn_params + other_params, lr=learning_rate)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5, verbose=True
+    optimizer = optim.Adam(cnn_params + other_params, lr=lr)
+    # Cosine schedule: ReduceLROnPlateau was monitoring a loss that's bounded
+    # below by the contrastive margin, so it kept halving LR to zero even
+    # though training had room to learn.
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=total_epochs, eta_min=lr * 0.01
     )
 
     # GradScaler only does anything when AMP is on and dtype is fp16
     # (bf16 has the same dynamic range as fp32 and doesn't need scaling).
     use_scaler = USE_AMP and AMP_DTYPE == torch.float16
-    scaler = torch.amp.GradScaler('cuda', enabled=use_scaler)
+    scaler = torch.cuda.amp.GradScaler(enabled=use_scaler)
+
+    start_epoch = 0
+    if resume_path is not None:
+        print(f"Resuming from checkpoint: {resume_path}")
+        ckpt = torch.load(resume_path, map_location=device)
+        imageEmbedding.load_state_dict(ckpt['model_state_dict'])
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+        if ckpt.get('scaler_state_dict') is not None and use_scaler:
+            scaler.load_state_dict(ckpt['scaler_state_dict'])
+        start_epoch = ckpt['epoch'] + 1
+        print(f"Resumed at epoch {start_epoch}/{total_epochs}")
 
     loss_lst = []
 
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
 
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, total_epochs):
         epoch_start_time = time.time()
 
         if hasattr(criterion, 'gamma'):
@@ -329,6 +381,10 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
             global_timer.stop('9_backward')
 
             global_timer.start('10_optimizer_step')
+            # Unscale before clipping so the clip threshold applies to the
+            # real (unscaled) gradients.
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(imageEmbedding.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
             global_timer.stop('10_optimizer_step')
@@ -369,7 +425,10 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion):
             torch.cuda.reset_peak_memory_stats()
         print('=' * 60, flush=True)
 
-        scheduler.step(val_loss)
+        scheduler.step()
+
+        # Save full checkpoint each epoch so --resume can recover exactly.
+        save_checkpoint(imageEmbedding, optimizer, scheduler, scaler, epoch, job_id)
 
         if debug_wandb:
             update_wandb(train_loss, val_loss)
@@ -387,9 +446,25 @@ if __name__ == '__main__':
     stride = max(1, int(window_size * stride_ratio))
     print(f"Using window_size={window_size}, stride={stride} ({int((1-stride_ratio)*100)}% overlap)")
 
+    # Resolve dataset path & training schedule. Precedence:
+    #   --data_dir > --finetune (finetune_data_dir) > Parameters.py defaults
     if args.data_dir is not None:
-        print(f"Loading dataset from custom path: {args.data_dir}")
-        _train_dl, _valid_dl, _test_dl = build_dataloaders(args.data_dir)
+        resolved_data_dir = args.data_dir
+    elif args.finetune:
+        resolved_data_dir = finetune_data_dir
+    else:
+        resolved_data_dir = None
+
+    if args.finetune:
+        run_lr = finetune_learning_rate
+        run_epochs = finetune_epochs
+    else:
+        run_lr = learning_rate
+        run_epochs = epochs
+
+    if resolved_data_dir is not None:
+        print(f"Loading dataset from: {resolved_data_dir}")
+        _train_dl, _valid_dl, _test_dl = build_dataloaders(resolved_data_dir)
     else:
         _train_dl, _valid_dl, _test_dl = train_dataloader, valid_dataloader, test_dataloader
 
@@ -407,10 +482,15 @@ if __name__ == '__main__':
         dropout=model_dropout,
     )
 
+    # --resume restores model + optimizer + scheduler + epoch inside Train().
+    # --pretrained_weights only loads model weights here (fresh optimizer/epoch).
+    if args.resume is not None and args.pretrained_weights is not None:
+        raise SystemExit("Pass either --resume or --pretrained_weights, not both.")
+
     if args.pretrained_weights is not None:
         print(f"Loading pretrained weights from: {args.pretrained_weights}")
-        state_dict = torch.load(args.pretrained_weights, map_location=device)
-        imageEmbedding.load_state_dict(state_dict)
+        loaded = torch.load(args.pretrained_weights, map_location=device)
+        imageEmbedding.load_state_dict(_extract_model_state(loaded))
         print("Pretrained weights loaded successfully.")
 
     if show_gradients:
@@ -427,10 +507,15 @@ if __name__ == '__main__':
     if multi_scale_enabled:
         print(f"[OPT 5] Multi-Scale Alignment: windows={multi_scale_window_sizes}, alpha={multi_scale_alpha}")
     print(f"[SPEED] AMP={USE_AMP} (dtype={AMP_DTYPE})  Profiling={ENABLE_PROFILING}")
+    print(f"[RUN]   lr={run_lr}  epochs={run_epochs}")
+    if args.finetune:
+        print(f"[FINETUNE] mode=ON  dataset={resolved_data_dir}")
     if args.pretrained_weights:
         print(f"[FINETUNE] Pretrained weights: {args.pretrained_weights}")
+    if args.resume:
+        print(f"[FINETUNE] Resuming from: {args.resume}")
     if args.data_dir:
-        print(f"[FINETUNE] Dataset: {args.data_dir}")
+        print(f"[FINETUNE] Dataset override: {args.data_dir}")
     print(f"================================================\n")
 
     loss_lst = Train(
@@ -438,7 +523,10 @@ if __name__ == '__main__':
         textEmbedding,
         _train_dl,
         _valid_dl,
-        criterion
+        criterion,
+        lr=run_lr,
+        total_epochs=run_epochs,
+        resume_path=args.resume,
     )
 
     if debug_wandb:

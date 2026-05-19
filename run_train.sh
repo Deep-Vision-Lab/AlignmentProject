@@ -1,20 +1,41 @@
 #!/bin/bash
 
-# Script to clean directories and run training
+# Script to clean directories and run training.
+#
+# Inputs can be passed either as positional args OR as env vars (env vars win
+# when set, which is how sbatch --export=... feeds values in).
+#
 # Usage: ./run_train.sh [job_id] [data_dir] [pretrained_weights]
-#   job_id            - identifier for this run (default: localRun)
-#   data_dir          - path to a different dataset root for finetuning (optional)
-#   pretrained_weights - path to a .pth file to load before training (optional)
+#
+# Env vars (all optional):
+#   JOB_ID              - identifier for this run (default: localRun)
+#   DATA_DIR            - dataset root override
+#   PRETRAINED_WEIGHTS  - path to a .pth file (weights-only load, fresh optimizer)
+#   FINETUNE            - "1"/"true" -> pass --finetune to train.py
+#                         (uses finetune_data_dir/lr/epochs from Parameters.py
+#                          unless DATA_DIR is also set)
+#   RESUME              - path to checkpoint .pth (restores model+optimizer+epoch)
 
-JOB_ID=${1:-localRun}
-DATA_DIR=${2:-}
-PRETRAINED_WEIGHTS=${3:-}
+JOB_ID=${JOB_ID:-${1:-localRun}}
+DATA_DIR=${DATA_DIR:-${2:-}}
+PRETRAINED_WEIGHTS=${PRETRAINED_WEIGHTS:-${3:-}}
+FINETUNE=${FINETUNE:-}
+RESUME=${RESUME:-}
 
+# Normalize FINETUNE truthiness
+case "${FINETUNE,,}" in
+    1|true|t|yes|y|on) FINETUNE_FLAG=1 ;;
+    *)                 FINETUNE_FLAG=0 ;;
+esac
 
 echo "====================================="
 echo "Parameters"
 echo "====================================="
-echo "Job ID: ${JOB_ID}"
+echo "Job ID:             ${JOB_ID}"
+echo "Data Dir:           ${DATA_DIR:-<default>}"
+echo "Pretrained Weights: ${PRETRAINED_WEIGHTS:-<none>}"
+echo "Finetune:           ${FINETUNE_FLAG}"
+echo "Resume:             ${RESUME:-<none>}"
 echo ""
 
 # Check if debug mode is enabled
@@ -25,16 +46,19 @@ if [ "${DEBUG_MODE}" = "True" ]; then
     echo "Cleaning training directories..."
     echo "====================================="
 
-    # Run clean_dirs_train.sh
     bash ./Clean/clean_dirs_train.sh "${JOB_ID}"
 
-    echo ""
-    echo "====================================="
-    echo "Cleaning weights..."
-    echo "====================================="
-
-    # Run clean_weights.sh
-    bash ./Clean/clean_weights.sh "${JOB_ID}"
+    # Never wipe weights when resuming — we need the checkpoint we're resuming from.
+    if [ -n "${RESUME}" ]; then
+        echo ""
+        echo "Resume mode: skipping weights cleanup to preserve checkpoint."
+    else
+        echo ""
+        echo "====================================="
+        echo "Cleaning weights..."
+        echo "====================================="
+        bash ./Clean/clean_weights.sh "${JOB_ID}"
+    fi
 
     echo ""
     echo "Cleaning completed!"
@@ -56,8 +80,13 @@ fi
 if [ -n "${PRETRAINED_WEIGHTS}" ]; then
     EXTRA_ARGS="${EXTRA_ARGS} --pretrained_weights \"${PRETRAINED_WEIGHTS}\""
 fi
+if [ "${FINETUNE_FLAG}" = "1" ]; then
+    EXTRA_ARGS="${EXTRA_ARGS} --finetune"
+fi
+if [ -n "${RESUME}" ]; then
+    EXTRA_ARGS="${EXTRA_ARGS} --resume \"${RESUME}\""
+fi
 
-# Run the training script
 eval python3 train.py --job_id "${JOB_ID}" ${EXTRA_ARGS}
 
 echo ""
