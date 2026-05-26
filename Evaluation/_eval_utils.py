@@ -32,7 +32,7 @@ if ROOT not in sys.path:
 
 from Parameters import *
 from embeddingModel import EmbeddingModel, sliding_window
-from textEmbedding import TextEmbedding
+from textEmbedding import TextEmbedding, build_text_embedder
 from soft_dtw_cuda import compute_softdtw
 
 
@@ -63,9 +63,13 @@ def load_image_model(weights_path: str, dev: str = device) -> EmbeddingModel:
     return model
 
 
-def load_text_model(dev: str = device) -> TextEmbedding:
-    """Instantiate a TextEmbedding model (no trained weights needed)."""
-    model = TextEmbedding(embedding_dim=vector_size).to(dev)
+def load_text_model(dev: str = device):
+    """Instantiate the text embedder selected in Parameters.py.
+
+    Returns either a TextEmbedding (char) or a FastTextCharEmbedding,
+    both of which expose the same forward/char_to_index interface.
+    """
+    model = build_text_embedder(embedding_dim=vector_size).to(dev)
     model.eval()
     return model
 

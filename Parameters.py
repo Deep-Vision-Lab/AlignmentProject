@@ -14,7 +14,24 @@ learning_rate = 1e-4
 window_size = 16
 vector_size = 128
 lang = 'Arabic' # ['English', 'Arabic']
-num_samples = 100000  # [10000, 50000, 100000]
+num_samples = 50000  # [10000, 50000, 100000]
+
+# ============================================================================
+# Text Embedding Selection
+# ============================================================================
+# 'char'     -> learned per-character table (random init, frozen by default).
+# 'fasttext' -> facebook/fasttext-ar-vectors pretrained vectors (frozen).
+#               Adds a small Linear adapter if fastText's 300-d != vector_size.
+text_embedder_type = os.environ.get('TEXT_EMBEDDER', 'fasttext').lower()
+# Optional local path to a fasttext model.bin. If None, the file is
+# auto-downloaded from HuggingFace (facebook/fasttext-ar-vectors).
+text_embedder_model_path = os.environ.get('TEXT_EMBEDDER_MODEL_PATH') or None
+# Where HuggingFace caches the downloaded model (None -> ~/.cache/huggingface).
+text_embedder_cache_dir = os.environ.get('TEXT_EMBEDDER_CACHE_DIR') or None
+# The fastText vectors are 300-d. If vector_size != 300, an adapter Linear is
+# inserted after the lookup. The fastText weights themselves stay frozen;
+# this flag only controls whether that small adapter is trainable.
+fasttext_projection_trainable = True
 
 # ============================================================================
 # Fine-tuning parameters
@@ -52,16 +69,32 @@ bilstm_layers = 1
 # All contrastive logic is inside the loss function - no special training loop needed
 contrastive_soft_dtw_gamma = 0.1          # Soft-DTW smoothing (gamma -> 0: hard DTW, gamma -> inf: average)
 
-# Sakoe-Chiba Band: restricts DTW warping path to a diagonal band
-# Prevents distant identical letters from being incorrectly aligned
-# Set as a fraction of sequence length (e.g., 0.2 = 20% of image width)
-sakoe_chiba_bandwidth_ratio = 0.0        # Bandwidth as fraction of sequence length (0 = no band constraint)
+# Sakoe-Chiba Band: the CUDA kernel implements `abs(i - j) <= bw`, which is
+# only valid for square matrices. Our similarity matrices are rectangular
+# (N text rows ≈ 30, M image cols ≈ 100-200), so any non-zero kernel band
+# makes the natural diagonal path's endpoint unreachable → DTW returns inf
+# → loss becomes NaN. We keep this param at 0 (disabled) and use the SOFT
+# diagonal-band penalty below instead.
+sakoe_chiba_bandwidth_ratio = 0.0
 contrastive_margin = 1.0                  # Margin for triplet loss on length-normalized DTW costs
 # Softmax temperature for converting cosine similarity (range [-1, 1]) into a
 # peaked distribution over image patches. Without this, softmax is nearly
 # uniform over ~100+ patches and the NLL distance saturates at log(N),
 # erasing the alignment gradient signal.
 contrastive_temperature = 0.07
+
+# ---------- Diagonal prior (encourages the staircase) ----------
+# Adds an auxiliary term that maximises <sim_pos, diagonal_gauss_mask>, pulling
+# similarity UP on the expected diagonal stripe and DOWN off-diagonal. The
+# contrastive margin alone is too weak — it allows fuzzy non-staircase solutions.
+diagonal_prior_weight = 0.1              # Strength of the diagonal-prior term (0 disables it)
+diagonal_prior_sigma_ratio = 0.15        # Gaussian width as fraction of max(N, M)
+
+# Soft diagonal band added to the DTW distance matrix. Quadratic in normalised
+# index distance from the expected diagonal j ≈ i·(M-1)/(N-1). Replaces the
+# kernel-level Sakoe-Chiba band (which can't handle rectangular matrices).
+# Set to 0 to disable. Reasonable range: 0.5 – 5.0.
+dtw_band_penalty_weight = 2.0
 
 
 # Dropout for regularization

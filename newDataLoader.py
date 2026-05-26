@@ -9,7 +9,7 @@ from Parameters import *
 from DiffNWAlgo import *
 
 
-_default_data_dir = f'DataSet/Synthetic_{lang}_{num_samples}'
+_default_data_dir = f'DataSet/Synthetic_{lang}_100000'
 
 
 # Plain ToTensor + Resize. Inputs are NEVER differentiated wrt; setting

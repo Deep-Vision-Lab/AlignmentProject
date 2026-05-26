@@ -468,9 +468,12 @@ if __name__ == '__main__':
     else:
         _train_dl, _valid_dl, _test_dl = train_dataloader, valid_dataloader, test_dataloader
 
-    textEmbedding = TextEmbedding(embedding_dim=vector_size)
+    # Pick the text embedder via Parameters.text_embedder_type
+    # ('char' = learned frozen table, 'fasttext' = facebook/fasttext-ar-vectors).
+    textEmbedding = build_text_embedder(embedding_dim=vector_size)
     textEmbedding = textEmbedding.to(device)
     textEmbedding.eval()
+    print(f"[TEXT EMBED] type={text_embedder_type}  out_dim={vector_size}", flush=True)
 
     imageEmbedding = EmbeddingModel(
         window_size=window_size,

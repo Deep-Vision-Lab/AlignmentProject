@@ -443,6 +443,10 @@ class BilinearSimilarityTransformer(nn.Module):
         
         # Bilinear similarity: text @ W @ image.T
         text_transformed = torch.matmul(text_encoded, self.W)  # [B, seq_len_text, hidden_dim]
-        similarity_matrix = torch.bmm(text_transformed, image_encoded.transpose(1, 2))  # [B, seq_len_text, seq_len_img]
+        # Normalize for cosine similarity
+        text_norm = F.normalize(text_transformed, p=2, dim=-1)
+        image_norm = F.normalize(image_encoded, p=2, dim=-1)
+        
+        similarity_matrix = torch.bmm(text_norm, image_norm.transpose(1, 2))  # [B, seq_len_text, seq_len_img]
         
         return similarity_matrix

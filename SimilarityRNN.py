@@ -184,7 +184,10 @@ class BilinearSimilarityRNN(nn.Module):
             # Use weight matrix W: sim = text @ W @ image.T
             # [B, seq_len_text, hidden] @ [hidden, hidden] = [B, seq_len_text, hidden]
             text_transformed = torch.matmul(text_encoded, self.W)
+            # Normalize for cosine similarity
+            text_norm = F.normalize(text_transformed, p=2, dim=-1)
+            image_norm = F.normalize(image_encoded, p=2, dim=-1)
             # [B, seq_len_text, hidden] @ [B, hidden, seq_len_img] = [B, seq_len_text, seq_len_img]
-            similarity_matrix = torch.bmm(text_transformed, image_encoded.transpose(1, 2))
+            similarity_matrix = torch.bmm(text_norm, image_norm.transpose(1, 2))
         
         return similarity_matrix
