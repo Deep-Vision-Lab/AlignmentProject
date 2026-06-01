@@ -11,6 +11,9 @@ epochs = 100
 learning_rate = 1e-4
 
 # Data parameters
+# For clean synthetic data, window_size=16 works well.
+# For Arabic manuscripts, consider window_size=32 or multi_scale_window_sizes=[32, 16]
+# because connected strokes and dots may need larger visual context.
 window_size = 16
 vector_size = 128
 lang = 'Arabic' # ['English', 'Arabic']
@@ -31,7 +34,7 @@ text_embedder_cache_dir = os.environ.get('TEXT_EMBEDDER_CACHE_DIR') or None
 # The fastText vectors are 300-d. If vector_size != 300, an adapter Linear is
 # inserted after the lookup. The fastText weights themselves stay frozen;
 # this flag only controls whether that small adapter is trainable.
-fasttext_projection_trainable = True
+fasttext_projection_trainable = False
 
 # ============================================================================
 # Fine-tuning parameters
@@ -58,7 +61,12 @@ stride_ratio = 0.5  # Recommended: 0.5 (50% overlap) or 0.25 (75% overlap)
 # ============================================================================
 # BiLSTM for local sequence context (CRNN architecture)
 use_bilstm = True
-bilstm_layers = 1
+bilstm_layers = 2
+# Hidden state size per direction in the BiLSTM.  The bidirectional output is
+# bilstm_hidden_dim * 2, which is projected back to vector_size.
+# Raising this from the old default (vector_size // 2 = 64) to vector_size (128)
+# doubles the LSTM memory capacity.
+bilstm_hidden_dim = vector_size  # 128
 
 # ============================================================================
 # Contrastive Soft-DTW Parameters (CUDA-accelerated)
@@ -76,7 +84,7 @@ contrastive_soft_dtw_gamma = 0.1          # Soft-DTW smoothing (gamma -> 0: hard
 # → loss becomes NaN. We keep this param at 0 (disabled) and use the SOFT
 # diagonal-band penalty below instead.
 sakoe_chiba_bandwidth_ratio = 0.0
-contrastive_margin = 1.0                  # Margin for triplet loss on length-normalized DTW costs
+contrastive_margin = 10.0                  # Margin for triplet loss on length-normalized DTW costs
 # Softmax temperature for converting cosine similarity (range [-1, 1]) into a
 # peaked distribution over image patches. Without this, softmax is nearly
 # uniform over ~100+ patches and the NLL distance saturates at log(N),
@@ -87,7 +95,7 @@ contrastive_temperature = 0.07
 # Adds an auxiliary term that maximises <sim_pos, diagonal_gauss_mask>, pulling
 # similarity UP on the expected diagonal stripe and DOWN off-diagonal. The
 # contrastive margin alone is too weak — it allows fuzzy non-staircase solutions.
-diagonal_prior_weight = 0.1              # Strength of the diagonal-prior term (0 disables it)
+diagonal_prior_weight = 0.01              # Strength of the diagonal-prior term (0 disables it)
 diagonal_prior_sigma_ratio = 0.15        # Gaussian width as fraction of max(N, M)
 
 # Soft diagonal band added to the DTW distance matrix. Quadratic in normalised
@@ -116,7 +124,7 @@ gapScore      = -10    # penalty per gap step
 #   - Small window (micro): learns fine-grained details (dots, diacritics)
 # Loss_total = Loss_norm(macro) + alpha * Loss_norm(micro)
 multi_scale_enabled = os.environ.get('MULTI_SCALE_ENABLED', 'False').lower() in ('true', '1', 't')
-multi_scale_window_sizes = [16, 8]   # [macro_window, micro_window]
+multi_scale_window_sizes = [32, 16]   # [macro_window, micro_window]  — see window_size comment above
 multi_scale_alpha = 0.5              # Weight for micro-scale loss (start at 0.5, tune later)
 
 # Debugging and visualization parameters

@@ -87,6 +87,7 @@ if [ -n "${RESUME}" ]; then
     EXTRA_ARGS="${EXTRA_ARGS} --resume \"${RESUME}\""
 fi
 
+export CUDA_LAUNCH_BLOCKING=1
 eval python3 train.py --job_id "${JOB_ID}" ${EXTRA_ARGS}
 
 echo ""

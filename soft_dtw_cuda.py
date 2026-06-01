@@ -47,7 +47,13 @@ def compute_softdtw_cuda(D, gamma, bandwidth, max_i, max_j, n_passes, R):
 
         if I + J == p and (I < max_i and J < max_j):
             if not (abs(i - j) > bandwidth > 0):
-                # 1. Get neighbors (D3TW Topology: Match & Stay)
+                # 1. Restricted D3TW topology (intentional design choice):
+                #    - diagonal transition: advance both text char (i) and image step (j)
+                #    - stay transition: keep the same text char (i), advance image step (j)
+                # This supports one-character-to-many-windows alignment, which is suitable
+                # for Arabic connected-script where one letter spans multiple overlapping
+                # windows. It is NOT full 3-neighbor DTW (which would also allow skipping
+                # a text character with an upward transition).
                 # We negate them because we want Soft-Min, not Soft-Max
                 val_match = R[b, i - 1, j - 1]
                 val_stay  = R[b, i, j - 1]

@@ -71,7 +71,7 @@ def build_dataloaders(data_dir=None):
 
     train_ds, valid_ds, test_ds = random_split(full_dataset, [train_sz, valid_sz, test_sz])
 
-    return _make_loader(train_ds, shuffle=False), _make_loader(valid_ds, shuffle=False), _make_loader(test_ds, shuffle=True)
+    return _make_loader(train_ds, shuffle=True), _make_loader(valid_ds, shuffle=False), _make_loader(test_ds, shuffle=False)
 
 
 # Module-level defaults (used when newDataLoader is imported without a custom data_dir)
@@ -121,6 +121,25 @@ def _hard_neg_shuffle(text):
 _hard_neg_fns = [_hard_neg_crop, _hard_neg_drop, _hard_neg_shuffle]
 
 
+def _ensure_different(neg, pos):
+    """Guarantee the negative text differs from the positive (at least one char)."""
+    if neg.strip() != pos.strip():
+        return neg
+    chars = list(pos.strip())
+    if len(chars) > 1:
+        import random as _rnd
+        _rnd.shuffle(chars)
+        candidate = ''.join(chars)
+        if candidate.strip() != pos.strip():
+            return candidate
+    if len(pos.strip()) > 1:
+        return pos.strip()[:-1]
+    return pos + "‌"  # zero-width non-joiner as last resort
+
+# TODO: add Arabic visual-confusion hard negatives, e.g. ب/ت/ث, ج/ح/خ, د/ذ, ر/ز,
+#       س/ش, ص/ض, ط/ظ, ع/غ, ف/ق.  These should be sampled at ~20% of hard-neg slots.
+
+
 def _maybe_crop(text):
     """Randomly crop negative text to 50-100% of its length."""
     if random.random() < 0.3 and len(text) > 3:
@@ -154,7 +173,8 @@ def custom_collate_fn(batch):
         sample_negs = []
         for _ in range(num_hard):
             fn = random.choice(_hard_neg_fns)
-            sample_negs.append(fn(pos_texts[i]))
+            neg = _ensure_different(fn(pos_texts[i]), pos_texts[i])
+            sample_negs.append(neg)
         available = [j for j in range(actual_batch_size) if j != i]
         if not available:
             available = [i]
@@ -163,7 +183,8 @@ def custom_collate_fn(batch):
         else:
             sampled = [random.choice(available) for _ in range(num_random)]
         for j in sampled:
-            sample_negs.append(_maybe_crop(texts1[j]))
+            neg = _ensure_different(_maybe_crop(texts1[j]), pos_texts[i])
+            sample_negs.append(neg)
         neg_texts.append(sample_negs)
 
     return images, pos_texts, neg_texts
@@ -199,9 +220,9 @@ def pad_matrices(matrices, smooth=False, kernel_size=5, sigma=1.0):
 
 
 # Create DataLoaders for training and testing
-train_dataloader = _make_loader(train_dataset, shuffle=False)
+train_dataloader = _make_loader(train_dataset, shuffle=True)
 valid_dataloader = _make_loader(valid_dataset, shuffle=False)
-test_dataloader = _make_loader(test_dataset, shuffle=True)
+test_dataloader = _make_loader(test_dataset, shuffle=False)
 
 
 if __name__ == "__main__":

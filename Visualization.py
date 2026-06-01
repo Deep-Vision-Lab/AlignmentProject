@@ -225,57 +225,49 @@ def save_debug_visualizations(model, text1, image1, Similar_TxtImg1, epoch, job_
 
 
 
-def saveHeatmapPlots(text1, image1, 
+def saveHeatmapPlots(text1, image1,
                     similarity_epoch_dir,
                     debug_Similar_TxtImg1):
-    
+
     for i in range(image1.size(0)): # Iterate through items in the current batch
         similarity_dir_per_batch = f'{similarity_epoch_dir}/{i}'
         os.makedirs(similarity_dir_per_batch, exist_ok=True)
 
         # Generate patches for visualization
         image1_i = image1[i].unsqueeze(0)
-        
-        # Calculate stride using the same logic as in train.py to match model output dimensions
-        # Use stride_ratio if available from Parameters.py, otherwise default to 1.0 (no overlap)
+
         ratio = stride_ratio if 'stride_ratio' in globals() else 1.0
         model_stride = max(1, int(window_size * ratio))
-        model_window_size = window_size
-        
-        # print(f"DEBUG: Visualization using window={model_window_size}, stride={model_stride}")
-        
-        windows_img1 = sliding_window(image1_i, model_window_size, model_stride).squeeze(0)
 
-        y_image = torch.flip(windows_img1, dims=[0]) # From image1, for Y-axis
+        windows_img1 = sliding_window(image1_i, window_size, model_stride).squeeze(0)
+        num_patches = windows_img1.shape[0]
 
-        # Prepare text labels (Full and Stripped versions)
-        y_text_full = list(text1[i])
-        y_text_stripped = list(text1[i].replace(" ", ""))
+        y_image = torch.flip(windows_img1, dims=[0])  # [num_patches, C, H, W] for x-axis
 
-        # Helper to select correct labels based on matrix dimension
-        def get_labels(dim_len, full_labels, stripped_labels):
-            if dim_len == len(full_labels):
-                return full_labels
-            elif dim_len == len(stripped_labels):
-                return stripped_labels
-            return list(range(dim_len))
+        # The similarity matrix is [text_len_padded, num_patches * subfeat].
+        # ModifiedOCRResNet34's AdaptiveAvgPool2d((1, None)) keeps window_size/8
+        # feature steps per patch (e.g. 16px window → 2 sub-features). We trim
+        # batch-padding rows and mean-pool sub-features so the matrix becomes
+        # [text_len, num_patches] — matching the y-axis chars and x-axis patches.
+        sim_mat = debug_Similar_TxtImg1[i]
+        text_len = len(text1[i])
+        if sim_mat.shape[0] > text_len:
+            sim_mat = sim_mat[:text_len, :]
+        cols = sim_mat.shape[1]
+        if num_patches > 0 and cols != num_patches and cols % num_patches == 0:
+            subfeat = cols // num_patches
+            sim_mat = sim_mat.reshape(text_len, num_patches, subfeat).mean(dim=2)
 
-        # Select labels for Image-Text Similarity matrices
-        # debug_Similar_TxtImg1 is [Text, Image]
-        h_sim1, _ = debug_Similar_TxtImg1[i].shape
-        # y_text_sim1 = get_labels(h_sim1, y_text_full, y_text_stripped)
-        y_text_sim1 = y_text_full
-        # Visualize similarity matrix instead of raw matrices
+        y_text_sim1 = list(text1[i])
         VisualizeMatrixWithAxis(
-            matrix_data=debug_Similar_TxtImg1[i],
+            matrix_data=sim_mat,
             image_path=f"{similarity_dir_per_batch}/IMG_TXT_Similarity_Image1_Text1.png",
             title="Image1-Text1 Similarity Heatmap",
             cur_patches_y=y_text_sim1,
             cur_patches_x=y_image
         )
 
-        del windows_img1, y_image
-        del image1_i
+        del windows_img1, y_image, image1_i
 
 
 
@@ -327,12 +319,9 @@ def VisualizeMatrixWithAxis(matrix_data, image_path, title,
     # Convert inputs to correct types
     matrix_data = matrix_data.detach().cpu().numpy() if torch.is_tensor(matrix_data) else np.array(matrix_data)
 
-    # Dynamic figsize: Make it bigger so image patches on axes are visible
-    # But ensure we don't exceed matplotlib's pixel limit (2^16 = 65536)
-    # Safe limit at 300 DPI is ~200 inches.
     h, w = matrix_data.shape
-    fig_w = max(25, min(w * 0.6, 180)) # 0.6 inches per column, max 180 inches
-    fig_h = max(20, min(h * 0.6, 180)) # 0.6 inches per row, max 180 inches
+    fig_w = max(16, min(w * 0.3, 120))  # 0.3 in/col, hard cap 120 in (36 000 px @ 300 DPI)
+    fig_h = max(10, min(h * 0.3, 120))
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     
@@ -360,10 +349,12 @@ def VisualizeMatrixWithAxis(matrix_data, image_path, title,
     else:
         label_x = False # Drop x-axis indexes
 
-    sns.heatmap(matrix_data, cmap='jet', linewidths=0.1, 
-                linecolor='black', ax=ax, annot=True, fmt=".2f",
+    # Per-cell annotations are illegible and slow past a few hundred cells
+    annot_on = (h * w) <= 600
+    sns.heatmap(matrix_data, cmap='jet', linewidths=0.1,
+                linecolor='black', ax=ax, annot=annot_on, fmt=".2f",
                 xticklabels=label_x, yticklabels=label_y,
-                cbar=True, annot_kws={"size": 10}) # Increased annotation font size slightly, assuming cells are big
+                cbar=True, annot_kws={"size": 10})
     
     # Adjust tick labels: rotation and much smaller font size
     ax.tick_params(axis='x', rotation=90, labelsize=8)

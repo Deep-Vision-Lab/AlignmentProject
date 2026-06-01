@@ -44,6 +44,9 @@ class TextEmbedding(nn.Module):
         # Freezing also drops the per-step gradient buffer for the full
         # vocab_size x embedding_dim table — a real VRAM win.
         self.embedding.weight.requires_grad_(False)
+        
+        # Layer normalization for similarity computation
+        self.text_norm = nn.LayerNorm(embedding_dim).to(device)
     
     def get_space_embedding(self):
         """
@@ -88,7 +91,7 @@ class TextEmbedding(nn.Module):
         if isinstance(text, str):
             # Single string: convert each character to embedding
             indices = self.text_to_indices(text).to(device)
-            return self.embedding(indices)
+            emb = self.embedding(indices)
         
         elif isinstance(text, (list, tuple)):
             # Batch of strings: pad to max length
@@ -103,11 +106,14 @@ class TextEmbedding(nn.Module):
                 batch_first=True, 
                 padding_value=self.PAD_TOKEN_IDX
             )
-            return self.embedding(padded.to(device))
+            emb = self.embedding(padded.to(device))
         
         else:
             # Already a tensor of indices
-            return self.embedding(text)
+            emb = self.embedding(text)
+        
+        # Apply LayerNorm before computing similarity
+        return self.text_norm(emb)
 
 
 # ============================================================================
@@ -212,6 +218,9 @@ class FastTextCharEmbedding(nn.Module):
             if not projection_trainable:
                 self.projection.weight.requires_grad_(False)
 
+        # Layer normalization for similarity computation
+        self.text_norm = nn.LayerNorm(embedding_dim).to(device)
+
     # ------------------------------------------------------------------ utils
     @staticmethod
     def _load_fasttext(model_path=None, cache_dir=None):
@@ -296,7 +305,9 @@ class FastTextCharEmbedding(nn.Module):
 
         if self.projection is not None:
             emb = self.projection(emb)
-        return emb
+        
+        # Apply LayerNorm before computing similarity
+        return self.text_norm(emb)
 
 
 # ============================================================================

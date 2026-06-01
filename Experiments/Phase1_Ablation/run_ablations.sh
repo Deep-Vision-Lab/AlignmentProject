@@ -14,11 +14,11 @@ sbatch \
   ablation_sbatch_template.sbatch
 
 # Experiment 2 (The Multi-Scale Test): ResNet34 + Bi-LSTM + Multi-Scale Windowing
-echo "Submitting Experiment 2: Multi-Scale Test"
-sbatch \
-  --job-name=MultiScale \
-  --export=ALL,MULTI_SCALE_ENABLED=True,JOB_ID=MultiScale,env=manucripts_align,model_dir=AlignmentProject_clone \
-  ablation_sbatch_template.sbatch
+# echo "Submitting Experiment 2: Multi-Scale Test"
+# sbatch \
+#   --job-name=MultiScale \
+#   --export=ALL,MULTI_SCALE_ENABLED=True,JOB_ID=MultiScale,env=manucripts_align,model_dir=AlignmentProject_clone \
+#   ablation_sbatch_template.sbatch
 
 
 # ============================================================================

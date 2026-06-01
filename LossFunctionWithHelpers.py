@@ -15,7 +15,7 @@ from Parameters import *
 
 
 # ============================================================================
-# CONTRASTIVE SOFT-DTW LOSS (InfoNCE-style Contrastive Learning)
+# CONTRASTIVE SOFT-DTW LOSS (Margin-based contrastive learning)
 # Uses CUDA-accelerated Soft-DTW from soft_dtw_cuda.py
 # ============================================================================
 
@@ -101,7 +101,7 @@ class ContrastiveSoftDTW(nn.Module):
         sim_matrix_centered = sim_matrix - column_mean      # Zero-out global frame bias
         
         # 2. Compute distances using the centered matrix
-        dist_matrix = -F.log_softmax(sim_matrix_centered / self.temperature, dim=-1)
+        dist_matrix = -F.log_softmax(sim_matrix_centered / self.temperature, dim=1)
         
         # 3. Apply your soft band penalty as normal
         N, M = sim_matrix.shape[1], sim_matrix.shape[2]
@@ -177,18 +177,103 @@ class ContrastiveSoftDTW(nn.Module):
 
         # 5. DIAGONAL PRIOR on positive similarity — directly rewards staircase.
         diag_loss = self._diagonal_prior_loss(sim_pos)
-        total_loss = contrastive_loss + self.diagonal_prior_weight * diag_loss
+        if self.diagonal_prior_weight > 0:
+            total_loss = contrastive_loss + self.diagonal_prior_weight * diag_loss
+        else:
+            total_loss = contrastive_loss
+
+        # 6. PROBABILITY SCORE: softmax(-costs) over [pos, neg_1 … neg_K].
+        # pos_prob → 1.0 means the model is fully confident the positive aligns
+        # better than every negative; → 1/(K+1) ≈ 0.09 means random chance.
+        # This is the "race winner probability" described in the training guide.
+        all_norm_costs = torch.cat(
+            [norm_pos_cost.unsqueeze(1), norm_neg_costs], dim=1
+        )  # [B, K+1]
+        pos_prob = torch.softmax(-all_norm_costs, dim=1)[:, 0].mean().item()
 
         avg_norm_gap = (norm_pos_cost.unsqueeze(1) - norm_neg_costs).mean().item()
         loss_dict = {
-            'cost_pos': pos_cost.mean().item(),
-            'cost_neg': neg_costs.mean().item(),
-            'gap': avg_norm_gap,
-            'norm_pos': norm_pos_cost.mean().item(),
-            'norm_neg': norm_neg_costs.mean().item(),
+            'cost_pos':   pos_cost.mean().item(),
+            'cost_neg':   neg_costs.mean().item(),
+            'pos_prob':   pos_prob,          # KEY: probability positive wins the race
+            'gap':        avg_norm_gap,
+            'norm_pos':   norm_pos_cost.mean().item(),
+            'norm_neg':   norm_neg_costs.mean().item(),
             'contrastive': contrastive_loss.item(),
             'diag_prior': diag_loss.item(),
-            # 'active_triplets': (per_neg_loss > 0).float().mean().item(),
+        }
+        return total_loss, loss_dict
+
+    def forward_varlen(self, sim_pos_list, sim_neg_list):
+        """
+        Variable-length contrastive margin Soft-DTW loss.
+
+        No padded text rows enter the DTW — each sample uses its exact
+        transcript length. This is the correct path for Arabic line alignment.
+
+        Args:
+            sim_pos_list: list[B] of Tensor[T_i, S_i]  (true text len × image seq len)
+            sim_neg_list: list[B] of list[K] of Tensor[T_neg_ik, S_i]
+
+        Returns:
+            total_loss (scalar Tensor), loss_dict (dict)
+        """
+        losses = []
+        pos_cost_values, neg_cost_values = [], []
+        pos_prob_values, gap_values = [], []
+        norm_pos_values, norm_neg_values = [], []
+        diag_values = []
+
+        for sim_pos, neg_sims in zip(sim_pos_list, sim_neg_list):
+            # sim_pos: [T_pos, S]
+            pos_cost = self._compute_dtw_on_similarity(sim_pos.unsqueeze(0))[0]
+            pos_norm = pos_cost / max(sim_pos.shape[0], sim_pos.shape[1])
+
+            neg_costs, neg_norms = [], []
+            for sim_neg in neg_sims:
+                neg_cost = self._compute_dtw_on_similarity(sim_neg.unsqueeze(0))[0]
+                neg_norm = neg_cost / max(sim_neg.shape[0], sim_neg.shape[1])
+                neg_costs.append(neg_cost)
+                neg_norms.append(neg_norm)
+
+            neg_costs = torch.stack(neg_costs)
+            neg_norms = torch.stack(neg_norms)
+
+            raw_loss = pos_norm - neg_norms + self.margin
+            per_neg_loss = torch.clamp(raw_loss, min=0.0)
+            margin_loss = per_neg_loss.mean()
+
+            # Optional diagonal prior per sample
+            if self.diagonal_prior_weight > 0:
+                diag_loss = self._diagonal_prior_loss(sim_pos.unsqueeze(0))
+                sample_loss = margin_loss + self.diagonal_prior_weight * diag_loss
+            else:
+                diag_loss = sim_pos.new_tensor(0.0)
+                sample_loss = margin_loss
+
+            losses.append(sample_loss)
+
+            all_norm_costs = torch.cat([pos_norm.view(1), neg_norms], dim=0)
+            pos_prob = torch.softmax(-all_norm_costs, dim=0)[0]
+
+            pos_cost_values.append(pos_cost.detach())
+            neg_cost_values.append(neg_costs.mean().detach())
+            pos_prob_values.append(pos_prob.detach())
+            gap_values.append((pos_norm - neg_norms.mean()).detach())
+            norm_pos_values.append(pos_norm.detach())
+            norm_neg_values.append(neg_norms.mean().detach())
+            diag_values.append(diag_loss.detach())
+
+        total_loss = torch.stack(losses).mean()
+        loss_dict = {
+            "cost_pos":   torch.stack(pos_cost_values).mean().item(),
+            "cost_neg":   torch.stack(neg_cost_values).mean().item(),
+            "pos_prob":   torch.stack(pos_prob_values).mean().item(),
+            "gap":        torch.stack(gap_values).mean().item(),
+            "norm_pos":   torch.stack(norm_pos_values).mean().item(),
+            "norm_neg":   torch.stack(norm_neg_values).mean().item(),
+            "contrastive": total_loss.item(),
+            "diag_prior": torch.stack(diag_values).mean().item(),
         }
         return total_loss, loss_dict
 
@@ -331,42 +416,37 @@ def Loss_choice():
 
 
 if __name__ == "__main__":
-    # Test the ContrastiveSoftDTW loss
-    print("Testing ContrastiveSoftDTW loss with similarity matrices...")
-    
-    batch_size = 4
-    N_txt = 15  # Text sequence length
-    N_img = 20  # Image sequence length
-    
-    # Create dummy similarity matrices
+    print("Testing ContrastiveSoftDTW loss...")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    img_txt_sim1 = torch.randn(batch_size, N_txt, N_img, device=device, requires_grad=True)
-    img_txt_sim2 = torch.randn(batch_size, N_txt, N_img, device=device, requires_grad=True)
-    
-    # Create dummy final prediction and target
-    final_pred = torch.randn(batch_size, N_txt, N_txt, device=device, requires_grad=True)
-    target = torch.randn(batch_size, N_txt, N_txt, device=device)
-    
-    # Test the loss with multiple negatives
-    criterion = ContrastiveSoftDTW(gamma=0.001, use_cuda=torch.cuda.is_available())
-    
-    # Create positive similarity matrix
-    sim_pos = torch.randn(batch_size, N_txt, N_img, device=device, requires_grad=True)
-    
-    # Create lists of negative similarity matrices (10 negatives)
+    batch_size = 4
+    N_txt = 15
+    N_img = 60
     num_neg = 10
-    neg_sim_img_list = [torch.randn(batch_size, N_txt, N_img, device=device, requires_grad=True) for _ in range(num_neg)]
-    neg_sim_txt_list = [torch.randn(batch_size, N_txt, N_img, device=device, requires_grad=True) for _ in range(num_neg)]
-    
-    loss, loss_dict = criterion(sim_pos, neg_sim_img_list, neg_sim_txt_list)
-    
-    print(f"Loss: {loss.item():.4f}")
-    print(f"Loss dict: {loss_dict}")
-    
-    # Test backward pass
+
+    criterion = ContrastiveSoftDTW(
+        gamma=0.1, use_cuda=(device == 'cuda'),
+        margin=10.0, temperature=0.07,
+    )
+
+    # --- Test forward (batched, padded) ---
+    sim_pos = torch.randn(batch_size, N_txt, N_img, device=device, requires_grad=True)
+    sim_neg_all = torch.randn(batch_size, num_neg, N_txt, N_img, device=device)
+    loss, loss_dict = criterion(sim_pos, sim_neg_all)
+    print(f"forward()      loss={loss.item():.4f}  pos_prob={loss_dict['pos_prob']:.3f}")
     loss.backward()
-    print(f"Gradient computed successfully.")
-    if sim_pos.grad is not None:
-        print(f"  sim_pos grad norm: {sim_pos.grad.norm().item():.4f}")
-    if neg_sim_img_list[0].grad is not None:
-        print(f"  neg_sim_img_list[0] grad norm: {neg_sim_img_list[0].grad.norm().item():.4f}")
+    print(f"  grad norm sim_pos: {sim_pos.grad.norm().item():.4f}")
+
+    # --- Test forward_varlen (variable-length, no padding) ---
+    sim_pos_list = [
+        torch.randn(N_txt + i % 3, N_img, device=device, requires_grad=True)
+        for i in range(batch_size)
+    ]
+    sim_neg_list = [
+        [torch.randn(N_txt + (i + k) % 4, N_img, device=device) for k in range(num_neg)]
+        for i in range(batch_size)
+    ]
+    loss_vl, dict_vl = criterion.forward_varlen(sim_pos_list, sim_neg_list)
+    print(f"forward_varlen loss={loss_vl.item():.4f}  pos_prob={dict_vl['pos_prob']:.3f}")
+    loss_vl.backward()
+    print(f"  grad norm sim_pos_list[0]: {sim_pos_list[0].grad.norm().item():.4f}")
+    print("All tests passed.")

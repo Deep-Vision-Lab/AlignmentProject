@@ -190,6 +190,51 @@ def _embed_negatives(textEmbed, neg_texts):
     return flat_emb.view(B, K, flat_emb.size(1), flat_emb.size(2))
 
 
+def compute_varlen_similarities(textEmbed, norm_img, pos_texts, neg_texts):
+    """
+    Build per-sample similarity matrices without padded text rows.
+
+    Each text is embedded individually (no batch padding), so DTW receives
+    exactly true_text_len rows — no PAD tokens corrupt the alignment.
+
+    Gradients flow from sim tensors → norm_img → image encoder.
+    Text embeddings are computed under no_grad (text branch is frozen).
+
+    Args:
+        textEmbed: frozen text embedding module
+        norm_img:  [B, S, D] L2-normalised image embeddings (carries gradients)
+        pos_texts: list[str], length B
+        neg_texts: list[list[str]], shape B × K
+
+    Returns:
+        sim_pos_list: list[B] of Tensor[T_i, S]
+        sim_neg_list: list[B] of list[K] of Tensor[T_neg_ik, S]
+    """
+    sim_pos_list = []
+    sim_neg_list = []
+
+    for i, text in enumerate(pos_texts):
+        with torch.no_grad():
+            txt_emb = textEmbed(text)           # [T_i, D]
+            txt_emb = normalize_func(txt_emb)
+
+        # sim carries grad via norm_img[i]
+        sim_pos = torch.einsum("td,sd->ts", txt_emb, norm_img[i])
+        sim_pos_list.append(sim_pos)
+
+        sample_neg_sims = []
+        for neg_text in neg_texts[i]:
+            with torch.no_grad():
+                neg_emb = textEmbed(neg_text)   # [T_neg, D]
+                neg_emb = normalize_func(neg_emb)
+            sim_neg = torch.einsum("td,sd->ts", neg_emb, norm_img[i])
+            sample_neg_sims.append(sim_neg)
+
+        sim_neg_list.append(sample_neg_sims)
+
+    return sim_pos_list, sim_neg_list
+
+
 def compute_batch_loss(imageEmbed, textEmbed,
                        images, pos_texts, neg_texts,
                        criterion,
@@ -216,12 +261,14 @@ def compute_batch_loss(imageEmbed, textEmbed,
         return torch.amp.autocast('cuda', dtype=AMP_DTYPE, enabled=USE_AMP)
 
     if multi_scale_enabled:
+        # Variable-length varlen is not yet implemented for multi-scale.
+        # Using padded batched similarity here until forward_varlen is extended
+        # to support dual-scale inputs.
         def _similarities_at_scale(ws, sr):
             s = max(1, int(ws * sr))
             with _autocast():
                 img_emb_s = imageEmbed.forward_at_scale(images, ws, s,
                                                         show_dims=False, timer=timer)
-            # Cast back to fp32 for stable similarity + DTW
             img_emb_s = img_emb_s.float()
             norm_img_s = normalize_func(img_emb_s)
             sim_pos_s = torch.einsum('bsv,btv->bst', norm_pos_text, norm_img_s)
@@ -248,11 +295,15 @@ def compute_batch_loss(imageEmbed, textEmbed,
         sim_pos_for_viz = sim_pos_macro
 
         if batch_idx % 10 == 0:
-            print(f"[Multi-Scale DTW]  "
-                  f"macro_pos={loss_dict['macro_cost_pos']:.2f}  macro_neg={loss_dict['macro_cost_neg']:.2f}  "
-                  f"micro_pos={loss_dict['micro_cost_pos']:.2f}  micro_neg={loss_dict['micro_cost_neg']:.2f}  "
-                  f"L_macro={loss_dict['loss_macro']:.4f}  L_micro={loss_dict['loss_micro']:.4f}  "
-                  f"loss={total_loss.item():.4f}", flush=True)
+            print(
+                f"[Multi-Scale DTW]"
+                f"  macro: raw pos={loss_dict['macro_cost_pos']:.1f} neg={loss_dict['macro_cost_neg']:.1f}"
+                f"  pos_wins={loss_dict['macro_pos_prob']:.3f}"
+                f"  |  micro: raw pos={loss_dict['micro_cost_pos']:.1f} neg={loss_dict['micro_cost_neg']:.1f}"
+                f"  pos_wins={loss_dict['micro_pos_prob']:.3f}"
+                f"  |  loss={total_loss.item():.4f}",
+                flush=True,
+            )
 
     else:
         timer.start('1_image_embedding')
@@ -265,31 +316,47 @@ def compute_batch_loss(imageEmbed, textEmbed,
         norm_img = normalize_func(img_emb)
         timer.stop('3b_norm_img')
 
-        timer.start('4_positive_similarity')
-        sim_pos = torch.einsum('bsv,btv->bst', norm_pos_text, norm_img)
-        timer.stop('4_positive_similarity')
+        # Use variable-length similarities so padded text rows never enter DTW
+        timer.start('4_varlen_similarities')
+        sim_pos_list, sim_neg_list = compute_varlen_similarities(
+            textEmbed=textEmbed,
+            norm_img=norm_img,
+            pos_texts=pos_texts,
+            neg_texts=neg_texts,
+        )
+        timer.stop('4_varlen_similarities')
 
-        timer.start('5_negative_similarities')
-        sim_neg_all = torch.einsum('bktv,bsv->bkts', stacked_neg, norm_img)
-        timer.stop('5_negative_similarities')
+        # One-time sanity check: print shapes for the first batch of training
+        if batch_idx == 0 and epoch == 0:
+            print(f"[SANITY] sim_pos_list[0].shape = {sim_pos_list[0].shape}  "
+                  f"(expected [{len(pos_texts[0])}, {norm_img.shape[1]}])", flush=True)
+            assert sim_pos_list[0].shape[0] == len(pos_texts[0]), \
+                f"Padded text rows detected: got {sim_pos_list[0].shape[0]} rows but text has {len(pos_texts[0])} chars"
 
         timer.start('6_loss_computation')
-        total_loss, loss_dict = criterion(sim_pos, sim_neg_all)
+        total_loss, loss_dict = criterion.forward_varlen(sim_pos_list, sim_neg_list)
         timer.stop('6_loss_computation')
 
-        sim_pos_for_viz = sim_pos
+        # Use first sample's sim for visualization (no padding)
+        sim_pos_for_viz = sim_pos_list[0].unsqueeze(0)
 
         if batch_idx % 10 == 0:
-            print(f"[DTW-NLL] pos={loss_dict['cost_pos']:.2f}  neg={loss_dict['cost_neg']:.2f}  "
-                  f"norm_pos={loss_dict['norm_pos']:.4f}  norm_neg={loss_dict['norm_neg']:.4f}  "
-                  f"gap={loss_dict['gap']:.4f}  loss={total_loss.item():.4f}", flush=True)
+            print(
+                f"[DTW] raw: pos={loss_dict['cost_pos']:.1f}  neg={loss_dict['cost_neg']:.1f}"
+                f"  |  prob: pos_wins={loss_dict['pos_prob']:.3f} (goal→1.0)"
+                f"  |  gap={loss_dict['gap']:.3f}  loss={total_loss.item():.4f}",
+                flush=True,
+            )
 
     # Debugging: Save visualizations for the first batch every 10 epochs
     if debug and batch_idx == 0 and epoch % 10 == 0:
+        # For multi-scale, sim_pos_for_viz is a padded [B, T, S] tensor.
+        # For single-scale, it is sim_pos_list[0].unsqueeze(0) — shape [1, T_0, S].
+        # save_debug_visualizations handles both; max_samples=1 keeps it fast.
         save_debug_visualizations(
             imageEmbed,
-            pos_texts,
-            images,
+            pos_texts[:1],
+            images[:1],
             sim_pos_for_viz,
             epoch,
             job_id=job_id
@@ -472,16 +539,22 @@ if __name__ == '__main__':
     # ('char' = learned frozen table, 'fasttext' = facebook/fasttext-ar-vectors).
     textEmbedding = build_text_embedder(embedding_dim=vector_size)
     textEmbedding = textEmbedding.to(device)
+    for p in textEmbedding.parameters():
+        p.requires_grad_(False)
     textEmbedding.eval()
-    print(f"[TEXT EMBED] type={text_embedder_type}  out_dim={vector_size}", flush=True)
+    assert not any(p.requires_grad for p in textEmbedding.parameters()), \
+        "Text branch must be fully frozen — some parameters still have requires_grad=True"
+    print(f"[TEXT EMBED] type={text_embedder_type}  out_dim={vector_size}  (frozen)", flush=True)
 
     imageEmbedding = EmbeddingModel(
         window_size=window_size,
         stride=stride,
         vector_size=vector_size,
         device=device,
+        use_flip=(lang.lower() == "arabic"),
         use_bilstm=use_bilstm,
         bilstm_layers=bilstm_layers,
+        bilstm_hidden_dim=bilstm_hidden_dim,
         dropout=model_dropout,
     )
 
@@ -495,6 +568,9 @@ if __name__ == '__main__':
         loaded = torch.load(args.pretrained_weights, map_location=device)
         imageEmbedding.load_state_dict(_extract_model_state(loaded))
         print("Pretrained weights loaded successfully.")
+
+    assert any(p.requires_grad for p in imageEmbedding.parameters()), \
+        "Image branch has no trainable parameters — check EmbeddingModel construction"
 
     if show_gradients:
         for param in imageEmbedding.parameters():

@@ -150,16 +150,68 @@ def sliding_window(image, window_size, stride, debug_mode=False, save_dir=False)
 
     return patches
 
-# CNN model for extracting features from sliding window patches
-def calculate_conv_output_size(input_size, kernel_size, stride, padding):
-    return (input_size - kernel_size + 2 * padding) // stride + 1
+class ModifiedOCRResNet34(nn.Module):
+    """
+    An ImageNet ResNet34 adapted specifically for sequence alignment and OCR.
+    Alters deep horizontal layer strides to maintain high-resolution text tracking.
+    """
+    def __init__(self, vector_size=512):
+        super(ModifiedOCRResNet34, self).__init__()
+        
+        # 1. Load standard ResNet34 with pre-trained weights
+        base_resnet = torchvision.models.resnet34(weights=torchvision.models.ResNet34_Weights.IMAGENET1K_V1)
+        
+        # 2. THE FIX: Change horizontal strides from 2 to 1 in later stages.
+        # Format: (vertical_stride, horizontal_stride)
+        
+        # Modify Layer 3 (First block downsamples height, leaves width open)
+        base_resnet.layer3[0].conv1.stride = (2, 1)
+        base_resnet.layer3[0].downsample[0].stride = (2, 1)
+        
+        # Modify Layer 4 (First block downsamples height, leaves width open)
+        base_resnet.layer4[0].conv1.stride = (2, 1)
+        base_resnet.layer4[0].downsample[0].stride = (2, 1)
+        
+        # 3. Strip away the global average pooling and fully connected classification layers
+        self.backbone = nn.Sequential(
+            base_resnet.conv1,
+            base_resnet.bn1,
+            base_resnet.relu,
+            base_resnet.maxpool,
+            base_resnet.layer1,
+            base_resnet.layer2,
+            base_resnet.layer3,
+            base_resnet.layer4
+        )
+
+        # 4. Project features to the required vector_size
+        self.feature_proj = nn.Linear(512, vector_size)
+        
+        # 5. Squash height to 1 while leaving width dynamic
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, None))
+        
+    def forward(self, x):
+        # Input shape: [Batch, 3, Height, Width]
+        
+        # Pass through modified layers
+        features = self.backbone(x)          # Shape: [Batch, 512, Height/8, Width/8]
+        
+        # Collapse the vertical height dimension entirely
+        features = self.adaptive_pool(features)  # Shape: [Batch, 512, 1, Width/8]
+        features = features.squeeze(2)            # Shape: [Batch, 512, Width/8]
+        
+        # Project to vector_size
+        features = features.permute(0, 2, 1)      # Shape: [Batch, Width/8, 512]
+        features = self.feature_proj(features)    # Shape: [Batch, Width/8, vector_size]
+        
+        return features
 
 
 
 class EmbeddingModel(nn.Module):
     def __init__(self, window_size=128, stride=64, vector_size=512,
                   device='cuda', use_flip=False, use_bilstm=True,
-                  bilstm_layers=1, dropout=0.1):
+                  bilstm_layers=1, bilstm_hidden_dim=None, dropout=0.1):
         """
         Image embedding model: ResNet34 CNN + Bi-LSTM sequence encoder (CRNN).
 
@@ -180,23 +232,25 @@ class EmbeddingModel(nn.Module):
         self.use_flip = use_flip
 
         # CNN encoder (ResNet34) for patch feature extraction
-        self.cnn_encoder = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)
-        cnn_feature_dim = self.cnn_encoder.fc.in_features
-        self.cnn_encoder.fc = nn.Linear(cnn_feature_dim, vector_size)
+        self.cnn_encoder = ModifiedOCRResNet34(vector_size=vector_size)
         self.cnn_encoder = self.cnn_encoder.to(device)
 
         # Sequence context encoder: Bi-LSTM or None
         if use_bilstm:
+            _hidden = bilstm_hidden_dim if bilstm_hidden_dim is not None else vector_size // 2
             self.sequence_encoder = BiLSTMEncoder(
                 embed_dim=vector_size,
-                hidden_dim=vector_size // 2,
+                hidden_dim=_hidden,
                 lstm_layers=bilstm_layers,
                 dropout=dropout,
             ).to(device)
-            print(f"[EmbeddingModel] Using BiLSTM encoder (layers={bilstm_layers})")
+            print(f"[EmbeddingModel] Using BiLSTM encoder (layers={bilstm_layers}, hidden_dim={_hidden})")
         else:
             self.sequence_encoder = None
             print("[EmbeddingModel] No sequence encoder (CNN features only)")
+
+        # Layer normalization for similarity computation
+        self.vision_norm = nn.LayerNorm(vector_size).to(device)
 
         self.window_size = window_size
         self.stride = stride
@@ -222,15 +276,15 @@ class EmbeddingModel(nn.Module):
 
         # --- Chunked CNN forward to cap peak memory ---
         if total_patches <= self.CNN_CHUNK_SIZE:
-            encoded_tokens_a = self.cnn_encoder(reshaped_tokens_a)
+            encoded_tokens_a = self.cnn_encoder(reshaped_tokens_a) # [Total_patches, seq_len, vector_size]
         else:
             # Pre-allocate output buffer to avoid the extra concat copy.
-            # Run a tiny first chunk to discover output dtype/shape, then fill.
             first_chunk = reshaped_tokens_a[:self.CNN_CHUNK_SIZE]
-            first_out = self.cnn_encoder(first_chunk)
-            out_dim = first_out.shape[1]
+            first_out = self.cnn_encoder(first_chunk) # [Chunk_size, seq_len, vector_size]
+            seq_len = first_out.shape[1]
+            out_dim = first_out.shape[2]
             encoded_tokens_a = torch.empty(
-                total_patches, out_dim,
+                total_patches, seq_len, out_dim,
                 device=first_out.device, dtype=first_out.dtype,
             )
             encoded_tokens_a[:self.CNN_CHUNK_SIZE] = first_out
@@ -284,7 +338,9 @@ class EmbeddingModel(nn.Module):
         )
         t.stop('img_1c_cnn_encoding')
 
-        features_vector_a = encoded_tokens_a.view(batches_num, windows_num, self.vector_size)
+        # encoded_tokens_a shape: [batches_num * windows_num, seq_len_per_patch, self.vector_size]
+        # We need to flatten to [batches_num, windows_num * seq_len_per_patch, self.vector_size]
+        features_vector_a = encoded_tokens_a.view(batches_num, -1, self.vector_size)
         del encoded_tokens_a
 
         # ==================== PHASE: Sequence Context (BiLSTM) ====================
@@ -292,6 +348,9 @@ class EmbeddingModel(nn.Module):
         if self.sequence_encoder is not None:
             features_vector_a = self.sequence_encoder(features_vector_a)
         t.stop('img_1f_sequence_encoder')
+
+        # Apply LayerNorm before computing similarity
+        features_vector_a = self.vision_norm(features_vector_a)
 
         return features_vector_a
 
@@ -333,7 +392,7 @@ class EmbeddingModel(nn.Module):
         t.stop(f'img_scale_{scale_window_size}_cnn')
 
         features_vector_a = encoded_tokens_a.view(
-            batches_num, windows_num, self.vector_size
+            batches_num, -1, self.vector_size
         )
         del encoded_tokens_a
 
@@ -342,5 +401,8 @@ class EmbeddingModel(nn.Module):
         if self.sequence_encoder is not None:
             features_vector_a = self.sequence_encoder(features_vector_a)
         t.stop(f'img_scale_{scale_window_size}_seq_enc')
+
+        # Apply LayerNorm before computing similarity
+        features_vector_a = self.vision_norm(features_vector_a)
 
         return features_vector_a
