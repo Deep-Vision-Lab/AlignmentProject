@@ -1,0 +1,7 @@
+method,metric,value
+CNN only,Top-1 Accuracy,0.31
+CNN + BiLSTM,Top-1 Accuracy,0.44
+CNN + BiLSTM + SoftDTW,Top-1 Accuracy,0.56
+CNN + BiLSTM + D3TW,Top-1 Accuracy,0.63
+CNN + BiLSTM + D3TW + Hard Negatives,Top-1 Accuracy,0.71
+Full Model (+ Char Embeddings),Top-1 Accuracy,0.78

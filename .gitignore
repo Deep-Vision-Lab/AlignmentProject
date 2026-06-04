@@ -40,3 +40,4 @@ TestResults/*.txt
 
 #ablations
 Experiments/Phase1_Ablation/out/*.out
+paper_figures/outputs/*
