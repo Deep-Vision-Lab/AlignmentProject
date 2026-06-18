@@ -151,6 +151,73 @@ def needleman_wunsch_path(sim_matrix, gap_penalty=0.0):
     return path
 
 
+def compute_path_quality(sim_matrix, path):
+    """
+    Diagnostic metrics for how well a DTW path follows high-similarity regions.
+
+    Args:
+        sim_matrix: [T, S] ndarray or Tensor — cosine similarities.
+        path:       list of (i, j) tuples from hard_dtw_path_restricted().
+
+    Returns:
+        dict with keys:
+            path_mean_similarity    — mean sim value on the path.
+            off_path_mean_similarity — mean sim value off the path.
+            path_gap                — path_mean − off_path_mean (positive = good).
+            path_min_similarity     — minimum sim on the path.
+            path_max_similarity     — maximum sim on the path.
+            path_coverage_rows      — fraction of text rows covered by the path.
+            path_coverage_cols      — fraction of image columns covered by the path.
+            path_length             — number of steps in the path.
+
+    Interpretation:
+        path_gap > 0  → model focuses on the correct region (good).
+        path_gap ≤ 0  → alignment is no better than random (failure).
+    """
+    if isinstance(sim_matrix, torch.Tensor):
+        sim = sim_matrix.detach().cpu().float().numpy()
+    else:
+        sim = np.array(sim_matrix, dtype=np.float32)
+
+    T, S = sim.shape
+    if not path:
+        return {
+            "path_mean_similarity":     float("nan"),
+            "off_path_mean_similarity": float(sim.mean()),
+            "path_gap":                 float("nan"),
+            "path_min_similarity":      float("nan"),
+            "path_max_similarity":      float("nan"),
+            "path_coverage_rows":       0.0,
+            "path_coverage_cols":       0.0,
+            "path_length":              0,
+        }
+
+    path_mask = np.zeros((T, S), dtype=bool)
+    for i, j in path:
+        if 0 <= i < T and 0 <= j < S:
+            path_mask[i, j] = True
+
+    on_path  = sim[path_mask]
+    off_path = sim[~path_mask]
+
+    path_mean = float(on_path.mean())  if len(on_path)  > 0 else float("nan")
+    off_mean  = float(off_path.mean()) if len(off_path) > 0 else float("nan")
+
+    rows_covered = len(set(i for i, _ in path))
+    cols_covered = len(set(j for _, j in path))
+
+    return {
+        "path_mean_similarity":     round(path_mean, 6),
+        "off_path_mean_similarity": round(off_mean, 6),
+        "path_gap":                 round(path_mean - off_mean, 6),
+        "path_min_similarity":      round(float(on_path.min()), 6) if len(on_path) > 0 else float("nan"),
+        "path_max_similarity":      round(float(on_path.max()), 6) if len(on_path) > 0 else float("nan"),
+        "path_coverage_rows":       round(rows_covered / T, 4),
+        "path_coverage_cols":       round(cols_covered / S, 4),
+        "path_length":              len(path),
+    }
+
+
 def path_to_char_window_mapping(path, text):
     """
     Convert a DTW path to a per-character → window-indices mapping.

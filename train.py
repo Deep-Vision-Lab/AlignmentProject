@@ -17,6 +17,11 @@ from embeddingModel import *
 from embeddingModel import img_embed_timer
 from NormalizeFuncs import *
 from LossFunctionWithHelpers import *
+from ctc_utils import (
+    CTCVocabulary,
+    compute_ctc_loss,
+    compute_contrastive_ctc_loss,
+)
 # SimilarityTransformer removed - using direct cosine similarity between CNN+BiLSTM and text embeddings
 
 import os
@@ -42,6 +47,43 @@ parser.add_argument('--finetune', action='store_true',
 parser.add_argument('--resume', type=str, default=None,
                     help='Path to a checkpoint .pth (saved by this script) to resume from. '
                          'Restores model, optimizer, scheduler, scaler, and epoch counter.')
+# Architecture overrides (supplement Parameters.py without editing it)
+parser.add_argument('--window_size',    type=int,   default=None,
+                    help='Override Parameters.window_size (e.g. 32 for larger windows).')
+parser.add_argument('--stride_ratio',   type=float, default=None,
+                    help='Override Parameters.stride_ratio (e.g. 0.25 for 75%% overlap).')
+parser.add_argument('--text_embedder', '--text_embedder_type', dest='text_embedder',
+                    type=str,   default=None,
+                    help='Override Parameters.text_embedder_type '
+                         '(char|fasttext|orthogonal_char|random_frozen_char|shape_group_char).')
+parser.add_argument('--negative_mode',  type=str,   default=None,
+                    help='Override Parameters.negative_mode '
+                         '(mixed|length_controlled|dot_confusion|same_length_random|shuffle_only).')
+parser.add_argument('--multi_scale',    action='store_true', default=False,
+                    help='Enable multi-scale alignment (overrides Parameters.multi_scale_enabled).')
+parser.add_argument('--loss_type',      type=str,   default=None,
+                    help='Override Parameters.contrastive_loss_type (margin|infonce|hybrid).')
+parser.add_argument('--epochs', type=int, default=None,
+                    help='Override Parameters.epochs for this run.')
+parser.add_argument('--learning_rate', type=float, default=None,
+                    help='Override Parameters.learning_rate for this run.')
+parser.add_argument('--num_negatives', type=int, default=None,
+                    help='Override Parameters.num_negatives for this run.')
+parser.add_argument('--alignment_loss_type', type=str, default=None,
+                    choices=['d3tw', 'ctc', 'contrastive_ctc', 'ctc_d3tw',
+                             'contrastive_ctc_d3tw'],
+                    help='Alignment objective to train.')
+parser.add_argument('--ctc_weight', type=float, default=None,
+                    help='Weight for CTC loss in hybrid modes.')
+parser.add_argument('--d3tw_weight', type=float, default=None,
+                    help='Weight for D3TW loss in hybrid modes.')
+parser.add_argument('--contrastive_ctc_loss_type', type=str, default=None,
+                    choices=['infonce', 'margin'],
+                    help='Contrastive CTC ranking objective.')
+parser.add_argument('--contrastive_ctc_tau', type=float, default=None,
+                    help='Temperature for InfoNCE over CTC costs.')
+parser.add_argument('--contrastive_ctc_margin', type=float, default=None,
+                    help='Margin for contrastive CTC loss.')
 args = parser.parse_args()
 job_id = args.job_id
 
@@ -142,28 +184,113 @@ def _weights_dir(job_id):
     return path
 
 
-def save_model_weights(model, epoch, job_id):
+def _make_model_config(ws, stride, sr, ctc_vocab=None):
+    """Collect current training config into a dict for the checkpoint."""
+    import Parameters as _P
+    cfg = {
+        'alignment_loss_type': _P.alignment_loss_type,
+        'window_size':        ws,
+        'stride':             stride,
+        'stride_ratio':       sr,
+        'vector_size':        _P.vector_size,
+        'use_bilstm':         _P.use_bilstm,
+        'bilstm_layers':      _P.bilstm_layers,
+        'bilstm_hidden_dim':  _P.bilstm_hidden_dim,
+        'lang':               _P.lang,
+        'text_embedder_type': _P.text_embedder_type,
+        'negative_mode':      getattr(_P, 'negative_mode', 'mixed'),
+        'multi_scale_enabled': _P.multi_scale_enabled,
+    }
+    if ctc_vocab is not None:
+        cfg.update({
+            'ctc_vocab_size': len(ctc_vocab),
+            'ctc_blank_idx': ctc_vocab.blank_idx,
+        })
+    return cfg
+
+
+def save_model_weights(model, epoch, job_id, model_config=None,
+                       ctc_head=None, ctc_vocab=None):
     weights_path = os.path.join(_weights_dir(job_id), "model_latest.pth")
-    torch.save(model.state_dict(), weights_path)
+    payload = {
+        'model_state_dict': model.state_dict(),
+        'image_model_state_dict': model.state_dict(),
+    }
+    if ctc_head is not None:
+        payload['ctc_head_state_dict'] = ctc_head.state_dict()
+    if ctc_vocab is not None:
+        payload['ctc_vocab'] = ctc_vocab.to_dict()
+    if model_config:
+        payload['model_config'] = model_config
+    if ctc_head is not None or ctc_vocab is not None or model_config:
+        torch.save(payload, weights_path)
+    else:
+        torch.save(model.state_dict(), weights_path)
 
 
-def save_checkpoint(model, optimizer, scheduler, scaler, epoch, job_id):
+def save_checkpoint(model, optimizer, scheduler, scaler, epoch, job_id,
+                    model_config=None, ctc_head=None, ctc_vocab=None):
     """Save full training state so --resume can pick up exactly where we left off."""
     ckpt = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
+        'image_model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),
         'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
     }
+    if ctc_head is not None:
+        ckpt['ctc_head_state_dict'] = ctc_head.state_dict()
+    if ctc_vocab is not None:
+        ckpt['ctc_vocab'] = ctc_vocab.to_dict()
+    if model_config:
+        ckpt['model_config'] = model_config
     torch.save(ckpt, os.path.join(_weights_dir(job_id), "checkpoint_latest.pth"))
 
 
 def _extract_model_state(loaded):
     """Accept either a raw state_dict or a checkpoint dict wrapping one."""
+    if isinstance(loaded, dict) and 'image_model_state_dict' in loaded:
+        return loaded['image_model_state_dict']
     if isinstance(loaded, dict) and 'model_state_dict' in loaded:
         return loaded['model_state_dict']
     return loaded
+
+
+def _needs_ctc():
+    return alignment_loss_type in {'ctc', 'contrastive_ctc', 'ctc_d3tw',
+                                   'contrastive_ctc_d3tw'}
+
+
+def _needs_d3tw():
+    return alignment_loss_type in {'d3tw', 'ctc_d3tw',
+                                   'contrastive_ctc_d3tw'}
+
+
+def _collect_training_texts(train_loader, data_dir=None):
+    texts = []
+    ds = getattr(train_loader, 'dataset', None)
+    base_ds = getattr(ds, 'dataset', ds)
+    indices = getattr(ds, 'indices', None)
+    text_dir = None
+    if getattr(base_ds, 'new_dataset', None):
+        text_dir = base_ds.new_dataset.get('texts')
+    elif data_dir is not None:
+        text_dir = os.path.join(data_dir, 'texts')
+
+    if text_dir and indices is not None:
+        for idx in indices:
+            path = os.path.join(text_dir, f"text1_{idx + 1}.txt")
+            with open(path, "r", encoding="utf-8") as f:
+                texts.append(' ' + f.read().strip() + ' ')
+        return texts
+
+    if text_dir:
+        for name in sorted(os.listdir(text_dir)):
+            if name.startswith("text1_") and name.endswith(".txt"):
+                with open(os.path.join(text_dir, name), "r", encoding="utf-8") as f:
+                    texts.append(' ' + f.read().strip() + ' ')
+    return texts
 
 
 def check_grad(grad):
@@ -235,10 +362,10 @@ def compute_varlen_similarities(textEmbed, norm_img, pos_texts, neg_texts):
     return sim_pos_list, sim_neg_list
 
 
-def compute_batch_loss(imageEmbed, textEmbed,
-                       images, pos_texts, neg_texts,
-                       criterion,
-                       epoch=0, batch_idx=0, dataloader_length=0, debug=False, timer=None):
+def compute_d3tw_batch_loss(imageEmbed, textEmbed,
+                            images, pos_texts, neg_texts,
+                            criterion,
+                            epoch=0, batch_idx=0, dataloader_length=0, debug=False, timer=None):
     """
     Compute batch loss for text-image alignment with multiple in-batch negatives.
 
@@ -361,16 +488,111 @@ def compute_batch_loss(imageEmbed, textEmbed,
             epoch,
             job_id=job_id
         )
-        save_model_weights(imageEmbed, epoch, job_id)
+        # model_config injected by Train() via a closure attribute
+        _cfg = getattr(compute_batch_loss, '_model_config', None)
+        if not _needs_ctc():
+            save_model_weights(imageEmbed, epoch, job_id, model_config=_cfg)
 
+    return total_loss, loss_dict
+
+
+def _print_loss_summary(loss_dict, batch_idx):
+    if batch_idx % 10 != 0:
+        return
+    parts = [f"alignment_loss_type={alignment_loss_type}"]
+    for key in (
+        "ctc_loss", "ctc_pos_cost", "ctc_neg_cost", "ctc_gap", "ctc_top1",
+        "d3tw_loss", "d3tw_cost_pos", "d3tw_cost_neg", "total_loss",
+        "input_length", "mean_target_length", "vocab_size",
+    ):
+        if key in loss_dict:
+            value = loss_dict[key]
+            if isinstance(value, float):
+                parts.append(f"{key}={value:.4f}")
+            else:
+                parts.append(f"{key}={value}")
+    print("[LOSS] " + "  ".join(parts), flush=True)
+
+
+def compute_batch_loss(imageEmbed, textEmbed,
+                       images, pos_texts, neg_texts,
+                       criterion,
+                       ctc_head=None, ctc_vocab=None,
+                       epoch=0, batch_idx=0, dataloader_length=0, debug=False, timer=None):
+    if timer is None:
+        timer = global_timer
+
+    def _autocast():
+        return torch.amp.autocast('cuda', dtype=AMP_DTYPE, enabled=USE_AMP)
+
+    loss_dict = {}
+    ctc_loss_value = None
+    d3tw_loss_value = None
+
+    if _needs_ctc():
+        if ctc_head is None or ctc_vocab is None:
+            raise RuntimeError("CTC mode requires ctc_head and ctc_vocab.")
+        timer.start('1_image_embedding')
+        with _autocast():
+            img_emb = imageEmbed(images, show_dims=False, timer=timer)
+        img_emb = img_emb.float()
+        timer.stop('1_image_embedding')
+
+        timer.start('6_ctc_loss_computation')
+        if alignment_loss_type in {'ctc', 'ctc_d3tw'}:
+            ctc_loss_value, ctc_dict = compute_ctc_loss(
+                img_emb, pos_texts, ctc_head, ctc_vocab, device
+            )
+        else:
+            ctc_loss_value, ctc_dict = compute_contrastive_ctc_loss(
+                img_emb, pos_texts, neg_texts, ctc_head, ctc_vocab,
+                tau=contrastive_ctc_tau,
+                margin=contrastive_ctc_margin,
+                loss_type=contrastive_ctc_loss_type,
+                device=device,
+            )
+        timer.stop('6_ctc_loss_computation')
+        loss_dict.update(ctc_dict)
+
+    if _needs_d3tw():
+        if textEmbed is None:
+            raise RuntimeError("D3TW mode requires a text embedder.")
+        d3tw_loss_value, d3tw_dict = compute_d3tw_batch_loss(
+            imageEmbed, textEmbed, images, pos_texts, neg_texts, criterion,
+            epoch=epoch, batch_idx=batch_idx,
+            dataloader_length=dataloader_length, debug=debug, timer=timer
+        )
+        loss_dict.update({f"d3tw_{k}": v for k, v in d3tw_dict.items()})
+        loss_dict["d3tw_loss"] = d3tw_loss_value.detach().item()
+
+    if alignment_loss_type == "ctc":
+        total_loss = ctc_loss_value
+    elif alignment_loss_type == "contrastive_ctc":
+        total_loss = ctc_loss_value
+    elif alignment_loss_type == "ctc_d3tw":
+        total_loss = ctc_weight * ctc_loss_value + d3tw_weight * d3tw_loss_value
+    elif alignment_loss_type == "contrastive_ctc_d3tw":
+        total_loss = ctc_weight * ctc_loss_value + d3tw_weight * d3tw_loss_value
+    elif alignment_loss_type == "d3tw":
+        total_loss = d3tw_loss_value
+    else:
+        raise ValueError(f"Unknown alignment_loss_type: {alignment_loss_type}")
+
+    loss_dict["total_loss"] = total_loss.detach().item()
+    _print_loss_summary(loss_dict, batch_idx)
     return total_loss
 
 
 def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
-          lr=None, total_epochs=None, resume_path=None):
+          ctc_head=None, ctc_vocab=None,
+          lr=None, total_epochs=None, resume_path=None, model_config=None):
     """Train the image-text alignment model (CRNN: ResNet34 + BiLSTM)."""
     imageEmbedding.train()
-    textEmbedding.eval()
+    if textEmbedding is not None:
+        textEmbedding.eval()
+    # Make model_config accessible to compute_batch_loss for mid-epoch saves.
+    _model_config = model_config
+    compute_batch_loss._model_config = model_config
 
     if lr is None:
         lr = learning_rate
@@ -382,7 +604,10 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
     cnn_param_ids = set(id(p) for p in cnn_params)
     other_params = [p for p in imageEmbedding.parameters() if id(p) not in cnn_param_ids]
 
-    optimizer = optim.Adam(cnn_params + other_params, lr=lr)
+    optim_params = cnn_params + other_params
+    if ctc_head is not None:
+        optim_params += list(ctc_head.parameters())
+    optimizer = optim.Adam(optim_params, lr=lr)
     # Cosine schedule: ReduceLROnPlateau was monitoring a loss that's bounded
     # below by the contrastive margin, so it kept halving LR to zero even
     # though training had room to learn.
@@ -399,7 +624,9 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
     if resume_path is not None:
         print(f"Resuming from checkpoint: {resume_path}")
         ckpt = torch.load(resume_path, map_location=device)
-        imageEmbedding.load_state_dict(ckpt['model_state_dict'])
+        imageEmbedding.load_state_dict(_extract_model_state(ckpt))
+        if ctc_head is not None and ckpt.get('ctc_head_state_dict') is not None:
+            ctc_head.load_state_dict(ckpt['ctc_head_state_dict'])
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         scheduler.load_state_dict(ckpt['scheduler_state_dict'])
         if ckpt.get('scaler_state_dict') is not None and use_scaler:
@@ -420,6 +647,8 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
             print(f"Epoch {epoch+1} - Soft-DTW gamma: {contrastive_soft_dtw_gamma:.6f}", flush=True)
 
         imageEmbedding.train()
+        if ctc_head is not None:
+            ctc_head.train()
         global_timer.reset()
 
         train_loss = 0.0
@@ -437,6 +666,8 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
                 imageEmbedding, textEmbedding,
                 images, pos_texts, neg_texts,
                 criterion,
+                ctc_head=ctc_head,
+                ctc_vocab=ctc_vocab,
                 epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader),
                 debug=debug, timer=global_timer
             )
@@ -451,7 +682,7 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
             # Unscale before clipping so the clip threshold applies to the
             # real (unscaled) gradients.
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(imageEmbedding.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(optim_params, max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
             global_timer.stop('10_optimizer_step')
@@ -465,6 +696,8 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
 
         # Validation phase
         imageEmbedding.eval()
+        if ctc_head is not None:
+            ctc_head.eval()
         val_loss = 0.0
         with torch.no_grad():
             for batch_idx, (images, pos_texts, neg_texts) in enumerate(validLoader):
@@ -474,6 +707,8 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
                     imageEmbedding, textEmbedding,
                     images, pos_texts, neg_texts,
                     criterion=criterion
+                    , ctc_head=ctc_head,
+                    ctc_vocab=ctc_vocab
                 )
                 val_loss += loss.item()
 
@@ -495,7 +730,12 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
         scheduler.step()
 
         # Save full checkpoint each epoch so --resume can recover exactly.
-        save_checkpoint(imageEmbedding, optimizer, scheduler, scaler, epoch, job_id)
+        save_checkpoint(imageEmbedding, optimizer, scheduler, scaler, epoch,
+                        job_id, model_config=_model_config,
+                        ctc_head=ctc_head, ctc_vocab=ctc_vocab)
+        save_model_weights(imageEmbedding, epoch, job_id,
+                           model_config=_model_config,
+                           ctc_head=ctc_head, ctc_vocab=ctc_vocab)
 
         if debug_wandb:
             update_wandb(train_loss, val_loss)
@@ -507,6 +747,56 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
 
 
 if __name__ == '__main__':
+    # Apply CLI overrides to the imported Parameters module so downstream code
+    # picks them up without any other changes.
+    import Parameters as _params
+    if args.window_size is not None:
+        _params.window_size = args.window_size
+        window_size = args.window_size
+    if args.stride_ratio is not None:
+        _params.stride_ratio = args.stride_ratio
+        stride_ratio = args.stride_ratio
+    if args.text_embedder is not None:
+        _params.text_embedder_type = args.text_embedder.lower()
+        text_embedder_type = _params.text_embedder_type
+    if args.negative_mode is not None:
+        _params.negative_mode = args.negative_mode.lower()
+    if args.multi_scale:
+        _params.multi_scale_enabled = True
+        multi_scale_enabled = True
+    if args.loss_type is not None:
+        _params.contrastive_loss_type = args.loss_type.lower()
+        contrastive_loss_type = _params.contrastive_loss_type
+    if args.epochs is not None:
+        _params.epochs = args.epochs
+        epochs = args.epochs
+    if args.learning_rate is not None:
+        _params.learning_rate = args.learning_rate
+        learning_rate = args.learning_rate
+    if args.num_negatives is not None:
+        _params.num_negatives = args.num_negatives
+        num_negatives = args.num_negatives
+        import newDataLoader as _ndl
+        _ndl.num_negatives = args.num_negatives
+    if args.alignment_loss_type is not None:
+        _params.alignment_loss_type = args.alignment_loss_type.lower()
+        alignment_loss_type = _params.alignment_loss_type
+    if args.ctc_weight is not None:
+        _params.ctc_weight = args.ctc_weight
+        ctc_weight = args.ctc_weight
+    if args.d3tw_weight is not None:
+        _params.d3tw_weight = args.d3tw_weight
+        d3tw_weight = args.d3tw_weight
+    if args.contrastive_ctc_loss_type is not None:
+        _params.contrastive_ctc_loss_type = args.contrastive_ctc_loss_type.lower()
+        contrastive_ctc_loss_type = _params.contrastive_ctc_loss_type
+    if args.contrastive_ctc_tau is not None:
+        _params.contrastive_ctc_tau = args.contrastive_ctc_tau
+        contrastive_ctc_tau = args.contrastive_ctc_tau
+    if args.contrastive_ctc_margin is not None:
+        _params.contrastive_ctc_margin = args.contrastive_ctc_margin
+        contrastive_ctc_margin = args.contrastive_ctc_margin
+
     if debug_wandb:
         init_wandb(job_id)
 
@@ -535,16 +825,24 @@ if __name__ == '__main__':
     else:
         _train_dl, _valid_dl, _test_dl = train_dataloader, valid_dataloader, test_dataloader
 
-    # Pick the text embedder via Parameters.text_embedder_type
-    # ('char' = learned frozen table, 'fasttext' = facebook/fasttext-ar-vectors).
-    textEmbedding = build_text_embedder(embedding_dim=vector_size)
-    textEmbedding = textEmbedding.to(device)
-    for p in textEmbedding.parameters():
-        p.requires_grad_(False)
-    textEmbedding.eval()
-    assert not any(p.requires_grad for p in textEmbedding.parameters()), \
-        "Text branch must be fully frozen — some parameters still have requires_grad=True"
-    print(f"[TEXT EMBED] type={text_embedder_type}  out_dim={vector_size}  (frozen)", flush=True)
+    resume_ckpt = None
+    if args.resume is not None:
+        resume_ckpt = torch.load(args.resume, map_location=device)
+
+    textEmbedding = None
+    if _needs_d3tw():
+        # Pick the text embedder via Parameters.text_embedder_type
+        # ('char' = learned frozen table, 'fasttext' = facebook/fasttext-ar-vectors).
+        textEmbedding = build_text_embedder(embedding_dim=vector_size)
+        textEmbedding = textEmbedding.to(device)
+        for p in textEmbedding.parameters():
+            p.requires_grad_(False)
+        textEmbedding.eval()
+        assert not any(p.requires_grad for p in textEmbedding.parameters()), \
+            "Text branch must be fully frozen — some parameters still have requires_grad=True"
+        print(f"[TEXT EMBED] type={text_embedder_type}  out_dim={vector_size}  (frozen)", flush=True)
+    else:
+        print("[TEXT EMBED] skipped for CTC-only objective", flush=True)
 
     imageEmbedding = EmbeddingModel(
         window_size=window_size,
@@ -576,15 +874,42 @@ if __name__ == '__main__':
         for param in imageEmbedding.parameters():
             param.register_hook(check_grad)
 
-    criterion = Loss_choice()
+    ctc_vocab = None
+    ctc_head = None
+    if _needs_ctc():
+        if resume_ckpt is not None and resume_ckpt.get("ctc_vocab") is not None:
+            ctc_vocab = CTCVocabulary.from_dict(resume_ckpt["ctc_vocab"])
+        else:
+            vocab_texts = _collect_training_texts(_train_dl, resolved_data_dir)
+            if not vocab_texts:
+                raise RuntimeError("Could not collect transcripts to build CTC vocabulary.")
+            ctc_vocab = CTCVocabulary.from_texts(vocab_texts, blank_token=ctc_blank_token)
+        ctc_head = nn.Linear(vector_size, len(ctc_vocab)).to(device)
+        if save_ctc_vocab:
+            ctc_vocab_path = os.path.join(_weights_dir(job_id), "ctc_vocab.json")
+            ctc_vocab.save_json(ctc_vocab_path)
+            print(f"[CTC] saved vocabulary: {ctc_vocab_path}", flush=True)
+        print(
+            f"[CTC] vocab_size={len(ctc_vocab)} blank_idx={ctc_vocab.blank_idx} "
+            f"blank_token={ctc_vocab.blank_token!r}",
+            flush=True,
+        )
+
+    criterion    = Loss_choice() if _needs_d3tw() else None
+    _model_cfg   = _make_model_config(window_size, stride, stride_ratio, ctc_vocab)
 
     print(f"\n=== Architecture: CRNN (ResNet34 + BiLSTM) ===")
     print(f"[OPT 1] job_id: {job_id}")
     print(f"[OPT 2] BiLSTM Context: {use_bilstm} (layers={bilstm_layers})")
     print(f"[OPT 3] Sliding Window Overlap: stride_ratio={stride_ratio}")
     print(f"[OPT 4] In-Batch Negatives: num_negatives={num_negatives}")
+    print(f"[OPT 5] alignment_loss_type={alignment_loss_type}")
+    if _needs_ctc():
+        print(f"[OPT 6] CTC: weight={ctc_weight} loss={contrastive_ctc_loss_type} tau={contrastive_ctc_tau} margin={contrastive_ctc_margin}")
+    if _needs_d3tw():
+        print(f"[OPT 7] D3TW: weight={d3tw_weight}")
     if multi_scale_enabled:
-        print(f"[OPT 5] Multi-Scale Alignment: windows={multi_scale_window_sizes}, alpha={multi_scale_alpha}")
+        print(f"[OPT 8] Multi-Scale Alignment: windows={multi_scale_window_sizes}, alpha={multi_scale_alpha}")
     print(f"[SPEED] AMP={USE_AMP} (dtype={AMP_DTYPE})  Profiling={ENABLE_PROFILING}")
     print(f"[RUN]   lr={run_lr}  epochs={run_epochs}")
     if args.finetune:
@@ -603,9 +928,12 @@ if __name__ == '__main__':
         _train_dl,
         _valid_dl,
         criterion,
+        ctc_head=ctc_head,
+        ctc_vocab=ctc_vocab,
         lr=run_lr,
         total_epochs=run_epochs,
         resume_path=args.resume,
+        model_config=_model_cfg,
     )
 
     if debug_wandb:

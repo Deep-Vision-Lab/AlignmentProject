@@ -74,9 +74,10 @@ def draw_sliding_windows(sentence_idx, output_dir, show_highlighted=10,
     # ── Row 0: full image with boxes ─────────────────────────────────────────
     ax_img = axes[0]
     ax_img.imshow(img_arr, aspect="auto")
+    overlap_pct = int((1 - stride / ws) * 100)
     ax_img.set_title(
-        f"Arabic Line Image  |  {num_win} non-overlapping windows "
-        f"(window_size={ws}, stride={stride})",
+        f"Arabic Line Image  |  {num_win} overlapping windows "
+        f"(window_size={ws}, stride={stride}, {overlap_pct}% overlap)",
         fontsize=11, pad=5,
     )
     ax_img.axis("off")

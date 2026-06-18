@@ -31,10 +31,11 @@ _PROJ_ROOT = os.path.dirname(_HERE)
 sys.path.insert(0, _PROJ_ROOT)
 sys.path.insert(0, _HERE)
 
-from utils.model_loading import load_image_model, load_text_embedder
-from utils.sample_data import make_sample, ARABIC_SENTENCES, FIG_STRIDE, FIG_NUM_PATCHES
+from utils.model_loading import load_image_model, load_text_embedder, load_ctc_components
+from utils.sample_data import make_sample, ARABIC_SENTENCES, FIG_STRIDE, FIG_NUM_PATCHES, pad_text
 from utils.similarity import (compute_image_embeddings, compute_text_embeddings,
                                compute_text_image_similarity, compute_dtw_cost)
+from ctc_utils import compute_ctc_cost
 from utils.negatives import generate_hard_negatives
 from utils.plotting import setup_paper_style, save_figure
 
@@ -47,76 +48,110 @@ def _trim_sim(sim):
     return sim
 
 
-def collect_costs(checkpoint, num_samples, num_negatives, device):
-    model         = load_image_model(checkpoint, device, stride_override=FIG_STRIDE)
-    text_embedder = load_text_embedder(device)
+def collect_costs(checkpoint, num_samples, num_negatives, device,
+                   negative_mode="mixed", cost_type="d3tw"):
+    cost_type = cost_type.lower()
+    if cost_type == "ctc":
+        model, ctc_head, ctc_vocab = load_ctc_components(checkpoint, device)
+        text_embedder = None
+    else:
+        model = load_image_model(checkpoint, device, stride_override=FIG_STRIDE)
+        text_embedder = load_text_embedder(device)
+        ctc_head = None
+        ctc_vocab = None
 
     # Use all sentences as the pool; cycle if num_samples > len(pool)
     all_texts = [ARABIC_SENTENCES[i % len(ARABIC_SENTENCES)]
                  for i in range(max(num_samples, len(ARABIC_SENTENCES)))]
 
-    pos_costs, neg_costs_all = [], []
+    pos_costs, neg_costs_all, pos_ranks = [], [], []
     wins = 0
 
     for si in range(num_samples):
         img_tensor, text = make_sample(si)
         img_emb = compute_image_embeddings(model, img_tensor, device)
 
-        # Positive cost
-        txt_emb  = compute_text_embeddings(text_embedder, text)
-        sim_pos  = compute_text_image_similarity(txt_emb, img_emb)
-        sim_pos  = _trim_sim(sim_pos)
-        pos_cost = compute_dtw_cost(sim_pos, device="cpu")
-        pos_costs.append(pos_cost)
+        if cost_type == "ctc":
+            pos_cost = compute_ctc_cost(img_emb, pad_text(text), ctc_head, ctc_vocab, device)
+        else:
+            txt_emb  = compute_text_embeddings(text_embedder, text)
+            sim_pos  = compute_text_image_similarity(txt_emb, img_emb)
+            sim_pos  = _trim_sim(sim_pos)
+            pos_cost = compute_dtw_cost(sim_pos, device="cpu")
+        if np.isfinite(pos_cost):
+            pos_costs.append(pos_cost)
 
         # Negative costs
         other_texts = [t for t in all_texts if t.strip() != text.strip()]
-        negs = generate_hard_negatives(text, all_texts=other_texts, k=num_negatives)
+        negs = generate_hard_negatives(text, all_texts=other_texts,
+                                       k=num_negatives, negative_mode=negative_mode)
         sample_neg_costs = []
         for neg_text, neg_type in negs:
             try:
-                n_emb    = compute_text_embeddings(text_embedder, neg_text)
-                sim_neg  = compute_text_image_similarity(n_emb, img_emb)
-                sim_neg  = _trim_sim(sim_neg)
-                nc       = compute_dtw_cost(sim_neg, device="cpu")
-                sample_neg_costs.append(nc)
+                if cost_type == "ctc":
+                    nc = compute_ctc_cost(img_emb, pad_text(neg_text), ctc_head, ctc_vocab, device)
+                else:
+                    n_emb    = compute_text_embeddings(text_embedder, neg_text)
+                    sim_neg  = compute_text_image_similarity(n_emb, img_emb)
+                    sim_neg  = _trim_sim(sim_neg)
+                    nc       = compute_dtw_cost(sim_neg, device="cpu")
+                if np.isfinite(nc):
+                    sample_neg_costs.append(nc)
             except Exception:
                 pass
 
         neg_costs_all.extend(sample_neg_costs)
-        if sample_neg_costs and pos_cost < min(sample_neg_costs):
+        if sample_neg_costs and np.isfinite(pos_cost) and pos_cost < min(sample_neg_costs):
             wins += 1
+        if sample_neg_costs and np.isfinite(pos_cost):
+            pos_ranks.append(1 + sum(nc < pos_cost for nc in sample_neg_costs))
 
         if (si + 1) % 5 == 0:
             print(f"  {si + 1}/{num_samples} done  "
                   f"pos={pos_cost:.3f}  neg_mean={np.mean(sample_neg_costs):.3f}")
 
     top1_acc = wins / len(pos_costs) if pos_costs else 0.0
-    return pos_costs, neg_costs_all, top1_acc
+    return pos_costs, neg_costs_all, top1_acc, pos_ranks
 
 
 def draw_cost_distribution(checkpoint, num_samples, num_negatives,
-                            output_dir, device):
+                            output_dir, device, negative_mode="mixed",
+                            cost_type="d3tw"):
     setup_paper_style()
 
-    pos_costs, neg_costs_all, top1_acc = collect_costs(
+    pos_costs, neg_costs_all, top1_acc, pos_ranks = collect_costs(
         checkpoint, num_samples, num_negatives, device,
+        negative_mode=negative_mode,
+        cost_type=cost_type,
     )
 
     # ── Statistics ────────────────────────────────────────────────────────────
     stats = {
+        "cost_type":         cost_type,
         "num_samples":       num_samples,
         "num_negatives":     num_negatives,
+        "mean_positive_cost": float(np.mean(pos_costs)),
+        "mean_negative_cost": float(np.mean(neg_costs_all)),
         "mean_pos_cost":     float(np.mean(pos_costs)),
         "mean_neg_cost":     float(np.mean(neg_costs_all)),
         "mean_gap":          float(np.mean(pos_costs) - np.mean(neg_costs_all)),
         "top1_accuracy":     float(top1_acc),
+        "positive_rank":     float(np.mean(pos_ranks)) if pos_ranks else float("nan"),
         "pct_pos_wins":      float(top1_acc * 100),
     }
     print("\n── Statistics ──────────────────────────────")
     for k, v in stats.items():
-        print(f"  {k:<22} {v:.4f}")
+        if isinstance(v, (int, float)):
+            print(f"  {k:<22} {v:.4f}")
+        else:
+            print(f"  {k:<22} {v}")
     print("────────────────────────────────────────────")
+    if stats["top1_accuracy"] == 0.0 or stats["mean_gap"] > 0:
+        print(
+            "\n  WARNING: Positive transcripts are not ranking above negatives.\n"
+            "  Treat as diagnostic failure, not success evidence.\n"
+            "  Check: negative_mode, DTW normalisation, text embedder type."
+        )
 
     # ── Plot ──────────────────────────────────────────────────────────────────
     fig, axes = plt.subplots(1, 2, figsize=(11, 5),
@@ -140,7 +175,7 @@ def draw_cost_distribution(checkpoint, num_samples, num_negatives,
 
     ax.set_xticks([1, 2])
     ax.set_xticklabels(labels, fontsize=10)
-    ax.set_ylabel("Normalised Soft-DTW Cost")
+    ax.set_ylabel("CTC Cost" if cost_type == "ctc" else "Normalised Soft-DTW Cost")
     ax.set_title("Positive vs Negative Alignment Cost Distribution")
     ax.axhline(np.mean(pos_costs), color=colors[0], ls="--", lw=1.0,
                label=f"μ_pos = {np.mean(pos_costs):.3f}")
@@ -168,7 +203,7 @@ def draw_cost_distribution(checkpoint, num_samples, num_negatives,
              fontfamily="monospace",
              bbox=dict(boxstyle="round,pad=0.5", fc="#f7f7f7", ec="#aaaaaa"))
 
-    fig.suptitle("Alignment Cost: Positive vs Hard Negatives",
+    fig.suptitle(f"{cost_type.upper()} Alignment Cost: Positive vs Hard Negatives",
                  fontsize=12, fontweight="bold")
     plt.tight_layout()
     save_figure(fig, output_dir, "fig05_pos_neg_cost_distribution")
@@ -190,14 +225,22 @@ def main():
     parser.add_argument("--num_samples",   type=int, default=10,
                         help="Number of synthetic sentences to evaluate "
                              f"(max {len(ARABIC_SENTENCES)})")
-    parser.add_argument("--num_negatives", type=int, default=5)
+    parser.add_argument("--num_negatives",  type=int, default=5)
+    parser.add_argument("--negative_mode",  default="length_controlled",
+                        choices=["mixed", "length_controlled", "dot_confusion",
+                                 "same_length_random", "shuffle_only"],
+                        help="Negative sampling strategy. 'length_controlled' is "
+                             "recommended for fair evaluation (no length bias).")
+    parser.add_argument("--cost_type", default="d3tw", choices=["d3tw", "ctc"])
     parser.add_argument("--output_dir",    default="paper_figures/outputs")
     parser.add_argument("--device",        default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
     os.chdir(_PROJ_ROOT)
     draw_cost_distribution(args.checkpoint, args.num_samples,
-                           args.num_negatives, args.output_dir, args.device)
+                           args.num_negatives, args.output_dir, args.device,
+                           negative_mode=args.negative_mode,
+                           cost_type=args.cost_type)
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ sys.path.insert(0, _HERE)
 from utils.model_loading import load_image_model, load_text_embedder
 from utils.sample_data import make_sample, FIG_STRIDE, FIG_NUM_PATCHES, get_fig_windows, pad_text
 from utils.similarity import compute_image_embeddings, compute_text_embeddings, compute_text_image_similarity
-from utils.alignment import hard_dtw_path_restricted, path_to_char_window_mapping
+from utils.alignment import hard_dtw_path_restricted, path_to_char_window_mapping, compute_path_quality
 from utils.plotting import setup_paper_style, save_figure, plot_similarity_with_path, attach_window_strip, arabic_label
 
 
@@ -56,15 +56,19 @@ def draw_path_overlay(checkpoint, sentence_idx, output_dir, device):
     path    = hard_dtw_path_restricted(sim_np)
     mapping = path_to_char_window_mapping(path, text_padded)
     chars   = list(text_padded)
+    pq      = compute_path_quality(sim_np, path)
 
     T, S    = sim_np.shape
     fig_h   = max(16, T * 0.75 + 5)
     fig, ax = plt.subplots(figsize=(28, fig_h))
 
+    path_gap_str = f"path_gap={pq['path_gap']:+.4f}"
+    quality_note = "✓ good" if pq["path_gap"] > 0 else "✗ poor"
     im = plot_similarity_with_path(
         ax, sim_np, path,
         title=(
-            f"D3TW Alignment  |  Sentence {sentence_idx}\n"
+            f"D3TW Alignment  |  Sentence {sentence_idx}  |  "
+            f"{path_gap_str}  {quality_note}\n"
             f'"{arabic_label(text)}"  —  T={T} chars  ×  S={S} windows'
         ),
         xlabel="Image window index",
@@ -86,8 +90,12 @@ def draw_path_overlay(checkpoint, sentence_idx, output_dir, device):
     os.makedirs(output_dir, exist_ok=True)
     json_path = os.path.join(output_dir, f"fig04_alignment_mapping_s{sentence_idx}.json")
     with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(mapping, f, ensure_ascii=False, indent=2)
+        json.dump({"path_quality": pq, "char_window_mapping": mapping},
+                  f, ensure_ascii=False, indent=2)
     print(f"  Saved {json_path}")
+    print(f"  path_gap={pq['path_gap']:+.4f}  "
+          f"path_mean={pq['path_mean_similarity']:.4f}  "
+          f"off_mean={pq['off_path_mean_similarity']:.4f}")
 
 
 def main():

@@ -93,6 +93,20 @@ train_dataset, valid_dataset, test_dataset = random_split(full_dataset, [train_s
 
 
 # ---- Hard Negative Generators (applied to the POSITIVE text) ----
+
+# Dot-confusion table for Arabic letters (same base glyph, different dots)
+_DOT_CONFUSIONS = {
+    "ب": ["ت", "ث", "ن", "ي"], "ت": ["ب", "ث", "ن", "ي"],
+    "ث": ["ب", "ت", "ن", "ي"], "ن": ["ب", "ت", "ث", "ي"],
+    "ي": ["ب", "ت", "ث", "ن"], "ج": ["ح", "خ"], "ح": ["ج", "خ"],
+    "خ": ["ج", "ح"], "د": ["ذ"], "ذ": ["د"], "ر": ["ز"], "ز": ["ر"],
+    "س": ["ش"], "ش": ["س"], "ص": ["ض"], "ض": ["ص"],
+    "ط": ["ظ"], "ظ": ["ط"], "ع": ["غ"], "غ": ["ع"],
+    "ف": ["ق"], "ق": ["ف"],
+}
+_ARABIC_LETTERS = list("ابتثجحخدذرزسشصضطظعغفقكلمنهوي")
+
+
 def _hard_neg_crop(text):
     words = text.split()
     if len(words) < 2:
@@ -118,7 +132,36 @@ def _hard_neg_shuffle(text):
     return ' '.join(words)
 
 
-_hard_neg_fns = [_hard_neg_crop, _hard_neg_drop, _hard_neg_shuffle]
+def _hard_neg_dot_confusion(text, p=0.25):
+    """Replace confusable Arabic letters at probability p; ensure ≥1 change."""
+    chars = list(text)
+    changed = False
+    for i, ch in enumerate(chars):
+        if ch in _DOT_CONFUSIONS and random.random() < p:
+            chars[i] = random.choice(_DOT_CONFUSIONS[ch])
+            changed = True
+    if not changed:
+        confusable = [(i, c) for i, c in enumerate(chars) if c in _DOT_CONFUSIONS]
+        if confusable:
+            idx, ch = random.choice(confusable)
+            chars[idx] = random.choice(_DOT_CONFUSIONS[ch])
+    return ''.join(chars)
+
+
+def _hard_neg_word_shuffle(text):
+    words = text.split()
+    if len(words) < 2:
+        return text
+    random.shuffle(words)
+    return ' '.join(words)
+
+
+def _hard_neg_same_length_random(text):
+    return ''.join(random.choice(_ARABIC_LETTERS) if ch != ' ' else ' ' for ch in text)
+
+
+_hard_neg_fns  = [_hard_neg_crop, _hard_neg_drop, _hard_neg_shuffle]
+_lc_neg_fns    = [_hard_neg_word_shuffle, _hard_neg_same_length_random]
 
 
 def _ensure_different(neg, pos):
@@ -136,9 +179,6 @@ def _ensure_different(neg, pos):
         return pos.strip()[:-1]
     return pos + "‌"  # zero-width non-joiner as last resort
 
-# TODO: add Arabic visual-confusion hard negatives, e.g. ب/ت/ث, ج/ح/خ, د/ذ, ر/ز,
-#       س/ش, ص/ض, ط/ظ, ع/غ, ف/ق.  These should be sampled at ~20% of hard-neg slots.
-
 
 def _maybe_crop(text):
     """Randomly crop negative text to 50-100% of its length."""
@@ -150,42 +190,84 @@ def _maybe_crop(text):
     return text
 
 
+def _build_negatives_for_sample(pos_text, all_pos_texts, sample_idx, mode):
+    """Build num_negatives negative strings for one positive using selected mode."""
+    mode = mode.lower()
+    sample_negs = []
+
+    if mode == "mixed":
+        num_hard = min(2, num_negatives)
+        num_random = num_negatives - num_hard
+        for _ in range(num_hard):
+            fn  = random.choice(_hard_neg_fns)
+            neg = _ensure_different(fn(pos_text), pos_text)
+            sample_negs.append(neg)
+        available = [j for j, t in enumerate(all_pos_texts) if j != sample_idx]
+        if not available:
+            available = [sample_idx]
+        sampled = (random.sample(available, num_random)
+                   if len(available) >= num_random
+                   else [random.choice(available) for _ in range(num_random)])
+        for j in sampled:
+            neg = _ensure_different(_maybe_crop(all_pos_texts[j]), pos_text)
+            sample_negs.append(neg)
+
+    elif mode == "length_controlled":
+        fns   = _lc_neg_fns + [_hard_neg_word_shuffle]
+        names = ["word_shuffled", "same_length_random", "word_shuffled2"]
+        num_lc = min(len(fns), num_negatives)
+        for fn in fns[:num_lc]:
+            neg = _ensure_different(fn(pos_text), pos_text)
+            sample_negs.append(neg)
+        remaining = num_negatives - len(sample_negs)
+        for _ in range(remaining):
+            neg = _ensure_different(_hard_neg_word_shuffle(pos_text), pos_text)
+            sample_negs.append(neg)
+
+    elif mode == "dot_confusion":
+        for _ in range(num_negatives):
+            neg = _ensure_different(_hard_neg_dot_confusion(pos_text), pos_text)
+            sample_negs.append(neg)
+
+    elif mode == "same_length_random":
+        for _ in range(num_negatives):
+            neg = _ensure_different(_hard_neg_same_length_random(pos_text), pos_text)
+            sample_negs.append(neg)
+
+    elif mode == "shuffle_only":
+        for _ in range(num_negatives):
+            neg = _ensure_different(_hard_neg_word_shuffle(pos_text), pos_text)
+            sample_negs.append(neg)
+
+    else:
+        # Unknown mode — fall back to mixed
+        return _build_negatives_for_sample(pos_text, all_pos_texts, sample_idx, "mixed")
+
+    return sample_negs
+
+
 def custom_collate_fn(batch):
     """
     Collate function for contrastive learning with in-batch negatives.
 
     Runs entirely on CPU inside dataloader workers; the training loop is
     responsible for the H2D copy (with non_blocking / pinned memory).
+    Negative mode is read from Parameters.negative_mode at collation time.
     """
     texts1, images1 = zip(*batch)
 
-    # Stack images on CPU. Pinned memory is handled by the DataLoader.
-    images = torch.stack(images1, dim=0)
-
-    actual_batch_size = len(texts1)
+    images    = torch.stack(images1, dim=0)
     pos_texts = list(texts1)
 
-    num_hard = min(2, num_negatives)
-    num_random = num_negatives - num_hard
+    try:
+        from Parameters import negative_mode as _neg_mode
+    except ImportError:
+        _neg_mode = "mixed"
 
-    neg_texts = []
-    for i in range(actual_batch_size):
-        sample_negs = []
-        for _ in range(num_hard):
-            fn = random.choice(_hard_neg_fns)
-            neg = _ensure_different(fn(pos_texts[i]), pos_texts[i])
-            sample_negs.append(neg)
-        available = [j for j in range(actual_batch_size) if j != i]
-        if not available:
-            available = [i]
-        if len(available) >= num_random:
-            sampled = random.sample(available, num_random)
-        else:
-            sampled = [random.choice(available) for _ in range(num_random)]
-        for j in sampled:
-            neg = _ensure_different(_maybe_crop(texts1[j]), pos_texts[i])
-            sample_negs.append(neg)
-        neg_texts.append(sample_negs)
+    neg_texts = [
+        _build_negatives_for_sample(pos_texts[i], pos_texts, i, _neg_mode)
+        for i in range(len(pos_texts))
+    ]
 
     return images, pos_texts, neg_texts
 

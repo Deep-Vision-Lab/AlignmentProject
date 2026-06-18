@@ -79,6 +79,10 @@ def main():
     parser.add_argument("--num_samples",      type=int, default=10,
                         help="Sentences for cost distribution (fig05) and embedding space (fig09)")
     parser.add_argument("--num_negatives",    type=int, default=5)
+    parser.add_argument("--negative_mode",    default="length_controlled",
+                        choices=["mixed", "length_controlled", "dot_confusion",
+                                 "same_length_random", "shuffle_only"],
+                        help="Negative sampling strategy for fig05 and fig08.")
     # Optional extras
     parser.add_argument("--ablation_csv",     default="",
                         help="Path to ablation CSV/JSON for fig06")
@@ -136,7 +140,8 @@ def main():
          draw_cost_distribution,
          args.checkpoint,
          args.num_samples, args.num_negatives,
-         args.output_dir, args.device)
+         args.output_dir, args.device,
+         negative_mode=args.negative_mode)
 
     # ── fig06: ablation (optional) ─────────────────────────────────────────────
     if args.ablation_csv:
@@ -160,7 +165,8 @@ def main():
     _run("fig08 — Hard negative case study",
          draw_hard_negative_case,
          args.checkpoint, args.sentence_idx,
-         args.num_negatives, args.output_dir, args.device)
+         args.num_negatives, args.output_dir, args.device,
+         negative_mode=args.negative_mode)
 
     # ── fig09: embedding space ─────────────────────────────────────────────────
     _run("fig09 — Embedding space (t-SNE)",

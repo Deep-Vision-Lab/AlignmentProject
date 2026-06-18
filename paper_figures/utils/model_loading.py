@@ -16,6 +16,7 @@ from Parameters import (
 )
 from embeddingModel import EmbeddingModel
 from textEmbedding import build_text_embedder
+from ctc_utils import CTCVocabulary
 
 _IMG_H, _IMG_W = 128, 1024
 
@@ -30,18 +31,44 @@ def get_stride():
     return max(1, int(window_size * stride_ratio))
 
 
-def _build_model(device, use_bilstm_override=None, stride_override=None):
-    stride = stride_override if stride_override is not None else get_stride()
-    _ubil = use_bilstm if use_bilstm_override is None else use_bilstm_override
+def _checkpoint_config(ckpt):
+    return ckpt.get("model_config", {}) if isinstance(ckpt, dict) else {}
+
+
+def _checkpoint_state(ckpt):
+    if isinstance(ckpt, dict):
+        return ckpt.get("image_model_state_dict", ckpt.get("model_state_dict", ckpt))
+    return ckpt
+
+
+def _build_model(device, use_bilstm_override=None, stride_override=None,
+                 model_config=None):
+    cfg = model_config or {}
+    ws = int(cfg.get("window_size", window_size))
+    sr = float(cfg.get("stride_ratio", stride_ratio))
+    stride = stride_override
+    if stride is None:
+        stride = cfg.get("stride")
+    if stride is None:
+        stride = max(1, int(ws * sr))
+
+    _vector_size = int(cfg.get("vector_size", vector_size))
+    _lang = cfg.get("lang", lang)
+    _ubil = cfg.get("use_bilstm", use_bilstm)
+    if use_bilstm_override is not None:
+        _ubil = use_bilstm_override
+    _layers = int(cfg.get("bilstm_layers", bilstm_layers))
+    _hidden = int(cfg.get("bilstm_hidden_dim", bilstm_hidden_dim))
+
     return EmbeddingModel(
-        window_size=window_size,
-        stride=stride,
-        vector_size=vector_size,
+        window_size=ws,
+        stride=int(stride),
+        vector_size=_vector_size,
         device=device,
-        use_flip=(lang.lower() == "arabic"),
+        use_flip=(str(_lang).lower() == "arabic"),
         use_bilstm=_ubil,
-        bilstm_layers=bilstm_layers,
-        bilstm_hidden_dim=bilstm_hidden_dim,
+        bilstm_layers=_layers,
+        bilstm_hidden_dim=_hidden,
         dropout=model_dropout,
     ).to(device)
 
@@ -55,9 +82,15 @@ def load_image_model(checkpoint_path, device, use_bilstm_override=None,
             "Train a model first:  python train.py --job_id <name>"
         )
 
-    model = _build_model(device, use_bilstm_override, stride_override=stride_override)
     ckpt = torch.load(checkpoint_path, map_location=device)
-    state = ckpt.get("model_state_dict", ckpt)
+    cfg = _checkpoint_config(ckpt)
+    model = _build_model(
+        device,
+        use_bilstm_override,
+        stride_override=stride_override,
+        model_config=cfg,
+    )
+    state = _checkpoint_state(ckpt)
     missing, unexpected = model.load_state_dict(state, strict=False)
     if missing:
         print(f"  [model_loading] Missing keys ({len(missing)}): {missing[:3]} ...")
@@ -65,6 +98,32 @@ def load_image_model(checkpoint_path, device, use_bilstm_override=None,
     model._flip_verified = True   # suppress debug_flip/ output during figure gen
     print(f"  Loaded checkpoint: {checkpoint_path}")
     return model
+
+
+def load_ctc_components(checkpoint_path, device, stride_override=None):
+    """Load image model, CTC head, and CTCVocabulary from a CTC checkpoint."""
+    ckpt = torch.load(checkpoint_path, map_location=device)
+    cfg = _checkpoint_config(ckpt)
+    vocab_data = ckpt.get("ctc_vocab")
+    if vocab_data is None:
+        vocab_path = os.path.join(os.path.dirname(checkpoint_path), "ctc_vocab.json")
+        if not os.path.isfile(vocab_path):
+            raise KeyError(
+                "Checkpoint does not contain ctc_vocab and ctc_vocab.json was not found."
+            )
+        ctc_vocab = CTCVocabulary.load_json(vocab_path)
+    else:
+        ctc_vocab = CTCVocabulary.from_dict(vocab_data)
+
+    model = load_image_model(checkpoint_path, device, stride_override=stride_override)
+    head_state = ckpt.get("ctc_head_state_dict")
+    if head_state is None:
+        raise KeyError("Checkpoint does not contain ctc_head_state_dict.")
+    head_in_dim = int(cfg.get("vector_size", vector_size))
+    head = torch.nn.Linear(head_in_dim, len(ctc_vocab)).to(device)
+    head.load_state_dict(head_state)
+    head.eval()
+    return model, head, ctc_vocab
 
 
 def load_random_model(device, use_bilstm_override=None, stride_override=None):

@@ -158,8 +158,21 @@ class ModifiedOCRResNet34(nn.Module):
     def __init__(self, vector_size=512):
         super(ModifiedOCRResNet34, self).__init__()
         
-        # 1. Load standard ResNet34 with pre-trained weights
-        base_resnet = torchvision.models.resnet34(weights=torchvision.models.ResNet34_Weights.IMAGENET1K_V1)
+        # 1. Load standard ResNet34 with pre-trained weights when available.
+        # Figure/eval jobs immediately load a checkpoint afterwards, so falling
+        # back to an uninitialised backbone is fine if the ImageNet cache is
+        # unavailable on a read-only home filesystem.
+        try:
+            base_resnet = torchvision.models.resnet34(
+                weights=torchvision.models.ResNet34_Weights.IMAGENET1K_V1
+            )
+        except Exception as exc:
+            print(
+                f"[ModifiedOCRResNet34] ImageNet weights unavailable ({exc}); "
+                "falling back to weights=None.",
+                flush=True,
+            )
+            base_resnet = torchvision.models.resnet34(weights=None)
         
         # 2. THE FIX: Change horizontal strides from 2 to 1 in later stages.
         # Format: (vertical_stride, horizontal_stride)

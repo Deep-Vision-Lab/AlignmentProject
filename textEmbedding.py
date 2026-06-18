@@ -311,19 +311,249 @@ class FastTextCharEmbedding(nn.Module):
 
 
 # ============================================================================
+# Orthogonal frozen character embedding
+# ============================================================================
+class OrthogonalCharEmbedding(nn.Module):
+    """
+    Fully frozen character embedding with deterministic approximately-orthogonal
+    vectors. Each Unicode codepoint gets a unit-length vector drawn from a fixed
+    random seed (no training, no fine-tuning). The space and pad tokens are
+    treated identically to TextEmbedding.
+
+    Rationale: FastText vectors are linguistic. For a visual-alignment baseline
+    we want a text target space that carries zero linguistic information —
+    every character just gets a distinct, stable direction in R^D. If the image
+    branch learns to match these directions it must be encoding visual identity,
+    not linguistic co-occurrence.
+
+    API matches TextEmbedding / FastTextCharEmbedding.
+    """
+
+    SPACE_TOKEN_IDX = 0
+    PAD_TOKEN_IDX   = 1
+
+    def __init__(self, embedding_dim, vocab_size=65536, seed=1234):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.vocab_size    = vocab_size
+
+        # Deterministic random unit vectors — same every run.
+        g      = torch.Generator().manual_seed(seed)
+        weight = torch.randn(vocab_size, embedding_dim, generator=g)
+        weight = torch.nn.functional.normalize(weight, p=2, dim=-1)
+        weight[self.PAD_TOKEN_IDX].zero_()          # pad → zero vector
+        # Space: keep its unit-length random direction (not zero).
+
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.embedding.weight = nn.Parameter(weight, requires_grad=False)
+
+        self.text_norm = nn.LayerNorm(embedding_dim)
+        for p in self.text_norm.parameters():
+            p.requires_grad_(False)
+
+    def char_to_index(self, char):
+        if char == " ":
+            return self.SPACE_TOKEN_IDX
+        return (ord(char) % (self.vocab_size - 2)) + 2
+
+    def text_to_indices(self, text):
+        indices = [self.char_to_index(c) for c in text]
+        return torch.tensor(indices, dtype=torch.long, device=device)
+
+    def get_space_embedding(self):
+        return self.embedding.weight[self.SPACE_TOKEN_IDX]
+
+    def forward(self, text):
+        if isinstance(text, str):
+            idx = self.text_to_indices(text).to(device)
+            emb = self.embedding(idx)
+        elif isinstance(text, (list, tuple)):
+            batch_indices = [self.text_to_indices(t) for t in text]
+            if not batch_indices:
+                return torch.empty(0, 0, self.embedding_dim, device=device)
+            padded = nn.utils.rnn.pad_sequence(
+                batch_indices, batch_first=True,
+                padding_value=self.PAD_TOKEN_IDX,
+            )
+            emb = self.embedding(padded.to(device))
+        else:
+            emb = self.embedding(text)
+        return self.text_norm(emb)
+
+
+# ============================================================================
+# Random frozen character embedding (non-normalised baseline)
+# ============================================================================
+class RandomFrozenCharEmbedding(nn.Module):
+    """
+    Like OrthogonalCharEmbedding but vectors are NOT L2-normalised at init.
+    Used as an ablation: tests whether the unit-sphere geometry of
+    OrthogonalCharEmbedding matters, vs. raw Gaussian random directions.
+    """
+
+    SPACE_TOKEN_IDX = 0
+    PAD_TOKEN_IDX   = 1
+
+    def __init__(self, embedding_dim, vocab_size=65536, seed=5678):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.vocab_size    = vocab_size
+
+        g      = torch.Generator().manual_seed(seed)
+        weight = torch.randn(vocab_size, embedding_dim, generator=g) * 0.1
+        weight[self.PAD_TOKEN_IDX].zero_()
+
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.embedding.weight = nn.Parameter(weight, requires_grad=False)
+
+        self.text_norm = nn.LayerNorm(embedding_dim)
+        for p in self.text_norm.parameters():
+            p.requires_grad_(False)
+
+    def char_to_index(self, char):
+        if char == " ":
+            return self.SPACE_TOKEN_IDX
+        return (ord(char) % (self.vocab_size - 2)) + 2
+
+    def text_to_indices(self, text):
+        indices = [self.char_to_index(c) for c in text]
+        return torch.tensor(indices, dtype=torch.long, device=device)
+
+    def get_space_embedding(self):
+        return self.embedding.weight[self.SPACE_TOKEN_IDX]
+
+    def forward(self, text):
+        if isinstance(text, str):
+            idx = self.text_to_indices(text).to(device)
+            emb = self.embedding(idx)
+        elif isinstance(text, (list, tuple)):
+            batch_indices = [self.text_to_indices(t) for t in text]
+            if not batch_indices:
+                return torch.empty(0, 0, self.embedding_dim, device=device)
+            padded = nn.utils.rnn.pad_sequence(
+                batch_indices, batch_first=True,
+                padding_value=self.PAD_TOKEN_IDX,
+            )
+            emb = self.embedding(padded.to(device))
+        else:
+            emb = self.embedding(text)
+        return self.text_norm(emb)
+
+
+# ============================================================================
+# Shape-group Arabic character embedding
+# ============================================================================
+# Letters that share a base glyph shape and differ only by dot count/position.
+_ARABIC_SHAPE_GROUPS = [
+    "بتثني",   # ba/ta/tha/nun/ya family
+    "جحخ",     # jim/ha/kha
+    "دذ",      # dal/thal
+    "رز",      # ra/zay
+    "سش",      # sin/shin
+    "صض",      # sad/dad
+    "طظ",      # ta/dha
+    "عغ",      # ain/ghain
+    "فق",      # fa/qaf
+]
+
+def _build_shape_group_table(vocab_size, embedding_dim, seed=9012):
+    """Return weight tensor with shape-aware vectors for Arabic letters."""
+    g      = torch.Generator().manual_seed(seed)
+    weight = torch.randn(vocab_size, embedding_dim, generator=g)
+    weight = torch.nn.functional.normalize(weight, p=2, dim=-1)
+    weight[1].zero_()  # PAD
+
+    # Within each group, blend all members toward their centroid so
+    # visually similar letters have similar (not identical) embeddings.
+    char_to_idx = lambda c: (ord(c) % (vocab_size - 2)) + 2
+    for group in _ARABIC_SHAPE_GROUPS:
+        indices = [char_to_idx(c) for c in group]
+        group_vecs = weight[indices]                        # [G, D]
+        centroid   = torch.nn.functional.normalize(
+            group_vecs.mean(0, keepdim=True), p=2, dim=-1  # [1, D]
+        )
+        # 50% blend: individual direction + group direction
+        blended = torch.nn.functional.normalize(
+            0.5 * group_vecs + 0.5 * centroid, p=2, dim=-1
+        )
+        weight[indices] = blended
+    return weight
+
+
+class ShapeGroupCharEmbedding(nn.Module):
+    """
+    Shape-aware Arabic character embedding. Letters that share a base glyph
+    (e.g. ب ت ث) receive embeddings that are blended toward a shared group
+    centroid so that visually-confusable pairs are closer in embedding space.
+
+    This provides a softer target than pure orthogonal embeddings and may help
+    the model learn coarser glyph structure before fine-grained dot distinction.
+    """
+
+    SPACE_TOKEN_IDX = 0
+    PAD_TOKEN_IDX   = 1
+
+    def __init__(self, embedding_dim, vocab_size=65536, seed=9012):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.vocab_size    = vocab_size
+
+        weight = _build_shape_group_table(vocab_size, embedding_dim, seed)
+
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.embedding.weight = nn.Parameter(weight, requires_grad=False)
+
+        self.text_norm = nn.LayerNorm(embedding_dim)
+        for p in self.text_norm.parameters():
+            p.requires_grad_(False)
+
+    def char_to_index(self, char):
+        if char == " ":
+            return self.SPACE_TOKEN_IDX
+        return (ord(char) % (self.vocab_size - 2)) + 2
+
+    def text_to_indices(self, text):
+        indices = [self.char_to_index(c) for c in text]
+        return torch.tensor(indices, dtype=torch.long, device=device)
+
+    def get_space_embedding(self):
+        return self.embedding.weight[self.SPACE_TOKEN_IDX]
+
+    def forward(self, text):
+        if isinstance(text, str):
+            idx = self.text_to_indices(text).to(device)
+            emb = self.embedding(idx)
+        elif isinstance(text, (list, tuple)):
+            batch_indices = [self.text_to_indices(t) for t in text]
+            if not batch_indices:
+                return torch.empty(0, 0, self.embedding_dim, device=device)
+            padded = nn.utils.rnn.pad_sequence(
+                batch_indices, batch_first=True,
+                padding_value=self.PAD_TOKEN_IDX,
+            )
+            emb = self.embedding(padded.to(device))
+        else:
+            emb = self.embedding(text)
+        return self.text_norm(emb)
+
+
+# ============================================================================
 # Factory
 # ============================================================================
 def build_text_embedder(kind=None, embedding_dim=None, **kwargs):
     """
     Construct the text embedder selected in Parameters.py.
 
-    Args:
-        kind:           'char' (default learned char table, frozen) or
-                        'fasttext' (facebook/fasttext-ar-vectors, frozen).
-                        Falls back to Parameters.text_embedder_type if None.
-        embedding_dim:  Output dim for the rest of the network. Falls back to
-                        Parameters.vector_size if None.
-        **kwargs:       Forwarded to the chosen embedder.
+    Supported kinds:
+        'char'               — learned frozen char table (random init).
+        'fasttext'           — facebook/fasttext-ar-vectors (frozen, linguistic).
+        'orthogonal_char'    — deterministic unit-sphere random vectors (frozen).
+                               Best baseline for visual alignment: no linguistic bias.
+        'random_frozen_char' — raw Gaussian random frozen vectors (ablation).
+        'shape_group_char'   — shape-aware Arabic embeddings (visually-confusable
+                               letters blended toward shared centroid).
+
+    Falls back to Parameters.text_embedder_type / vector_size if args are None.
     """
     if kind is None or embedding_dim is None:
         # Local import avoids a circular-import risk at module load time.
@@ -350,9 +580,17 @@ def build_text_embedder(kind=None, embedding_dim=None, **kwargs):
             cache_dir=text_embedder_cache_dir,
             **kwargs,
         )
+    elif kind in ("orthogonal_char", "orthogonal"):
+        model = OrthogonalCharEmbedding(embedding_dim=embedding_dim, **kwargs)
+    elif kind in ("random_frozen_char", "random_frozen"):
+        model = RandomFrozenCharEmbedding(embedding_dim=embedding_dim, **kwargs)
+    elif kind in ("shape_group_char", "shape_group"):
+        model = ShapeGroupCharEmbedding(embedding_dim=embedding_dim, **kwargs)
     else:
         raise ValueError(
-            f"Unknown text_embedder_type {kind!r}. Expected 'char' or 'fasttext'."
+            f"Unknown text_embedder_type {kind!r}. "
+            f"Expected 'char', 'fasttext', 'orthogonal_char', "
+            f"'random_frozen_char', or 'shape_group_char'."
         )
     return model
 

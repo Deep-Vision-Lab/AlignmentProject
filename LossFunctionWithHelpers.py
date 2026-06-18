@@ -243,17 +243,36 @@ class ContrastiveSoftDTW(nn.Module):
             per_neg_loss = torch.clamp(raw_loss, min=0.0)
             margin_loss = per_neg_loss.mean()
 
+            # InfoNCE over DTW costs: treat [pos, neg_1…neg_K] as a classification problem.
+            # Lower cost = better alignment, so logit = -cost / tau.
+            all_norm_costs = torch.cat([pos_norm.view(1), neg_norms], dim=0)
+            _tau = getattr(sys.modules[__name__], 'contrastive_infonce_tau', 0.1)
+            infonce_logits = -all_norm_costs / max(_tau, 1e-6)
+            infonce_loss = F.cross_entropy(
+                infonce_logits.unsqueeze(0),
+                torch.zeros(1, dtype=torch.long, device=infonce_logits.device),
+            )
+
+            _loss_type = getattr(sys.modules[__name__], 'contrastive_loss_type', 'margin')
+            _lambda    = getattr(sys.modules[__name__], 'lambda_infonce', 1.0)
+
+            if _loss_type == 'infonce':
+                base_loss = infonce_loss
+            elif _loss_type == 'hybrid':
+                base_loss = margin_loss + _lambda * infonce_loss
+            else:  # 'margin' (default)
+                base_loss = margin_loss
+
             # Optional diagonal prior per sample
             if self.diagonal_prior_weight > 0:
                 diag_loss = self._diagonal_prior_loss(sim_pos.unsqueeze(0))
-                sample_loss = margin_loss + self.diagonal_prior_weight * diag_loss
+                sample_loss = base_loss + self.diagonal_prior_weight * diag_loss
             else:
                 diag_loss = sim_pos.new_tensor(0.0)
-                sample_loss = margin_loss
+                sample_loss = base_loss
 
             losses.append(sample_loss)
 
-            all_norm_costs = torch.cat([pos_norm.view(1), neg_norms], dim=0)
             pos_prob = torch.softmax(-all_norm_costs, dim=0)[0]
 
             pos_cost_values.append(pos_cost.detach())

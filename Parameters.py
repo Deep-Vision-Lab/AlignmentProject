@@ -10,6 +10,38 @@ batch_size = 32
 epochs = 100
 learning_rate = 1e-4
 
+
+def _env_value(name, default):
+    value = os.environ.get(name)
+    if value is None or value == '':
+        return default
+    return value
+
+
+def _env_float(name, default):
+    return float(_env_value(name, default))
+
+
+def _env_bool(name, default):
+    value = str(_env_value(name, default)).lower()
+    return value in ('true', '1', 't', 'yes')
+
+# ============================================================================
+# Alignment Loss Selection
+# ============================================================================
+alignment_loss_type = str(_env_value('ALIGNMENT_LOSS_TYPE', 'd3tw')).lower()
+
+# CTC / hybrid weights and settings
+ctc_weight = _env_float('CTC_WEIGHT', 1.0)
+d3tw_weight = _env_float('D3TW_WEIGHT', 1.0)
+ctc_blank_token = _env_value('CTC_BLANK_TOKEN', '<ctc_blank>')
+ctc_zero_infinity = _env_bool('CTC_ZERO_INFINITY', True)
+ctc_reduction = str(_env_value('CTC_REDUCTION', 'mean')).lower()
+contrastive_ctc_loss_type = str(_env_value('CONTRASTIVE_CTC_LOSS_TYPE', 'infonce')).lower()
+contrastive_ctc_tau = _env_float('CONTRASTIVE_CTC_TAU', 0.1)
+contrastive_ctc_margin = _env_float('CONTRASTIVE_CTC_MARGIN', 0.2)
+save_ctc_vocab = _env_bool('SAVE_CTC_VOCAB', True)
+
 # Data parameters
 # For clean synthetic data, window_size=16 works well.
 # For Arabic manuscripts, consider window_size=32 or multi_scale_window_sizes=[32, 16]
@@ -22,9 +54,15 @@ num_samples = 50000  # [10000, 50000, 100000]
 # ============================================================================
 # Text Embedding Selection
 # ============================================================================
-# 'char'     -> learned per-character table (random init, frozen by default).
-# 'fasttext' -> facebook/fasttext-ar-vectors pretrained vectors (frozen).
-#               Adds a small Linear adapter if fastText's 300-d != vector_size.
+# 'char'               -> learned per-character table (random init, frozen).
+# 'fasttext'           -> facebook/fasttext-ar-vectors pretrained vectors (frozen).
+#                         Linguistic vectors; may not align with visual features.
+# 'orthogonal_char'    -> deterministic unit-sphere random vectors (frozen).
+#                         Recommended visual-alignment baseline: no linguistic
+#                         bias, each character gets a unique stable direction.
+# 'random_frozen_char' -> raw Gaussian random frozen vectors (ablation).
+# 'shape_group_char'   -> shape-aware Arabic embeddings; visually-confusable
+#                         letters (ب/ت/ث/ن/ي) blended toward a group centroid.
 text_embedder_type = os.environ.get('TEXT_EMBEDDER', 'fasttext').lower()
 # Optional local path to a fasttext model.bin. If None, the file is
 # auto-downloaded from HuggingFace (facebook/fasttext-ar-vectors).
@@ -108,8 +146,21 @@ dtw_band_penalty_weight = 2.0
 # Dropout for regularization
 model_dropout = 0.3
 
-# Negative sampling
-num_negatives = 10  # Number of negative samples per positive pair (in-batch negatives)
+# ============================================================================
+# Negative Sampling Mode
+# ============================================================================
+# 'mixed'              -> current default: crop/drop/shuffle + random in-batch.
+# 'length_controlled'  -> word-shuffle + same-length alternatives. Prevents
+#                         length bias where shorter negatives get unfairly lower
+#                         DTW cost. Use for fig05/fig08 evaluation.
+# 'dot_confusion'      -> substitutes visually-confusable Arabic letters
+#                         (ب↔ت↔ث, ج↔ح↔خ, etc.). Hardest negatives for Arabic.
+# 'same_length_random' -> random Arabic chars preserving exact char count.
+# 'shuffle_only'       -> word shuffle only (no crop/drop).
+negative_mode = os.environ.get('NEGATIVE_MODE', 'mixed').lower()
+
+# Number of negative samples per positive pair (in-batch negatives)
+num_negatives = 10
 
 # Needleman-Wunsch / alignment scoring parameters
 matchScore    =  10    # reward for a matching character/patch
@@ -126,6 +177,37 @@ gapScore      = -10    # penalty per gap step
 multi_scale_enabled = os.environ.get('MULTI_SCALE_ENABLED', 'False').lower() in ('true', '1', 't')
 multi_scale_window_sizes = [32, 16]   # [macro_window, micro_window]  — see window_size comment above
 multi_scale_alpha = 0.5              # Weight for micro-scale loss (start at 0.5, tune later)
+
+# ============================================================================
+# Blank / Transition Token Support
+# ============================================================================
+# use_blank_token=True prepends/appends a boundary space so alignment can
+# assign background windows to a non-character anchor (like CTC blank).
+# blank_insert_mode controls where blanks are inserted beyond boundaries:
+#   'boundaries'    -> only at start and end of transcript (default, safe).
+#   'between_words' -> also between every word.
+#   'none'          -> disabled (fall back to existing pad_text behaviour).
+use_blank_token    = False
+blank_insert_mode  = "boundaries"  # boundaries | between_words | none
+
+# ============================================================================
+# Loss Type
+# ============================================================================
+# 'margin'   -> current: triplet margin loss on normalised DTW costs.
+# 'infonce'  -> InfoNCE cross-entropy over [pos, neg_1…neg_K] costs.
+# 'hybrid'   -> margin + lambda_infonce * infonce (recommended).
+contrastive_loss_type   = os.environ.get('LOSS_TYPE', 'margin').lower()
+contrastive_infonce_tau = 0.1   # temperature for InfoNCE softmax
+lambda_infonce          = 1.0   # weight for InfoNCE term in hybrid mode
+
+# ============================================================================
+# DTW Cost Normalization
+# ============================================================================
+# Normalising by the longer sequence (max_len) is the standard approach.
+# Using 'path_len' normalises by the actual aligned path length instead —
+# fairer when positive and negative transcripts have very different lengths.
+# Options: 'max_len' (current) | 'path_len' | 'text_len' | 'image_len'
+dtw_cost_normalization = os.environ.get('DTW_NORM', 'max_len').lower()
 
 # Debugging and visualization parameters
 debug = True # Set to True to save patches and heatmaps for debugging

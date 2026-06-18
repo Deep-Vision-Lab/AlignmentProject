@@ -28,7 +28,7 @@ from utils.model_loading import load_image_model, load_text_embedder
 from utils.sample_data import make_sample, FIG_STRIDE, FIG_NUM_PATCHES, get_fig_windows, pad_text
 from utils.similarity import (compute_image_embeddings, compute_text_embeddings,
                                compute_text_image_similarity)
-from utils.alignment import hard_dtw_path_restricted
+from utils.alignment import hard_dtw_path_restricted, compute_path_quality
 from utils.plotting import setup_paper_style, save_figure, plot_similarity_with_path, attach_window_strip, arabic_label
 
 
@@ -83,6 +83,7 @@ def draw_success_failure(checkpoint, sentence_indices, case_labels,
         text_padded = pad_text(text)
         sim_np = _get_sim(model, text_embedder, img_tensor, text_padded, device)
         path   = hard_dtw_path_restricted(sim_np)
+        pq     = compute_path_quality(sim_np, path)
         chars  = list(text_padded)
         color  = _CASE_COLORS.get(label.lower(), "#555555")
 
@@ -137,7 +138,11 @@ def draw_success_failure(checkpoint, sentence_indices, case_labels,
             rows_p = [p[0] for p in path]
             cols_p = [p[1] for p in path]
             ax_path.plot(cols_p, rows_p, color="red", linewidth=1.5, alpha=0.85)
-        ax_path.set_title(f"Path overlay\nNote: {note[:35]}", fontsize=9, pad=3)
+        ax_path.set_title(
+            f"Path overlay  |  gap={pq['path_gap']:+.3f}\n"
+            f"Note: {note[:35]}",
+            fontsize=9, pad=3,
+        )
         ax_path.set_yticks(range(T_s))
         ax_path.set_yticklabels(y_labels, fontsize=7)
         ax_path.tick_params(labelsize=6)

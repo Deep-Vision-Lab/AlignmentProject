@@ -55,7 +55,8 @@ def draw_cnn_vs_bilstm(checkpoint_cnn, checkpoint_bilstm,
     text_embedder    = load_text_embedder(device)
     chars            = list(text_padded)
 
-    if checkpoint_cnn and os.path.isfile(checkpoint_cnn):
+    random_cnn = not (checkpoint_cnn and os.path.isfile(checkpoint_cnn))
+    if not random_cnn:
         model_cnn = load_image_model(checkpoint_cnn, device,
                                      use_bilstm_override=False,
                                      stride_override=FIG_STRIDE)
@@ -99,6 +100,16 @@ def draw_cnn_vs_bilstm(checkpoint_cnn, checkpoint_bilstm,
         f"CNN-only vs CNN+BiLSTM  |  \"{arabic_label(text)}\"",
         fontsize=12, fontweight="bold",
     )
+    if random_cnn:
+        axes[0].text(
+            0.5, 1.02,
+            "⚠ CNN-only random init — not a fair trained ablation",
+            transform=axes[0].transAxes,
+            ha="center", va="bottom", fontsize=8,
+            color="#c0392b", style="italic",
+            bbox=dict(boxstyle="round,pad=0.3", fc="#fdecea", ec="#c0392b", alpha=0.85),
+        )
+
     wins = get_fig_windows(sentence_idx)
     plt.tight_layout()
     fig.subplots_adjust(bottom=max(0.08, 0.9 / fig.get_figheight()))
