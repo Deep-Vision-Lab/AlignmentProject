@@ -1,0 +1,372 @@
+------------------------------------
+Mon 22 Jun 2026 19:15:38 IDT
+SLURM_JOBID:		18325672
+SLURM_JOB_NODELIST:	ise-6000-05
+SLURM_SCRATCH_DIR:	/scratch/ahmedmas/18325672
+Allocated Resouces:	cpu - 8 / mem -  MB / gpu - 1
+SLURM_GPU_INDEX:	5
+Running as ahmedmas from jelsana account with jelsana QOS
+------------------------------------
+wandb: Currently logged in as: ahmedmas (ahmedmas-ben-gurion-university-of-the-negev). Use `wandb login --relogin` to force relogin
+wandb: Using wandb-core as the SDK backend.  Please refer to https://wandb.me/wandb-core for more information.
+wandb: Tracking run with wandb version 0.19.2
+wandb: Run data is saved locally in /home/ahmedmas/BGU-Lab/AlignmentProject_clone/wandb/run-20260622_191546-1fk6r9l2
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run d3tw_charpool_w16_nooverlap
+wandb: ⭐️ View project at https://wandb.ai/ahmedmas-ben-gurion-university-of-the-negev/AlignmentProject
+wandb: 🚀 View run at https://wandb.ai/ahmedmas-ben-gurion-university-of-the-negev/AlignmentProject/runs/1fk6r9l2
+Using window_size=16, stride=16, window_overlap_mode=no_overlap
+Loading dataset from: DataSet/Synthetic_Arabic_100000
+[TEXT EMBED] type=orthogonal_char  out_dim=128  (frozen)
+[EmbeddingModel] Using BiLSTM encoder (layers=2, hidden_dim=128)
+[CHAR POOL] char bank size=37 first 20 chars=[' ', 'ء', 'آ', 'أ', 'ؤ', 'إ', 'ئ', 'ا', 'ب', 'ة', 'ت', 'ث', 'ج', 'ح', 'خ', 'د', 'ذ', 'ر', 'ز', 'س'] embedding dim=128 method=hard_mean saved=/home/ahmedmas/BGU-Lab/AlignmentProject_clone/Weights/d3tw_charpool_w16_nooverlap/char_bank.json
+
+=== Architecture: Image Encoder (ResNet34 + bilstm) ===
+[OPT 1] job_id: d3tw_charpool_w16_nooverlap
+[OPT 2] Sequence Encoder: bilstm
+[OPT 2a] BiLSTM layers=2 hidden_dim=128
+[OPT 3] Sliding Window: window_overlap_mode=no_overlap window_size=16 stride=16 stride_ratio=0.5
+[OPT 4] In-Batch Negatives: num_negatives=10
+[OPT 5] alignment_loss_type=d3tw_char_pool
+[OPT 7] D3TW: weight=1.0
+[OPT 7a] Cross-Attention: enabled=False type=text_to_image weight=0.0
+[OPT 7b] Character Pool: weight=0.5 tau=0.07 warmup=5 ramp=10 method=hard_mean detach_alignment=True skip_spaces=False min_windows=1
+[SPEED] AMP=True (dtype=torch.float16)  Profiling=False
+[RUN]   lr=0.0001  epochs=50
+[FINETUNE] Dataset override: DataSet/Synthetic_Arabic_100000
+================================================
+
+Epoch 1 - Soft-DTW gamma: 0.100000
+[FlipCheck] Saved debug_flip/patch0_after_flip.png  ← should show the FIRST Arabic character (rightmost in image)
+[FlipCheck] Saved debug_flip/patchLast_after_flip.png ← should show the LAST Arabic character (leftmost in image)
+[FlipCheck] Saved debug_flip/full_image_ref.png        ← original image for comparison
+[FlipCheck] tokens_a shape after flip: torch.Size([32, 64, 3, 128, 16])  (B, num_patches, C, H, W)
+[SANITY] sim_pos_list[0].shape = torch.Size([65, 128])  (expected [65, 128])
+[DTW] raw: pos=481.8  neg=473.5  |  prob: pos_wins=0.086 (goal→1.0)  |  gap=0.065  loss=10.0648
+[CHAR POOL GROUPS] Transcript:  بدون أدنى شك القصص المسلية ممتعة جدا للأطفال بنظرة متفائلة دائم 
+char[0]=' ' windows=[0]
+char[1]='ب' windows=[1]
+char[2]='د' windows=[2]
+char[3]='و' windows=[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+char[4]='ن' windows=[16, 17]
+char[5]=' ' windows=[18]
+char[6]='أ' windows=[19]
+char[7]='د' windows=[20]
+char[8]='ن' windows=[21]
+char[9]='ى' windows=[22]
+char[10]=' ' windows=[23]
+char[11]='ش' windows=[24]
+char[12]='ك' windows=[25]
+char[13]=' ' windows=[26]
+char[14]='ا' windows=[27]
+char[15]='ل' windows=[28]
+char[16]='ق' windows=[29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57]
+char[17]='ص' windows=[58]
+char[18]='ص' windows=[59]
+char[19]=' ' windows=[60]
+char[20]='ا' windows=[61, 62, 63]
+char[21]='ل' windows=[64]
+char[22]='م' windows=[65]
+char[23]='س' windows=[66]
+char[24]='ل' windows=[67]
+char[25]='ي' windows=[68, 69, 70]
+char[26]='ة' windows=[71]
+char[27]=' ' windows=[72]
+char[28]='م' windows=[73, 74, 75]
+char[29]='م' windows=[76]
+char[30]='ت' windows=[77]
+char[31]='ع' windows=[78]
+char[32]='ة' windows=[79]
+char[33]=' ' windows=[80]
+char[34]='ج' windows=[81]
+char[35]='د' windows=[82]
+char[36]='ا' windows=[83, 84]
+char[37]=' ' windows=[85]
+char[38]='ل' windows=[86]
+char[39]='ل' windows=[87]
+char[40]='أ' windows=[88]
+char[41]='ط' windows=[89]
+char[42]='ف' windows=[90]
+char[43]='ا' windows=[91, 92, 93]
+char[44]='ل' windows=[94]
+char[45]=' ' windows=[95]
+char[46]='ب' windows=[96]
+char[47]='ن' windows=[97, 98, 99]
+char[48]='ظ' windows=[100]
+char[49]='ر' windows=[101]
+char[50]='ة' windows=[102]
+char[51]=' ' windows=[103]
+char[52]='م' windows=[104]
+char[53]='ت' windows=[105]
+char[54]='ف' windows=[106]
+char[55]='ا' windows=[107, 108]
+char[56]='ئ' windows=[109]
+char[57]='ل' windows=[110]
+char[58]='ة' windows=[111]
+char[59]=' ' windows=[112]
+char[60]='د' windows=[113]
+char[61]='ا' windows=[114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124]
+char[62]='ئ' windows=[125]
+char[63]='م' windows=[126]
+char[64]=' ' windows=[127]
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=10.0648  d3tw_cost_pos=481.7708  d3tw_cost_neg=473.4732  total_loss=10.0648  char_pool_loss=3.8162  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.0736  char_pool_acc_top5=0.2625  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 1, Loss: 10.0648
+Epoch 1, Batch 2, Loss: 10.0070
+Epoch 1, Batch 3, Loss: 9.9383
+Epoch 1, Batch 4, Loss: 9.8183
+Epoch 1, Batch 5, Loss: 9.6433
+Epoch 1, Batch 6, Loss: 9.4310
+Epoch 1, Batch 7, Loss: 9.1819
+Epoch 1, Batch 8, Loss: 8.9692
+Epoch 1, Batch 9, Loss: 8.6971
+Epoch 1, Batch 10, Loss: 8.4238
+[DTW] raw: pos=354.8  neg=582.0  |  prob: pos_wins=0.367 (goal→1.0)  |  gap=-1.775  loss=8.2250
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=8.2250  d3tw_cost_pos=354.8064  d3tw_cost_neg=582.0073  total_loss=8.2250  char_pool_loss=1.7315  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.5841  char_pool_acc_top5=0.7817  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 11, Loss: 8.2250
+Epoch 1, Batch 12, Loss: 8.0327
+Epoch 1, Batch 13, Loss: 7.7048
+Epoch 1, Batch 14, Loss: 7.5121
+Epoch 1, Batch 15, Loss: 7.2892
+Epoch 1, Batch 16, Loss: 7.0280
+Epoch 1, Batch 17, Loss: 6.8203
+Epoch 1, Batch 18, Loss: 6.6499
+Epoch 1, Batch 19, Loss: 6.5114
+Epoch 1, Batch 20, Loss: 6.2058
+[DTW] raw: pos=293.5  neg=796.7  |  prob: pos_wins=0.819 (goal→1.0)  |  gap=-3.932  loss=6.0683
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=6.0683  d3tw_cost_pos=293.4506  d3tw_cost_neg=796.6979  total_loss=6.0683  char_pool_loss=1.1610  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.7572  char_pool_acc_top5=0.9111  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 21, Loss: 6.0683
+Epoch 1, Batch 22, Loss: 5.9250
+Epoch 1, Batch 23, Loss: 5.7593
+Epoch 1, Batch 24, Loss: 5.7112
+Epoch 1, Batch 25, Loss: 5.5985
+Epoch 1, Batch 26, Loss: 5.3737
+Epoch 1, Batch 27, Loss: 5.2854
+Epoch 1, Batch 28, Loss: 5.2065
+Epoch 1, Batch 29, Loss: 5.0303
+Epoch 1, Batch 30, Loss: 4.8994
+[DTW] raw: pos=268.9  neg=919.8  |  prob: pos_wins=0.928 (goal→1.0)  |  gap=-5.086  loss=4.9143
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=4.9143  d3tw_cost_pos=268.8526  d3tw_cost_neg=919.8209  total_loss=4.9143  char_pool_loss=0.9405  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.8308  char_pool_acc_top5=0.9514  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 31, Loss: 4.9143
+Epoch 1, Batch 32, Loss: 4.8642
+Epoch 1, Batch 33, Loss: 4.6582
+Epoch 1, Batch 34, Loss: 4.6244
+Epoch 1, Batch 35, Loss: 4.6118
+Epoch 1, Batch 36, Loss: 4.4932
+Epoch 1, Batch 37, Loss: 4.4174
+Epoch 1, Batch 38, Loss: 4.3223
+Epoch 1, Batch 39, Loss: 4.3725
+Epoch 1, Batch 40, Loss: 4.0539
+[DTW] raw: pos=251.3  neg=1008.4  |  prob: pos_wins=0.965 (goal→1.0)  |  gap=-5.915  loss=4.0851
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=4.0851  d3tw_cost_pos=251.3153  d3tw_cost_neg=1008.4142  total_loss=4.0851  char_pool_loss=0.9357  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.8620  char_pool_acc_top5=0.9577  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 41, Loss: 4.0851
+Epoch 1, Batch 42, Loss: 4.0737
+Epoch 1, Batch 43, Loss: 4.1603
+Epoch 1, Batch 44, Loss: 4.0448
+Epoch 1, Batch 45, Loss: 4.0053
+Epoch 1, Batch 46, Loss: 3.9727
+Epoch 1, Batch 47, Loss: 3.9164
+Epoch 1, Batch 48, Loss: 3.8780
+Epoch 1, Batch 49, Loss: 3.7978
+Epoch 1, Batch 50, Loss: 3.8086
+[DTW] raw: pos=239.3  neg=1027.1  |  prob: pos_wins=0.972 (goal→1.0)  |  gap=-6.155  loss=3.8453
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=3.8453  d3tw_cost_pos=239.3253  d3tw_cost_neg=1027.1251  total_loss=3.8453  char_pool_loss=0.7537  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9005  char_pool_acc_top5=0.9692  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 51, Loss: 3.8453
+Epoch 1, Batch 52, Loss: 3.8738
+Epoch 1, Batch 53, Loss: 3.8358
+Epoch 1, Batch 54, Loss: 3.6034
+Epoch 1, Batch 55, Loss: 3.6893
+Epoch 1, Batch 56, Loss: 3.5639
+Epoch 1, Batch 57, Loss: 3.6650
+Epoch 1, Batch 58, Loss: 3.6391
+Epoch 1, Batch 59, Loss: 3.5117
+Epoch 1, Batch 60, Loss: 3.5437
+[DTW] raw: pos=236.2  neg=1054.0  |  prob: pos_wins=0.977 (goal→1.0)  |  gap=-6.389  loss=3.6109
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=3.6109  d3tw_cost_pos=236.1999  d3tw_cost_neg=1053.9934  total_loss=3.6109  char_pool_loss=0.6706  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9043  char_pool_acc_top5=0.9769  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 61, Loss: 3.6109
+Epoch 1, Batch 62, Loss: 3.5422
+Epoch 1, Batch 63, Loss: 3.3956
+Epoch 1, Batch 64, Loss: 3.4697
+Epoch 1, Batch 65, Loss: 3.4040
+Epoch 1, Batch 66, Loss: 3.4210
+Epoch 1, Batch 67, Loss: 3.3850
+Epoch 1, Batch 68, Loss: 3.2801
+Epoch 1, Batch 69, Loss: 3.3323
+Epoch 1, Batch 70, Loss: 3.3728
+[DTW] raw: pos=218.3  neg=1075.0  |  prob: pos_wins=0.983 (goal→1.0)  |  gap=-6.694  loss=3.3064
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=3.3064  d3tw_cost_pos=218.2717  d3tw_cost_neg=1075.0493  total_loss=3.3064  char_pool_loss=0.5510  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9231  char_pool_acc_top5=0.9784  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 71, Loss: 3.3064
+Epoch 1, Batch 72, Loss: 3.4521
+Epoch 1, Batch 73, Loss: 3.2998
+Epoch 1, Batch 74, Loss: 3.2969
+Epoch 1, Batch 75, Loss: 3.3460
+Epoch 1, Batch 76, Loss: 3.3099
+Epoch 1, Batch 77, Loss: 3.4096
+Epoch 1, Batch 78, Loss: 3.2677
+Epoch 1, Batch 79, Loss: 3.3114
+Epoch 1, Batch 80, Loss: 3.2512
+[DTW] raw: pos=218.7  neg=1079.1  |  prob: pos_wins=0.983 (goal→1.0)  |  gap=-6.721  loss=3.2786
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=3.2786  d3tw_cost_pos=218.7500  d3tw_cost_neg=1079.0763  total_loss=3.2786  char_pool_loss=0.5335  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9308  char_pool_acc_top5=0.9798  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 81, Loss: 3.2786
+Epoch 1, Batch 82, Loss: 3.0616
+Epoch 1, Batch 83, Loss: 3.1390
+Epoch 1, Batch 84, Loss: 3.3268
+Epoch 1, Batch 85, Loss: 3.1755
+Epoch 1, Batch 86, Loss: 3.1457
+Epoch 1, Batch 87, Loss: 3.2368
+Epoch 1, Batch 88, Loss: 3.1317
+Epoch 1, Batch 89, Loss: 3.2128
+Epoch 1, Batch 90, Loss: 3.2355
+[DTW] raw: pos=217.3  neg=1077.6  |  prob: pos_wins=0.983 (goal→1.0)  |  gap=-6.722  loss=3.2783
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=3.2783  d3tw_cost_pos=217.2648  d3tw_cost_neg=1077.6406  total_loss=3.2783  char_pool_loss=0.4817  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9399  char_pool_acc_top5=0.9808  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 91, Loss: 3.2783
+Epoch 1, Batch 92, Loss: 3.2122
+Epoch 1, Batch 93, Loss: 3.1047
+Epoch 1, Batch 94, Loss: 3.0902
+Epoch 1, Batch 95, Loss: 3.1082
+Epoch 1, Batch 96, Loss: 3.0907
+Epoch 1, Batch 97, Loss: 3.1216
+Epoch 1, Batch 98, Loss: 3.0150
+Epoch 1, Batch 99, Loss: 3.0492
+Epoch 1, Batch 100, Loss: 3.1179
+[DTW] raw: pos=209.9  neg=1091.1  |  prob: pos_wins=0.985 (goal→1.0)  |  gap=-6.885  loss=3.1154
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=3.1154  d3tw_cost_pos=209.9182  d3tw_cost_neg=1091.1394  total_loss=3.1154  char_pool_loss=0.4232  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9452  char_pool_acc_top5=0.9875  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 101, Loss: 3.1154
+Epoch 1, Batch 102, Loss: 3.0750
+Epoch 1, Batch 103, Loss: 3.0210
+Epoch 1, Batch 104, Loss: 3.1397
+Epoch 1, Batch 105, Loss: 3.0716
+Epoch 1, Batch 106, Loss: 3.1447
+Epoch 1, Batch 107, Loss: 3.1313
+Epoch 1, Batch 108, Loss: 3.0184
+Epoch 1, Batch 109, Loss: 3.0407
+Epoch 1, Batch 110, Loss: 3.0517
+[DTW] raw: pos=207.9  neg=1094.2  |  prob: pos_wins=0.986 (goal→1.0)  |  gap=-6.925  loss=3.0754
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=3.0754  d3tw_cost_pos=207.9012  d3tw_cost_neg=1094.2407  total_loss=3.0754  char_pool_loss=0.4316  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9428  char_pool_acc_top5=0.9865  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 111, Loss: 3.0754
+Epoch 1, Batch 112, Loss: 3.0863
+Epoch 1, Batch 113, Loss: 2.9486
+Epoch 1, Batch 114, Loss: 2.9986
+Epoch 1, Batch 115, Loss: 2.9253
+Epoch 1, Batch 116, Loss: 2.9728
+Epoch 1, Batch 117, Loss: 3.0482
+Epoch 1, Batch 118, Loss: 2.8997
+Epoch 1, Batch 119, Loss: 2.8827
+Epoch 1, Batch 120, Loss: 2.9219
+[DTW] raw: pos=202.0  neg=1101.2  |  prob: pos_wins=0.987 (goal→1.0)  |  gap=-7.026  loss=2.9744
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=2.9744  d3tw_cost_pos=201.9512  d3tw_cost_neg=1101.2197  total_loss=2.9744  char_pool_loss=0.2911  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9644  char_pool_acc_top5=0.9894  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 121, Loss: 2.9744
+Epoch 1, Batch 122, Loss: 2.9982
+Epoch 1, Batch 123, Loss: 3.0403
+Epoch 1, Batch 124, Loss: 2.9762
+Epoch 1, Batch 125, Loss: 2.8936
+Epoch 1, Batch 126, Loss: 2.8086
+Epoch 1, Batch 127, Loss: 2.9286
+Epoch 1, Batch 128, Loss: 2.7989
+Epoch 1, Batch 129, Loss: 2.8694
+Epoch 1, Batch 130, Loss: 2.8859
+[DTW] raw: pos=191.1  neg=1104.6  |  prob: pos_wins=0.988 (goal→1.0)  |  gap=-7.137  loss=2.8633
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=2.8633  d3tw_cost_pos=191.1309  d3tw_cost_neg=1104.6147  total_loss=2.8633  char_pool_loss=0.2061  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9702  char_pool_acc_top5=0.9947  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 131, Loss: 2.8633
+Epoch 1, Batch 132, Loss: 2.8736
+Epoch 1, Batch 133, Loss: 2.9220
+Epoch 1, Batch 134, Loss: 2.9107
+Epoch 1, Batch 135, Loss: 3.0272
+Epoch 1, Batch 136, Loss: 2.9055
+Epoch 1, Batch 137, Loss: 2.9006
+Epoch 1, Batch 138, Loss: 2.7696
+Epoch 1, Batch 139, Loss: 2.8897
+Epoch 1, Batch 140, Loss: 2.9184
+[DTW] raw: pos=197.4  neg=1104.1  |  prob: pos_wins=0.987 (goal→1.0)  |  gap=-7.084  loss=2.9158
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=2.9158  d3tw_cost_pos=197.3521  d3tw_cost_neg=1104.1226  total_loss=2.9158  char_pool_loss=0.2875  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9601  char_pool_acc_top5=0.9909  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 141, Loss: 2.9158
+Epoch 1, Batch 142, Loss: 2.8599
+Epoch 1, Batch 143, Loss: 2.9186
+Epoch 1, Batch 144, Loss: 2.7993
+Epoch 1, Batch 145, Loss: 2.8306
+Epoch 1, Batch 146, Loss: 2.8361
+Epoch 1, Batch 147, Loss: 2.9676
+Epoch 1, Batch 148, Loss: 2.8070
+Epoch 1, Batch 149, Loss: 2.8270
+Epoch 1, Batch 150, Loss: 2.8356
+[DTW] raw: pos=194.4  neg=1103.4  |  prob: pos_wins=0.989 (goal→1.0)  |  gap=-7.101  loss=2.8985
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=2.8985  d3tw_cost_pos=194.4310  d3tw_cost_neg=1103.4131  total_loss=2.8985  char_pool_loss=0.3210  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9639  char_pool_acc_top5=0.9865  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 151, Loss: 2.8985
+Epoch 1, Batch 152, Loss: 2.8614
+Epoch 1, Batch 153, Loss: 2.8218
+Epoch 1, Batch 154, Loss: 2.9013
+Epoch 1, Batch 155, Loss: 2.8598
+Epoch 1, Batch 156, Loss: 2.7559
+Epoch 1, Batch 157, Loss: 2.9513
+Epoch 1, Batch 158, Loss: 2.7985
+Epoch 1, Batch 159, Loss: 2.7428
+Epoch 1, Batch 160, Loss: 2.8943
+[DTW] raw: pos=187.8  neg=1100.5  |  prob: pos_wins=0.988 (goal→1.0)  |  gap=-7.130  loss=2.8697
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=2.8697  d3tw_cost_pos=187.7909  d3tw_cost_neg=1100.4612  total_loss=2.8697  char_pool_loss=0.2247  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9692  char_pool_acc_top5=0.9918  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 161, Loss: 2.8697
+Epoch 1, Batch 162, Loss: 2.8250
+Epoch 1, Batch 163, Loss: 2.8658
+Epoch 1, Batch 164, Loss: 2.8604
+Epoch 1, Batch 165, Loss: 2.8758
+Epoch 1, Batch 166, Loss: 2.8517
+Epoch 1, Batch 167, Loss: 2.7607
+Epoch 1, Batch 168, Loss: 2.8523
+Epoch 1, Batch 169, Loss: 2.7470
+Epoch 1, Batch 170, Loss: 2.6357
+[DTW] raw: pos=190.6  neg=1124.1  |  prob: pos_wins=0.990 (goal→1.0)  |  gap=-7.293  loss=2.7072
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=2.7072  d3tw_cost_pos=190.6050  d3tw_cost_neg=1124.0798  total_loss=2.7072  char_pool_loss=0.2003  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9736  char_pool_acc_top5=0.9923  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 171, Loss: 2.7072
+Epoch 1, Batch 172, Loss: 2.8083
+Epoch 1, Batch 173, Loss: 2.7002
+Epoch 1, Batch 174, Loss: 2.6815
+Epoch 1, Batch 175, Loss: 2.7786
+Epoch 1, Batch 176, Loss: 2.6509
+Epoch 1, Batch 177, Loss: 2.7297
+Epoch 1, Batch 178, Loss: 2.6473
+Epoch 1, Batch 179, Loss: 2.7121
+Epoch 1, Batch 180, Loss: 2.7608
+[DTW] raw: pos=191.1  neg=1111.3  |  prob: pos_wins=0.988 (goal→1.0)  |  gap=-7.189  loss=2.8107
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=2.8107  d3tw_cost_pos=191.0547  d3tw_cost_neg=1111.2769  total_loss=2.8107  char_pool_loss=0.2070  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9755  char_pool_acc_top5=0.9928  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 181, Loss: 2.8107
+Epoch 1, Batch 182, Loss: 2.7365
+Epoch 1, Batch 183, Loss: 2.7208
+Epoch 1, Batch 184, Loss: 2.7606
+Epoch 1, Batch 185, Loss: 2.7692
+Epoch 1, Batch 186, Loss: 2.7787
+Epoch 1, Batch 187, Loss: 2.7610
+Epoch 1, Batch 188, Loss: 2.6919
+Epoch 1, Batch 189, Loss: 2.6826
+Epoch 1, Batch 190, Loss: 2.8727
+[DTW] raw: pos=185.3  neg=1122.5  |  prob: pos_wins=0.990 (goal→1.0)  |  gap=-7.322  loss=2.6777
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=2.6777  d3tw_cost_pos=185.2818  d3tw_cost_neg=1122.5254  total_loss=2.6777  char_pool_loss=0.1870  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9760  char_pool_acc_top5=0.9933  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 191, Loss: 2.6777
+Epoch 1, Batch 192, Loss: 2.8057
+Epoch 1, Batch 193, Loss: 2.7621
+Epoch 1, Batch 194, Loss: 2.6650
+Epoch 1, Batch 195, Loss: 2.7462
+Epoch 1, Batch 196, Loss: 2.8547
+Epoch 1, Batch 197, Loss: 2.8798
+Epoch 1, Batch 198, Loss: 2.6646
+Epoch 1, Batch 199, Loss: 2.6707
+Epoch 1, Batch 200, Loss: 2.6098
+[DTW] raw: pos=194.1  neg=1116.4  |  prob: pos_wins=0.988 (goal→1.0)  |  gap=-7.205  loss=2.7948
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=2.7948  d3tw_cost_pos=194.1152  d3tw_cost_neg=1116.3724  total_loss=2.7948  char_pool_loss=0.2270  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9726  char_pool_acc_top5=0.9904  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 201, Loss: 2.7948
+Epoch 1, Batch 202, Loss: 2.7481
+Epoch 1, Batch 203, Loss: 2.6868
+Epoch 1, Batch 204, Loss: 2.6694
+Epoch 1, Batch 205, Loss: 2.6642
+Epoch 1, Batch 206, Loss: 2.7024
+Epoch 1, Batch 207, Loss: 2.7083
+Epoch 1, Batch 208, Loss: 2.7439
+Epoch 1, Batch 209, Loss: 2.7196
+Epoch 1, Batch 210, Loss: 2.7302
+[DTW] raw: pos=183.9  neg=1131.7  |  prob: pos_wins=0.991 (goal→1.0)  |  gap=-7.405  loss=2.5952
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=2.5952  d3tw_cost_pos=183.9341  d3tw_cost_neg=1131.7383  total_loss=2.5952  char_pool_loss=0.1809  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.9764  char_pool_acc_top5=0.9933  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 211, Loss: 2.5952
+Epoch 1, Batch 212, Loss: 2.6558
+Epoch 1, Batch 213, Loss: 2.6579
+Epoch 1, Batch 214, Loss: 2.6875
+Epoch 1, Batch 215, Loss: 2.7096
+Epoch 1, Batch 216, Loss: 2.6650
+Epoch 1, Batch 217, Loss: 2.7153
+[2026-06-22T19:28:33.691] error: *** JOB 18325672 ON ise-6000-05 CANCELLED AT 2026-06-22T19:28:33 DUE to SIGNAL Terminated ***

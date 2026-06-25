@@ -56,8 +56,8 @@ Output directory structure (default: paper_figures/outputs/feature_concentration
 """
 
 import argparse
-import json
 import os
+import subprocess
 import sys
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -79,9 +79,13 @@ sys.path.insert(0, _HERE)
 
 from Parameters import window_size, stride_ratio, lang, vector_size
 from embeddingModel import sliding_window
-from utils.model_loading import load_image_model, load_text_embedder, load_sample
+from utils.model_loading import (
+    load_image_model, load_text_embedder, load_sample,
+    load_cross_attention_module, load_char_bank_if_available,
+)
 from utils.similarity import compute_text_embeddings, compute_text_image_similarity
 from utils.alignment import hard_dtw_path_restricted
+from utils.char_pooling import compute_d3tw_char_pool_for_sample, char_pool_predictions
 from utils.plotting import setup_paper_style, arabic_label
 from utils.gradcam import (
     GradCAMExtractor, compute_saliency, compute_occlusion,
@@ -107,8 +111,10 @@ def parse_args():
                    help="Path to trained model checkpoint (.pth)")
     p.add_argument("--data_dir",    required=True,
                    help="Dataset root containing images/ and texts/")
-    p.add_argument("--sample_idx",  type=int, required=True,
-                   help="0-based index of the sample to analyse")
+    p.add_argument("--sample_idx",  type=int, default=None,
+                   help="0-based index of one sample to analyse")
+    p.add_argument("--sample_indices", type=int, nargs="+", default=[0, 1, 2],
+                   help="Multiple sample indices to analyse when --sample_idx is omitted")
     # Output
     p.add_argument("--output_dir",  default="paper_figures/outputs/feature_concentration")
     p.add_argument("--dpi",         type=int,  default=300)
@@ -121,8 +127,8 @@ def parse_args():
     p.add_argument("--method",       default="gradcam",
                    choices=["gradcam", "saliency", "occlusion", "all"],
                    help="Explanation method(s) to run")
-    p.add_argument("--target_mode",  default="aligned_char",
-                   choices=["aligned_char", "max_similarity", "embedding_norm"],
+    p.add_argument("--target_mode",  default="pooled_char",
+                   choices=["window", "pooled_char", "aligned_char", "max_similarity", "embedding_norm"],
                    help="How to compute the target score for back-propagation")
     # Occlusion options
     p.add_argument("--occlusion_patch_size", type=int, default=8)
@@ -141,8 +147,11 @@ def parse_args():
                         "'foreground': highest foreground pixel ratio. "
                         "'high_score': highest target similarity score.")
     # Misc
-    p.add_argument("--save_metadata", action="store_true", default=True)
+    p.add_argument("--save_metadata", action="store_true", default=False,
+                   help="Deprecated; figure scripts are PDF-only by default.")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--use_cross_attention_for_figures", action="store_true",
+                   help="Use saved cross-attention similarity for D3TW alignment diagnostics.")
     return p.parse_args()
 
 
@@ -268,10 +277,9 @@ def save_context_image(img_tensor, windows_flipped, selected, total_windows,
     base = os.path.join(output_dir, f"sample_{sample_idx}_selected_windows_context")
     _save_arr(img_np, base, dpi)
     plt.tight_layout()
-    fig.savefig(base + "_annotated.png", dpi=dpi, bbox_inches="tight")
-    fig.savefig(base + "_annotated.pdf",          bbox_inches="tight")
+    fig.savefig(base + "_annotated.pdf", bbox_inches="tight")
     plt.close(fig)
-    print(f"  Saved {base}_annotated.{{png,pdf}}")
+    print(f"  Saved {base}_annotated.pdf")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -279,7 +287,7 @@ def save_context_image(img_tensor, windows_flipped, selected, total_windows,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def make_score_fn(target_mode, w_start, w_end,
-                   text_emb=None, char_idx=None):
+                   text_emb=None, char_idx=None, assignment=None):
     """
     Return score_fn: Callable(output [1, S, D]) → differentiable scalar.
 
@@ -287,9 +295,27 @@ def make_score_fn(target_mode, w_start, w_end,
     We apply L2 normalisation inside score_fn to be consistent with the rest
     of the codebase (NormalizeFuncs.normalize_func with l2 type).
     """
-    if target_mode == "embedding_norm":
+    if target_mode in ("embedding_norm", "window"):
+        # This is a single-window/subfeature collapse, not D3TW character pooling.
+        # Character pooling requires the transcript-dependent assignment A [T,S].
         def _fn(output):
             return output[0, w_start:w_end, :].mean(0).norm()
+        return _fn
+
+    if target_mode == "pooled_char":
+        assert text_emb is not None and char_idx is not None and assignment is not None, \
+            "pooled_char requires text_emb, char_idx, and D3TW assignment"
+        char_vec = text_emb[char_idx].detach()   # [D], L2-normalised
+        assignment_row = assignment[char_idx].detach()  # [S]
+
+        def _fn(output):
+            visual = F.normalize(output[0].float(), p=2, dim=-1)  # [S, D]
+            weights = assignment_row.to(visual.device, visual.dtype)
+            weights = weights / (weights.sum() + 1e-8)
+            # This is the actual D3TW-guided character pooling for target j:
+            # pooled_j = normalized_assignment[j] @ visual_emb.
+            pooled_j = F.normalize(weights.unsqueeze(0) @ visual, p=2, dim=-1)
+            return F.cosine_similarity(pooled_j, char_vec.unsqueeze(0)).squeeze()
         return _fn
 
     if target_mode == "max_similarity":
@@ -321,7 +347,9 @@ def make_score_fn(target_mode, w_start, w_end,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_alignment(img_tensor, model, text_padded, text_embedder,
-                       total_windows, subfeat, device):
+                       total_windows, subfeat, device,
+                       cross_attention_module=None,
+                       cross_attention_weight=0.0):
     """
     DTW-based window → character alignment.
 
@@ -346,7 +374,11 @@ def compute_alignment(img_tensor, model, text_padded, text_embedder,
         img_win = img_feat
     img_win = F.normalize(img_win, p=2, dim=-1)
 
-    sim    = compute_text_image_similarity(text_emb, img_win)   # [T, W]
+    sim    = compute_text_image_similarity(
+        text_emb, img_win,
+        cross_attention_module=cross_attention_module,
+        cross_attention_weight=cross_attention_weight,
+    )   # [T, W]
     sim_np = sim.detach().cpu().numpy()
 
     path = hard_dtw_path_restricted(sim_np)
@@ -382,10 +414,7 @@ def _heatmap_rgb(hm, cmap="jet"):
 
 
 def _save_arr(arr, base_path, dpi):
-    """Save [H, W, 3] uint8 array as PNG and PDF."""
-    pil = PILImage.fromarray(arr)
-    pil.save(base_path + ".png")
-    # PDF via matplotlib for vector-compatible output
+    """Save [H, W, 3] uint8 array as PDF only."""
     fig, ax = plt.subplots(
         figsize=(max(2, arr.shape[1] / 50), max(2, arr.shape[0] / 50))
     )
@@ -405,7 +434,8 @@ def analyse_window(w, model, img_tensor, windows_flipped,
                     text_emb, win_to_char, chars,
                     occ_patch, occ_stride, occ_fill,
                     device, output_dir, sample_idx, dpi, save_metadata,
-                    gradcam_layer="layer3", select_mode="evenly_spaced"):
+                    gradcam_layer="layer3", select_mode="evenly_spaced",
+                    assignment=None, groups=None, top5_by_char=None):
     """
     Run all requested explanation methods for window w and write outputs.
 
@@ -424,6 +454,17 @@ def analyse_window(w, model, img_tensor, windows_flipped,
 
     # ── Resolve aligned character ─────────────────────────────────────────────
     char_idx    = win_to_char.get(w) if win_to_char else None
+    # Restricted DTW paths do not necessarily visit every image window.  For
+    # evenly-spaced/foreground selection, use the character assigned to the
+    # nearest visited window instead of failing on an otherwise valid window.
+    if target_mode in ("aligned_char", "pooled_char") and char_idx is None and win_to_char:
+        nearest_aligned_window = min(win_to_char, key=lambda wi: abs(wi - w))
+        char_idx = win_to_char[nearest_aligned_window]
+    elif target_mode in ("aligned_char", "pooled_char") and char_idx is None and chars:
+        # The restricted path can be empty when the transcript is longer than
+        # the window sequence.  Retain a monotonic character target by mapping
+        # this window onto the transcript diagonal.
+        char_idx = round(w * (len(chars) - 1) / max(total_windows - 1, 1))
     target_char = chars[char_idx] if (chars and char_idx is not None) else "?"
 
     # ── Score function ────────────────────────────────────────────────────────
@@ -431,6 +472,7 @@ def analyse_window(w, model, img_tensor, windows_flipped,
         target_mode, w_start, w_end,
         text_emb=text_emb,
         char_idx=char_idx,
+        assignment=assignment,
     )
 
     # ── Extract pixel patch (model-order window) ─────────────────────────────
@@ -548,6 +590,17 @@ def analyse_window(w, model, img_tensor, windows_flipped,
         "gradcam_layer":      gradcam_layer,
         "method_outputs":     method_meta,
     }
+    if target_mode == "pooled_char" and char_idx is not None:
+        assigned = groups[char_idx] if groups and char_idx < len(groups) else []
+        meta.update({
+            "assigned_windows": [int(i) for i in assigned],
+            "pooled_char_score": round(float(target_score), 6),
+            "top5_predictions": top5_by_char.get(char_idx) if top5_by_char else None,
+            "note": (
+                "target_mode=pooled_char uses pooled_j = normalized_assignment[j] "
+                "@ visual_emb, not a single-window target."
+            ),
+        })
 
     return meta, patch_disp, maps
 
@@ -689,6 +742,33 @@ def main():
 
     os.chdir(_PROJ_ROOT)
     os.makedirs(args.output_dir, exist_ok=True)
+    if args.sample_idx is None:
+        for idx in args.sample_indices:
+            cmd = [
+                sys.executable, __file__,
+                "--checkpoint", args.checkpoint,
+                "--data_dir", args.data_dir,
+                "--sample_idx", str(idx),
+                "--output_dir", args.output_dir,
+                "--dpi", str(args.dpi),
+                "--num_windows", str(args.num_windows),
+                "--method", args.method,
+                "--target_mode", args.target_mode,
+                "--occlusion_patch_size", str(args.occlusion_patch_size),
+                "--occlusion_stride", str(args.occlusion_stride),
+                "--occlusion_value", args.occlusion_value,
+                "--gradcam_layer", args.gradcam_layer,
+                "--select_mode", args.select_mode,
+                "--device", args.device,
+            ]
+            if args.window_indices:
+                cmd.extend(["--window_indices", *[str(w) for w in args.window_indices]])
+            if args.use_cross_attention_for_figures:
+                cmd.append("--use_cross_attention_for_figures")
+            print(f"[fig12] Running sample {idx}")
+            subprocess.run(cmd, check=True)
+        return
+
     device = torch.device(args.device)
 
     print(f"\n[fig12] Sample idx  : {args.sample_idx}")
@@ -703,6 +783,10 @@ def main():
     print("[fig12] Loading model …")
     model = load_image_model(args.checkpoint, device)
     model.eval()
+    cross_module, cross_weight = load_cross_attention_module(
+        args.checkpoint, device,
+        use_for_figures=args.use_cross_attention_for_figures,
+    )
     model_window_size = int(getattr(model, "window_size", window_size))
     model_stride = int(getattr(model, "stride", _STRIDE))
     print(f"  model window_size={model_window_size} stride={model_stride}")
@@ -749,18 +833,58 @@ def main():
     text_emb   = None
     win_to_char = {}
     chars       = []
+    assignment  = None
+    groups      = None
+    top5_by_char = {}
 
-    if args.target_mode in ("aligned_char", "max_similarity"):
+    if args.target_mode == "pooled_char":
+        print("[fig12] Computing D3TW-guided pooled-character target …")
+        chars = list(text_padded)
+        bank_emb, char_to_idx, idx_to_char = load_char_bank_if_available(args.checkpoint, device)
+        if bank_emb is not None and char_to_idx is not None and all(ch in char_to_idx for ch in chars):
+            text_emb = bank_emb[torch.tensor([char_to_idx[ch] for ch in chars], device=device)]
+        else:
+            print("  [fig12] Warning: char bank unavailable/incomplete; falling back to text embedder.")
+            text_embedder = load_text_embedder(device)
+            text_emb = compute_text_embeddings(text_embedder, text_padded)
+        with torch.no_grad():
+            visual_emb = F.normalize(model(img_tensor)[0].float(), p=2, dim=-1)
+            pool_result = compute_d3tw_char_pool_for_sample(
+                visual_emb=visual_emb,
+                text_emb=text_emb,
+                transcript_chars=chars,
+                detach_assignment=True,
+            )
+            assignment = pool_result["assignment"]
+            groups = pool_result["groups"]
+            predictions, _ = char_pool_predictions(
+                pooled_visual=pool_result["pooled_visual"],
+                transcript_chars=chars,
+                char_bank_embeddings=bank_emb,
+                char_to_idx=char_to_idx,
+                idx_to_char=idx_to_char,
+                valid_mask=pool_result["valid_mask"],
+                topk=5,
+            )
+            if predictions:
+                top5_by_char = {row["char_index"]: row["top5_pred"] for row in predictions}
+        for ci, visual_indices in enumerate(groups):
+            for visual_idx in visual_indices:
+                raw_w = min(total_windows - 1, max(0, int(visual_idx) // max(subfeat, 1)))
+                win_to_char.setdefault(raw_w, ci)
+    elif args.target_mode in ("aligned_char", "max_similarity"):
         print("[fig12] Loading text embedder …")
         text_embedder = load_text_embedder(device)
         print("[fig12] Computing alignment …")
         _, _, win_to_char, chars, text_emb = compute_alignment(
             img_tensor, model, text_padded, text_embedder,
             total_windows, subfeat, device,
+            cross_attention_module=cross_module,
+            cross_attention_weight=cross_weight,
         )
         if args.target_mode == "max_similarity":
             win_to_char = {}   # alignment not used for char targeting in max_sim mode
-    elif args.target_mode == "embedding_norm":
+    elif args.target_mode in ("embedding_norm", "window"):
         chars = list(text_padded)   # still useful for display
 
     # ── 6. Select windows ──────────────────────────────────────────────────────
@@ -797,6 +921,9 @@ def main():
             text_emb=text_emb,
             win_to_char=win_to_char,
             chars=chars,
+            assignment=assignment,
+            groups=groups,
+            top5_by_char=top5_by_char,
             occ_patch=args.occlusion_patch_size,
             occ_stride=args.occlusion_stride,
             occ_fill=args.occlusion_value,
@@ -820,48 +947,6 @@ def main():
         dpi=args.dpi,
         ckpt_name=os.path.basename(args.checkpoint),
     )
-
-    # ── 9. Sample-level summary metadata ──────────────────────────────────────
-    if False and args.save_metadata:
-        summary = {
-            "sample_idx":    args.sample_idx,
-            "transcript":    text_padded,
-            "raw_text":      raw_text,
-            "checkpoint":    args.checkpoint,
-            "data_dir":      args.data_dir,
-            "method":        args.method,
-            "target_mode":   args.target_mode,
-            "model_config": {
-                "window_size":    model_window_size,
-                "stride":         model_stride,
-                "stride_ratio":   float(model_stride / max(model_window_size, 1)),
-                "vector_size":    vector_size,
-                "lang":           lang,
-                "use_flip":       _IS_ARABIC,
-                "total_windows":  total_windows,
-                "subfeat_per_window": subfeat,
-                "total_seq_len":  total_seq,
-            },
-            "selected_windows": selected,
-            "window_results": [m for m, _, _ in results],
-            "generated_files": {
-                "summary_png": os.path.join(
-                    args.output_dir,
-                    f"fig12_feature_concentration_sample_{args.sample_idx}.png"
-                ),
-                "summary_pdf": os.path.join(
-                    args.output_dir,
-                    f"fig12_feature_concentration_sample_{args.sample_idx}.pdf"
-                ),
-            },
-        }
-        sum_path = os.path.join(
-            args.output_dir,
-            f"sample_{args.sample_idx}_feature_concentration_summary.json"
-        )
-        with open(sum_path, "w", encoding="utf-8") as f:
-            json.dump(summary, f, ensure_ascii=False, indent=2)
-        print(f"  Saved {sum_path}")
 
     print("\n[fig12] Done.")
 

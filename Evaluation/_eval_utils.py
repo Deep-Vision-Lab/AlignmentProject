@@ -42,23 +42,44 @@ from soft_dtw_cuda import compute_softdtw
 
 def load_image_model(weights_path: str, dev: str = device) -> EmbeddingModel:
     """Load EmbeddingModel from a checkpoint file."""
-    model = EmbeddingModel(
-        window_size=window_size,
-        stride=window_size,  # Now uses calculated overlap stride
-        vector_size=vector_size,
-        device=device,
-        # OPTIMIZATION 1 & 3: Enable BiLSTM and Positional Encoding
-        use_bilstm=use_bilstm,
-        use_positional_encoding=use_positional_encoding,
-        positional_encoding_type=positional_encoding_type,
-        bilstm_layers=bilstm_layers,
-        dropout=model_dropout
-    ).to(dev)
     checkpoint = torch.load(weights_path, map_location=dev)
-    if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['state_dict'])
+    cfg = checkpoint.get("model_config", {}) if isinstance(checkpoint, dict) else {}
+    ws = int(cfg.get("window_size", window_size))
+    stride = int(cfg.get("stride", max(1, int(ws * stride_ratio))))
+    seq_type = str(cfg.get(
+        "sequence_encoder_type",
+        "bilstm" if cfg.get("use_bilstm", use_bilstm) else "none",
+    )).lower()
+    model = EmbeddingModel(
+        window_size=ws,
+        stride=stride,
+        vector_size=int(cfg.get("vector_size", vector_size)),
+        device=dev,
+        use_flip=(str(cfg.get("lang", lang)).lower() == "arabic"),
+        sequence_encoder_type=seq_type,
+        use_bilstm=(seq_type == "bilstm"),
+        bilstm_layers=int(cfg.get("bilstm_layers", bilstm_layers)),
+        bilstm_hidden_dim=cfg.get("bilstm_hidden_dim", bilstm_hidden_dim),
+        dropout=model_dropout,
+        transformer_num_layers=int(cfg.get("transformer_num_layers", transformer_num_layers)),
+        transformer_num_heads=int(cfg.get("transformer_num_heads", transformer_num_heads)),
+        transformer_ff_dim=int(cfg.get("transformer_ff_dim", transformer_ff_dim)),
+        transformer_dropout=float(cfg.get("transformer_dropout", transformer_dropout)),
+        transformer_activation=cfg.get("transformer_activation", transformer_activation),
+        transformer_norm_first=bool(cfg.get("transformer_norm_first", transformer_norm_first)),
+        transformer_positional_encoding=cfg.get(
+            "transformer_positional_encoding", transformer_positional_encoding
+        ),
+        transformer_max_len=int(cfg.get("transformer_max_len", transformer_max_len)),
+    ).to(dev)
+    if isinstance(checkpoint, dict) and 'image_model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['image_model_state_dict'], strict=False)
+    elif isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+    elif isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['state_dict'], strict=False)
     else:
-        model.load_state_dict(checkpoint)
+        model.load_state_dict(checkpoint, strict=False)
     model.eval()
     return model
 

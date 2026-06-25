@@ -11,7 +11,7 @@ This is the key evaluation figure showing that after training the model can
 align two manuscript images without any transcript information.
 
 Output:
-  fig10_image_only_alignment_{idx_a}_{idx_b}.png / .pdf
+  fig10_image_only_alignment_{idx_a}_{idx_b}.pdf
 """
 import argparse
 import os
@@ -37,7 +37,11 @@ from utils.plotting import setup_paper_style, save_figure, plot_similarity_with_
 
 
 def _collapse(emb):
-    """Mean-pool sub-features: [FIG_NUM_PATCHES*k, D] → [FIG_NUM_PATCHES, D]."""
+    """Mean-pool sub-features: [FIG_NUM_PATCHES*k, D] → [FIG_NUM_PATCHES, D].
+
+    This collapse is not D3TW character pooling. Character pooling requires a
+    transcript-dependent assignment A [T,S].
+    """
     S = emb.shape[0]
     if S != FIG_NUM_PATCHES and S % FIG_NUM_PATCHES == 0:
         subfeat = S // FIG_NUM_PATCHES
@@ -82,9 +86,8 @@ def draw_image_only_alignment(checkpoint, pair_idx, output_dir, device):
     im = plot_similarity_with_path(
         ax_sim, sim_np, path,
         title=(
-            f"Image-Image Similarity + D3TW Alignment\n"
-            f"Shared content creates bright diagonal regions; "
-            f"NW path follows them"
+            f"Image-only alignment uses the visual branch without transcript input\n"
+            f"D3TW-guided character pooling is a training-time supervision mechanism"
         ),
         xlabel=f"Image B windows  (S={S_b})",
         ylabel=f"Image A windows  (S={S_a})",
@@ -112,16 +115,22 @@ def main():
         description="Image-only NW alignment between two shared-content line images (fig10)."
     )
     parser.add_argument("--checkpoint",  required=True)
-    parser.add_argument("--pair_idx",    type=int, default=0,
+    parser.add_argument("--pair_idx",    type=int, default=None,
                         help=f"Index into FIG10_SENTENCE_PAIRS "
                              f"(0..{len(FIG10_SENTENCE_PAIRS)-1})")
+    parser.add_argument("--pair_indices", type=int, nargs="+", default=[0, 1, 2],
+                        help="Multiple image-pair indices to render.")
     parser.add_argument("--output_dir",  default="paper_figures/outputs")
     parser.add_argument("--device",      default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--use_cross_attention_for_figures", action="store_true",
+                        help="Accepted for consistency; ignored for image-only figures.")
     args = parser.parse_args()
 
     os.chdir(_PROJ_ROOT)
-    draw_image_only_alignment(args.checkpoint, args.pair_idx,
-                               args.output_dir, args.device)
+    indices = [args.pair_idx] if args.pair_idx is not None else args.pair_indices
+    for idx in indices:
+        draw_image_only_alignment(args.checkpoint, idx,
+                                  args.output_dir, args.device)
 
 
 if __name__ == "__main__":

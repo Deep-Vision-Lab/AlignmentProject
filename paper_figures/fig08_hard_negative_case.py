@@ -8,11 +8,10 @@ Shows one image line alongside a ranked table of:
 Each row shows: rank | transcript | type | DTW cost | ✓ marker
 
 Output:
-  fig08_hard_negative_case_sample_{idx}.png / .pdf
+  fig08_hard_negative_case_sample_{idx}.pdf
   fig08_hard_negative_case_sample_{idx}.json
 """
 import argparse
-import json
 import os
 import sys
 
@@ -28,10 +27,13 @@ _PROJ_ROOT = os.path.dirname(_HERE)
 sys.path.insert(0, _PROJ_ROOT)
 sys.path.insert(0, _HERE)
 
-from utils.model_loading import (load_image_model, load_text_embedder, load_ctc_components)
+from utils.model_loading import (
+    load_image_model, load_text_embedder, load_ctc_components, load_char_bank_if_available,
+)
 from utils.sample_data import make_sample, ARABIC_SENTENCES, FIG_STRIDE, FIG_NUM_PATCHES, pad_text
 from utils.similarity import (compute_image_embeddings, compute_text_embeddings,
                                compute_text_image_similarity, compute_dtw_cost)
+from utils.char_pooling import compute_d3tw_char_pool_for_sample, char_pool_predictions
 from ctc_utils import compute_ctc_cost
 from utils.negatives import generate_hard_negatives
 from utils.plotting import setup_paper_style, save_figure, arabic_label
@@ -56,7 +58,7 @@ def _get_cost(text_embedder, img_emb, text, device,
 
 def draw_hard_negative_case(checkpoint, sentence_idx, num_negatives,
                              output_dir, device, negative_mode="length_controlled",
-                             cost_type="d3tw"):
+                             cost_type="d3tw", include_char_pool_stats=False):
     setup_paper_style()
 
     pil_img, text  = make_sample(sentence_idx, transform=False)
@@ -80,6 +82,32 @@ def draw_hard_negative_case(checkpoint, sentence_idx, num_negatives,
     rows = []
     pos_cost = _get_cost(text_embedder, img_emb, pad_text(text), device,
                          cost_type=cost_type, ctc_head=ctc_head, ctc_vocab=ctc_vocab)
+    char_pool_summary = {}
+    if include_char_pool_stats and cost_type == "d3tw":
+        try:
+            chars = list(pad_text(text))
+            txt_emb = compute_text_embeddings(text_embedder, pad_text(text))
+            pool_result = compute_d3tw_char_pool_for_sample(
+                visual_emb=img_emb,
+                text_emb=txt_emb,
+                transcript_chars=chars,
+                detach_assignment=True,
+            )
+            bank_emb, char_to_idx, idx_to_char = load_char_bank_if_available(checkpoint, device)
+            _, pred_stats = char_pool_predictions(
+                pool_result["pooled_visual"], chars, bank_emb, char_to_idx, idx_to_char,
+                valid_mask=pool_result["valid_mask"], topk=5,
+            )
+            counts = pool_result["counts"].detach().cpu().float().numpy()
+            char_pool_summary = {
+                "char_pool_top1": pred_stats["char_pool_top1"],
+                "char_pool_top5": pred_stats["char_pool_top5"],
+                "mean_windows_per_char": float(np.mean(counts)),
+                "min_windows_per_char": float(np.min(counts)),
+                "max_windows_per_char": float(np.max(counts)),
+            }
+        except Exception as exc:
+            char_pool_summary = {"char_pool_warning": str(exc)}
     rows.append({"text": text,       "type": "positive", "cost": pos_cost, "is_pos": True})
     for neg_text, neg_type in negs:
         nc = _get_cost(text_embedder, img_emb, pad_text(neg_text), device,
@@ -169,20 +197,8 @@ def draw_hard_negative_case(checkpoint, sentence_idx, num_negatives,
     save_figure(fig, output_dir, f"fig08_hard_negative_case_s{sentence_idx}")
     plt.close(fig)
 
-    os.makedirs(output_dir, exist_ok=True)
-    json_path = os.path.join(output_dir,
-                             f"fig08_hard_negative_case_s{sentence_idx}.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        summary = {
-            "cost_type": cost_type,
-            "mean_positive_cost": float(pos_cost),
-            "mean_negative_cost": float(np.mean([r["cost"] for r in valid if not r["is_pos"]])),
-            "top1_accuracy": float(1.0 if pos_rank == 1 else 0.0),
-            "positive_rank": int(pos_rank) if pos_rank is not None else None,
-            "rows": valid,
-        }
-        json.dump(summary, f, ensure_ascii=False, indent=2)
-    print(f"  Saved {json_path}")
+    if char_pool_summary:
+        print(f"  [fig08] char-pool stats: {char_pool_summary}")
 
 
 def main():
@@ -190,22 +206,33 @@ def main():
         description="Hard negative case study figure (fig08)."
     )
     parser.add_argument("--checkpoint",    required=True)
-    parser.add_argument("--sentence_idx",  type=int, default=0,
+    parser.add_argument("--sentence_idx",  type=int, default=None,
                         help="Index into the built-in Arabic sentence pool")
+    parser.add_argument("--sentence_indices", type=int, nargs="+", default=[0, 1, 2],
+                        help="Multiple built-in sentence indices to render.")
     parser.add_argument("--num_negatives",  type=int, default=5)
     parser.add_argument("--negative_mode",  default="length_controlled",
                         choices=["mixed", "length_controlled", "dot_confusion",
                                  "same_length_random", "shuffle_only"])
     parser.add_argument("--cost_type", default="d3tw", choices=["d3tw", "ctc"])
+    parser.add_argument("--include_char_pool_stats", action="store_true")
     parser.add_argument("--output_dir",    default="paper_figures/outputs")
     parser.add_argument("--device",        default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
     os.chdir(_PROJ_ROOT)
-    draw_hard_negative_case(args.checkpoint, args.sentence_idx,
-                             args.num_negatives, args.output_dir, args.device,
-                             negative_mode=args.negative_mode,
-                             cost_type=args.cost_type)
+    indices = [args.sentence_idx] if args.sentence_idx is not None else args.sentence_indices
+    for idx in indices:
+        draw_hard_negative_case(
+            args.checkpoint,
+            idx,
+            args.num_negatives,
+            args.output_dir,
+            args.device,
+            negative_mode=args.negative_mode,
+            cost_type=args.cost_type,
+            include_char_pool_stats=args.include_char_pool_stats,
+        )
 
 
 if __name__ == "__main__":

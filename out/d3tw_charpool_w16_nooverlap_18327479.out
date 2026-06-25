@@ -1,0 +1,132 @@
+------------------------------------
+Mon 22 Jun 2026 20:31:22 IDT
+SLURM_JOBID:		18327479
+SLURM_JOB_NODELIST:	ise-6000-05
+SLURM_SCRATCH_DIR:	/scratch/ahmedmas/18327479
+Allocated Resouces:	cpu - 6 / mem -  MB / gpu - 1
+SLURM_GPU_INDEX:	1
+Running as ahmedmas from jelsana account with normal QOS
+------------------------------------
+wandb: Currently logged in as: ahmedmas (ahmedmas-ben-gurion-university-of-the-negev). Use `wandb login --relogin` to force relogin
+wandb: Using wandb-core as the SDK backend.  Please refer to https://wandb.me/wandb-core for more information.
+wandb: - Waiting for wandb.init()...wandb: \ Waiting for wandb.init()...wandb: Tracking run with wandb version 0.19.2
+wandb: Run data is saved locally in /home/ahmedmas/BGU-Lab/AlignmentProject_clone/wandb/run-20260622_203130-vgf6ejgz
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run d3tw_charpool_w16_nooverlap
+wandb: ⭐️ View project at https://wandb.ai/ahmedmas-ben-gurion-university-of-the-negev/AlignmentProject
+wandb: 🚀 View run at https://wandb.ai/ahmedmas-ben-gurion-university-of-the-negev/AlignmentProject/runs/vgf6ejgz
+Using window_size=16, stride=16, window_overlap_mode=no_overlap
+Loading dataset from: DataSet/Synthetic_Arabic_100000
+[TEXT EMBED] type=orthogonal_char  out_dim=128  (frozen)
+[EmbeddingModel] Using BiLSTM encoder (layers=2, hidden_dim=128)
+[CHAR POOL] char bank size=37 first 20 chars=[' ', 'ء', 'آ', 'أ', 'ؤ', 'إ', 'ئ', 'ا', 'ب', 'ة', 'ت', 'ث', 'ج', 'ح', 'خ', 'د', 'ذ', 'ر', 'ز', 'س'] embedding dim=128 method=hard_mean saved=/home/ahmedmas/BGU-Lab/AlignmentProject_clone/Weights/d3tw_charpool_w16_nooverlap/char_bank.json
+
+=== Architecture: Image Encoder (ResNet34 + bilstm) ===
+[OPT 1] job_id: d3tw_charpool_w16_nooverlap
+[OPT 2] Sequence Encoder: bilstm
+[OPT 2a] BiLSTM layers=2 hidden_dim=128
+[OPT 3] Sliding Window: window_overlap_mode=no_overlap window_size=16 stride=16 stride_ratio=0.5
+[OPT 4] In-Batch Negatives: num_negatives=10
+[OPT 5] alignment_loss_type=d3tw_char_pool
+[OPT 7] D3TW: weight=1.0
+[OPT 7a] Cross-Attention: enabled=False type=text_to_image weight=0.0
+[OPT 7b] Character Pool: weight=0.5 tau=0.07 warmup=5 ramp=10 method=hard_mean detach_alignment=True skip_spaces=False min_windows=1
+[SPEED] AMP=True (dtype=torch.float16)  Profiling=False
+[RUN]   lr=0.0001  epochs=50
+[FINETUNE] Dataset override: DataSet/Synthetic_Arabic_100000
+================================================
+
+Epoch 1 - Soft-DTW gamma: 0.100000
+[FlipCheck] Saved debug_flip/patch0_after_flip.png  ← should show the FIRST Arabic character (rightmost in image)
+[FlipCheck] Saved debug_flip/patchLast_after_flip.png ← should show the LAST Arabic character (leftmost in image)
+[FlipCheck] Saved debug_flip/full_image_ref.png        ← original image for comparison
+[FlipCheck] tokens_a shape after flip: torch.Size([32, 64, 3, 128, 16])  (B, num_patches, C, H, W)
+[SANITY] sim_pos_list[0].shape = torch.Size([65, 128])  (expected [65, 128])
+[DTW] raw: pos=480.5  neg=479.1  |  prob: pos_wins=0.090 (goal→1.0)  |  gap=0.011  loss=10.0108
+[CHAR POOL GROUPS] Transcript:  الرياح الباردة تعصف في الشتاء القارس في بعض الأحيان في المساء ا 
+char[0]=' ' windows=[0]
+char[1]='ا' windows=[1, 2, 3]
+char[2]='ل' windows=[4]
+char[3]='ر' windows=[5]
+char[4]='ي' windows=[6]
+char[5]='ا' windows=[7]
+char[6]='ح' windows=[8, 9]
+char[7]=' ' windows=[10]
+char[8]='ا' windows=[11, 12]
+char[9]='ل' windows=[13]
+char[10]='ب' windows=[14, 15]
+char[11]='ا' windows=[16, 17]
+char[12]='ر' windows=[18]
+char[13]='د' windows=[19]
+char[14]='ة' windows=[20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41]
+char[15]=' ' windows=[42]
+char[16]='ت' windows=[43]
+char[17]='ع' windows=[44, 45]
+char[18]='ص' windows=[46, 47, 48, 49, 50, 51]
+char[19]='ف' windows=[52]
+char[20]=' ' windows=[53, 54]
+char[21]='ف' windows=[55]
+char[22]='ي' windows=[56]
+char[23]=' ' windows=[57, 58, 59, 60, 61]
+char[24]='ا' windows=[62, 63]
+char[25]='ل' windows=[64, 65]
+char[26]='ش' windows=[66]
+char[27]='ت' windows=[67]
+char[28]='ا' windows=[68, 69, 70, 71]
+char[29]='ء' windows=[72, 73]
+char[30]=' ' windows=[74]
+char[31]='ا' windows=[75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85]
+char[32]='ل' windows=[86]
+char[33]='ق' windows=[87]
+char[34]='ا' windows=[88]
+char[35]='ر' windows=[89]
+char[36]='س' windows=[90, 91, 92]
+char[37]=' ' windows=[93]
+char[38]='ف' windows=[94]
+char[39]='ي' windows=[95]
+char[40]=' ' windows=[96, 97]
+char[41]='ب' windows=[98]
+char[42]='ع' windows=[99, 100, 101]
+char[43]='ض' windows=[102]
+char[44]=' ' windows=[103]
+char[45]='ا' windows=[104]
+char[46]='ل' windows=[105]
+char[47]='أ' windows=[106, 107]
+char[48]='ح' windows=[108]
+char[49]='ي' windows=[109]
+char[50]='ا' windows=[110]
+char[51]='ن' windows=[111]
+char[52]=' ' windows=[112]
+char[53]='ف' windows=[113]
+char[54]='ي' windows=[114]
+char[55]=' ' windows=[115]
+char[56]='ا' windows=[116]
+char[57]='ل' windows=[117]
+char[58]='م' windows=[118]
+char[59]='س' windows=[119, 120]
+char[60]='ا' windows=[121]
+char[61]='ء' windows=[122]
+char[62]=' ' windows=[123]
+char[63]='ا' windows=[124, 125]
+char[64]=' ' windows=[126, 127]
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=10.0108  d3tw_cost_pos=480.5082  d3tw_cost_neg=479.1382  total_loss=10.0108  char_pool_loss=3.5374  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.1240  char_pool_acc_top5=0.3495  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 1, Loss: 10.0108
+Epoch 1, Batch 2, Loss: 9.9444
+Epoch 1, Batch 3, Loss: 9.8025
+Epoch 1, Batch 4, Loss: 9.5827
+Epoch 1, Batch 5, Loss: 9.3473
+Epoch 1, Batch 6, Loss: 9.0588
+Epoch 1, Batch 7, Loss: 8.8548
+Epoch 1, Batch 8, Loss: 8.4914
+Epoch 1, Batch 9, Loss: 8.3324
+Epoch 1, Batch 10, Loss: 8.1000
+[DTW] raw: pos=341.8  neg=616.0  |  prob: pos_wins=0.454 (goal→1.0)  |  gap=-2.143  loss=7.8571
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=7.8571  d3tw_cost_pos=341.7509  d3tw_cost_neg=616.0364  total_loss=7.8571  char_pool_loss=1.7824  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.5769  char_pool_acc_top5=0.7615  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 11, Loss: 7.8571
+Epoch 1, Batch 12, Loss: 7.5962
+Epoch 1, Batch 13, Loss: 7.3683
+Epoch 1, Batch 14, Loss: 7.0755
+Epoch 1, Batch 15, Loss: 6.9553
+Epoch 1, Batch 16, Loss: 6.7739
+Epoch 1, Batch 17, Loss: 6.5508
+[2026-06-22T20:32:45.114] error: *** JOB 18327479 ON ise-6000-05 CANCELLED AT 2026-06-22T20:32:45 DUE to SIGNAL Terminated ***

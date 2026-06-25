@@ -1,164 +1,200 @@
-"""
-fig09_embedding_space.py
-=========================
-Visualise the learned image-window embedding space via t-SNE / UMAP / PCA.
+"""Embedding-space visualization for raw windows or D3TW-pooled characters."""
 
-Two panels:
-  (a) Before training — random model embeddings
-  (b) After training  — trained model embeddings
-
-Points are coloured by sample id (or by aligned character if alignment path
-is computed — requires the text branch).
-
-Output:
-  fig09_embedding_space_before_after.png / .pdf
-"""
 import argparse
 import os
 import sys
 
-import numpy as np
-import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
 
-_HERE      = os.path.dirname(os.path.abspath(__file__))
-_PROJ_ROOT = os.path.dirname(_HERE)
-sys.path.insert(0, _PROJ_ROOT)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+sys.path.insert(0, _ROOT)
 sys.path.insert(0, _HERE)
 
-from utils.model_loading import load_image_model, load_random_model
-from utils.sample_data import make_sample, FIG_STRIDE
+from NormalizeFuncs import normalize_func
+from utils.char_pooling import compute_d3tw_char_pool_for_sample
+from utils.model_loading import (
+    load_char_bank_if_available,
+    load_image_model,
+    load_sample,
+    load_text_embedder,
+)
+from utils.sample_data import make_sample, pad_text
 from utils.similarity import compute_image_embeddings
 from utils.plotting import setup_paper_style, save_figure
 
 
-# ── Dimensionality reduction helper ──────────────────────────────────────────
-
-def _reduce(embeddings, method, n_components=2, seed=42):
-    """
-    Reduce [N, D] embeddings to [N, 2].
-
-    method: 'tsne' | 'umap' | 'pca'
-    Falls back: umap → tsne → pca
-    """
+def _reduce(embeddings, method, seed=42):
     method = method.lower()
-
-    if method == "umap":
-        try:
-            import umap
-            reducer = umap.UMAP(n_components=n_components, random_state=seed,
-                                n_neighbors=min(15, len(embeddings) - 1))
-            return reducer.fit_transform(embeddings)
-        except ImportError:
-            print("  [fig09] umap-learn not installed, falling back to t-SNE.")
-            method = "tsne"
-
+    if len(embeddings) < 3:
+        return np.zeros((len(embeddings), 2), dtype=np.float32)
     if method == "tsne":
         try:
             from sklearn.manifold import TSNE
-            perp = min(30, max(5, len(embeddings) // 5))
-            reducer = TSNE(n_components=n_components, random_state=seed,
-                           perplexity=perp, max_iter=1000, init="pca")
-            return reducer.fit_transform(embeddings)
-        except ImportError:
-            print("  [fig09] scikit-learn not installed — "
-                  "install with: pip install scikit-learn")
-            print("  [fig09] falling back to PCA (no dimensionality reduction needed).")
+            perplexity = min(30, max(2, len(embeddings) // 5))
+            return TSNE(
+                n_components=2,
+                random_state=seed,
+                perplexity=perplexity,
+                init="pca",
+                learning_rate="auto",
+            ).fit_transform(embeddings)
+        except Exception as exc:
+            print(f"  [fig09] t-SNE unavailable/failed ({exc}); falling back to PCA.")
             method = "pca"
-
-    # PCA fallback
+    if method == "umap":
+        try:
+            import umap
+            return umap.UMAP(
+                n_components=2,
+                random_state=seed,
+                n_neighbors=min(15, len(embeddings) - 1),
+            ).fit_transform(embeddings)
+        except Exception as exc:
+            print(f"  [fig09] UMAP unavailable/failed ({exc}); falling back to PCA.")
+            method = "pca"
     from sklearn.decomposition import PCA
-    reducer = PCA(n_components=n_components, random_state=seed)
-    return reducer.fit_transform(embeddings)
+    return PCA(n_components=2, random_state=seed).fit_transform(embeddings)
 
 
-# ── Embedding collection ──────────────────────────────────────────────────────
+def _sample(data_dir, idx):
+    if data_dir:
+        return load_sample(data_dir, idx, transform=True)
+    return make_sample(idx, transform=True)
+
+
+def _text_embeddings(chars, checkpoint, device):
+    bank_emb, char_to_idx, idx_to_char = load_char_bank_if_available(checkpoint, device)
+    if bank_emb is not None and char_to_idx is not None and all(ch in char_to_idx for ch in chars):
+        ids = torch.tensor([char_to_idx[ch] for ch in chars], device=device, dtype=torch.long)
+        return bank_emb[ids]
+    print("  [fig09] Warning: char bank unavailable/incomplete; falling back to text embedder.")
+    embedder = load_text_embedder(device)
+    with torch.no_grad():
+        return normalize_func(embedder("".join(chars)).to(device))
+
 
 @torch.no_grad()
-def collect_embeddings(model, num_samples, device):
-    """Return (all_window_vecs [N_total, D], sample_ids [N_total])."""
-    all_vecs, all_ids = [], []
-    for si in range(num_samples):
-        img_tensor, _ = make_sample(si)
-        emb = compute_image_embeddings(model, img_tensor, device)
-        all_vecs.append(emb.detach().cpu().numpy())
-        all_ids.extend([si] * emb.shape[0])
-    return np.vstack(all_vecs), np.array(all_ids)
+def collect_window_embeddings(model, num_samples, device, data_dir=None):
+    vectors, labels, metadata = [], [], []
+    for sample_idx in range(num_samples):
+        image, _ = _sample(data_dir, sample_idx)
+        emb = compute_image_embeddings(model, image, device)
+        vectors.append(emb.detach().cpu().numpy())
+        labels.extend([f"sample {sample_idx}"] * emb.shape[0])
+        metadata.extend([
+            {"sample_idx": sample_idx, "window_idx": int(i)}
+            for i in range(emb.shape[0])
+        ])
+    return np.vstack(vectors), labels, metadata
 
 
-# ── Drawing ───────────────────────────────────────────────────────────────────
+@torch.no_grad()
+def collect_pooled_char_embeddings(model, checkpoint, num_samples, device, data_dir=None):
+    vectors, labels, metadata = [], [], []
+    for sample_idx in range(num_samples):
+        image, text = _sample(data_dir, sample_idx)
+        chars = list(pad_text(text))
+        visual_emb = normalize_func(model(image.unsqueeze(0).to(device)).squeeze(0).float())
+        text_emb = _text_embeddings(chars, checkpoint, device)
+        result = compute_d3tw_char_pool_for_sample(
+            visual_emb=visual_emb,
+            text_emb=text_emb,
+            transcript_chars=chars,
+            detach_assignment=True,
+        )
+        pooled = result["pooled_visual"].detach().cpu().numpy()
+        vectors.append(pooled)
+        labels.extend(chars)
+        metadata.extend([
+            {
+                "sample_idx": int(sample_idx),
+                "char_idx": int(j),
+                "char": chars[j],
+                "assigned_windows": [int(i) for i in result["groups"][j]],
+                "num_windows": int(len(result["groups"][j])),
+            }
+            for j in range(len(chars))
+        ])
+    return np.vstack(vectors), labels, metadata
 
-def draw_embedding_space(checkpoint, num_samples, output_dir, device, method):
+
+def draw_embedding_space(
+    checkpoint,
+    num_samples,
+    output_dir,
+    device,
+    method,
+    embedding_level="pooled_char",
+    data_dir=None,
+):
     setup_paper_style()
+    device = torch.device(device)
+    model = load_image_model(checkpoint, device)
 
-    random_model  = load_random_model(device,    stride_override=FIG_STRIDE)
-    trained_model = load_image_model(checkpoint, device, stride_override=FIG_STRIDE)
+    if embedding_level == "pooled_char":
+        vectors, labels, metadata = collect_pooled_char_embeddings(
+            model, checkpoint, num_samples, device, data_dir=data_dir
+        )
+        title = "D3TW-pooled visual character vectors"
+        color_label = "true Arabic character"
+        stem = "fig09_embedding_space_pooled_char"
+    else:
+        vectors, labels, metadata = collect_window_embeddings(
+            model, num_samples, device, data_dir=data_dir
+        )
+        title = "Raw visual window embeddings"
+        color_label = "sample id"
+        stem = "fig09_embedding_space_window"
 
-    print(f"  Collecting embeddings (before) …")
-    vecs_before, ids_before = collect_embeddings(random_model,  num_samples, device)
-    print(f"  Collecting embeddings (after)  …")
-    vecs_after,  ids_after  = collect_embeddings(trained_model, num_samples, device)
+    print(f"  [fig09] Reducing {len(vectors)} {embedding_level} vectors with {method.upper()}")
+    projection = _reduce(vectors, method)
 
-    print(f"  Running {method.upper()} on {len(vecs_before)} points …")
-    proj_before = _reduce(vecs_before, method)
-    proj_after  = _reduce(vecs_after,  method)
+    unique_labels = list(dict.fromkeys(labels))
+    label_to_id = {label: idx for idx, label in enumerate(unique_labels)}
+    color_ids = np.array([label_to_id[label] for label in labels])
 
-    cmap   = plt.cm.tab20
-    n_samp = max(ids_before.max(), ids_after.max()) + 1
-    norm   = plt.Normalize(0, n_samp - 1)
-
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5.5),
-                             gridspec_kw={"wspace": 0.35})
-
-    for ax, proj, ids, title in [
-        (axes[0], proj_before, ids_before,
-         f"(a) Before Training\n({method.upper()} of random model embeddings)"),
-        (axes[1], proj_after,  ids_after,
-         f"(b) After Training\n({method.upper()} of trained model embeddings)"),
-    ]:
-        sc = ax.scatter(proj[:, 0], proj[:, 1],
-                        c=ids, cmap=cmap, norm=norm,
-                        s=8, alpha=0.55, linewidths=0)
-        ax.set_title(title, fontsize=10)
-        ax.set_xlabel(f"{method.upper()} dim 1")
-        ax.set_ylabel(f"{method.upper()} dim 2")
-        ax.tick_params(labelsize=7)
-
-    cbar = fig.colorbar(
-        plt.cm.ScalarMappable(norm=norm, cmap=cmap),
-        ax=axes.ravel().tolist(),
-        fraction=0.015, pad=0.02,
+    fig, ax = plt.subplots(figsize=(12, 9))
+    scatter = ax.scatter(
+        projection[:, 0],
+        projection[:, 1],
+        c=color_ids,
+        cmap="tab20",
+        s=14 if embedding_level == "pooled_char" else 8,
+        alpha=0.75,
+        linewidths=0,
     )
-    cbar.set_label("Sample ID", fontsize=9)
+    ax.set_title(f"{title}\n(each point labeled by {color_label})", fontsize=13)
+    ax.set_xlabel(f"{method.upper()} dim 1")
+    ax.set_ylabel(f"{method.upper()} dim 2")
+    fig.colorbar(scatter, ax=ax, fraction=0.025, pad=0.02, label=color_label)
 
-    fig.suptitle(
-        f"Visual Window Embedding Space — {num_samples} samples\n"
-        "(each point = one image window; colour = sample id)",
-        fontsize=11, fontweight="bold",
-    )
-    plt.tight_layout()
-    save_figure(fig, output_dir, "fig09_embedding_space_before_after")
+    if embedding_level == "pooled_char":
+        for idx, (x, y) in enumerate(projection[: min(220, len(projection))]):
+            ax.text(x, y, labels[idx] if labels[idx] != " " else "sp", fontsize=7, alpha=0.75)
+
+    os.makedirs(output_dir, exist_ok=True)
+    save_figure(fig, output_dir, stem)
     plt.close(fig)
+    print(f"  [fig09] collected metadata for {len(metadata)} points (not saved; PDF-only output).")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Embedding space visualisation (fig09)."
-    )
-    parser.add_argument("--checkpoint",  required=True)
-    parser.add_argument("--num_samples", type=int, default=10,
-                        help="Number of synthetic sentences (max 10)")
-    parser.add_argument("--output_dir",  default="paper_figures/outputs")
-    parser.add_argument("--device",      default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--method",      default="tsne",
-                        choices=["tsne", "umap", "pca"])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--data_dir", default=None)
+    parser.add_argument("--num_samples", type=int, default=50)
+    parser.add_argument("--embedding_level", default="pooled_char", choices=["window", "pooled_char"])
+    parser.add_argument("--output_dir", default="paper_figures/outputs")
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--method", default="tsne", choices=["tsne", "umap", "pca"])
     args = parser.parse_args()
-
-    os.chdir(_PROJ_ROOT)
-    draw_embedding_space(args.checkpoint, args.num_samples,
-                          args.output_dir, args.device, args.method)
+    os.chdir(_ROOT)
+    draw_embedding_space(**vars(args))
 
 
 if __name__ == "__main__":

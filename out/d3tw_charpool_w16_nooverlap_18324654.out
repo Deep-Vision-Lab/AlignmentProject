@@ -1,0 +1,156 @@
+------------------------------------
+Mon 22 Jun 2026 18:57:36 IDT
+SLURM_JOBID:		18324654
+SLURM_JOB_NODELIST:	ise-4090-05
+SLURM_SCRATCH_DIR:	/scratch/ahmedmas/18324654
+Allocated Resouces:	cpu - 6 / mem -  MB / gpu - 1
+SLURM_GPU_INDEX:	2
+Running as ahmedmas from jelsana account with normal QOS
+------------------------------------
+wandb: Currently logged in as: ahmedmas (ahmedmas-ben-gurion-university-of-the-negev). Use `wandb login --relogin` to force relogin
+wandb: Using wandb-core as the SDK backend.  Please refer to https://wandb.me/wandb-core for more information.
+wandb: Tracking run with wandb version 0.19.2
+wandb: Run data is saved locally in /home/ahmedmas/BGU-Lab/AlignmentProject_clone/wandb/run-20260622_185749-pqhbkv4v
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run d3tw_charpool_w16_nooverlap
+wandb: ⭐️ View project at https://wandb.ai/ahmedmas-ben-gurion-university-of-the-negev/AlignmentProject
+wandb: 🚀 View run at https://wandb.ai/ahmedmas-ben-gurion-university-of-the-negev/AlignmentProject/runs/pqhbkv4v
+Using window_size=16, stride=16, window_overlap_mode=no_overlap
+Loading dataset from: DataSet/Synthetic_Arabic_100000
+[TEXT EMBED] type=orthogonal_char  out_dim=128  (frozen)
+[EmbeddingModel] Using BiLSTM encoder (layers=2, hidden_dim=128)
+[CHAR POOL] char bank size=37 first 20 chars=[' ', 'ء', 'آ', 'أ', 'ؤ', 'إ', 'ئ', 'ا', 'ب', 'ة', 'ت', 'ث', 'ج', 'ح', 'خ', 'د', 'ذ', 'ر', 'ز', 'س'] embedding dim=128 method=hard_mean saved=/home/ahmedmas/BGU-Lab/AlignmentProject_clone/Weights/d3tw_charpool_w16_nooverlap/char_bank.json
+
+=== Architecture: Image Encoder (ResNet34 + bilstm) ===
+[OPT 1] job_id: d3tw_charpool_w16_nooverlap
+[OPT 2] Sequence Encoder: bilstm
+[OPT 2a] BiLSTM layers=2 hidden_dim=128
+[OPT 3] Sliding Window: window_overlap_mode=no_overlap window_size=16 stride=16 stride_ratio=0.5
+[OPT 4] In-Batch Negatives: num_negatives=10
+[OPT 5] alignment_loss_type=d3tw_char_pool
+[OPT 7] D3TW: weight=1.0
+[OPT 7a] Cross-Attention: enabled=False type=text_to_image weight=0.0
+[OPT 7b] Character Pool: weight=0.5 tau=0.07 warmup=5 ramp=10 method=hard_mean detach_alignment=True skip_spaces=False min_windows=1
+[SPEED] AMP=True (dtype=torch.float16)  Profiling=False
+[RUN]   lr=0.0001  epochs=50
+[FINETUNE] Dataset override: DataSet/Synthetic_Arabic_100000
+================================================
+
+Epoch 1 - Soft-DTW gamma: 0.100000
+[FlipCheck] Saved debug_flip/patch0_after_flip.png  ← should show the FIRST Arabic character (rightmost in image)
+[FlipCheck] Saved debug_flip/patchLast_after_flip.png ← should show the LAST Arabic character (leftmost in image)
+[FlipCheck] Saved debug_flip/full_image_ref.png        ← original image for comparison
+[FlipCheck] tokens_a shape after flip: torch.Size([32, 64, 3, 128, 16])  (B, num_patches, C, H, W)
+[SANITY] sim_pos_list[0].shape = torch.Size([65, 128])  (expected [65, 128])
+[DTW] raw: pos=477.6  neg=473.6  |  prob: pos_wins=0.088 (goal→1.0)  |  gap=0.031  loss=10.0313
+[CHAR POOL GROUPS] Transcript:  تحت أي ظرف كان الرياضة تحافظ على صحة الجسم بأسلوب جميل ومميز بص 
+char[0]=' ' windows=[0]
+char[1]='ت' windows=[1]
+char[2]='ح' windows=[2, 3]
+char[3]='ت' windows=[4, 5]
+char[4]=' ' windows=[6, 7]
+char[5]='أ' windows=[8, 9]
+char[6]='ي' windows=[10]
+char[7]=' ' windows=[11]
+char[8]='ظ' windows=[12]
+char[9]='ر' windows=[13]
+char[10]='ف' windows=[14, 15]
+char[11]=' ' windows=[16]
+char[12]='ك' windows=[17, 18, 19, 20]
+char[13]='ا' windows=[21]
+char[14]='ن' windows=[22, 23, 24, 25]
+char[15]=' ' windows=[26]
+char[16]='ا' windows=[27]
+char[17]='ل' windows=[28]
+char[18]='ر' windows=[29]
+char[19]='ي' windows=[30]
+char[20]='ا' windows=[31]
+char[21]='ض' windows=[32, 33]
+char[22]='ة' windows=[34]
+char[23]=' ' windows=[35]
+char[24]='ت' windows=[36, 37, 38, 39]
+char[25]='ح' windows=[40]
+char[26]='ا' windows=[41]
+char[27]='ف' windows=[42]
+char[28]='ظ' windows=[43]
+char[29]=' ' windows=[44]
+char[30]='ع' windows=[45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57]
+char[31]='ل' windows=[58]
+char[32]='ى' windows=[59]
+char[33]=' ' windows=[60]
+char[34]='ص' windows=[61, 62, 63, 64, 65]
+char[35]='ح' windows=[66]
+char[36]='ة' windows=[67]
+char[37]=' ' windows=[68]
+char[38]='ا' windows=[69]
+char[39]='ل' windows=[70]
+char[40]='ج' windows=[71]
+char[41]='س' windows=[72]
+char[42]='م' windows=[73, 74]
+char[43]=' ' windows=[75]
+char[44]='ب' windows=[76]
+char[45]='أ' windows=[77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102]
+char[46]='س' windows=[103, 104, 105, 106]
+char[47]='ل' windows=[107]
+char[48]='و' windows=[108]
+char[49]='ب' windows=[109]
+char[50]=' ' windows=[110]
+char[51]='ج' windows=[111]
+char[52]='م' windows=[112]
+char[53]='ي' windows=[113]
+char[54]='ل' windows=[114, 115]
+char[55]=' ' windows=[116]
+char[56]='و' windows=[117]
+char[57]='م' windows=[118]
+char[58]='م' windows=[119]
+char[59]='ي' windows=[120]
+char[60]='ز' windows=[121]
+char[61]=' ' windows=[122, 123]
+char[62]='ب' windows=[124]
+char[63]='ص' windows=[125, 126]
+char[64]=' ' windows=[127]
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=10.0313  d3tw_cost_pos=477.6144  d3tw_cost_neg=473.6017  total_loss=10.0313  char_pool_loss=3.7645  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.0798  char_pool_acc_top5=0.2615  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 1, Loss: 10.0313
+Epoch 1, Batch 2, Loss: 9.9858
+Epoch 1, Batch 3, Loss: 9.9170
+Epoch 1, Batch 4, Loss: 9.8231
+Epoch 1, Batch 5, Loss: 9.6469
+Epoch 1, Batch 6, Loss: 9.4162
+Epoch 1, Batch 7, Loss: 9.1777
+Epoch 1, Batch 8, Loss: 8.9007
+Epoch 1, Batch 9, Loss: 8.7061
+Epoch 1, Batch 10, Loss: 8.3632
+[DTW] raw: pos=331.1  neg=564.0  |  prob: pos_wins=0.377 (goal→1.0)  |  gap=-1.820  loss=8.1805
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=8.1805  d3tw_cost_pos=331.0679  d3tw_cost_neg=563.9648  total_loss=8.1805  char_pool_loss=1.4706  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.6111  char_pool_acc_top5=0.8365  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 11, Loss: 8.1805
+Epoch 1, Batch 12, Loss: 7.9545
+Epoch 1, Batch 13, Loss: 7.6826
+Epoch 1, Batch 14, Loss: 7.3893
+Epoch 1, Batch 15, Loss: 7.2440
+Epoch 1, Batch 16, Loss: 7.0871
+Epoch 1, Batch 17, Loss: 6.7678
+Epoch 1, Batch 18, Loss: 6.5879
+Epoch 1, Batch 19, Loss: 6.4274
+Epoch 1, Batch 20, Loss: 6.0707
+[DTW] raw: pos=284.3  neg=783.3  |  prob: pos_wins=0.810 (goal→1.0)  |  gap=-3.898  loss=6.1015
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=6.1015  d3tw_cost_pos=284.2808  d3tw_cost_neg=783.2836  total_loss=6.1015  char_pool_loss=0.9993  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.7779  char_pool_acc_top5=0.9231  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 21, Loss: 6.1015
+Epoch 1, Batch 22, Loss: 5.7973
+Epoch 1, Batch 23, Loss: 5.7124
+Epoch 1, Batch 24, Loss: 5.5483
+Epoch 1, Batch 25, Loss: 5.5654
+Epoch 1, Batch 26, Loss: 5.3594
+Epoch 1, Batch 27, Loss: 5.0603
+Epoch 1, Batch 28, Loss: 5.1303
+Epoch 1, Batch 29, Loss: 4.9328
+Epoch 1, Batch 30, Loss: 4.9278
+[DTW] raw: pos=263.0  neg=920.8  |  prob: pos_wins=0.932 (goal→1.0)  |  gap=-5.139  loss=4.8608
+[LOSS] alignment_loss_type=d3tw_char_pool  d3tw_loss=4.8608  d3tw_cost_pos=262.9969  d3tw_cost_neg=920.8096  total_loss=4.8608  char_pool_loss=0.9098  effective_char_pool_weight=0.0000  char_pool_acc_top1=0.8404  char_pool_acc_top5=0.9548  char_pool_valid_chars=2080  char_pool_num_chars=2080  window_size=16  stride=16  window_overlap_mode=no_overlap  num_windows=64  sequence_length=128
+Epoch 1, Batch 31, Loss: 4.8608
+Epoch 1, Batch 32, Loss: 4.6846
+Epoch 1, Batch 33, Loss: 4.4938
+Epoch 1, Batch 34, Loss: 4.5277
+Epoch 1, Batch 35, Loss: 4.4895
+Epoch 1, Batch 36, Loss: 4.3732
+Epoch 1, Batch 37, Loss: 4.3840
+[2026-06-22T19:02:19.316] error: *** JOB 18324654 ON ise-4090-05 CANCELLED AT 2026-06-22T19:02:19 DUE to SIGNAL Terminated ***

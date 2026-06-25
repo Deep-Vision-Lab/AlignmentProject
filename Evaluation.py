@@ -113,9 +113,13 @@ def compute_retrieval_metrics(imageEmbedding, textEmbedding,
 
 if __name__ == '__main__':
     import argparse
-    from Parameters import window_size, vector_size, use_bilstm, \
-        use_positional_encoding, positional_encoding_type, bilstm_layers, \
-        model_dropout
+    from Parameters import (
+        window_size, stride_ratio, vector_size, use_bilstm, bilstm_layers,
+        bilstm_hidden_dim, model_dropout, lang, transformer_num_layers,
+        transformer_num_heads, transformer_ff_dim, transformer_dropout,
+        transformer_activation, transformer_norm_first,
+        transformer_positional_encoding, transformer_max_len,
+    )
     from embeddingModel import EmbeddingModel
     from textEmbedding import TextEmbedding
     from newDataLoader import test_dataloader
@@ -130,25 +134,46 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # ── load models ───────────────────────────────────────────────────────
-    stride = max(1, int(window_size * 0.5))
+    checkpoint = torch.load(args.weights, map_location=device)
+    cfg = checkpoint.get("model_config", {}) if isinstance(checkpoint, dict) else {}
+    ws = int(cfg.get("window_size", window_size))
+    stride = int(cfg.get("stride", max(1, int(ws * stride_ratio))))
+    seq_type = str(cfg.get(
+        "sequence_encoder_type",
+        "bilstm" if cfg.get("use_bilstm", use_bilstm) else "none",
+    )).lower()
 
     img_model = EmbeddingModel(
-        window_size=window_size,
+        window_size=ws,
         stride=stride,
-        vector_size=vector_size,
+        vector_size=int(cfg.get("vector_size", vector_size)),
         device=device,
-        use_bilstm=use_bilstm,
-        use_positional_encoding=use_positional_encoding,
-        positional_encoding_type=positional_encoding_type,
-        bilstm_layers=bilstm_layers,
+        use_flip=(str(cfg.get("lang", lang)).lower() == "arabic"),
+        sequence_encoder_type=seq_type,
+        use_bilstm=(seq_type == "bilstm"),
+        bilstm_layers=int(cfg.get("bilstm_layers", bilstm_layers)),
+        bilstm_hidden_dim=cfg.get("bilstm_hidden_dim", bilstm_hidden_dim),
         dropout=model_dropout,
+        transformer_num_layers=int(cfg.get("transformer_num_layers", transformer_num_layers)),
+        transformer_num_heads=int(cfg.get("transformer_num_heads", transformer_num_heads)),
+        transformer_ff_dim=int(cfg.get("transformer_ff_dim", transformer_ff_dim)),
+        transformer_dropout=float(cfg.get("transformer_dropout", transformer_dropout)),
+        transformer_activation=cfg.get("transformer_activation", transformer_activation),
+        transformer_norm_first=bool(cfg.get("transformer_norm_first", transformer_norm_first)),
+        transformer_positional_encoding=cfg.get(
+            "transformer_positional_encoding", transformer_positional_encoding
+        ),
+        transformer_max_len=int(cfg.get("transformer_max_len", transformer_max_len)),
     ).to(device)
 
-    checkpoint = torch.load(args.weights, map_location=device)
-    if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-        img_model.load_state_dict(checkpoint['state_dict'])
+    if isinstance(checkpoint, dict) and 'image_model_state_dict' in checkpoint:
+        img_model.load_state_dict(checkpoint['image_model_state_dict'], strict=False)
+    elif isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        img_model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+    elif isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+        img_model.load_state_dict(checkpoint['state_dict'], strict=False)
     else:
-        img_model.load_state_dict(checkpoint)
+        img_model.load_state_dict(checkpoint, strict=False)
     img_model.eval()
     print(f"Loaded weights: {args.weights}")
 

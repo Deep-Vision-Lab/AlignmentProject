@@ -2,10 +2,10 @@
 fig01_architecture.py
 =====================
 Generates a conceptual architecture diagram showing:
-  - Training phase  (image + text branches → D3TW → contrastive loss)
+  - Training phase with D3TW-guided character pooling
   - Evaluation phase (image branch only)
 
-Output: fig01_architecture.png / .pdf
+Output: fig01_architecture.pdf
 """
 import argparse
 import os
@@ -94,9 +94,9 @@ def draw_architecture(output_dir):
     bw, bh = 0.17, 0.10
     _box(ax, 0.12, 0.77, bw, bh, "Arabic Line", "Image",       fc=C_IMG)
     _box(ax, 0.12, 0.60, bw, bh, "Sliding", "Windows",         fc=C_IMG)
-    _box(ax, 0.12, 0.43, bw, bh, "CNN", "ResNet-34",           fc=C_IMG)
-    _box(ax, 0.12, 0.26, bw, bh, "BiLSTM", "Sequence Encoder", fc=C_IMG)
-    _box(ax, 0.12, 0.09, bw, bh, "Visual", "Embeddings",       fc=C_OUT)
+    _box(ax, 0.12, 0.43, bw, bh, "CNN", "+ BiLSTM/Transformer", fc=C_IMG)
+    _box(ax, 0.12, 0.26, bw, bh, "Window Emb.", "V₁…Vₛ  [S,D]", fc=C_OUT)
+    _box(ax, 0.12, 0.09, bw, bh, "Image Branch", "trainable",   fc=C_IMG)
 
     for y0, y1 in [(0.72, 0.65), (0.55, 0.48), (0.38, 0.31), (0.21, 0.14)]:
         _arrow(ax, 0.12, y0, 0.12, y1)
@@ -107,24 +107,28 @@ def draw_architecture(output_dir):
          "Frozen Text", "Embedder",  fc=C_TXT)
     ax.text(0.42, 0.48, "(frozen)", ha="center", va="top",
             fontsize=7.5, color=C_TXT, style="italic")
-    _box(ax, 0.42, 0.34, bw, bh, "Text", "Embeddings",          fc=C_OUT)
+    _box(ax, 0.42, 0.34, bw, bh, "Char Emb.", "E₁…Eₜ  [T,D]",   fc=C_OUT)
     _arrow(ax, 0.42, 0.72, 0.42, 0.605)
     _arrow(ax, 0.42, 0.535, 0.42, 0.39)
 
     # Similarity matrix ────────────────────────────────────────────────────────
-    _box(ax, 0.68, 0.57, 0.18, bh, "Similarity", "Matrix",      fc=C_LOSS)
-    _arrow(ax, 0.205, 0.09, 0.59, 0.57,
+    _box(ax, 0.68, 0.62, 0.19, bh, "Similarity", "S = E @ Vᵀ",  fc=C_LOSS)
+    _arrow(ax, 0.205, 0.26, 0.59, 0.62,
            connectionstyle="arc3,rad=-0.25")
-    _arrow(ax, 0.505, 0.34, 0.59, 0.57,
+    _arrow(ax, 0.505, 0.34, 0.59, 0.62,
            connectionstyle="arc3,rad=0.15")
 
     # D3TW alignment ──────────────────────────────────────────────────────────
-    _box(ax, 0.68, 0.40, 0.18, bh, "D3TW", "Alignment",         fc=C_LOSS)
-    _arrow(ax, 0.68, 0.52, 0.68, 0.455)
-
-    # Contrastive loss ─────────────────────────────────────────────────────────
-    _box(ax, 0.68, 0.23, 0.18, bh, "Contrastive", "Margin Loss",fc=C_LOSS)
-    _arrow(ax, 0.68, 0.355, 0.68, 0.285)
+    _box(ax, 0.68, 0.47, 0.19, bh, "Contrastive", "D3TW loss",  fc=C_LOSS)
+    _box(ax, 0.68, 0.32, 0.19, bh, "Assignment", "A [T,S]",     fc=C_LOSS)
+    _box(ax, 0.68, 0.17, 0.22, bh, "Char Pool", "M = norm(A) @ V", fc=C_LOSS)
+    _box(ax, 0.68, 0.06, 0.22, bh, "InfoNCE", "char-level loss", fc=C_LOSS)
+    for y0, y1 in [(0.57, 0.525), (0.42, 0.375), (0.27, 0.225), (0.12, 0.105)]:
+        _arrow(ax, 0.68, y0, 0.68, y1)
+    ax.text(0.50, 0.905, "L_total = λ_d3tw L_D3TW + λ_char L_char_pool",
+            ha="center", va="center", fontsize=8.5, color="#1a9641",
+            fontweight="bold",
+            bbox=dict(boxstyle="round,pad=0.3", fc="#e6f4ea", ec=C_LOSS, lw=0.8))
 
     # Negatives arrow ──────────────────────────────────────────────────────────
     ax.annotate(
@@ -137,7 +141,7 @@ def draw_architecture(output_dir):
 
     # Gradient flows only to image branch ─────────────────────────────────────
     ax.text(0.50, 0.04,
-            "Gradient updates image branch only",
+            "Text branch is supervision only; gradients update image branch",
             ha="center", va="bottom", fontsize=8, color=C_IMG,
             style="italic",
             bbox=dict(boxstyle="round,pad=0.3", fc="#dceeff", ec=C_IMG, lw=0.8))
@@ -154,28 +158,28 @@ def draw_architecture(output_dir):
 
     _box(ax, 0.50, 0.82, 0.30, bh, "Arabic Line", "Image",        fc=C_IMG2)
     _box(ax, 0.50, 0.65, 0.30, bh, "Sliding", "Windows",          fc=C_IMG2)
-    _box(ax, 0.50, 0.48, 0.30, bh, "CNN", "ResNet-34",             fc=C_IMG2)
-    _box(ax, 0.50, 0.31, 0.30, bh, "BiLSTM", "Sequence Encoder",   fc=C_IMG2)
+    _box(ax, 0.50, 0.48, 0.30, bh, "CNN", "+ BiLSTM/Transformer",  fc=C_IMG2)
+    _box(ax, 0.50, 0.31, 0.30, bh, "Visual", "Window Embeddings",  fc=C_IMG2)
     _box(ax, 0.50, 0.14, 0.30, bh, "Visual", "Embeddings",         fc=C_OUT)
 
     for y0, y1 in [(0.77, 0.70), (0.60, 0.53), (0.43, 0.36), (0.26, 0.19)]:
         _arrow(ax, 0.50, y0, 0.50, y1, color="#1a7a4a")
 
     ax.text(0.50, 0.04,
-            "No text branch required at evaluation",
+            "Image-only alignment uses the visual branch; no transcript input",
             ha="center", va="bottom", fontsize=8, color=C_IMG2,
             style="italic",
             bbox=dict(boxstyle="round,pad=0.3", fc="#d7f5e3", ec=C_IMG2, lw=0.8))
 
     # Cross-out where text branch would be ────────────────────────────────────
-    ax.text(0.82, 0.57, "[X]  Text\n     branch",
+    ax.text(0.82, 0.57, "Text/D3TW/\nCharPool only\nfor training\nand diagnostics",
             ha="center", va="center", fontsize=9, color="#cc0000",
             fontweight="bold",
             bbox=dict(boxstyle="round,pad=0.3", fc="#fff0f0", ec="#cc0000", lw=0.8))
 
     fig.suptitle(
-        "Weakly-Supervised Arabic Transcript-Image Alignment\n"
-        "Training uses both branches; Evaluation uses image branch only",
+        "D3TW-Guided Character Pooling for Arabic Transcript-Image Alignment\n"
+        "Training uses transcript supervision; final evaluation is image-only",
         fontsize=12, fontweight="bold", y=1.01,
     )
 
