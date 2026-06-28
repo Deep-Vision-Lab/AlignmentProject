@@ -22,6 +22,38 @@ from ctc_utils import (
     compute_ctc_loss,
     compute_contrastive_ctc_loss,
 )
+from alignment_pooling import (
+    CharacterBank,
+    build_char_bank,
+    collect_unique_chars,
+    compute_char_pool_contrastive_loss,
+    groups_from_assignment,
+    get_char_pool_weight,
+    hard_d3tw_path_from_similarity,
+    path_to_assignment,
+    pool_visual_by_assignment,
+)
+from token_bank import (
+    BigramFusionMLP,
+    TokenBank,
+    build_adjacent_pair_visuals,
+    build_token_bank,
+    collect_bigram_tokens,
+    compute_bigram_token_contrastive_loss,
+    get_aux_weight,
+    save_token_bank_json,
+)
+from ngram_tokenizer import (
+    NGramTokenizer,
+    collect_ngram_tokens,
+    save_ngram_vocab_json,
+)
+from token_embedding_bank import (
+    build_token_embedding_bank,
+    compute_char_aux_loss_from_token_pool,
+    compute_token_pool_contrastive_loss,
+    encode_text_units,
+)
 # SimilarityTransformer removed - using direct cosine similarity between CNN+BiLSTM and text embeddings
 
 import os
@@ -30,6 +62,34 @@ import time
 import wandb
 import warnings
 import argparse
+import json
+
+
+def _str2bool(value):
+    if isinstance(value, bool):
+        return value
+    value = value.lower()
+    if value in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Expected a boolean value, got {value!r}")
+
+
+def compute_stride(window_size, stride_ratio, window_overlap_mode):
+    """Resolve the sliding-window stride for a named overlap experiment."""
+    if window_overlap_mode == "no_overlap":
+        return window_size
+    if window_overlap_mode == "light_overlap":
+        return max(1, window_size // 2)
+    if window_overlap_mode == "dense_overlap":
+        return max(1, window_size // 4)
+    if window_overlap_mode == "custom":
+        return max(1, int(window_size * stride_ratio))
+    raise ValueError(
+        "window_overlap_mode must be one of no_overlap, light_overlap, "
+        f"dense_overlap, custom; got {window_overlap_mode!r}"
+    )
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='Train the alignment model')
@@ -59,6 +119,8 @@ parser.add_argument('--text_embedder', '--text_embedder_type', dest='text_embedd
 parser.add_argument('--negative_mode',  type=str,   default=None,
                     help='Override Parameters.negative_mode '
                          '(mixed|length_controlled|dot_confusion|same_length_random|shuffle_only).')
+parser.add_argument('--window_overlap_mode', type=str, default=None,
+                    choices=['no_overlap', 'light_overlap', 'dense_overlap', 'custom'])
 parser.add_argument('--multi_scale',    action='store_true', default=False,
                     help='Enable multi-scale alignment (overrides Parameters.multi_scale_enabled).')
 parser.add_argument('--loss_type',      type=str,   default=None,
@@ -71,8 +133,57 @@ parser.add_argument('--num_negatives', type=int, default=None,
                     help='Override Parameters.num_negatives for this run.')
 parser.add_argument('--alignment_loss_type', type=str, default=None,
                     choices=['d3tw', 'ctc', 'contrastive_ctc', 'ctc_d3tw',
-                             'contrastive_ctc_d3tw'],
+                             'contrastive_ctc_d3tw', 'd3tw_char_pool',
+                             'contrastive_d3tw_char_pool'],
                     help='Alignment objective to train.')
+parser.add_argument('--use_d3tw_char_pooling', type=_str2bool, nargs='?', const=True,
+                    default=None)
+parser.add_argument('--char_pool_weight', type=float, default=None)
+parser.add_argument('--char_pool_tau', type=float, default=None)
+parser.add_argument('--char_pool_warmup_epochs', type=int, default=None)
+parser.add_argument('--char_pool_ramp_epochs', type=int, default=None)
+parser.add_argument('--char_pool_method', choices=['hard_mean', 'soft_weighted'], default=None)
+parser.add_argument('--char_pool_detach_alignment', type=_str2bool, nargs='?', const=True,
+                    default=None)
+parser.add_argument('--char_pool_skip_spaces', type=_str2bool, nargs='?', const=True,
+                    default=None)
+parser.add_argument('--char_pool_min_windows_per_char', type=int, default=None)
+parser.add_argument('--text_unit_type', choices=['char', 'ngram'], default=None)
+parser.add_argument('--ngram_min_n', type=int, default=None)
+parser.add_argument('--ngram_max_n', type=int, default=None)
+parser.add_argument('--ngram_min_freq', type=int, default=None)
+parser.add_argument('--ngram_max_vocab_size', type=int, default=None)
+parser.add_argument('--ngram_tokenizer_mode', choices=['greedy_longest'], default=None)
+parser.add_argument('--ngram_skip_spaces', type=_str2bool, nargs='?', const=True,
+                    default=None)
+parser.add_argument('--ngram_include_ligatures', type=_str2bool, nargs='?', const=True,
+                    default=None)
+parser.add_argument('--token_pool_weight', type=float, default=None)
+parser.add_argument('--token_pool_tau', type=float, default=None)
+parser.add_argument('--token_pool_warmup_epochs', type=int, default=None)
+parser.add_argument('--token_pool_ramp_epochs', type=int, default=None)
+parser.add_argument('--token_pool_detach_alignment', type=_str2bool, nargs='?', const=True,
+                    default=None)
+parser.add_argument('--token_pool_min_windows_per_token', type=int, default=None)
+parser.add_argument('--use_char_aux_loss', type=_str2bool, nargs='?', const=True,
+                    default=None)
+parser.add_argument('--char_aux_weight', type=float, default=None)
+parser.add_argument('--char_aux_tau', type=float, default=None)
+parser.add_argument('--char_aux_warmup_epochs', type=int, default=None)
+parser.add_argument('--char_aux_ramp_epochs', type=int, default=None)
+parser.add_argument('--use_bigram_token_loss', type=_str2bool, nargs='?', const=True,
+                    default=None)
+parser.add_argument('--bigram_token_weight', type=float, default=None)
+parser.add_argument('--bigram_token_tau', type=float, default=None)
+parser.add_argument('--bigram_token_warmup_epochs', type=int, default=None)
+parser.add_argument('--bigram_token_ramp_epochs', type=int, default=None)
+parser.add_argument('--bigram_token_skip_spaces', type=_str2bool, nargs='?', const=True,
+                    default=None)
+parser.add_argument('--bigram_token_min_freq', type=int, default=None)
+parser.add_argument('--bigram_token_max_vocab_size', type=int, default=None)
+parser.add_argument('--bigram_token_fusion', choices=['mean', 'mlp'], default=None)
+parser.add_argument('--bigram_token_include_ligatures', type=_str2bool, nargs='?', const=True,
+                    default=None)
 parser.add_argument('--ctc_weight', type=float, default=None,
                     help='Weight for CTC loss in hybrid modes.')
 parser.add_argument('--d3tw_weight', type=float, default=None,
@@ -84,10 +195,37 @@ parser.add_argument('--contrastive_ctc_tau', type=float, default=None,
                     help='Temperature for InfoNCE over CTC costs.')
 parser.add_argument('--contrastive_ctc_margin', type=float, default=None,
                     help='Margin for contrastive CTC loss.')
+parser.add_argument('--sequence_encoder_type', type=str, default=None,
+                    choices=['bilstm', 'transformer', 'none'],
+                    help='Sequence encoder after CNN features.')
+parser.add_argument('--transformer_num_layers', type=int, default=None)
+parser.add_argument('--transformer_num_heads', type=int, default=None)
+parser.add_argument('--transformer_ff_dim', type=int, default=None)
+parser.add_argument('--transformer_dropout', type=float, default=None)
+parser.add_argument('--transformer_activation', type=str, default=None,
+                    choices=['relu', 'gelu'])
+parser.add_argument('--transformer_norm_first', action=argparse.BooleanOptionalAction,
+                    default=None)
+parser.add_argument('--transformer_positional_encoding', type=str, default=None,
+                    choices=['sinusoidal', 'learnable'])
+parser.add_argument('--transformer_max_len', type=int, default=None)
+parser.add_argument('--return_attention_weights', action=argparse.BooleanOptionalAction,
+                    default=None)
+parser.add_argument('--use_cross_attention', action='store_true', default=None,
+                    help='Enable optional auxiliary cross-attention similarity.')
+parser.add_argument('--cross_attention_type', type=str, default=None,
+                    choices=['text_to_image', 'image_to_text', 'bidirectional'])
+parser.add_argument('--cross_attention_num_heads', type=int, default=None)
+parser.add_argument('--cross_attention_dropout', type=float, default=None)
+parser.add_argument('--cross_attention_weight', type=float, default=None)
 args = parser.parse_args()
 job_id = args.job_id
 
-from wandb_config import init_wandb, update_wandb, upload_artifacts_to_wandb
+from wandb_config import (
+    init_wandb,
+    update_wandb,
+    log_wandb_weights,
+)
 
 warnings.filterwarnings("ignore")
 
@@ -192,14 +330,73 @@ def _make_model_config(ws, stride, sr, ctc_vocab=None):
         'window_size':        ws,
         'stride':             stride,
         'stride_ratio':       sr,
+        'window_overlap_mode': _P.window_overlap_mode,
         'vector_size':        _P.vector_size,
+        'sequence_encoder_type': _P.sequence_encoder_type,
         'use_bilstm':         _P.use_bilstm,
         'bilstm_layers':      _P.bilstm_layers,
         'bilstm_hidden_dim':  _P.bilstm_hidden_dim,
+        'transformer_num_layers': _P.transformer_num_layers,
+        'transformer_num_heads': _P.transformer_num_heads,
+        'transformer_ff_dim': _P.transformer_ff_dim,
+        'transformer_dropout': _P.transformer_dropout,
+        'transformer_activation': _P.transformer_activation,
+        'transformer_norm_first': _P.transformer_norm_first,
+        'transformer_positional_encoding': _P.transformer_positional_encoding,
+        'transformer_max_len': _P.transformer_max_len,
+        'return_attention_weights': _P.return_attention_weights,
+        'use_cross_attention': _P.use_cross_attention,
+        'cross_attention_type': _P.cross_attention_type,
+        'cross_attention_num_heads': _P.cross_attention_num_heads,
+        'cross_attention_dropout': _P.cross_attention_dropout,
+        'cross_attention_weight': _P.cross_attention_weight,
         'lang':               _P.lang,
         'text_embedder_type': _P.text_embedder_type,
         'negative_mode':      getattr(_P, 'negative_mode', 'mixed'),
         'multi_scale_enabled': _P.multi_scale_enabled,
+        'char_pool_weight': _P.char_pool_weight,
+        'char_pool_tau': _P.char_pool_tau,
+        'char_pool_method': _P.char_pool_method,
+        'char_pool_warmup_epochs': _P.char_pool_warmup_epochs,
+        'char_pool_ramp_epochs': _P.char_pool_ramp_epochs,
+        'char_pool_detach_alignment': _P.char_pool_detach_alignment,
+        'char_pool_skip_spaces': _P.char_pool_skip_spaces,
+        'char_pool_min_windows_per_char': _P.char_pool_min_windows_per_char,
+        'char_pool_use_char_bank': _P.char_pool_use_char_bank,
+        'use_d3tw_char_pooling': _P.use_d3tw_char_pooling,
+        'text_unit_type': _P.text_unit_type,
+        'ngram_min_n': _P.ngram_min_n,
+        'ngram_max_n': _P.ngram_max_n,
+        'ngram_min_freq': _P.ngram_min_freq,
+        'ngram_max_vocab_size': _P.ngram_max_vocab_size,
+        'ngram_tokenizer_mode': _P.ngram_tokenizer_mode,
+        'ngram_skip_spaces': _P.ngram_skip_spaces,
+        'ngram_include_ligatures': _P.ngram_include_ligatures,
+        'ngram_ligatures': _P.ngram_ligatures,
+        'token_pool_weight': _P.token_pool_weight,
+        'token_pool_tau': _P.token_pool_tau,
+        'token_pool_warmup_epochs': _P.token_pool_warmup_epochs,
+        'token_pool_ramp_epochs': _P.token_pool_ramp_epochs,
+        'token_pool_detach_alignment': _P.token_pool_detach_alignment,
+        'token_pool_min_windows_per_token': _P.token_pool_min_windows_per_token,
+        'use_char_aux_loss': _P.use_char_aux_loss,
+        'char_aux_weight': _P.char_aux_weight,
+        'char_aux_tau': _P.char_aux_tau,
+        'char_aux_warmup_epochs': _P.char_aux_warmup_epochs,
+        'char_aux_ramp_epochs': _P.char_aux_ramp_epochs,
+        'ngram_vocab_size': int(getattr(_make_model_config, "_ngram_vocab_size", 0))
+                            if _P.text_unit_type == "ngram" else None,
+        'use_bigram_token_loss': _P.use_bigram_token_loss,
+        'bigram_token_weight': _P.bigram_token_weight,
+        'bigram_token_tau': _P.bigram_token_tau,
+        'bigram_token_warmup_epochs': _P.bigram_token_warmup_epochs,
+        'bigram_token_ramp_epochs': _P.bigram_token_ramp_epochs,
+        'bigram_token_skip_spaces': _P.bigram_token_skip_spaces,
+        'bigram_token_min_freq': _P.bigram_token_min_freq,
+        'bigram_token_max_vocab_size': _P.bigram_token_max_vocab_size,
+        'bigram_token_fusion': _P.bigram_token_fusion,
+        'bigram_token_include_ligatures': _P.bigram_token_include_ligatures,
+        'bigram_token_vocab_size': int(getattr(_make_model_config, "_bigram_token_vocab_size", 0)),
     }
     if ctc_vocab is not None:
         cfg.update({
@@ -210,7 +407,9 @@ def _make_model_config(ws, stride, sr, ctc_vocab=None):
 
 
 def save_model_weights(model, epoch, job_id, model_config=None,
-                       ctc_head=None, ctc_vocab=None):
+                       ctc_head=None, ctc_vocab=None,
+                       cross_attention_module=None,
+                       bigram_fusion_mlp=None):
     weights_path = os.path.join(_weights_dir(job_id), "model_latest.pth")
     payload = {
         'model_state_dict': model.state_dict(),
@@ -218,6 +417,10 @@ def save_model_weights(model, epoch, job_id, model_config=None,
     }
     if ctc_head is not None:
         payload['ctc_head_state_dict'] = ctc_head.state_dict()
+    if cross_attention_module is not None:
+        payload['cross_attention_state_dict'] = cross_attention_module.state_dict()
+    if bigram_fusion_mlp is not None:
+        payload['bigram_fusion_mlp_state_dict'] = bigram_fusion_mlp.state_dict()
     if ctc_vocab is not None:
         payload['ctc_vocab'] = ctc_vocab.to_dict()
     if model_config:
@@ -226,10 +429,13 @@ def save_model_weights(model, epoch, job_id, model_config=None,
         torch.save(payload, weights_path)
     else:
         torch.save(model.state_dict(), weights_path)
+    return weights_path
 
 
 def save_checkpoint(model, optimizer, scheduler, scaler, epoch, job_id,
-                    model_config=None, ctc_head=None, ctc_vocab=None):
+                    model_config=None, ctc_head=None, ctc_vocab=None,
+                    cross_attention_module=None,
+                    bigram_fusion_mlp=None):
     """Save full training state so --resume can pick up exactly where we left off."""
     ckpt = {
         'epoch': epoch,
@@ -241,6 +447,10 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, job_id,
     }
     if ctc_head is not None:
         ckpt['ctc_head_state_dict'] = ctc_head.state_dict()
+    if cross_attention_module is not None:
+        ckpt['cross_attention_state_dict'] = cross_attention_module.state_dict()
+    if bigram_fusion_mlp is not None:
+        ckpt['bigram_fusion_mlp_state_dict'] = bigram_fusion_mlp.state_dict()
     if ctc_vocab is not None:
         ckpt['ctc_vocab'] = ctc_vocab.to_dict()
     if model_config:
@@ -264,7 +474,23 @@ def _needs_ctc():
 
 def _needs_d3tw():
     return alignment_loss_type in {'d3tw', 'ctc_d3tw',
-                                   'contrastive_ctc_d3tw'}
+                                   'contrastive_ctc_d3tw', 'd3tw_char_pool',
+                                   'contrastive_d3tw_char_pool'}
+
+
+def _uses_char_pool():
+    return (
+        alignment_loss_type in {'d3tw_char_pool', 'contrastive_d3tw_char_pool'}
+        or use_d3tw_char_pooling
+    )
+
+
+def _uses_bigram_token_loss():
+    return bool(use_bigram_token_loss)
+
+
+def _uses_ngram_units():
+    return str(text_unit_type).lower() == "ngram"
 
 
 def _collect_training_texts(train_loader, data_dir=None):
@@ -293,6 +519,26 @@ def _collect_training_texts(train_loader, data_dir=None):
     return texts
 
 
+def _save_char_bank(char_bank, job_id):
+    path = os.path.join(_weights_dir(job_id), "char_bank.json")
+    payload = {
+        "idx_to_char": char_bank.idx_to_char,
+        "char_to_idx": char_bank.char_to_idx,
+        # Keep the frozen vectors with the mapping so evaluation/figure code
+        # can reproduce character logits without rebuilding the text model.
+        "embeddings": char_bank.embeddings.detach().cpu().tolist(),
+    }
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False)
+    return path
+
+
+def _save_token_bank(token_bank, job_id):
+    path = os.path.join(_weights_dir(job_id), "token_bank.json")
+    save_token_bank_json(path, token_bank.token_to_idx, token_bank.idx_to_token)
+    return path
+
+
 def check_grad(grad):
     if grad is None:
         print("Gradient is None!")
@@ -317,7 +563,10 @@ def _embed_negatives(textEmbed, neg_texts):
     return flat_emb.view(B, K, flat_emb.size(1), flat_emb.size(2))
 
 
-def compute_varlen_similarities(textEmbed, norm_img, pos_texts, neg_texts):
+def compute_varlen_similarities(textEmbed, norm_img, pos_texts, neg_texts,
+                                cross_attention_module=None,
+                                cross_attention_weight=0.0,
+                                ngram_tokenizer=None):
     """
     Build per-sample similarity matrices without padded text rows.
 
@@ -337,34 +586,64 @@ def compute_varlen_similarities(textEmbed, norm_img, pos_texts, neg_texts):
         sim_pos_list: list[B] of Tensor[T_i, S]
         sim_neg_list: list[B] of list[K] of Tensor[T_neg_ik, S]
     """
+    use_cross = (
+        cross_attention_module is not None and cross_attention_weight > 0
+    )
     sim_pos_list = []
     sim_neg_list = []
+    pos_units_list = []
+    pos_spans_list = []
 
     for i, text in enumerate(pos_texts):
-        with torch.no_grad():
-            txt_emb = textEmbed(text)           # [T_i, D]
-            txt_emb = normalize_func(txt_emb)
+        units, spans, txt_emb = encode_text_units(
+            text=text,
+            text_unit_type=text_unit_type,
+            text_embedder=textEmbed,
+            device=norm_img.device,
+            ngram_tokenizer=ngram_tokenizer,
+        )
+        txt_emb = normalize_func(txt_emb)
+        pos_units_list.append(units)
+        pos_spans_list.append(spans)
 
-        # sim carries grad via norm_img[i]
-        sim_pos = torch.einsum("td,sd->ts", txt_emb, norm_img[i])
+        # sim carries grad via norm_img[i]. Dot-product remains the primary
+        # D3TW matrix; optional cross-attention is only an additive auxiliary.
+        dot_pos = torch.einsum("td,sd->ts", txt_emb, norm_img[i])
+        if use_cross:
+            attn_pos = cross_attention_module(txt_emb, norm_img[i])
+            sim_pos = dot_pos + cross_attention_weight * attn_pos
+        else:
+            sim_pos = dot_pos
         sim_pos_list.append(sim_pos)
 
         sample_neg_sims = []
         for neg_text in neg_texts[i]:
-            with torch.no_grad():
-                neg_emb = textEmbed(neg_text)   # [T_neg, D]
-                neg_emb = normalize_func(neg_emb)
-            sim_neg = torch.einsum("td,sd->ts", neg_emb, norm_img[i])
+            _neg_units, _neg_spans, neg_emb = encode_text_units(
+                text=neg_text,
+                text_unit_type=text_unit_type,
+                text_embedder=textEmbed,
+                device=norm_img.device,
+                ngram_tokenizer=ngram_tokenizer,
+            )
+            neg_emb = normalize_func(neg_emb)
+            dot_neg = torch.einsum("td,sd->ts", neg_emb, norm_img[i])
+            if use_cross:
+                attn_neg = cross_attention_module(neg_emb, norm_img[i])
+                sim_neg = dot_neg + cross_attention_weight * attn_neg
+            else:
+                sim_neg = dot_neg
             sample_neg_sims.append(sim_neg)
 
         sim_neg_list.append(sample_neg_sims)
 
-    return sim_pos_list, sim_neg_list
+    return sim_pos_list, sim_neg_list, pos_units_list, pos_spans_list
 
 
 def compute_d3tw_batch_loss(imageEmbed, textEmbed,
                             images, pos_texts, neg_texts,
                             criterion,
+                            cross_attention_module=None,
+                            ngram_tokenizer=None,
                             epoch=0, batch_idx=0, dataloader_length=0, debug=False, timer=None):
     """
     Compute batch loss for text-image alignment with multiple in-batch negatives.
@@ -387,6 +666,7 @@ def compute_d3tw_batch_loss(imageEmbed, textEmbed,
     def _autocast():
         return torch.amp.autocast('cuda', dtype=AMP_DTYPE, enabled=USE_AMP)
 
+    artifacts = None
     if multi_scale_enabled:
         # Variable-length varlen is not yet implemented for multi-scale.
         # Using padded batched similarity here until forward_varlen is extended
@@ -398,8 +678,29 @@ def compute_d3tw_batch_loss(imageEmbed, textEmbed,
                                                         show_dims=False, timer=timer)
             img_emb_s = img_emb_s.float()
             norm_img_s = normalize_func(img_emb_s)
-            sim_pos_s = torch.einsum('bsv,btv->bst', norm_pos_text, norm_img_s)
-            sim_neg_s = torch.einsum('bktv,bsv->bkts', stacked_neg, norm_img_s)
+            dot_pos_s = torch.einsum('bsv,btv->bst', norm_pos_text, norm_img_s)
+            dot_neg_s = torch.einsum('bktv,bsv->bkts', stacked_neg, norm_img_s)
+            if (
+                cross_attention_module is not None
+                and use_cross_attention
+                and cross_attention_weight > 0
+            ):
+                attn_pos_s = cross_attention_module(norm_pos_text, norm_img_s)
+                B, K, T, D = stacked_neg.shape
+                flat_neg = stacked_neg.reshape(B * K, T, D)
+                flat_img = (
+                    norm_img_s.unsqueeze(1)
+                    .expand(B, K, norm_img_s.size(1), norm_img_s.size(2))
+                    .reshape(B * K, norm_img_s.size(1), norm_img_s.size(2))
+                )
+                attn_neg_s = cross_attention_module(flat_neg, flat_img).reshape(
+                    B, K, T, norm_img_s.size(1)
+                )
+                sim_pos_s = dot_pos_s + cross_attention_weight * attn_pos_s
+                sim_neg_s = dot_neg_s + cross_attention_weight * attn_neg_s
+            else:
+                sim_pos_s = dot_pos_s
+                sim_neg_s = dot_neg_s
             return sim_pos_s, sim_neg_s
 
         macro_ws, micro_ws = multi_scale_window_sizes
@@ -445,20 +746,29 @@ def compute_d3tw_batch_loss(imageEmbed, textEmbed,
 
         # Use variable-length similarities so padded text rows never enter DTW
         timer.start('4_varlen_similarities')
-        sim_pos_list, sim_neg_list = compute_varlen_similarities(
+        sim_pos_list, sim_neg_list, pos_units_list, pos_spans_list = compute_varlen_similarities(
             textEmbed=textEmbed,
             norm_img=norm_img,
             pos_texts=pos_texts,
             neg_texts=neg_texts,
+            cross_attention_module=cross_attention_module,
+            cross_attention_weight=(
+                cross_attention_weight
+                if use_cross_attention and cross_attention_weight > 0
+                else 0.0
+            ),
+            ngram_tokenizer=ngram_tokenizer,
         )
         timer.stop('4_varlen_similarities')
 
         # One-time sanity check: print shapes for the first batch of training
         if batch_idx == 0 and epoch == 0:
+            expected_units = len(pos_units_list[0])
             print(f"[SANITY] sim_pos_list[0].shape = {sim_pos_list[0].shape}  "
-                  f"(expected [{len(pos_texts[0])}, {norm_img.shape[1]}])", flush=True)
-            assert sim_pos_list[0].shape[0] == len(pos_texts[0]), \
-                f"Padded text rows detected: got {sim_pos_list[0].shape[0]} rows but text has {len(pos_texts[0])} chars"
+                  f"(expected [{expected_units}, {norm_img.shape[1]}], "
+                  f"text_unit_type={text_unit_type})", flush=True)
+            assert sim_pos_list[0].shape[0] == expected_units, \
+                f"Padded text rows detected: got {sim_pos_list[0].shape[0]} rows but text has {expected_units} text units"
 
         timer.start('6_loss_computation')
         total_loss, loss_dict = criterion.forward_varlen(sim_pos_list, sim_neg_list)
@@ -466,6 +776,12 @@ def compute_d3tw_batch_loss(imageEmbed, textEmbed,
 
         # Use first sample's sim for visualization (no padding)
         sim_pos_for_viz = sim_pos_list[0].unsqueeze(0)
+        artifacts = {
+            "norm_img": norm_img,
+            "sim_pos_list": sim_pos_list,
+            "unit_lists": pos_units_list,
+            "unit_spans": pos_spans_list,
+        }
 
         if batch_idx % 10 == 0:
             print(
@@ -491,9 +807,364 @@ def compute_d3tw_batch_loss(imageEmbed, textEmbed,
         # model_config injected by Train() via a closure attribute
         _cfg = getattr(compute_batch_loss, '_model_config', None)
         if not _needs_ctc():
-            save_model_weights(imageEmbed, epoch, job_id, model_config=_cfg)
+            save_model_weights(
+                imageEmbed, epoch, job_id, model_config=_cfg,
+                cross_attention_module=cross_attention_module,
+            )
 
-    return total_loss, loss_dict
+    return total_loss, loss_dict, artifacts
+
+
+def compute_char_pool_batch_loss(
+    pos_texts, artifacts, char_bank, epoch, batch_idx=0,
+    token_bank=None, bigram_fusion_mlp=None
+):
+    """Pool one D3TW group per character and classify against the frozen bank."""
+    if artifacts is None:
+        raise RuntimeError("D3TW character pooling is not supported with multi_scale_enabled.")
+    if char_pool_method == "soft_weighted":
+        raise NotImplementedError(
+            "char_pool_method='soft_weighted' requires Soft-DTW alignment weights, "
+            "which the current D3TW implementation does not expose. Use 'hard_mean'."
+        )
+
+    norm_img = artifacts["norm_img"]
+    sim_pos_list = artifacts["sim_pos_list"]
+    sample_losses = []
+    total_valid = 0
+    total_chars = 0
+    weighted_top1 = 0.0
+    weighted_top5 = 0.0
+    bigram_losses = []
+    bigram_total_valid = 0
+    bigram_weighted_top1 = 0.0
+    bigram_weighted_top5 = 0.0
+    effective_bigram_weight = get_aux_weight(
+        epoch,
+        bigram_token_weight,
+        bigram_token_warmup_epochs,
+        bigram_token_ramp_epochs,
+    )
+    for sample_idx, transcript in enumerate(pos_texts):
+        chars = list(transcript)
+        sim = sim_pos_list[sample_idx]
+        visual_b = norm_img[sample_idx]
+        total_chars += len(chars)
+        if not chars:
+            continue
+        assert sim.dim() == 2
+        assert visual_b.dim() == 2
+        assert sim.shape[1] == visual_b.shape[0]
+        assert len(chars) == sim.shape[0], (
+            f"Transcript chars length {len(chars)} != sim_pos T {sim.shape[0]}. "
+            "Use the exact same character list as text embeddings."
+        )
+
+        path = hard_d3tw_path_from_similarity(sim)
+        if not path:
+            if epoch == 0 and batch_idx == 0 and sample_idx == 0:
+                print(
+                    f"[CHAR POOL GROUPS] Transcript: {transcript}\n"
+                    f"no restricted path exists for T={sim.shape[0]}, S={sim.shape[1]} "
+                    "(this topology requires T <= S)",
+                    flush=True,
+                )
+            continue
+        assignment = path_to_assignment(
+            path,
+            num_chars=sim.shape[0],
+            num_visual=sim.shape[1],
+            device=sim.device,
+        )
+        pooled_visual, valid_mask, counts = pool_visual_by_assignment(
+            visual_emb=visual_b,
+            assignment=assignment,
+            detach_assignment=char_pool_detach_alignment,
+            min_windows_per_char=char_pool_min_windows_per_char,
+        )
+        assert pooled_visual.shape[0] == sim.shape[0]
+        assert pooled_visual.shape[1] == visual_b.shape[1]
+
+        effective_weight = get_char_pool_weight(
+            epoch, char_pool_weight, char_pool_warmup_epochs, char_pool_ramp_epochs
+        )
+        if effective_weight > 0 and torch.is_grad_enabled():
+            assert pooled_visual.requires_grad, "Pooled vectors lost their image gradient path"
+
+        if epoch == 0 and batch_idx == 0 and sample_idx == 0:
+            print(f"[CHAR POOL GROUPS] Transcript: {transcript}", flush=True)
+            for char_idx, visual_indices in enumerate(groups_from_assignment(assignment)):
+                print(
+                    f"char[{char_idx}]={chars[char_idx]!r} windows={visual_indices}",
+                    flush=True,
+                )
+        sample_loss, sample_stats = compute_char_pool_contrastive_loss(
+            pooled_visual,
+            chars,
+            char_bank.embeddings,
+            char_bank.char_to_idx,
+            tau=char_pool_tau,
+            valid_mask=valid_mask,
+            skip_spaces=char_pool_skip_spaces,
+        )
+        valid_count = sample_stats["char_pool_valid_chars"]
+        sample_losses.append(sample_loss)
+        if valid_count:
+            total_valid += valid_count
+            weighted_top1 += sample_stats["char_pool_acc_top1"] * valid_count
+            weighted_top5 += sample_stats["char_pool_acc_top5"] * valid_count
+
+        if (
+            use_bigram_token_loss
+            and token_bank is not None
+        ):
+            pair_visuals, target_token_ids, pair_metadata = build_adjacent_pair_visuals(
+                pooled_visual=pooled_visual,
+                transcript_chars=chars,
+                token_to_idx=token_bank.token_to_idx,
+                fusion=bigram_token_fusion,
+                skip_spaces=bigram_token_skip_spaces,
+                fusion_mlp=bigram_fusion_mlp,
+            )
+            if pair_visuals.numel() > 0 and torch.is_grad_enabled():
+                assert pair_visuals.requires_grad, "Bigram pair vectors lost image gradient path"
+            bigram_loss_i, bigram_stats_i = compute_bigram_token_contrastive_loss(
+                pair_visuals=pair_visuals,
+                target_token_ids=target_token_ids,
+                token_bank_embeddings=token_bank.embeddings,
+                tau=bigram_token_tau,
+            )
+            bigram_losses.append(bigram_loss_i)
+            valid_pairs = bigram_stats_i["bigram_token_valid_pairs"]
+            if valid_pairs:
+                bigram_total_valid += valid_pairs
+                bigram_weighted_top1 += bigram_stats_i["bigram_token_acc_top1"] * valid_pairs
+                bigram_weighted_top5 += bigram_stats_i["bigram_token_acc_top5"] * valid_pairs
+            if epoch == 0 and batch_idx == 0 and sample_idx == 0:
+                print("Bigram pairs:", flush=True)
+                for pair_idx, meta in enumerate(pair_metadata[:20]):
+                    print(
+                        f"pair[{pair_idx}]={meta['token']!r} "
+                        f"from chars [{meta['start_char_index']},{meta['end_char_index']}]",
+                        flush=True,
+                    )
+
+    if sample_losses:
+        char_loss = torch.stack(sample_losses).mean()
+        if total_valid > 0 and torch.is_grad_enabled():
+            assert char_loss.requires_grad, "Character-pool loss lost its image gradient path"
+    else:
+        if not getattr(compute_char_pool_batch_loss, "_warned_no_valid", False):
+            print(
+                "[WARN] No valid D3TW character groups in batch; "
+                "char-pool loss skipped.",
+                flush=True,
+            )
+            compute_char_pool_batch_loss._warned_no_valid = True
+        char_loss = norm_img.sum() * 0.0
+
+    effective_weight = get_char_pool_weight(
+        epoch, char_pool_weight, char_pool_warmup_epochs, char_pool_ramp_epochs
+    )
+    if bigram_losses:
+        bigram_loss = torch.stack(bigram_losses).mean()
+    else:
+        bigram_loss = norm_img.sum() * 0.0
+    stats = {
+        "char_pool_loss": float(char_loss.detach().item()),
+        "char_pool_acc_top1": weighted_top1 / max(total_valid, 1),
+        "char_pool_acc_top5": weighted_top5 / max(total_valid, 1),
+        "char_pool_num_chars": total_chars,
+        "char_pool_valid_chars": total_valid,
+        "char_pool_tau": float(char_pool_tau),
+        "effective_char_pool_weight": effective_weight,
+        "bigram_token_loss": float(bigram_loss.detach().item()),
+        "effective_bigram_token_weight": effective_bigram_weight,
+        "bigram_token_acc_top1": bigram_weighted_top1 / max(bigram_total_valid, 1),
+        "bigram_token_acc_top5": bigram_weighted_top5 / max(bigram_total_valid, 1),
+        "bigram_token_valid_pairs": bigram_total_valid,
+        "bigram_token_tau": float(bigram_token_tau),
+        "sequence_length": int(norm_img.shape[1]),
+    }
+    return char_loss, bigram_loss, stats
+
+
+def compute_token_pool_batch_loss(
+    pos_texts, artifacts, token_bank, epoch, batch_idx=0, char_bank=None
+):
+    """Pool one D3TW group per n-gram token and classify against token bank."""
+    if artifacts is None:
+        raise RuntimeError("D3TW token pooling is not supported with multi_scale_enabled.")
+    if token_bank is None:
+        raise RuntimeError("text_unit_type='ngram' requires a frozen token bank.")
+
+    norm_img = artifacts["norm_img"]
+    sim_pos_list = artifacts["sim_pos_list"]
+    unit_lists = artifacts["unit_lists"]
+    unit_spans = artifacts["unit_spans"]
+
+    token_losses = []
+    char_aux_losses = []
+    total_valid = 0
+    total_units = 0
+    weighted_top1 = 0.0
+    weighted_top5 = 0.0
+    window_count_weight = 0
+    sum_mean_windows = 0.0
+    min_windows_global = None
+    max_windows_global = None
+    char_aux_total_valid = 0
+    char_aux_weighted_top1 = 0.0
+    char_aux_weighted_top5 = 0.0
+
+    effective_token_weight = get_aux_weight(
+        epoch,
+        token_pool_weight,
+        token_pool_warmup_epochs,
+        token_pool_ramp_epochs,
+    )
+    effective_char_aux_weight = get_aux_weight(
+        epoch,
+        char_aux_weight,
+        char_aux_warmup_epochs,
+        char_aux_ramp_epochs,
+    )
+
+    for sample_idx, transcript in enumerate(pos_texts):
+        units = unit_lists[sample_idx]
+        spans = unit_spans[sample_idx]
+        sim = sim_pos_list[sample_idx]
+        visual_b = norm_img[sample_idx]
+        total_units += len(units)
+        if not units:
+            continue
+        assert sim.dim() == 2
+        assert visual_b.dim() == 2
+        assert sim.shape[1] == visual_b.shape[0]
+        assert sim.shape[0] == len(units), (
+            f"Text-unit length {len(units)} != sim rows {sim.shape[0]}."
+        )
+
+        path = hard_d3tw_path_from_similarity(sim)
+        if not path:
+            if epoch == 0 and batch_idx == 0 and sample_idx == 0:
+                print(
+                    f"[TOKEN POOL GROUPS] Transcript: {transcript}\n"
+                    f"no restricted path exists for K={sim.shape[0]}, S={sim.shape[1]} "
+                    "(this topology requires K <= S)",
+                    flush=True,
+                )
+            continue
+        assignment = path_to_assignment(
+            path,
+            num_chars=sim.shape[0],
+            num_visual=sim.shape[1],
+            device=sim.device,
+        )
+        pooled_token_visual, valid_mask, counts = pool_visual_by_assignment(
+            visual_emb=visual_b,
+            assignment=assignment,
+            detach_assignment=token_pool_detach_alignment,
+            min_windows_per_char=token_pool_min_windows_per_token,
+        )
+        assert pooled_token_visual.shape[0] == len(units)
+        assert pooled_token_visual.shape[1] == visual_b.shape[1]
+        if effective_token_weight > 0 and torch.is_grad_enabled():
+            assert pooled_token_visual.requires_grad, "Pooled token vectors lost image gradient path"
+
+        if epoch == 0 and batch_idx == 0 and sample_idx == 0:
+            print(f"[NGRAM TOKENIZATION] Original transcript: {transcript}", flush=True)
+            for unit_idx, (unit, span) in enumerate(zip(units[:40], spans[:40])):
+                print(f"[{unit_idx}] token={unit!r} span={span}", flush=True)
+            print("[D3TW TOKEN GROUPS]", flush=True)
+            for unit_idx, visual_indices in enumerate(groups_from_assignment(assignment)[:40]):
+                print(
+                    f"token[{unit_idx}]={units[unit_idx]!r} span={spans[unit_idx]} "
+                    f"windows={visual_indices}",
+                    flush=True,
+                )
+            print(
+                f"Shapes: visual_emb={tuple(visual_b.shape)} "
+                f"token_emb=[{len(units)},{visual_b.shape[1]}] "
+                f"sim={tuple(sim.shape)} pooled_token_visual={tuple(pooled_token_visual.shape)}",
+                flush=True,
+            )
+
+        token_loss_i, token_stats_i = compute_token_pool_contrastive_loss(
+            pooled_visual=pooled_token_visual,
+            units=units,
+            token_bank_embeddings=token_bank.embeddings,
+            token_to_idx=token_bank.token_to_idx,
+            tau=token_pool_tau,
+            valid_mask=valid_mask,
+            counts=counts,
+        )
+        token_losses.append(token_loss_i)
+        valid_count = token_stats_i["token_pool_valid_tokens"]
+        if valid_count:
+            total_valid += valid_count
+            weighted_top1 += token_stats_i["token_pool_acc_top1"] * valid_count
+            weighted_top5 += token_stats_i["token_pool_acc_top5"] * valid_count
+            sum_mean_windows += token_stats_i["mean_windows_per_token"] * valid_count
+            window_count_weight += valid_count
+            min_w = token_stats_i["min_windows_per_token"]
+            max_w = token_stats_i["max_windows_per_token"]
+            min_windows_global = min_w if min_windows_global is None else min(min_windows_global, min_w)
+            max_windows_global = max_w if max_windows_global is None else max(max_windows_global, max_w)
+
+        if use_char_aux_loss and char_bank is not None:
+            char_aux_loss_i, char_aux_stats_i = compute_char_aux_loss_from_token_pool(
+                pooled_token_visual=pooled_token_visual,
+                units=units,
+                spans=spans,
+                original_text=transcript,
+                char_bank_embeddings=char_bank.embeddings,
+                char_to_idx=char_bank.char_to_idx,
+                tau=char_aux_tau,
+                valid_mask=valid_mask,
+            )
+            char_aux_losses.append(char_aux_loss_i)
+            aux_valid = char_aux_stats_i["char_aux_valid_chars"]
+            if aux_valid:
+                char_aux_total_valid += aux_valid
+                char_aux_weighted_top1 += char_aux_stats_i["char_aux_acc_top1"] * aux_valid
+                char_aux_weighted_top5 += char_aux_stats_i["char_aux_acc_top5"] * aux_valid
+
+    if token_losses:
+        token_loss = torch.stack(token_losses).mean()
+        if total_valid > 0 and torch.is_grad_enabled():
+            assert token_loss.requires_grad, "Token-pool loss lost its image gradient path"
+    else:
+        if not getattr(compute_token_pool_batch_loss, "_warned_no_valid", False):
+            print("[WARN] No valid D3TW token groups in batch; token-pool loss skipped.", flush=True)
+            compute_token_pool_batch_loss._warned_no_valid = True
+        token_loss = norm_img.sum() * 0.0
+
+    if char_aux_losses:
+        char_aux_loss = torch.stack(char_aux_losses).mean()
+    else:
+        char_aux_loss = norm_img.sum() * 0.0
+
+    stats = {
+        "token_pool_loss": float(token_loss.detach().item()),
+        "token_pool_acc_top1": weighted_top1 / max(total_valid, 1),
+        "token_pool_acc_top5": weighted_top5 / max(total_valid, 1),
+        "token_pool_valid_tokens": total_valid,
+        "token_pool_num_units": total_units,
+        "token_pool_tau": float(token_pool_tau),
+        "effective_token_pool_weight": effective_token_weight,
+        "char_aux_loss": float(char_aux_loss.detach().item()),
+        "effective_char_aux_weight": effective_char_aux_weight if use_char_aux_loss else 0.0,
+        "char_aux_acc_top1": char_aux_weighted_top1 / max(char_aux_total_valid, 1),
+        "char_aux_acc_top5": char_aux_weighted_top5 / max(char_aux_total_valid, 1),
+        "char_aux_valid_chars": char_aux_total_valid,
+        "char_aux_tau": float(char_aux_tau),
+        "mean_windows_per_token": sum_mean_windows / max(window_count_weight, 1),
+        "min_windows_per_token": int(min_windows_global or 0),
+        "max_windows_per_token": int(max_windows_global or 0),
+        "sequence_length": int(norm_img.shape[1]),
+    }
+    return token_loss, char_aux_loss, stats
 
 
 def _print_loss_summary(loss_dict, batch_idx):
@@ -503,6 +1174,17 @@ def _print_loss_summary(loss_dict, batch_idx):
     for key in (
         "ctc_loss", "ctc_pos_cost", "ctc_neg_cost", "ctc_gap", "ctc_top1",
         "d3tw_loss", "d3tw_cost_pos", "d3tw_cost_neg", "total_loss",
+        "char_pool_loss", "effective_char_pool_weight", "char_pool_acc_top1",
+        "char_pool_acc_top5", "char_pool_valid_chars", "char_pool_num_chars",
+        "bigram_token_loss", "effective_bigram_token_weight",
+        "bigram_token_acc_top1", "bigram_token_acc_top5", "bigram_token_valid_pairs",
+        "token_pool_loss", "effective_token_pool_weight",
+        "token_pool_acc_top1", "token_pool_acc_top5", "token_pool_valid_tokens",
+        "token_pool_num_units", "char_aux_loss", "effective_char_aux_weight",
+        "char_aux_acc_top1", "char_aux_acc_top5", "char_aux_valid_chars",
+        "mean_windows_per_token", "min_windows_per_token", "max_windows_per_token",
+        "window_size", "stride", "window_overlap_mode", "num_windows",
+        "sequence_length",
         "input_length", "mean_target_length", "vocab_size",
     ):
         if key in loss_dict:
@@ -518,6 +1200,11 @@ def compute_batch_loss(imageEmbed, textEmbed,
                        images, pos_texts, neg_texts,
                        criterion,
                        ctc_head=None, ctc_vocab=None,
+                       char_bank=None,
+                       token_bank=None,
+                       bigram_fusion_mlp=None,
+                       ngram_tokenizer=None,
+                       cross_attention_module=None,
                        epoch=0, batch_idx=0, dataloader_length=0, debug=False, timer=None):
     if timer is None:
         timer = global_timer
@@ -528,6 +1215,10 @@ def compute_batch_loss(imageEmbed, textEmbed,
     loss_dict = {}
     ctc_loss_value = None
     d3tw_loss_value = None
+    char_pool_loss_value = None
+    bigram_token_loss_value = None
+    token_pool_loss_value = None
+    char_aux_loss_value = None
 
     if _needs_ctc():
         if ctc_head is None or ctc_vocab is None:
@@ -557,13 +1248,43 @@ def compute_batch_loss(imageEmbed, textEmbed,
     if _needs_d3tw():
         if textEmbed is None:
             raise RuntimeError("D3TW mode requires a text embedder.")
-        d3tw_loss_value, d3tw_dict = compute_d3tw_batch_loss(
+        d3tw_loss_value, d3tw_dict, d3tw_artifacts = compute_d3tw_batch_loss(
             imageEmbed, textEmbed, images, pos_texts, neg_texts, criterion,
+            cross_attention_module=cross_attention_module,
+            ngram_tokenizer=ngram_tokenizer,
             epoch=epoch, batch_idx=batch_idx,
             dataloader_length=dataloader_length, debug=debug, timer=timer
         )
         loss_dict.update({f"d3tw_{k}": v for k, v in d3tw_dict.items()})
         loss_dict["d3tw_loss"] = d3tw_loss_value.detach().item()
+
+        if _uses_char_pool():
+            if _uses_ngram_units():
+                if token_bank is None:
+                    raise RuntimeError("text_unit_type='ngram' requires a token bank.")
+                token_pool_loss_value, char_aux_loss_value, token_pool_dict = compute_token_pool_batch_loss(
+                    pos_texts, d3tw_artifacts, token_bank, epoch, batch_idx=batch_idx,
+                    char_bank=char_bank,
+                )
+                loss_dict.update(token_pool_dict)
+            else:
+                if char_bank is None:
+                    raise RuntimeError("D3TW character-pooling mode requires a character bank.")
+                char_pool_loss_value, bigram_token_loss_value, char_pool_dict = compute_char_pool_batch_loss(
+                    pos_texts, d3tw_artifacts, char_bank, epoch, batch_idx=batch_idx,
+                    token_bank=token_bank,
+                    bigram_fusion_mlp=bigram_fusion_mlp,
+                )
+                loss_dict.update(char_pool_dict)
+            if char_bank is None and not _uses_ngram_units():
+                raise RuntimeError("D3TW character-pooling mode requires a character bank.")
+            loss_dict.update({
+                "window_size": imageEmbed.window_size,
+                "stride": imageEmbed.stride,
+                "window_overlap_mode": window_overlap_mode,
+                "num_windows": (images.shape[-1] - imageEmbed.window_size)
+                               // imageEmbed.stride + 1,
+            })
 
     if alignment_loss_type == "ctc":
         total_loss = ctc_loss_value
@@ -571,10 +1292,55 @@ def compute_batch_loss(imageEmbed, textEmbed,
         total_loss = ctc_loss_value
     elif alignment_loss_type == "ctc_d3tw":
         total_loss = ctc_weight * ctc_loss_value + d3tw_weight * d3tw_loss_value
+        if _uses_char_pool():
+            if _uses_ngram_units():
+                total_loss = total_loss + loss_dict["effective_token_pool_weight"] * token_pool_loss_value
+                total_loss = total_loss + loss_dict["effective_char_aux_weight"] * char_aux_loss_value
+            else:
+                total_loss = total_loss + loss_dict["effective_char_pool_weight"] * char_pool_loss_value
+                if _uses_bigram_token_loss():
+                    total_loss = total_loss + loss_dict["effective_bigram_token_weight"] * bigram_token_loss_value
     elif alignment_loss_type == "contrastive_ctc_d3tw":
         total_loss = ctc_weight * ctc_loss_value + d3tw_weight * d3tw_loss_value
+        if _uses_char_pool():
+            if _uses_ngram_units():
+                total_loss = total_loss + loss_dict["effective_token_pool_weight"] * token_pool_loss_value
+                total_loss = total_loss + loss_dict["effective_char_aux_weight"] * char_aux_loss_value
+            else:
+                total_loss = total_loss + loss_dict["effective_char_pool_weight"] * char_pool_loss_value
+                if _uses_bigram_token_loss():
+                    total_loss = total_loss + loss_dict["effective_bigram_token_weight"] * bigram_token_loss_value
+    elif alignment_loss_type in {"d3tw_char_pool", "contrastive_d3tw_char_pool"}:
+        if _uses_ngram_units():
+            total_loss = (
+                d3tw_weight * d3tw_loss_value
+                + loss_dict["effective_token_pool_weight"] * token_pool_loss_value
+                + loss_dict["effective_char_aux_weight"] * char_aux_loss_value
+            )
+        else:
+            total_loss = (
+                d3tw_weight * d3tw_loss_value
+                + loss_dict["effective_char_pool_weight"] * char_pool_loss_value
+            )
+            if _uses_bigram_token_loss():
+                total_loss = total_loss + loss_dict["effective_bigram_token_weight"] * bigram_token_loss_value
     elif alignment_loss_type == "d3tw":
-        total_loss = d3tw_loss_value
+        if _uses_char_pool():
+            if _uses_ngram_units():
+                total_loss = (
+                    d3tw_weight * d3tw_loss_value
+                    + loss_dict["effective_token_pool_weight"] * token_pool_loss_value
+                    + loss_dict["effective_char_aux_weight"] * char_aux_loss_value
+                )
+            else:
+                total_loss = (
+                    d3tw_weight * d3tw_loss_value
+                    + loss_dict["effective_char_pool_weight"] * char_pool_loss_value
+                )
+                if _uses_bigram_token_loss():
+                    total_loss = total_loss + loss_dict["effective_bigram_token_weight"] * bigram_token_loss_value
+        else:
+            total_loss = d3tw_loss_value
     else:
         raise ValueError(f"Unknown alignment_loss_type: {alignment_loss_type}")
 
@@ -585,6 +1351,11 @@ def compute_batch_loss(imageEmbed, textEmbed,
 
 def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
           ctc_head=None, ctc_vocab=None,
+          char_bank=None,
+          token_bank=None,
+          bigram_fusion_mlp=None,
+          ngram_tokenizer=None,
+          cross_attention_module=None,
           lr=None, total_epochs=None, resume_path=None, model_config=None):
     """Train the image-text alignment model (CRNN: ResNet34 + BiLSTM)."""
     imageEmbedding.train()
@@ -607,6 +1378,13 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
     optim_params = cnn_params + other_params
     if ctc_head is not None:
         optim_params += list(ctc_head.parameters())
+    if cross_attention_module is not None and cross_attention_weight > 0:
+        cross_params = [
+            p for p in cross_attention_module.parameters() if p.requires_grad
+        ]
+        optim_params += cross_params
+    if bigram_fusion_mlp is not None:
+        optim_params += [p for p in bigram_fusion_mlp.parameters() if p.requires_grad]
     optimizer = optim.Adam(optim_params, lr=lr)
     # Cosine schedule: ReduceLROnPlateau was monitoring a loss that's bounded
     # below by the contrastive margin, so it kept halving LR to zero even
@@ -627,6 +1405,16 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
         imageEmbedding.load_state_dict(_extract_model_state(ckpt))
         if ctc_head is not None and ckpt.get('ctc_head_state_dict') is not None:
             ctc_head.load_state_dict(ckpt['ctc_head_state_dict'])
+        if (
+            cross_attention_module is not None
+            and ckpt.get('cross_attention_state_dict') is not None
+        ):
+            cross_attention_module.load_state_dict(ckpt['cross_attention_state_dict'])
+        if (
+            bigram_fusion_mlp is not None
+            and ckpt.get('bigram_fusion_mlp_state_dict') is not None
+        ):
+            bigram_fusion_mlp.load_state_dict(ckpt['bigram_fusion_mlp_state_dict'])
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         scheduler.load_state_dict(ckpt['scheduler_state_dict'])
         if ckpt.get('scaler_state_dict') is not None and use_scaler:
@@ -649,6 +1437,10 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
         imageEmbedding.train()
         if ctc_head is not None:
             ctc_head.train()
+        if cross_attention_module is not None:
+            cross_attention_module.train()
+        if bigram_fusion_mlp is not None:
+            bigram_fusion_mlp.train()
         global_timer.reset()
 
         train_loss = 0.0
@@ -668,6 +1460,11 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
                 criterion,
                 ctc_head=ctc_head,
                 ctc_vocab=ctc_vocab,
+                char_bank=char_bank,
+                token_bank=token_bank,
+                bigram_fusion_mlp=bigram_fusion_mlp,
+                ngram_tokenizer=ngram_tokenizer,
+                cross_attention_module=cross_attention_module,
                 epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader),
                 debug=debug, timer=global_timer
             )
@@ -698,6 +1495,10 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
         imageEmbedding.eval()
         if ctc_head is not None:
             ctc_head.eval()
+        if cross_attention_module is not None:
+            cross_attention_module.eval()
+        if bigram_fusion_mlp is not None:
+            bigram_fusion_mlp.eval()
         val_loss = 0.0
         with torch.no_grad():
             for batch_idx, (images, pos_texts, neg_texts) in enumerate(validLoader):
@@ -707,8 +1508,15 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
                     imageEmbedding, textEmbedding,
                     images, pos_texts, neg_texts,
                     criterion=criterion
-                    , ctc_head=ctc_head,
-                    ctc_vocab=ctc_vocab
+	                    , ctc_head=ctc_head,
+	                    ctc_vocab=ctc_vocab
+	                    , char_bank=char_bank
+	                    , token_bank=token_bank
+	                    , bigram_fusion_mlp=bigram_fusion_mlp
+	                    , ngram_tokenizer=ngram_tokenizer
+	                    , cross_attention_module=cross_attention_module
+                    , epoch=epoch
+                    , batch_idx=batch_idx
                 )
                 val_loss += loss.item()
 
@@ -732,15 +1540,20 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
         # Save full checkpoint each epoch so --resume can recover exactly.
         save_checkpoint(imageEmbedding, optimizer, scheduler, scaler, epoch,
                         job_id, model_config=_model_config,
-                        ctc_head=ctc_head, ctc_vocab=ctc_vocab)
-        save_model_weights(imageEmbedding, epoch, job_id,
-                           model_config=_model_config,
-                           ctc_head=ctc_head, ctc_vocab=ctc_vocab)
+                        ctc_head=ctc_head, ctc_vocab=ctc_vocab,
+                        cross_attention_module=cross_attention_module,
+                        bigram_fusion_mlp=bigram_fusion_mlp)
+        weights_path = save_model_weights(imageEmbedding, epoch, job_id,
+                                          model_config=_model_config,
+                                          ctc_head=ctc_head, ctc_vocab=ctc_vocab,
+                                          cross_attention_module=cross_attention_module,
+                                          bigram_fusion_mlp=bigram_fusion_mlp)
 
         if debug_wandb:
-            update_wandb(train_loss, val_loss)
-            if epoch % 10 == 0:
-                upload_artifacts_to_wandb(job_id, epoch)
+            # One W&B loss update per completed epoch.
+            update_wandb(epoch + 1, train_loss, val_loss)
+            if (epoch + 1) % 10 == 0:
+                log_wandb_weights(job_id, epoch + 1, weights_path)
         loss_lst.append(train_loss)
 
     return loss_lst
@@ -756,6 +1569,9 @@ if __name__ == '__main__':
     if args.stride_ratio is not None:
         _params.stride_ratio = args.stride_ratio
         stride_ratio = args.stride_ratio
+    if args.window_overlap_mode is not None:
+        _params.window_overlap_mode = args.window_overlap_mode
+        window_overlap_mode = args.window_overlap_mode
     if args.text_embedder is not None:
         _params.text_embedder_type = args.text_embedder.lower()
         text_embedder_type = _params.text_embedder_type
@@ -781,6 +1597,120 @@ if __name__ == '__main__':
     if args.alignment_loss_type is not None:
         _params.alignment_loss_type = args.alignment_loss_type.lower()
         alignment_loss_type = _params.alignment_loss_type
+    if args.use_d3tw_char_pooling is not None:
+        _params.use_d3tw_char_pooling = args.use_d3tw_char_pooling
+        use_d3tw_char_pooling = args.use_d3tw_char_pooling
+    if args.char_pool_weight is not None:
+        _params.char_pool_weight = args.char_pool_weight
+        char_pool_weight = args.char_pool_weight
+    if args.char_pool_tau is not None:
+        _params.char_pool_tau = args.char_pool_tau
+        char_pool_tau = args.char_pool_tau
+    if args.char_pool_warmup_epochs is not None:
+        _params.char_pool_warmup_epochs = args.char_pool_warmup_epochs
+        char_pool_warmup_epochs = args.char_pool_warmup_epochs
+    if args.char_pool_ramp_epochs is not None:
+        _params.char_pool_ramp_epochs = args.char_pool_ramp_epochs
+        char_pool_ramp_epochs = args.char_pool_ramp_epochs
+    if args.char_pool_method is not None:
+        _params.char_pool_method = args.char_pool_method
+        char_pool_method = args.char_pool_method
+    if args.char_pool_detach_alignment is not None:
+        _params.char_pool_detach_alignment = args.char_pool_detach_alignment
+        char_pool_detach_alignment = args.char_pool_detach_alignment
+    if args.char_pool_skip_spaces is not None:
+        _params.char_pool_skip_spaces = args.char_pool_skip_spaces
+        char_pool_skip_spaces = args.char_pool_skip_spaces
+    if args.char_pool_min_windows_per_char is not None:
+        _params.char_pool_min_windows_per_char = args.char_pool_min_windows_per_char
+        char_pool_min_windows_per_char = args.char_pool_min_windows_per_char
+    if args.text_unit_type is not None:
+        _params.text_unit_type = args.text_unit_type.lower()
+        text_unit_type = _params.text_unit_type
+    if args.ngram_min_n is not None:
+        _params.ngram_min_n = args.ngram_min_n
+        ngram_min_n = args.ngram_min_n
+    if args.ngram_max_n is not None:
+        _params.ngram_max_n = args.ngram_max_n
+        ngram_max_n = args.ngram_max_n
+    if args.ngram_min_freq is not None:
+        _params.ngram_min_freq = args.ngram_min_freq
+        ngram_min_freq = args.ngram_min_freq
+    if args.ngram_max_vocab_size is not None:
+        _params.ngram_max_vocab_size = args.ngram_max_vocab_size
+        ngram_max_vocab_size = args.ngram_max_vocab_size
+    if args.ngram_tokenizer_mode is not None:
+        _params.ngram_tokenizer_mode = args.ngram_tokenizer_mode
+        ngram_tokenizer_mode = args.ngram_tokenizer_mode
+    if args.ngram_skip_spaces is not None:
+        _params.ngram_skip_spaces = args.ngram_skip_spaces
+        ngram_skip_spaces = args.ngram_skip_spaces
+    if args.ngram_include_ligatures is not None:
+        _params.ngram_include_ligatures = args.ngram_include_ligatures
+        ngram_include_ligatures = args.ngram_include_ligatures
+    if args.token_pool_weight is not None:
+        _params.token_pool_weight = args.token_pool_weight
+        token_pool_weight = args.token_pool_weight
+    if args.token_pool_tau is not None:
+        _params.token_pool_tau = args.token_pool_tau
+        token_pool_tau = args.token_pool_tau
+    if args.token_pool_warmup_epochs is not None:
+        _params.token_pool_warmup_epochs = args.token_pool_warmup_epochs
+        token_pool_warmup_epochs = args.token_pool_warmup_epochs
+    if args.token_pool_ramp_epochs is not None:
+        _params.token_pool_ramp_epochs = args.token_pool_ramp_epochs
+        token_pool_ramp_epochs = args.token_pool_ramp_epochs
+    if args.token_pool_detach_alignment is not None:
+        _params.token_pool_detach_alignment = args.token_pool_detach_alignment
+        token_pool_detach_alignment = args.token_pool_detach_alignment
+    if args.token_pool_min_windows_per_token is not None:
+        _params.token_pool_min_windows_per_token = args.token_pool_min_windows_per_token
+        token_pool_min_windows_per_token = args.token_pool_min_windows_per_token
+    if args.use_char_aux_loss is not None:
+        _params.use_char_aux_loss = args.use_char_aux_loss
+        use_char_aux_loss = args.use_char_aux_loss
+    if args.char_aux_weight is not None:
+        _params.char_aux_weight = args.char_aux_weight
+        char_aux_weight = args.char_aux_weight
+    if args.char_aux_tau is not None:
+        _params.char_aux_tau = args.char_aux_tau
+        char_aux_tau = args.char_aux_tau
+    if args.char_aux_warmup_epochs is not None:
+        _params.char_aux_warmup_epochs = args.char_aux_warmup_epochs
+        char_aux_warmup_epochs = args.char_aux_warmup_epochs
+    if args.char_aux_ramp_epochs is not None:
+        _params.char_aux_ramp_epochs = args.char_aux_ramp_epochs
+        char_aux_ramp_epochs = args.char_aux_ramp_epochs
+    if args.use_bigram_token_loss is not None:
+        _params.use_bigram_token_loss = args.use_bigram_token_loss
+        use_bigram_token_loss = args.use_bigram_token_loss
+    if args.bigram_token_weight is not None:
+        _params.bigram_token_weight = args.bigram_token_weight
+        bigram_token_weight = args.bigram_token_weight
+    if args.bigram_token_tau is not None:
+        _params.bigram_token_tau = args.bigram_token_tau
+        bigram_token_tau = args.bigram_token_tau
+    if args.bigram_token_warmup_epochs is not None:
+        _params.bigram_token_warmup_epochs = args.bigram_token_warmup_epochs
+        bigram_token_warmup_epochs = args.bigram_token_warmup_epochs
+    if args.bigram_token_ramp_epochs is not None:
+        _params.bigram_token_ramp_epochs = args.bigram_token_ramp_epochs
+        bigram_token_ramp_epochs = args.bigram_token_ramp_epochs
+    if args.bigram_token_skip_spaces is not None:
+        _params.bigram_token_skip_spaces = args.bigram_token_skip_spaces
+        bigram_token_skip_spaces = args.bigram_token_skip_spaces
+    if args.bigram_token_min_freq is not None:
+        _params.bigram_token_min_freq = args.bigram_token_min_freq
+        bigram_token_min_freq = args.bigram_token_min_freq
+    if args.bigram_token_max_vocab_size is not None:
+        _params.bigram_token_max_vocab_size = args.bigram_token_max_vocab_size
+        bigram_token_max_vocab_size = args.bigram_token_max_vocab_size
+    if args.bigram_token_fusion is not None:
+        _params.bigram_token_fusion = args.bigram_token_fusion
+        bigram_token_fusion = args.bigram_token_fusion
+    if args.bigram_token_include_ligatures is not None:
+        _params.bigram_token_include_ligatures = args.bigram_token_include_ligatures
+        bigram_token_include_ligatures = args.bigram_token_include_ligatures
     if args.ctc_weight is not None:
         _params.ctc_weight = args.ctc_weight
         ctc_weight = args.ctc_weight
@@ -796,12 +1726,94 @@ if __name__ == '__main__':
     if args.contrastive_ctc_margin is not None:
         _params.contrastive_ctc_margin = args.contrastive_ctc_margin
         contrastive_ctc_margin = args.contrastive_ctc_margin
+    if args.sequence_encoder_type is not None:
+        _params.sequence_encoder_type = args.sequence_encoder_type.lower()
+        _params.use_bilstm = _params.sequence_encoder_type == "bilstm"
+        sequence_encoder_type = _params.sequence_encoder_type
+        use_bilstm = _params.use_bilstm
+    if args.transformer_num_layers is not None:
+        _params.transformer_num_layers = args.transformer_num_layers
+        transformer_num_layers = args.transformer_num_layers
+    if args.transformer_num_heads is not None:
+        _params.transformer_num_heads = args.transformer_num_heads
+        transformer_num_heads = args.transformer_num_heads
+    if args.transformer_ff_dim is not None:
+        _params.transformer_ff_dim = args.transformer_ff_dim
+        transformer_ff_dim = args.transformer_ff_dim
+    if args.transformer_dropout is not None:
+        _params.transformer_dropout = args.transformer_dropout
+        transformer_dropout = args.transformer_dropout
+    if args.transformer_activation is not None:
+        _params.transformer_activation = args.transformer_activation.lower()
+        transformer_activation = _params.transformer_activation
+    if args.transformer_norm_first is not None:
+        _params.transformer_norm_first = args.transformer_norm_first
+        transformer_norm_first = args.transformer_norm_first
+    if args.transformer_positional_encoding is not None:
+        _params.transformer_positional_encoding = args.transformer_positional_encoding.lower()
+        transformer_positional_encoding = _params.transformer_positional_encoding
+    if args.transformer_max_len is not None:
+        _params.transformer_max_len = args.transformer_max_len
+        transformer_max_len = args.transformer_max_len
+    if args.return_attention_weights is not None:
+        _params.return_attention_weights = args.return_attention_weights
+        return_attention_weights = args.return_attention_weights
+    if args.use_cross_attention is not None:
+        _params.use_cross_attention = args.use_cross_attention
+        use_cross_attention = args.use_cross_attention
+    if args.cross_attention_type is not None:
+        _params.cross_attention_type = args.cross_attention_type.lower()
+        cross_attention_type = _params.cross_attention_type
+    if args.cross_attention_num_heads is not None:
+        _params.cross_attention_num_heads = args.cross_attention_num_heads
+        cross_attention_num_heads = args.cross_attention_num_heads
+    if args.cross_attention_dropout is not None:
+        _params.cross_attention_dropout = args.cross_attention_dropout
+        cross_attention_dropout = args.cross_attention_dropout
+    if args.cross_attention_weight is not None:
+        _params.cross_attention_weight = args.cross_attention_weight
+        cross_attention_weight = args.cross_attention_weight
 
     if debug_wandb:
         init_wandb(job_id)
 
-    stride = max(1, int(window_size * stride_ratio))
-    print(f"Using window_size={window_size}, stride={stride} ({int((1-stride_ratio)*100)}% overlap)")
+    if alignment_loss_type in {'d3tw_char_pool', 'contrastive_d3tw_char_pool'}:
+        _params.use_d3tw_char_pooling = True
+        use_d3tw_char_pooling = True
+    if _uses_char_pool() and multi_scale_enabled:
+        raise NotImplementedError("D3TW character pooling currently supports single-scale training only.")
+    if _uses_char_pool() and not _needs_d3tw():
+        raise ValueError("use_d3tw_char_pooling requires an alignment mode containing D3TW.")
+    if _uses_char_pool() and char_pool_method == "soft_weighted":
+        raise NotImplementedError(
+            "char_pool_method='soft_weighted' is configured but the current Soft-DTW "
+            "backend does not expose alignment weights. Use hard_mean."
+        )
+    if text_unit_type not in {"char", "ngram"}:
+        raise ValueError("text_unit_type must be 'char' or 'ngram'.")
+    if _uses_ngram_units() and not _uses_char_pool():
+        raise ValueError("text_unit_type='ngram' requires d3tw_char_pool/use_d3tw_char_pooling.")
+    if _uses_char_pool() and not _uses_ngram_units() and not char_pool_use_char_bank:
+        raise NotImplementedError("Character-pooling currently requires char_pool_use_char_bank=True.")
+    if _uses_bigram_token_loss() and _uses_ngram_units():
+        print(
+            "[BIGRAM TOKEN] auxiliary bigram loss is ignored in text_unit_type='ngram'; "
+            "token_pool_loss is the main token-level supervision.",
+            flush=True,
+        )
+        import Parameters as _P
+        _P.use_bigram_token_loss = False
+        use_bigram_token_loss = False
+    if _uses_bigram_token_loss() and not _uses_char_pool():
+        raise ValueError("use_bigram_token_loss requires D3TW character pooling.")
+    if _uses_bigram_token_loss() and bigram_token_fusion not in {"mean", "mlp"}:
+        raise ValueError("bigram_token_fusion must be 'mean' or 'mlp'.")
+
+    stride = compute_stride(window_size, stride_ratio, window_overlap_mode)
+    print(
+        f"Using window_size={window_size}, stride={stride}, "
+        f"window_overlap_mode={window_overlap_mode}"
+    )
 
     # Resolve dataset path & training schedule. Precedence:
     #   --data_dir > --finetune (finetune_data_dir) > Parameters.py defaults
@@ -850,11 +1862,43 @@ if __name__ == '__main__':
         vector_size=vector_size,
         device=device,
         use_flip=(lang.lower() == "arabic"),
-        use_bilstm=use_bilstm,
+        sequence_encoder_type=sequence_encoder_type,
+        use_bilstm=(sequence_encoder_type == "bilstm"),
         bilstm_layers=bilstm_layers,
         bilstm_hidden_dim=bilstm_hidden_dim,
         dropout=model_dropout,
+        transformer_num_layers=transformer_num_layers,
+        transformer_num_heads=transformer_num_heads,
+        transformer_ff_dim=transformer_ff_dim,
+        transformer_dropout=transformer_dropout,
+        transformer_activation=transformer_activation,
+        transformer_norm_first=transformer_norm_first,
+        transformer_positional_encoding=transformer_positional_encoding,
+        transformer_max_len=transformer_max_len,
+        return_attention_weights=return_attention_weights,
     )
+
+    cross_attention_module = None
+    if use_cross_attention:
+        if cross_attention_weight > 0 and _needs_d3tw():
+            cross_attention_module = CrossAttentionSimilarity(
+                dim=vector_size,
+                num_heads=cross_attention_num_heads,
+                dropout=cross_attention_dropout,
+                attention_type=cross_attention_type,
+            ).to(device)
+            print(
+                "[CROSS-ATTN] enabled as auxiliary similarity "
+                f"type={cross_attention_type} heads={cross_attention_num_heads} "
+                f"weight={cross_attention_weight}",
+                flush=True,
+            )
+        else:
+            print(
+                "[CROSS-ATTN] requested but inactive "
+                f"(needs_d3tw={_needs_d3tw()} weight={cross_attention_weight})",
+                flush=True,
+            )
 
     # --resume restores model + optimizer + scheduler + epoch inside Train().
     # --pretrained_weights only loads model weights here (fresh optimizer/epoch).
@@ -895,19 +1939,188 @@ if __name__ == '__main__':
             flush=True,
         )
 
+    char_bank = None
+    token_bank = None
+    bigram_fusion_mlp = None
+    ngram_tokenizer = None
+    if _uses_char_pool():
+        bank_texts = _collect_training_texts(_train_dl, resolved_data_dir)
+        if not bank_texts:
+            raise RuntimeError("Could not collect training transcripts for pooling banks.")
+
+        if _uses_ngram_units():
+            tokens = collect_ngram_tokens(
+                bank_texts,
+                min_n=ngram_min_n,
+                max_n=ngram_max_n,
+                min_freq=ngram_min_freq,
+                max_vocab_size=ngram_max_vocab_size,
+                skip_spaces=ngram_skip_spaces,
+                include_ligatures=ngram_include_ligatures,
+                ligatures=ngram_ligatures,
+            )
+            if not tokens:
+                raise RuntimeError("No n-gram text-unit tokens were collected.")
+            ngram_tokenizer = NGramTokenizer(tokens, mode=ngram_tokenizer_mode)
+            token_embeddings, token_to_idx, idx_to_token = build_token_embedding_bank(
+                textEmbedding, tokens, device
+            )
+            token_bank = TokenBank(
+                token_to_idx=token_to_idx,
+                idx_to_token=idx_to_token,
+                embeddings=token_embeddings,
+            )
+            assert not token_bank.embeddings.requires_grad, "Token bank must be frozen"
+            vocab_path = os.path.join(_weights_dir(job_id), "ngram_vocab.json")
+            save_ngram_vocab_json(vocab_path, idx_to_token)
+            token_bank_path = _save_token_bank(token_bank, job_id)
+            _make_model_config._ngram_vocab_size = len(token_bank.idx_to_token)
+            print(
+                f"[NGRAM TOKEN] vocab size={len(token_bank.idx_to_token)} "
+                f"first 30 tokens={token_bank.idx_to_token[:30]} "
+                f"embedding dim={token_bank.embeddings.shape[1]} "
+                f"vocab={vocab_path} token_bank={token_bank_path}",
+                flush=True,
+            )
+
+            if use_char_aux_loss:
+                chars = collect_unique_chars(bank_texts, skip_spaces=False)
+                bank_embeddings, char_to_idx, idx_to_char = build_char_bank(
+                    textEmbedding, chars, device
+                )
+                char_bank = CharacterBank(
+                    char_to_idx=char_to_idx,
+                    idx_to_char=idx_to_char,
+                    embeddings=bank_embeddings,
+                )
+                assert not char_bank.embeddings.requires_grad, "Character bank must be frozen"
+                char_bank_path = _save_char_bank(char_bank, job_id)
+                print(
+                    f"[CHAR AUX] char bank size={len(char_bank.idx_to_char)} "
+                    f"first 20 chars={char_bank.idx_to_char[:20]} "
+                    f"embedding dim={char_bank.embeddings.shape[1]} saved={char_bank_path}",
+                    flush=True,
+                )
+        else:
+            chars = collect_unique_chars(
+                bank_texts, skip_spaces=char_pool_skip_spaces
+            )
+            bank_embeddings, char_to_idx, idx_to_char = build_char_bank(
+                textEmbedding, chars, device
+            )
+            char_bank = CharacterBank(
+                char_to_idx=char_to_idx,
+                idx_to_char=idx_to_char,
+                embeddings=bank_embeddings,
+            )
+            assert not char_bank.embeddings.requires_grad, "Character bank must be frozen"
+            char_bank_path = _save_char_bank(char_bank, job_id)
+            print(
+                f"[CHAR POOL] char bank size={len(char_bank.idx_to_char)} "
+                f"first 20 chars={char_bank.idx_to_char[:20]} "
+                f"embedding dim={char_bank.embeddings.shape[1]} "
+                f"method={char_pool_method} saved={char_bank_path}",
+                flush=True,
+            )
+
+        if (not _uses_ngram_units()) and _uses_bigram_token_loss():
+            tokens = collect_bigram_tokens(
+                bank_texts,
+                skip_spaces=bigram_token_skip_spaces,
+                min_freq=bigram_token_min_freq,
+                max_vocab_size=bigram_token_max_vocab_size,
+                include_ligatures=bigram_token_include_ligatures,
+            )
+            if not tokens:
+                print(
+                    "[BIGRAM TOKEN] WARNING: no bigram tokens found; disabling bigram token loss.",
+                    flush=True,
+                )
+                import Parameters as _P
+                _P.use_bigram_token_loss = False
+                use_bigram_token_loss = False
+            else:
+                token_embeddings, token_to_idx, idx_to_token = build_token_bank(
+                    textEmbedding, tokens, device
+                )
+                token_bank = TokenBank(
+                    token_to_idx=token_to_idx,
+                    idx_to_token=idx_to_token,
+                    embeddings=token_embeddings,
+                )
+                assert not token_bank.embeddings.requires_grad, "Token bank must be frozen"
+                token_bank_path = _save_token_bank(token_bank, job_id)
+                _make_model_config._bigram_token_vocab_size = len(token_bank.idx_to_token)
+                print(
+                    f"[BIGRAM TOKEN] token bank size={len(token_bank.idx_to_token)} "
+                    f"first 30 tokens={token_bank.idx_to_token[:30]} "
+                    f"embedding dim={token_bank.embeddings.shape[1]} "
+                    f"fusion={bigram_token_fusion} saved={token_bank_path}",
+                    flush=True,
+                )
+                if bigram_token_fusion == "mlp":
+                    bigram_fusion_mlp = BigramFusionMLP(vector_size).to(device)
+
     criterion    = Loss_choice() if _needs_d3tw() else None
     _model_cfg   = _make_model_config(window_size, stride, stride_ratio, ctc_vocab)
 
-    print(f"\n=== Architecture: CRNN (ResNet34 + BiLSTM) ===")
+    print(f"\n=== Architecture: Image Encoder (ResNet34 + {sequence_encoder_type}) ===")
     print(f"[OPT 1] job_id: {job_id}")
-    print(f"[OPT 2] BiLSTM Context: {use_bilstm} (layers={bilstm_layers})")
-    print(f"[OPT 3] Sliding Window Overlap: stride_ratio={stride_ratio}")
+    print(f"[OPT 2] Sequence Encoder: {sequence_encoder_type}")
+    if sequence_encoder_type == "bilstm":
+        print(f"[OPT 2a] BiLSTM layers={bilstm_layers} hidden_dim={bilstm_hidden_dim}")
+    if sequence_encoder_type == "transformer":
+        print(
+            f"[OPT 2a] Transformer layers={transformer_num_layers} "
+            f"heads={transformer_num_heads} ff_dim={transformer_ff_dim} "
+            f"dropout={transformer_dropout} pos={transformer_positional_encoding}"
+        )
+    print(
+        f"[OPT 3] Sliding Window: window_overlap_mode={window_overlap_mode} "
+        f"window_size={window_size} stride={stride} stride_ratio={stride_ratio}"
+    )
     print(f"[OPT 4] In-Batch Negatives: num_negatives={num_negatives}")
     print(f"[OPT 5] alignment_loss_type={alignment_loss_type}")
     if _needs_ctc():
         print(f"[OPT 6] CTC: weight={ctc_weight} loss={contrastive_ctc_loss_type} tau={contrastive_ctc_tau} margin={contrastive_ctc_margin}")
     if _needs_d3tw():
         print(f"[OPT 7] D3TW: weight={d3tw_weight}")
+        print(
+            f"[OPT 7a] Cross-Attention: enabled={cross_attention_module is not None} "
+            f"type={cross_attention_type} weight={cross_attention_weight}"
+        )
+    if _uses_char_pool():
+        if _uses_ngram_units():
+            print(
+                f"[OPT 7b] N-gram Token D3TW: n={ngram_min_n}-{ngram_max_n} "
+                f"min_freq={ngram_min_freq} max_vocab={ngram_max_vocab_size} "
+                f"mode={ngram_tokenizer_mode} skip_spaces={ngram_skip_spaces}"
+            )
+            print(
+                f"[OPT 7c] Token Pool: weight={token_pool_weight} tau={token_pool_tau} "
+                f"warmup={token_pool_warmup_epochs} ramp={token_pool_ramp_epochs} "
+                f"detach_alignment={token_pool_detach_alignment} "
+                f"min_windows={token_pool_min_windows_per_token}"
+            )
+            print(
+                f"[OPT 7d] Char Aux: enabled={use_char_aux_loss} "
+                f"weight={char_aux_weight} tau={char_aux_tau} "
+                f"warmup={char_aux_warmup_epochs} ramp={char_aux_ramp_epochs}"
+            )
+        else:
+            print(
+                f"[OPT 7b] Character Pool: weight={char_pool_weight} tau={char_pool_tau} "
+                f"warmup={char_pool_warmup_epochs} ramp={char_pool_ramp_epochs} "
+                f"method={char_pool_method} detach_alignment={char_pool_detach_alignment} "
+                f"skip_spaces={char_pool_skip_spaces} min_windows={char_pool_min_windows_per_char}"
+            )
+    if _uses_bigram_token_loss():
+        print(
+            f"[OPT 7c] Bigram Token Loss: weight={bigram_token_weight} tau={bigram_token_tau} "
+            f"warmup={bigram_token_warmup_epochs} ramp={bigram_token_ramp_epochs} "
+            f"skip_spaces={bigram_token_skip_spaces} min_freq={bigram_token_min_freq} "
+            f"max_vocab={bigram_token_max_vocab_size} fusion={bigram_token_fusion}"
+        )
     if multi_scale_enabled:
         print(f"[OPT 8] Multi-Scale Alignment: windows={multi_scale_window_sizes}, alpha={multi_scale_alpha}")
     print(f"[SPEED] AMP={USE_AMP} (dtype={AMP_DTYPE})  Profiling={ENABLE_PROFILING}")
@@ -930,6 +2143,11 @@ if __name__ == '__main__':
         criterion,
         ctc_head=ctc_head,
         ctc_vocab=ctc_vocab,
+        char_bank=char_bank,
+        token_bank=token_bank,
+        bigram_fusion_mlp=bigram_fusion_mlp,
+        ngram_tokenizer=ngram_tokenizer,
+        cross_attention_module=cross_attention_module,
         lr=run_lr,
         total_epochs=run_epochs,
         resume_path=args.resume,

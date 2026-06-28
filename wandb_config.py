@@ -1,60 +1,51 @@
-import wandb
-import os
-from Parameters import *
+"""Weights & Biases logging helpers."""
 
-# Store artifact references to update them instead of creating new ones
-_weights_artifact = None
-_results_artifact = None
+import os
+
+import wandb
+
 
 def init_wandb(job_id):
-    wandb.init(
-            # set the wandb project where this run will be logged
-            project="AlignmentProject",
-            name=f"{job_id}",
-            # track hyperparameters and run metadata
-            config={
-                "learning_rate": learning_rate,
-                "batch_size": batch_size,
-                "vector size": vector_size,
-                "epochs": epochs,
-                "slicing_window_width": window_size,
-                "normalizing method ": normalize_type
-            })
-    
-def update_wandb(train_loss, val_loss):
-    wandb.log({
-    "train_loss": train_loss, 
-    "val_loss": val_loss,
-    })
+    """Start a normal W&B run; do not disable W&B logging features."""
+    run = wandb.init(
+        project="AlignmentProject",
+        name=job_id,
+    )
+    return run
 
-def upload_artifacts_to_wandb(job_id, epoch):
-    """
-    Upload weights and TrainResults to wandb as artifacts.
-    Uses the same artifact name to update instead of creating new ones.
-    """
-    global _weights_artifact, _results_artifact
-    
-    weights_dir = os.path.join(os.path.dirname(__file__), "Weights", job_id)
-    results_dir = os.path.join(os.path.dirname(__file__), "TrainResults", job_id)
-    
-    # Upload weights artifact (update existing)
-    if os.path.exists(weights_dir):
-        weights_artifact = wandb.Artifact(
-            name=f"weights-{job_id}",
-            type="model",
-            description=f"Model weights at epoch {epoch}"
-        )
-        weights_artifact.add_dir(weights_dir)
-        wandb.log_artifact(weights_artifact)
-        print(f"Uploaded weights to wandb (epoch {epoch})")
-    
-    # Upload TrainResults artifact (update existing)
-    if os.path.exists(results_dir):
-        results_artifact = wandb.Artifact(
-            name=f"train-results-{job_id}",
-            type="results",
-            description=f"Training visualizations at epoch {epoch}"
-        )
-        results_artifact.add_dir(results_dir)
-        wandb.log_artifact(results_artifact)
-        print(f"Uploaded TrainResults to wandb (epoch {epoch})")
+
+def update_wandb(epoch, train_loss, val_loss):
+    """Commit exactly one W&B update per epoch containing only losses."""
+    wandb.log(
+        {
+            "train_loss": float(train_loss),
+            "val_loss": float(val_loss),
+        },
+        step=int(epoch),
+        commit=True,
+    )
+    print(
+        f"[WANDB] logged epoch={int(epoch)} "
+        f"train_loss={float(train_loss):.6f} val_loss={float(val_loss):.6f}",
+        flush=True,
+    )
+
+
+def log_wandb_weights(job_id, epoch, weights_path):
+    """Upload a saved model weights file as a W&B artifact."""
+    if not weights_path or not os.path.isfile(weights_path):
+        print(f"[WANDB] Skipping weights artifact; file not found: {weights_path}", flush=True)
+        return
+
+    safe_job_id = str(job_id).replace("/", "-").replace(" ", "_")
+    artifact = wandb.Artifact(
+        name=f"{safe_job_id}-weights-epoch-{int(epoch):04d}",
+        type="model",
+        metadata={"job_id": str(job_id), "epoch": int(epoch)},
+    )
+    artifact.add_file(weights_path, name=f"model_epoch_{int(epoch):04d}.pth")
+    wandb.log_artifact(
+        artifact,
+        aliases=[f"epoch-{int(epoch)}", "latest-10epoch"],
+    )
+    print(f"[WANDB] uploaded weights artifact for epoch={int(epoch)}: {weights_path}", flush=True)
