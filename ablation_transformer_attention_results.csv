@@ -1,0 +1,7 @@
+method,metric,value
+CNN + BiLSTM + D3TW,Top-1 Accuracy,
+CNN + Transformer + D3TW,Top-1 Accuracy,
+CNN + BiLSTM + Contrastive CTC,Top-1 Accuracy,
+CNN + Transformer + Contrastive CTC,Top-1 Accuracy,
+CNN + Transformer + CTC+D3TW,Top-1 Accuracy,
+CNN + Transformer + D3TW + Cross-Attention,Top-1 Accuracy,
