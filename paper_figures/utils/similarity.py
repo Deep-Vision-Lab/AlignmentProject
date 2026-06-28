@@ -56,7 +56,8 @@ def compute_text_embeddings(text_embedder, text):
 # Similarity matrices
 # ─────────────────────────────────────────────────────────────────────────────
 
-def compute_text_image_similarity(text_emb, img_emb):
+def compute_text_image_similarity(text_emb, img_emb, cross_attention_module=None,
+                                  cross_attention_weight=0.0):
     """
     Cosine similarity matrix between text and image embeddings.
 
@@ -69,7 +70,11 @@ def compute_text_image_similarity(text_emb, img_emb):
     Returns:
         [T, S] cosine similarity matrix.
     """
-    return torch.einsum("td,sd->ts", text_emb, img_emb)
+    dot_sim = torch.einsum("td,sd->ts", text_emb, img_emb)
+    if cross_attention_module is None or cross_attention_weight <= 0:
+        return dot_sim
+    attn_sim = cross_attention_module(text_emb, img_emb)
+    return dot_sim + cross_attention_weight * attn_sim
 
 
 def compute_image_image_similarity(img_emb_a, img_emb_b):

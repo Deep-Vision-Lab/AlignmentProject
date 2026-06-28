@@ -213,7 +213,8 @@ def compute_saliency(model, img_tensor, col_start, col_end, score_fn):
 
 def compute_occlusion(model, img_tensor, col_start, col_end,
                        score_fn, window_h, window_w,
-                       patch_size=8, occ_stride=4, fill="mean"):
+                       patch_size=8, occ_stride=4, fill="mean",
+                       batch_size=4):
     """
     Occlusion sensitivity map for the selected window region.
 
@@ -232,6 +233,7 @@ def compute_occlusion(model, img_tensor, col_start, col_end,
         patch_size:   Occluding patch side length (pixels).
         occ_stride:   Stride of the occlusion scan.
         fill:         'zero' | 'mean' — value to fill the masked region with.
+        batch_size:   Number of masked images evaluated per model forward.
 
     Returns:
         occ_map:        [window_h, window_w] numpy float32 array in [0, 1].
@@ -249,27 +251,35 @@ def compute_occlusion(model, img_tensor, col_start, col_end,
     drop_acc  = np.zeros((window_h, window_w), dtype=np.float32)
     count_acc = np.zeros((window_h, window_w), dtype=np.float32)
 
-    ys     = range(0, window_h - patch_size + 1, occ_stride)
-    xs     = range(0, window_w - patch_size + 1, occ_stride)
-    total  = len(list(ys)) * len(list(xs))
-    done   = 0
+    positions = [
+        (y0, x0)
+        for y0 in range(0, window_h - patch_size + 1, occ_stride)
+        for x0 in range(0, window_w - patch_size + 1, occ_stride)
+    ]
+    total = len(positions)
 
-    for y0 in range(0, window_h - patch_size + 1, occ_stride):
-        for x0 in range(0, window_w - patch_size + 1, occ_stride):
-            masked = img_tensor.clone()
-            masked[:, :,
+    for start in range(0, total, batch_size):
+        batch_positions = positions[start:start + batch_size]
+        masked = img_tensor.repeat(len(batch_positions), 1, 1, 1)
+        for batch_idx, (y0, x0) in enumerate(batch_positions):
+            masked[batch_idx, :,
                    y0:y0 + patch_size,
                    col_start + x0:col_start + x0 + patch_size] = fill_val
-            with torch.no_grad():
-                emb = model(masked)
-                s   = score_fn(emb).item()
 
-            drop = original_score - s
+        with torch.no_grad():
+            embeddings = model(masked)
+            scores = [
+                score_fn(embeddings[i:i + 1]).item()
+                for i in range(len(batch_positions))
+            ]
+
+        for (y0, x0), score in zip(batch_positions, scores):
+            drop = original_score - score
             drop_acc[y0:y0 + patch_size, x0:x0 + patch_size]  += drop
             count_acc[y0:y0 + patch_size, x0:x0 + patch_size] += 1.0
-            done += 1
-            if done % 50 == 0:
-                print(f"      occlusion {done}/{total}", end="\r", flush=True)
+
+        done = min(start + batch_size, total)
+        print(f"      occlusion {done}/{total}", end="\r", flush=True)
 
     print()
     mask = count_acc > 0

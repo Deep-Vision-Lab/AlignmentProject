@@ -1,14 +1,14 @@
 """
 fig02_sliding_windows.py
 ========================
-Shows how an Arabic line image is decomposed into overlapping sliding windows.
+Shows how an Arabic line image is decomposed into sliding windows.
 
 Figure layout:
   Row 0 : full image with highlighted window boxes (RTL labels)
   Row 1 : arrow row + "Right-to-Left sequence order" annotation
   Row 2+: grid of extracted window patches (first N windows)
 
-Output: fig02_sliding_windows_sample_{idx}.png / .pdf
+Output: fig02_sliding_windows_sample_{idx}.pdf
 """
 import argparse
 import os
@@ -29,6 +29,7 @@ sys.path.insert(0, _HERE)
 from Parameters import lang
 from utils.sample_data import make_sample, FIG_STRIDE, FIG_WINDOW_SIZE
 from utils.plotting import setup_paper_style, save_figure
+from utils.model_loading import compute_stride
 
 
 def _extract_windows(img_arr, ws, stride):
@@ -43,16 +44,19 @@ def _extract_windows(img_arr, ws, stride):
 
 
 def draw_sliding_windows(sentence_idx, output_dir, show_highlighted=10,
-                         show_patches=16):
+                         show_patches=16, window_size=FIG_WINDOW_SIZE,
+                         window_overlap_mode="custom", stride_ratio=None):
     setup_paper_style()
 
-    stride    = FIG_STRIDE   # non-overlapping for display
+    if stride_ratio is None:
+        stride_ratio = FIG_STRIDE / max(FIG_WINDOW_SIZE, 1)
+    stride    = compute_stride(window_size, stride_ratio, window_overlap_mode)
     pil_img, text = make_sample(sentence_idx, transform=False)
     pil_img   = pil_img.resize((708, 128), Image.LANCZOS)
     img_arr   = np.array(pil_img)
     H, W, _   = img_arr.shape
 
-    ws        = FIG_WINDOW_SIZE
+    ws        = int(window_size)
     windows   = _extract_windows(img_arr, ws, stride)
     num_win   = len(windows)
 
@@ -74,10 +78,12 @@ def draw_sliding_windows(sentence_idx, output_dir, show_highlighted=10,
     # ── Row 0: full image with boxes ─────────────────────────────────────────
     ax_img = axes[0]
     ax_img.imshow(img_arr, aspect="auto")
-    overlap_pct = int((1 - stride / ws) * 100)
+    overlap_pct = max(0, int((1 - stride / ws) * 100))
+    mode_label = "non-overlapping" if overlap_pct == 0 else f"{overlap_pct}% overlap"
     ax_img.set_title(
-        f"Arabic Line Image  |  {num_win} overlapping windows "
-        f"(window_size={ws}, stride={stride}, {overlap_pct}% overlap)",
+        f"Arabic Line Image  |  {num_win} sliding windows "
+        f"(window_size={ws}, stride={stride}, mode={window_overlap_mode}, {mode_label})\n"
+        "Sliding windows are later grouped by D3TW into character-level regions.",
         fontsize=11, pad=5,
     )
     ax_img.axis("off")
@@ -158,13 +164,28 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate sliding-window decomposition figure (fig02)."
     )
-    parser.add_argument("--sentence_idx", type=int, default=0,
+    parser.add_argument("--sentence_idx", type=int, default=None,
                         help="Index into the built-in Arabic sentence pool")
+    parser.add_argument("--sentence_indices", type=int, nargs="+", default=[0, 1, 2],
+                        help="Multiple built-in sentence indices to render.")
     parser.add_argument("--output_dir", default="paper_figures/outputs")
+    parser.add_argument("--window_size", type=int, default=FIG_WINDOW_SIZE)
+    parser.add_argument("--window_overlap_mode", default="custom",
+                        choices=["no_overlap", "light_overlap", "dense_overlap", "custom"])
+    parser.add_argument("--stride_ratio", type=float, default=None,
+                        help="Used only when --window_overlap_mode custom.")
     args = parser.parse_args()
 
     os.chdir(_PROJ_ROOT)
-    draw_sliding_windows(args.sentence_idx, args.output_dir)
+    indices = [args.sentence_idx] if args.sentence_idx is not None else args.sentence_indices
+    for idx in indices:
+        draw_sliding_windows(
+            idx,
+            args.output_dir,
+            window_size=args.window_size,
+            window_overlap_mode=args.window_overlap_mode,
+            stride_ratio=args.stride_ratio,
+        )
 
 
 if __name__ == "__main__":

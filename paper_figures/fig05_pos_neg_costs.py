@@ -11,11 +11,10 @@ Computes for *num_samples* samples:
 Also prints and saves summary statistics as JSON.
 
 Output:
-  fig05_pos_neg_cost_distribution.png / .pdf
+  fig05_pos_neg_cost_distribution.pdf
   fig05_pos_neg_cost_stats.json
 """
 import argparse
-import json
 import os
 import sys
 import random
@@ -31,7 +30,10 @@ _PROJ_ROOT = os.path.dirname(_HERE)
 sys.path.insert(0, _PROJ_ROOT)
 sys.path.insert(0, _HERE)
 
-from utils.model_loading import load_image_model, load_text_embedder, load_ctc_components
+from utils.model_loading import (
+    load_image_model, load_text_embedder, load_ctc_components,
+    load_cross_attention_module,
+)
 from utils.sample_data import make_sample, ARABIC_SENTENCES, FIG_STRIDE, FIG_NUM_PATCHES, pad_text
 from utils.similarity import (compute_image_embeddings, compute_text_embeddings,
                                compute_text_image_similarity, compute_dtw_cost)
@@ -49,7 +51,8 @@ def _trim_sim(sim):
 
 
 def collect_costs(checkpoint, num_samples, num_negatives, device,
-                   negative_mode="mixed", cost_type="d3tw"):
+                   negative_mode="mixed", cost_type="d3tw",
+                   use_cross_attention_for_figures=False):
     cost_type = cost_type.lower()
     if cost_type == "ctc":
         model, ctc_head, ctc_vocab = load_ctc_components(checkpoint, device)
@@ -57,8 +60,13 @@ def collect_costs(checkpoint, num_samples, num_negatives, device,
     else:
         model = load_image_model(checkpoint, device, stride_override=FIG_STRIDE)
         text_embedder = load_text_embedder(device)
+        cross_module, cross_weight = load_cross_attention_module(
+            checkpoint, device, use_for_figures=use_cross_attention_for_figures
+        )
         ctc_head = None
         ctc_vocab = None
+    if cost_type == "ctc":
+        cross_module, cross_weight = None, 0.0
 
     # Use all sentences as the pool; cycle if num_samples > len(pool)
     all_texts = [ARABIC_SENTENCES[i % len(ARABIC_SENTENCES)]
@@ -75,7 +83,11 @@ def collect_costs(checkpoint, num_samples, num_negatives, device,
             pos_cost = compute_ctc_cost(img_emb, pad_text(text), ctc_head, ctc_vocab, device)
         else:
             txt_emb  = compute_text_embeddings(text_embedder, text)
-            sim_pos  = compute_text_image_similarity(txt_emb, img_emb)
+            sim_pos  = compute_text_image_similarity(
+                txt_emb, img_emb,
+                cross_attention_module=cross_module,
+                cross_attention_weight=cross_weight,
+            )
             sim_pos  = _trim_sim(sim_pos)
             pos_cost = compute_dtw_cost(sim_pos, device="cpu")
         if np.isfinite(pos_cost):
@@ -92,7 +104,11 @@ def collect_costs(checkpoint, num_samples, num_negatives, device,
                     nc = compute_ctc_cost(img_emb, pad_text(neg_text), ctc_head, ctc_vocab, device)
                 else:
                     n_emb    = compute_text_embeddings(text_embedder, neg_text)
-                    sim_neg  = compute_text_image_similarity(n_emb, img_emb)
+                    sim_neg  = compute_text_image_similarity(
+                        n_emb, img_emb,
+                        cross_attention_module=cross_module,
+                        cross_attention_weight=cross_weight,
+                    )
                     sim_neg  = _trim_sim(sim_neg)
                     nc       = compute_dtw_cost(sim_neg, device="cpu")
                 if np.isfinite(nc):
@@ -116,13 +132,16 @@ def collect_costs(checkpoint, num_samples, num_negatives, device,
 
 def draw_cost_distribution(checkpoint, num_samples, num_negatives,
                             output_dir, device, negative_mode="mixed",
-                            cost_type="d3tw"):
+                            cost_type="d3tw",
+                            use_cross_attention_for_figures=False,
+                            include_char_pool_stats=False):
     setup_paper_style()
 
     pos_costs, neg_costs_all, top1_acc, pos_ranks = collect_costs(
         checkpoint, num_samples, num_negatives, device,
         negative_mode=negative_mode,
         cost_type=cost_type,
+        use_cross_attention_for_figures=use_cross_attention_for_figures,
     )
 
     # ── Statistics ────────────────────────────────────────────────────────────
@@ -139,6 +158,16 @@ def draw_cost_distribution(checkpoint, num_samples, num_negatives,
         "positive_rank":     float(np.mean(pos_ranks)) if pos_ranks else float("nan"),
         "pct_pos_wins":      float(top1_acc * 100),
     }
+    if include_char_pool_stats:
+        stats.update({
+            "char_pool_top1": None,
+            "char_pool_top5": None,
+            "mean_windows_per_character": None,
+            "char_pool_note": (
+                "Use fig04/fig13 for assignment-based character-pool diagnostics; "
+                "fig05 intentionally keeps the main plot as positive vs negative D3TW cost."
+            ),
+        })
     print("\n── Statistics ──────────────────────────────")
     for k, v in stats.items():
         if isinstance(v, (int, float)):
@@ -209,12 +238,7 @@ def draw_cost_distribution(checkpoint, num_samples, num_negatives,
     save_figure(fig, output_dir, "fig05_pos_neg_cost_distribution")
     plt.close(fig)
 
-    # ── Save stats JSON ───────────────────────────────────────────────────────
-    os.makedirs(output_dir, exist_ok=True)
-    json_path = os.path.join(output_dir, "fig05_pos_neg_cost_stats.json")
-    with open(json_path, "w") as f:
-        json.dump(stats, f, indent=2)
-    print(f"  Saved {json_path}")
+    # PDF-only output by design; stats are printed to stdout, not written.
 
 
 def main():
@@ -234,13 +258,19 @@ def main():
     parser.add_argument("--cost_type", default="d3tw", choices=["d3tw", "ctc"])
     parser.add_argument("--output_dir",    default="paper_figures/outputs")
     parser.add_argument("--device",        default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--use_cross_attention_for_figures", action="store_true",
+                        help="Use saved cross-attention similarity for D3TW costs.")
+    parser.add_argument("--include_char_pool_stats", action="store_true",
+                        help="Include char-pooling diagnostic fields in the JSON summary.")
     args = parser.parse_args()
 
     os.chdir(_PROJ_ROOT)
     draw_cost_distribution(args.checkpoint, args.num_samples,
                            args.num_negatives, args.output_dir, args.device,
                            negative_mode=args.negative_mode,
-                           cost_type=args.cost_type)
+                           cost_type=args.cost_type,
+                           use_cross_attention_for_figures=args.use_cross_attention_for_figures,
+                           include_char_pool_stats=args.include_char_pool_stats)
 
 
 if __name__ == "__main__":

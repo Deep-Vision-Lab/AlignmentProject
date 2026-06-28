@@ -49,7 +49,7 @@ save_ctc_vocab = _env_bool('SAVE_CTC_VOCAB', True)
 window_size = 16
 vector_size = 128
 lang = 'Arabic' # ['English', 'Arabic']
-num_samples = 50000  # [10000, 50000, 100000]
+num_samples = 10000  # [10000, 50000, 100000]
 
 # ============================================================================
 # Text Embedding Selection
@@ -93,18 +93,102 @@ finetune_epochs = 30                     # Usually fewer epochs than pretraining
 # stride_ratio = 0.5 means 50% overlap (stride = window_size // 2)
 # stride_ratio = 0.25 means 75% overlap (stride = window_size // 4)
 stride_ratio = 0.5  # Recommended: 0.5 (50% overlap) or 0.25 (75% overlap)
+window_overlap_mode = str(_env_value('WINDOW_OVERLAP_MODE', 'custom')).lower()
+
+# ============================================================================
+# D3TW-guided Character Pooling
+# ============================================================================
+use_d3tw_char_pooling = _env_bool('USE_D3TW_CHAR_POOLING', False)
+char_pool_weight = _env_float('CHAR_POOL_WEIGHT', 0.5)
+char_pool_tau = _env_float('CHAR_POOL_TAU', 0.07)
+char_pool_warmup_epochs = int(_env_value('CHAR_POOL_WARMUP_EPOCHS', 5))
+char_pool_ramp_epochs = int(_env_value('CHAR_POOL_RAMP_EPOCHS', 10))
+char_pool_method = str(_env_value('CHAR_POOL_METHOD', 'hard_mean')).lower()
+char_pool_detach_alignment = _env_bool('CHAR_POOL_DETACH_ALIGNMENT', True)
+char_pool_skip_spaces = _env_bool('CHAR_POOL_SKIP_SPACES', False)
+char_pool_min_windows_per_char = int(_env_value('CHAR_POOL_MIN_WINDOWS_PER_CHAR', 1))
+char_pool_use_char_bank = _env_bool('CHAR_POOL_USE_CHAR_BANK', True)
+
+# ============================================================================
+# Text Unit Granularity: characters or n-gram tokens for D3TW rows
+# ============================================================================
+text_unit_type = str(_env_value('TEXT_UNIT_TYPE', 'char')).lower()  # char | ngram
+
+# N-gram tokenizer. In ngram mode, D3TW aligns these tokens to visual windows.
+ngram_min_n = int(_env_value('NGRAM_MIN_N', 1))
+ngram_max_n = int(_env_value('NGRAM_MAX_N', 3))
+ngram_min_freq = int(_env_value('NGRAM_MIN_FREQ', 2))
+ngram_max_vocab_size = int(_env_value('NGRAM_MAX_VOCAB_SIZE', 5000))
+ngram_tokenizer_mode = str(_env_value('NGRAM_TOKENIZER_MODE', 'greedy_longest')).lower()
+ngram_skip_spaces = _env_bool('NGRAM_SKIP_SPACES', True)
+ngram_include_ligatures = _env_bool('NGRAM_INCLUDE_LIGATURES', True)
+ngram_ligatures = ["لا", "لل", "ال"]
+
+# Token-level pooling/loss used when text_unit_type == "ngram".
+token_pool_weight = _env_float('TOKEN_POOL_WEIGHT', 0.5)
+token_pool_tau = _env_float('TOKEN_POOL_TAU', 0.07)
+token_pool_warmup_epochs = int(_env_value('TOKEN_POOL_WARMUP_EPOCHS', 5))
+token_pool_ramp_epochs = int(_env_value('TOKEN_POOL_RAMP_EPOCHS', 10))
+token_pool_detach_alignment = _env_bool('TOKEN_POOL_DETACH_ALIGNMENT', True)
+token_pool_min_windows_per_token = int(_env_value('TOKEN_POOL_MIN_WINDOWS_PER_TOKEN', 1))
+
+# Optional char auxiliary loss for single-character n-gram tokens.
+use_char_aux_loss = _env_bool('USE_CHAR_AUX_LOSS', True)
+char_aux_weight = _env_float('CHAR_AUX_WEIGHT', 0.25)
+char_aux_tau = _env_float('CHAR_AUX_TAU', 0.07)
+char_aux_warmup_epochs = int(_env_value('CHAR_AUX_WARMUP_EPOCHS', 8))
+char_aux_ramp_epochs = int(_env_value('CHAR_AUX_RAMP_EPOCHS', 10))
+
+# ============================================================================
+# Bigram / multi-character token auxiliary loss
+# ============================================================================
+use_bigram_token_loss = _env_bool('USE_BIGRAM_TOKEN_LOSS', False)
+bigram_token_weight = _env_float('BIGRAM_TOKEN_WEIGHT', 0.25)
+bigram_token_tau = _env_float('BIGRAM_TOKEN_TAU', 0.07)
+bigram_token_warmup_epochs = int(_env_value('BIGRAM_TOKEN_WARMUP_EPOCHS', 8))
+bigram_token_ramp_epochs = int(_env_value('BIGRAM_TOKEN_RAMP_EPOCHS', 10))
+bigram_token_skip_spaces = _env_bool('BIGRAM_TOKEN_SKIP_SPACES', True)
+bigram_token_min_freq = int(_env_value('BIGRAM_TOKEN_MIN_FREQ', 1))
+bigram_token_max_vocab_size = int(_env_value('BIGRAM_TOKEN_MAX_VOCAB_SIZE', 5000))
+bigram_token_fusion = str(_env_value('BIGRAM_TOKEN_FUSION', 'mean')).lower()
+bigram_token_include_ligatures = _env_bool('BIGRAM_TOKEN_INCLUDE_LIGATURES', True)
 
 # ============================================================================
 # ARCHITECTURE FLAGS
 # ============================================================================
-# BiLSTM for local sequence context (CRNN architecture)
-use_bilstm = True
+# Sequence context encoder after the CNN patch features.
+# Options: "bilstm" (default/current), "transformer", "none".
+sequence_encoder_type = str(_env_value('SEQUENCE_ENCODER_TYPE', 'bilstm')).lower()
+# Backward-compatible flag for older scripts/checkpoints.
+use_bilstm = sequence_encoder_type == "bilstm"
 bilstm_layers = 2
 # Hidden state size per direction in the BiLSTM.  The bidirectional output is
 # bilstm_hidden_dim * 2, which is projected back to vector_size.
 # Raising this from the old default (vector_size // 2 = 64) to vector_size (128)
 # doubles the LSTM memory capacity.
 bilstm_hidden_dim = vector_size  # 128
+
+# Transformer sequence encoder options. Positional index 0 follows the model
+# sequence order; for Arabic this already means the rightmost window after flip.
+transformer_num_layers = int(_env_value('TRANSFORMER_NUM_LAYERS', 2))
+transformer_num_heads = int(_env_value('TRANSFORMER_NUM_HEADS', 4))
+transformer_ff_dim = int(_env_value('TRANSFORMER_FF_DIM', 512))
+transformer_dropout = _env_float('TRANSFORMER_DROPOUT', 0.1)
+transformer_activation = str(_env_value('TRANSFORMER_ACTIVATION', 'gelu')).lower()
+transformer_norm_first = _env_bool('TRANSFORMER_NORM_FIRST', True)
+transformer_positional_encoding = str(_env_value(
+    'TRANSFORMER_POSITIONAL_ENCODING', 'sinusoidal'
+)).lower()
+transformer_max_len = int(_env_value('TRANSFORMER_MAX_LEN', 4096))
+return_attention_weights = _env_bool('RETURN_ATTENTION_WEIGHTS', False)
+
+# Optional auxiliary cross-attention similarity. Disabled by default and never
+# required for image-only inference/evaluation.
+use_cross_attention = _env_bool('USE_CROSS_ATTENTION', False)
+cross_attention_type = str(_env_value('CROSS_ATTENTION_TYPE', 'text_to_image')).lower()
+cross_attention_num_heads = int(_env_value('CROSS_ATTENTION_NUM_HEADS', 4))
+cross_attention_dropout = _env_float('CROSS_ATTENTION_DROPOUT', 0.1)
+cross_attention_weight = _env_float('CROSS_ATTENTION_WEIGHT', 0.0)
 
 # ============================================================================
 # Contrastive Soft-DTW Parameters (CUDA-accelerated)

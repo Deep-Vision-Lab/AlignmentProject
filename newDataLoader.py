@@ -63,7 +63,7 @@ def build_dataloaders(data_dir=None):
         "texts": os.path.join(data_dir, "texts"),
     }
 
-    full_dataset = TextLineModern(new_dataset=dataset_paths, transform=transform)
+    full_dataset = TextLineModern(new_dataset=dataset_paths, transform=transform, num_samples_override=num_samples)
 
     train_sz = int(0.6 * len(full_dataset))
     valid_sz = int(0.2 * len(full_dataset))

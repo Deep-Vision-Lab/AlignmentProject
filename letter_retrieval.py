@@ -39,6 +39,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 from Parameters import (
     window_size, stride_ratio, vector_size, device,
     use_bilstm, bilstm_layers, bilstm_hidden_dim, model_dropout,
+    lang, transformer_num_layers, transformer_num_heads, transformer_ff_dim,
+    transformer_dropout, transformer_activation, transformer_norm_first,
+    transformer_positional_encoding, transformer_max_len,
 )
 from embeddingModel import EmbeddingModel
 
@@ -180,21 +183,38 @@ _to_tensor = T.Compose([
 
 
 def _load_model(weights_path: str) -> EmbeddingModel:
-    stride = max(1, int(window_size * stride_ratio))
+    ckpt = torch.load(weights_path, map_location=device)
+    cfg = ckpt.get("model_config", {}) if isinstance(ckpt, dict) else {}
+    ws = int(cfg.get("window_size", window_size))
+    stride = int(cfg.get("stride", max(1, int(ws * stride_ratio))))
+    seq_type = str(cfg.get(
+        "sequence_encoder_type",
+        "bilstm" if cfg.get("use_bilstm", use_bilstm) else "none",
+    )).lower()
     model  = EmbeddingModel(
-        window_size=window_size,
+        window_size=ws,
         stride=stride,
-        vector_size=vector_size,
+        vector_size=int(cfg.get("vector_size", vector_size)),
         device=device,
-        use_flip=True,
-        use_bilstm=use_bilstm,
-        bilstm_layers=bilstm_layers,
-        bilstm_hidden_dim=bilstm_hidden_dim,
+        use_flip=(str(cfg.get("lang", lang)).lower() == "arabic"),
+        sequence_encoder_type=seq_type,
+        use_bilstm=(seq_type == "bilstm"),
+        bilstm_layers=int(cfg.get("bilstm_layers", bilstm_layers)),
+        bilstm_hidden_dim=cfg.get("bilstm_hidden_dim", bilstm_hidden_dim),
         dropout=model_dropout,
+        transformer_num_layers=int(cfg.get("transformer_num_layers", transformer_num_layers)),
+        transformer_num_heads=int(cfg.get("transformer_num_heads", transformer_num_heads)),
+        transformer_ff_dim=int(cfg.get("transformer_ff_dim", transformer_ff_dim)),
+        transformer_dropout=float(cfg.get("transformer_dropout", transformer_dropout)),
+        transformer_activation=cfg.get("transformer_activation", transformer_activation),
+        transformer_norm_first=bool(cfg.get("transformer_norm_first", transformer_norm_first)),
+        transformer_positional_encoding=cfg.get(
+            "transformer_positional_encoding", transformer_positional_encoding
+        ),
+        transformer_max_len=int(cfg.get("transformer_max_len", transformer_max_len)),
     ).to(device)
 
-    ckpt = torch.load(weights_path, map_location=device)
-    state = ckpt.get("model_state_dict", ckpt)
+    state = ckpt.get("image_model_state_dict", ckpt.get("model_state_dict", ckpt))
     model.load_state_dict(state, strict=False)
     model.eval()
     print(f"Loaded weights from  {weights_path}")

@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import torchvision
 from torchvision.models import resnet34, ResNet34_Weights
 import time
+import math
 
 import gc
 
@@ -129,6 +130,203 @@ class BiLSTMEncoder(nn.Module):
         return output
 
 
+# ============================================================================
+# TRANSFORMER SEQUENCE CONTEXT ENCODER
+# ============================================================================
+
+class SinusoidalPositionalEncoding(nn.Module):
+    """Fixed sinusoidal positional encoding for [B, S, D] sequences."""
+    def __init__(self, embed_dim, max_len=4096, dropout=0.1):
+        super(SinusoidalPositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.max_len = max_len
+
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, embed_dim, 2) * (-math.log(10000.0) / embed_dim)
+        )
+        pe = torch.zeros(max_len, embed_dim)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        if embed_dim > 1:
+            pe[:, 1::2] = torch.cos(position * div_term[:pe[:, 1::2].shape[1]])
+        self.register_buffer("pe", pe.unsqueeze(0), persistent=False)
+
+    def forward(self, x):
+        seq_len = x.size(1)
+        if seq_len > self.max_len:
+            raise ValueError(
+                f"Sequence length {seq_len} exceeds transformer_max_len={self.max_len}."
+            )
+        return self.dropout(x + self.pe[:, :seq_len].to(dtype=x.dtype, device=x.device))
+
+
+class LearnablePositionalEncoding(nn.Module):
+    """Learned positional embedding for [B, S, D] sequences."""
+    def __init__(self, embed_dim, max_len=4096, dropout=0.1):
+        super(LearnablePositionalEncoding, self).__init__()
+        self.max_len = max_len
+        self.position_embedding = nn.Embedding(max_len, embed_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        seq_len = x.size(1)
+        if seq_len > self.max_len:
+            raise ValueError(
+                f"Sequence length {seq_len} exceeds transformer_max_len={self.max_len}."
+            )
+        positions = torch.arange(seq_len, device=x.device)
+        pos = self.position_embedding(positions).unsqueeze(0).to(dtype=x.dtype)
+        return self.dropout(x + pos)
+
+
+class TransformerSequenceEncoder(nn.Module):
+    """
+    Transformer encoder for CNN patch sequences.
+
+    Attention weights are not exposed by PyTorch's stock TransformerEncoderLayer.
+    The module keeps the layer stack directly accessible at
+    ``transformer_encoder.layers`` so attention hooks or a custom layer can be
+    added later without changing EmbeddingModel's public interface.
+    """
+    def __init__(self, embed_dim, num_layers=2, num_heads=4, ff_dim=512,
+                 dropout=0.1, activation="gelu", norm_first=True,
+                 positional_encoding="sinusoidal", max_len=4096,
+                 return_attention_weights=False):
+        super(TransformerSequenceEncoder, self).__init__()
+        if embed_dim % num_heads != 0:
+            raise ValueError(
+                f"vector_size ({embed_dim}) must be divisible by "
+                f"transformer_num_heads ({num_heads})."
+            )
+
+        pe_type = str(positional_encoding).lower()
+        if pe_type == "sinusoidal":
+            self.positional_encoding = SinusoidalPositionalEncoding(
+                embed_dim, max_len=max_len, dropout=dropout
+            )
+        elif pe_type == "learnable":
+            self.positional_encoding = LearnablePositionalEncoding(
+                embed_dim, max_len=max_len, dropout=dropout
+            )
+        else:
+            raise ValueError(
+                "transformer_positional_encoding must be 'sinusoidal' or 'learnable', "
+                f"got {positional_encoding!r}."
+            )
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=num_heads,
+            dim_feedforward=ff_dim,
+            dropout=dropout,
+            activation=activation,
+            batch_first=True,
+            norm_first=norm_first,
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers,
+        )
+        self.return_attention_weights = return_attention_weights
+        self.last_attention_weights = None
+        if return_attention_weights:
+            # TODO: Replace stock TransformerEncoderLayer with a small custom
+            # layer that stores per-layer self-attention maps.
+            print(
+                "[TransformerSequenceEncoder] return_attention_weights=True was "
+                "requested, but stock nn.TransformerEncoderLayer does not expose "
+                "weights. self.transformer_encoder.layers is hook-friendly.",
+                flush=True,
+            )
+
+    def forward(self, x):
+        x = self.positional_encoding(x)
+        self.last_attention_weights = None
+        return self.transformer_encoder(x)
+
+
+class CrossAttentionSimilarity(nn.Module):
+    """
+    Optional auxiliary cross-attention similarity.
+
+    Returns log attention weights in [B, T, S]. This is intended only as an
+    additive training/figure diagnostic term; it does not replace the explicit
+    dot-product text-image similarity matrix.
+    """
+    def __init__(self, dim, num_heads=4, dropout=0.1,
+                 attention_type="text_to_image", eps=1e-8):
+        super(CrossAttentionSimilarity, self).__init__()
+        if dim % num_heads != 0:
+            raise ValueError(
+                f"vector_size ({dim}) must be divisible by "
+                f"cross_attention_num_heads ({num_heads})."
+            )
+        self.attention_type = str(attention_type).lower()
+        if self.attention_type not in {"text_to_image", "image_to_text", "bidirectional"}:
+            raise ValueError(
+                "cross_attention_type must be one of: text_to_image, image_to_text, "
+                f"bidirectional. Got {attention_type!r}."
+            )
+        self.eps = eps
+        self.text_to_image_attn = nn.MultiheadAttention(
+            dim, num_heads, dropout=dropout, batch_first=True
+        )
+        self.image_to_text_attn = None
+        if self.attention_type in {"image_to_text", "bidirectional"}:
+            self.image_to_text_attn = nn.MultiheadAttention(
+                dim, num_heads, dropout=dropout, batch_first=True
+            )
+
+    def _text_to_image(self, text_z, visual_z):
+        _, weights = self.text_to_image_attn(
+            query=text_z,
+            key=visual_z,
+            value=visual_z,
+            need_weights=True,
+        )
+        return torch.log(weights.clamp_min(self.eps))
+
+    def _image_to_text(self, text_z, visual_z):
+        _, weights = self.image_to_text_attn(
+            query=visual_z,
+            key=text_z,
+            value=text_z,
+            need_weights=True,
+        )
+        return torch.log(weights.transpose(1, 2).clamp_min(self.eps))
+
+    def forward(self, text_z, visual_z):
+        squeeze = False
+        if text_z.dim() == 2:
+            text_z = text_z.unsqueeze(0)
+            squeeze = True
+        if visual_z.dim() == 2:
+            visual_z = visual_z.unsqueeze(0)
+        if text_z.size(0) != visual_z.size(0):
+            if text_z.size(0) == 1:
+                text_z = text_z.expand(visual_z.size(0), -1, -1)
+                squeeze = False
+            elif visual_z.size(0) == 1:
+                visual_z = visual_z.expand(text_z.size(0), -1, -1)
+            else:
+                raise ValueError(
+                    "text_z and visual_z batch sizes must match, or one side "
+                    f"must be unbatched. Got {text_z.size(0)} and {visual_z.size(0)}."
+                )
+
+        if self.attention_type == "text_to_image":
+            sim = self._text_to_image(text_z, visual_z)
+        elif self.attention_type == "image_to_text":
+            sim = self._image_to_text(text_z, visual_z)
+        else:
+            sim = 0.5 * (
+                self._text_to_image(text_z, visual_z) +
+                self._image_to_text(text_z, visual_z)
+            )
+
+        return sim.squeeze(0) if squeeze else sim
+
+
 # Sliding window function to divide image into patches (subwindows)
 def sliding_window(image, window_size, stride, debug_mode=False, save_dir=False):
     """Vectorized sliding window using torch.Tensor.unfold.
@@ -224,9 +422,19 @@ class ModifiedOCRResNet34(nn.Module):
 class EmbeddingModel(nn.Module):
     def __init__(self, window_size=128, stride=64, vector_size=512,
                   device='cuda', use_flip=False, use_bilstm=True,
-                  bilstm_layers=1, bilstm_hidden_dim=None, dropout=0.1):
+                  bilstm_layers=1, bilstm_hidden_dim=None, dropout=0.1,
+                  sequence_encoder_type=None,
+                  transformer_num_layers=2,
+                  transformer_num_heads=4,
+                  transformer_ff_dim=512,
+                  transformer_dropout=0.1,
+                  transformer_activation="gelu",
+                  transformer_norm_first=True,
+                  transformer_positional_encoding="sinusoidal",
+                  transformer_max_len=4096,
+                  return_attention_weights=False):
         """
-        Image embedding model: ResNet34 CNN + Bi-LSTM sequence encoder (CRNN).
+        Image embedding model: ResNet34 CNN + optional sequence encoder.
 
         Args:
             window_size: Size of sliding window for patch extraction
@@ -234,22 +442,35 @@ class EmbeddingModel(nn.Module):
             vector_size: Dimension of output feature vectors
             device: Device to run on ('cuda' or 'cpu')
             use_flip: Flip patches left-to-right before CNN
-            use_bilstm: Enable BiLSTM for sequence context
+            use_bilstm: Backward-compatible BiLSTM flag
             bilstm_layers: Number of BiLSTM layers
             dropout: Dropout rate
+            sequence_encoder_type: "none", "bilstm", or "transformer".
+                If None, infer from use_bilstm for old callers.
         """
         super(EmbeddingModel, self).__init__()
 
         self.device = device
-        self.use_bilstm = use_bilstm
         self.use_flip = use_flip
+        if sequence_encoder_type is None:
+            sequence_encoder_type = "bilstm" if use_bilstm else "none"
+        sequence_encoder_type = str(sequence_encoder_type).lower()
+        if sequence_encoder_type not in {"none", "bilstm", "transformer"}:
+            raise ValueError(
+                "sequence_encoder_type must be one of: 'none', 'bilstm', "
+                f"'transformer'. Got {sequence_encoder_type!r}."
+            )
+        self.sequence_encoder_type = sequence_encoder_type
+        self.use_bilstm = sequence_encoder_type == "bilstm"
+        self.transformer_positional_encoding = transformer_positional_encoding
+        self._sequence_debug_printed = False
 
         # CNN encoder (ResNet34) for patch feature extraction
         self.cnn_encoder = ModifiedOCRResNet34(vector_size=vector_size)
         self.cnn_encoder = self.cnn_encoder.to(device)
 
-        # Sequence context encoder: Bi-LSTM or None
-        if use_bilstm:
+        # Sequence context encoder: None, Bi-LSTM, or Transformer
+        if sequence_encoder_type == "bilstm":
             _hidden = bilstm_hidden_dim if bilstm_hidden_dim is not None else vector_size // 2
             self.sequence_encoder = BiLSTMEncoder(
                 embed_dim=vector_size,
@@ -258,6 +479,25 @@ class EmbeddingModel(nn.Module):
                 dropout=dropout,
             ).to(device)
             print(f"[EmbeddingModel] Using BiLSTM encoder (layers={bilstm_layers}, hidden_dim={_hidden})")
+        elif sequence_encoder_type == "transformer":
+            self.sequence_encoder = TransformerSequenceEncoder(
+                embed_dim=vector_size,
+                num_layers=transformer_num_layers,
+                num_heads=transformer_num_heads,
+                ff_dim=transformer_ff_dim,
+                dropout=transformer_dropout,
+                activation=transformer_activation,
+                norm_first=transformer_norm_first,
+                positional_encoding=transformer_positional_encoding,
+                max_len=transformer_max_len,
+                return_attention_weights=return_attention_weights,
+            ).to(device)
+            print(
+                "[EmbeddingModel] Using Transformer encoder "
+                f"(layers={transformer_num_layers}, heads={transformer_num_heads}, "
+                f"ff_dim={transformer_ff_dim}, pos={transformer_positional_encoding})",
+                flush=True,
+            )
         else:
             self.sequence_encoder = None
             print("[EmbeddingModel] No sequence encoder (CNN features only)")
@@ -310,6 +550,20 @@ class EmbeddingModel(nn.Module):
 
         return encoded_tokens_a, batches_num, windows_num
 
+    def _apply_sequence_encoder(self, x):
+        """Apply the configured sequence encoder to [B, S, D] CNN features."""
+        if self.sequence_encoder_type == "transformer" and not self._sequence_debug_printed:
+            print(
+                f"sequence_encoder_type=transformer "
+                f"positional_encoding={self.transformer_positional_encoding} "
+                f"input_seq_len={x.shape[1]}",
+                flush=True,
+            )
+            self._sequence_debug_printed = True
+        if self.sequence_encoder is None:
+            return x
+        return self.sequence_encoder(x)
+
     def forward(self, image_a, show_dims=False, debug=False, timer=None):
         t = timer if timer is not None else img_embed_timer
 
@@ -356,10 +610,9 @@ class EmbeddingModel(nn.Module):
         features_vector_a = encoded_tokens_a.view(batches_num, -1, self.vector_size)
         del encoded_tokens_a
 
-        # ==================== PHASE: Sequence Context (BiLSTM) ====================
+        # ==================== PHASE: Sequence Context ====================
         t.start('img_1f_sequence_encoder')
-        if self.sequence_encoder is not None:
-            features_vector_a = self.sequence_encoder(features_vector_a)
+        features_vector_a = self._apply_sequence_encoder(features_vector_a)
         t.stop('img_1f_sequence_encoder')
 
         # Apply LayerNorm before computing similarity
@@ -409,10 +662,9 @@ class EmbeddingModel(nn.Module):
         )
         del encoded_tokens_a
 
-        # ---- Sequence encoder (BiLSTM) ----
+        # ---- Sequence encoder ----
         t.start(f'img_scale_{scale_window_size}_seq_enc')
-        if self.sequence_encoder is not None:
-            features_vector_a = self.sequence_encoder(features_vector_a)
+        features_vector_a = self._apply_sequence_encoder(features_vector_a)
         t.stop(f'img_scale_{scale_window_size}_seq_enc')
 
         # Apply LayerNorm before computing similarity

@@ -49,7 +49,7 @@ def setup_paper_style():
 
 def save_figure(fig, output_dir, name):
     """
-    Save *fig* as both high-res PNG and PDF.
+    Save *fig* as PDF only.
 
     Args:
         fig:        matplotlib Figure.
@@ -57,11 +57,8 @@ def save_figure(fig, output_dir, name):
         name:       Base filename without extension.
     """
     os.makedirs(output_dir, exist_ok=True)
-    png_path = os.path.join(output_dir, f"{name}.png")
     pdf_path = os.path.join(output_dir, f"{name}.pdf")
-    fig.savefig(png_path, dpi=300, bbox_inches="tight")
     fig.savefig(pdf_path, bbox_inches="tight")
-    print(f"  Saved {png_path}")
     print(f"  Saved {pdf_path}")
 
 
@@ -154,12 +151,19 @@ def attach_window_strip(ax, patches):
     """
     Add a row of individually framed window-patch images below the x-axis.
 
+    PDF-only figure generation can become extremely memory-heavy when dozens
+    of raster window thumbnails are embedded under every heatmap.  The current
+    paper figure set renders multiple samples by default, so this helper is a
+    no-op to keep generation reliable and PDF-only.
+
     Each patch is shown as a separate, bordered thumbnail with visible gaps
     between neighbours so they appear as distinct elements.
 
     Must be called AFTER plt.tight_layout() and plt.subplots_adjust().
     Returns the newly created strip Axes.
     """
+    return None
+
     n = len(patches)
     if not n:
         return None

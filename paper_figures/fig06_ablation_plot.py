@@ -13,7 +13,7 @@ Input JSON format:
     [{"method": "CNN only", "metric": "Top-1 Retrieval", "value": 0.42}, ...]
 
 Output:
-  fig06_ablation_{metric}.png / .pdf
+  fig06_ablation_{metric}.pdf
 """
 import argparse
 import os
@@ -46,6 +46,9 @@ def _load_results(path):
         for line in f:
             parts = [p.strip() for p in line.split(",")]
             if len(parts) < 3:
+                continue
+            if parts[2] == "":
+                print(f"  [fig06] Placeholder row without value skipped: {parts[0]}")
                 continue
             rows.append({
                 "method": parts[0],
