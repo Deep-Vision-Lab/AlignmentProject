@@ -1,13 +1,24 @@
-"""Main D3TW-guided character-pooling architecture figure."""
+"""Figure 13: D3TW-guided text-unit/token pooling.
+
+This visualizes the same operation used during training:
+V[S,D] + E[K,D] -> sim=E@V.T [K,S] -> D3TW assignment A[K,S]
+-> pooled text-unit vectors M = normalized(A) @ V [K,D].
+
+For --text_unit_type ngram, the script loads the exact ngram_vocab.json and
+token_bank.json saved next to the checkpoint. It never rebuilds a tokenizer from
+the dataset during visualization.
+"""
 
 import argparse
+import csv
+import json
 import os
 import sys
+from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
 import numpy as np
 import torch
 
@@ -17,395 +28,285 @@ sys.path.insert(0, _ROOT)
 sys.path.insert(0, _HERE)
 
 from NormalizeFuncs import normalize_func
+from Parameters import vector_size
+from ngram_tokenizer import NGramTokenizer, load_ngram_vocab_json
+from textEmbedding import build_text_embedder
+from token_embedding_bank import build_token_embedding_bank, encode_text_units
 from utils.char_pooling import (
-    compute_d3tw_char_pool_for_sample,
     char_pool_predictions,
+    compute_d3tw_char_pool_for_sample,
     group_records,
     token_pool_predictions,
     unit_group_records,
 )
-from utils.model_loading import (
-    load_char_bank_if_available,
-    load_image_model,
-    load_ngram_tokenizer_if_available,
-    load_sample,
-    load_text_embedder,
-    load_token_bank_if_available,
-)
-from token_bank import build_adjacent_pair_visuals
-from token_embedding_bank import embed_token_with_fallback, encode_text_units
+from utils.model_loading import load_char_bank_if_available, load_image_model, load_sample
 
 
-def _display_char(char):
-    return "sp" if char == " " else char
-
-
-def _display_unit(unit, max_len=9):
-    text = str(unit)
-    if text == " ":
+def _display_unit(unit, max_len=14):
+    unit = str(unit)
+    if unit == " ":
         return "sp"
-    return text if len(text) <= max_len else text[: max_len - 3] + "..."
+    return unit if len(unit) <= max_len else unit[: max_len - 3] + "..."
 
 
-def _stable_unit_colors(units):
+def _checkpoint_config(checkpoint_path):
+    try:
+        ckpt = torch.load(checkpoint_path, map_location="cpu")
+    except Exception as exc:
+        print(f"  [fig13] Warning: could not read checkpoint config: {exc}")
+        return {}
+    return ckpt.get("model_config", {}) if isinstance(ckpt, dict) else {}
+
+
+def _load_text_embedder_for_checkpoint(checkpoint_path, device):
+    cfg = _checkpoint_config(checkpoint_path)
+    kind = cfg.get("text_embedder_type", None)
+    dim = int(cfg.get("vector_size", vector_size))
+    try:
+        embedder = build_text_embedder(kind=kind, embedding_dim=dim)
+    except Exception as exc:
+        print(
+            f"  [fig13] Warning: could not load checkpoint text embedder "
+            f"kind={kind!r}, dim={dim}: {exc}. Falling back to Parameters.py."
+        )
+        embedder = build_text_embedder(embedding_dim=dim)
+    embedder = embedder.to(device)
+    embedder.eval()
+    for parameter in embedder.parameters():
+        parameter.requires_grad_(False)
+    print(f"  [fig13] text embedder kind={kind or 'Parameters.py default'} dim={dim} (frozen)")
+    return embedder
+
+
+def _load_ngram_tokenizer_from_checkpoint(checkpoint_path):
+    vocab_path = Path(checkpoint_path).resolve().parent / "ngram_vocab.json"
+    if not vocab_path.is_file():
+        print(f"  [fig13] Warning: ngram vocab not found: {vocab_path}")
+        return None
+    tokens = load_ngram_vocab_json(str(vocab_path))
+    print(f"  [fig13] loaded ngram vocab: {vocab_path} ({len(tokens)} tokens)")
+    return NGramTokenizer(tokens)
+
+
+def _load_token_bank_from_checkpoint(checkpoint_path, device, text_embedder):
+    bank_path = Path(checkpoint_path).resolve().parent / "token_bank.json"
+    if not bank_path.is_file():
+        print(f"  [fig13] Warning: token bank not found: {bank_path}")
+        return None, None, None
+    with bank_path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    idx_to_token = list(payload.get("idx_to_token", []))
+    token_to_idx = dict(payload.get("token_to_idx", {t: i for i, t in enumerate(idx_to_token)}))
+    if not idx_to_token:
+        print(f"  [fig13] Warning: empty token bank: {bank_path}")
+        return None, token_to_idx, idx_to_token
+    embeddings, token_to_idx, idx_to_token = build_token_embedding_bank(
+        text_embedder, idx_to_token, device
+    )
+    print(f"  [fig13] loaded token bank: {bank_path} ({len(idx_to_token)} tokens)")
+    return embeddings, token_to_idx, idx_to_token
+
+
+def _encode_units(text, text_unit_type, checkpoint_path, device):
+    text_embedder = _load_text_embedder_for_checkpoint(checkpoint_path, device)
+    text_unit_type = str(text_unit_type).lower()
+
+    if text_unit_type == "ngram":
+        tokenizer = _load_ngram_tokenizer_from_checkpoint(checkpoint_path)
+        if tokenizer is None:
+            raise RuntimeError(
+                "--text_unit_type ngram requires ngram_vocab.json saved next to the checkpoint."
+            )
+        units, spans, text_emb = encode_text_units(
+            text=text,
+            text_unit_type="ngram",
+            text_embedder=text_embedder,
+            device=device,
+            ngram_tokenizer=tokenizer,
+        )
+        bank_emb, unit_to_idx, idx_to_unit = _load_token_bank_from_checkpoint(
+            checkpoint_path, device, text_embedder
+        )
+        return units, spans, text_emb, bank_emb, unit_to_idx, idx_to_unit
+
+    if text_unit_type == "char":
+        units = list(text)
+        spans = [(idx, idx + 1) for idx in range(len(units))]
+        bank_emb, unit_to_idx, idx_to_unit = load_char_bank_if_available(checkpoint_path, device)
+        if bank_emb is not None and unit_to_idx is not None and all(unit in unit_to_idx for unit in units):
+            ids = torch.tensor([unit_to_idx[unit] for unit in units], device=device, dtype=torch.long)
+            text_emb = normalize_func(bank_emb[ids])
+        else:
+            print("  [fig13] Warning: char bank unavailable/incomplete; using frozen text embedder.")
+            with torch.no_grad():
+                text_emb = normalize_func(text_embedder(text).to(device=device, dtype=torch.float32))
+        return units, spans, text_emb, bank_emb, unit_to_idx, idx_to_unit
+
+    raise ValueError("fig13 supports only --text_unit_type char|ngram.")
+
+
+def _sliding_window_patches(image_width, window_size, stride, rtl=True):
+    num_windows = max(1, (image_width - window_size) // stride + 1)
+    patches = []
+    for raw_idx in range(num_windows):
+        x0 = image_width - window_size - raw_idx * stride if rtl else raw_idx * stride
+        x0 = max(0, int(x0))
+        x1 = min(image_width, x0 + int(window_size))
+        patches.append((raw_idx, x0, x1))
+    return patches
+
+
+def _visual_index_ranges(num_visual, image_width, patches, use_flip):
+    num_windows = len(patches)
+    if num_visual == num_windows:
+        return [(x0, x1) for _, x0, x1 in patches], "direct"
+    if num_windows > 0 and num_visual % num_windows == 0:
+        subfeatures = max(1, num_visual // num_windows)
+        ranges = []
+        for idx in range(num_visual):
+            parent = min(num_windows - 1, idx // subfeatures)
+            _, x0, x1 = patches[parent]
+            ranges.append((x0, x1))
+        return ranges, f"parent_window_x{subfeatures}"
+
+    ranges = []
+    for idx in range(num_visual):
+        if use_flip:
+            x1 = int(image_width - (idx / max(num_visual, 1)) * image_width)
+            x0 = int(image_width - ((idx + 1) / max(num_visual, 1)) * image_width)
+        else:
+            x0 = int((idx / max(num_visual, 1)) * image_width)
+            x1 = int(((idx + 1) / max(num_visual, 1)) * image_width)
+        ranges.append((max(0, min(x0, x1)), min(image_width, max(x0, x1))))
+    return ranges, "proportional"
+
+
+def _stable_colors(labels):
     palette = list(plt.cm.tab20(np.linspace(0, 1, 20)))
     palette += list(plt.cm.Set3(np.linspace(0, 1, 12)))
     colors = {}
-    for unit in units:
-        if unit not in colors:
-            colors[unit] = palette[len(colors) % len(palette)]
+    for label in labels:
+        if label not in colors:
+            colors[label] = palette[len(colors) % len(palette)]
     return colors
 
 
-def _word_spans(text):
-    words = []
-    start = None
-    for idx, ch in enumerate(text):
-        if ch == " ":
-            if start is not None:
-                words.append({"start": start, "end": idx, "text": text[start:idx]})
-                start = None
-        elif start is None:
-            start = idx
-    if start is not None:
-        words.append({"start": start, "end": len(text), "text": text[start:]})
-    return words
+def _select_y_ticks(units, max_y_labels):
+    n_units = len(units)
+    if n_units == 0:
+        return [], []
+    step = max(1, int(np.ceil(n_units / max(1, int(max_y_labels)))))
+    ticks = list(range(0, n_units, step))
+    if (n_units - 1) not in ticks:
+        ticks.append(n_units - 1)
+    labels = [f"{idx}:{_display_unit(units[idx])}" for idx in ticks]
+    return ticks, labels
 
 
-def _word_space_units(text):
-    units = []
-    spans = []
-    idx = 0
-    while idx < len(text):
-        ch = text[idx]
-        start = idx
-        if ch == " ":
-            while idx < len(text) and text[idx] == " ":
-                idx += 1
-            units.append(" ")
-            spans.append((start, idx))
-        else:
-            while idx < len(text) and text[idx] != " ":
-                idx += 1
-            units.append(text[start:idx])
-            spans.append((start, idx))
-    return units, spans
-
-
-def _encode_word_units(text, text_embedder, device):
-    units, spans = _word_space_units(text)
-    if not units:
-        return units, spans, torch.empty((0, 0), device=device)
-
-    text_embedder.eval()
-    vectors = []
-    with torch.no_grad():
-        for unit in units:
-            vec = embed_token_with_fallback(text_embedder, unit, device)
-            vectors.append(vec.to(device=device, dtype=torch.float32))
-        embeddings = normalize_func(torch.stack(vectors, dim=0))
-    return units, spans, embeddings
-
-
-def _encode_bigram_units(text, text_embedder, device, include_space_units=True):
-    units = []
-    spans = []
-    idx = 0
-    while idx < len(text):
-        start = idx
-        if text[idx] == " ":
-            while idx < len(text) and text[idx] == " ":
-                idx += 1
-            if include_space_units:
-                units.append(" ")
-                spans.append((start, idx))
-            continue
-
-        while idx < len(text) and text[idx] != " ":
-            idx += 1
-        word_start, word_end = start, idx
-        if word_end - word_start == 1:
-            units.append(text[word_start:word_end])
-            spans.append((word_start, word_end))
-            continue
-        for char_idx in range(word_start, word_end - 1):
-            units.append(text[char_idx:char_idx + 2])
-            spans.append((char_idx, char_idx + 2))
-    if not units:
-        return units, spans, torch.empty((0, 0), device=device)
-
-    text_embedder.eval()
-    vectors = []
-    with torch.no_grad():
-        for unit in units:
-            vec = embed_token_with_fallback(text_embedder, unit, device)
-            vectors.append(vec.to(device=device, dtype=torch.float32))
-        embeddings = normalize_func(torch.stack(vectors, dim=0))
-    return units, spans, embeddings
-
-
-def _unit_word_map(spans, words):
-    mapping = []
-    for span in spans:
-        unit_start, unit_end = int(span[0]), int(span[1])
-        best_idx = None
-        best_overlap = 0
-        for word_idx, word in enumerate(words):
-            overlap = max(0, min(unit_end, word["end"]) - max(unit_start, word["start"]))
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_idx = word_idx
-        if best_idx is None:
-            # Space units sit between word spans. Attach the space before a
-            # word to that following word so the word mask starts from the
-            # first space-owned window before its letters.
-            for word_idx, word in enumerate(words):
-                if word["start"] >= unit_end:
-                    best_idx = word_idx
-                    break
-            if best_idx is None and words:
-                best_idx = len(words) - 1
-        mapping.append(best_idx)
-    return mapping
-
-
-def _window_unit_assignments(assignment, sim, raw_windows, subfeatures):
-    """
-    Assign every raw sliding window to one text unit.
-
-    Hard D3TW can leave a raw window with no assigned subfeature.  For those
-    cases, use the strongest mean similarity over the window's subfeatures so
-    the top image has no unmasked gaps.
-    """
-    owners = []
-    num_visual = assignment.shape[1] if assignment.size else sim.shape[1]
-    for raw_idx in range(raw_windows):
-        start = raw_idx * subfeatures
-        end = min(num_visual, start + subfeatures)
-        if start >= num_visual:
-            owners.append(None)
-            continue
-
-        assign_scores = assignment[:, start:end].sum(axis=1) if assignment.size else np.array([])
-        if assign_scores.size and float(assign_scores.max()) > 0:
-            owners.append(int(np.argmax(assign_scores)))
-            continue
-
-        sim_scores = sim[:, start:end].mean(axis=1)
-        owners.append(int(np.argmax(sim_scores)))
-    return owners
-
-
-def _window_word_assignments(unit_owners, unit_to_word, assignment, sim, raw_windows, subfeatures):
-    word_owners = []
-    num_visual = assignment.shape[1] if assignment.size else sim.shape[1]
-    for raw_idx, unit_owner in enumerate(unit_owners):
-        if unit_owner is not None and unit_owner < len(unit_to_word):
-            word_owner = unit_to_word[unit_owner]
-            word_owners.append(word_owner)
-            continue
-
-        start = raw_idx * subfeatures
-        end = min(num_visual, start + subfeatures)
-        if start >= num_visual:
-            word_owners.append(None)
-            continue
-
-        sim_scores = sim[:, start:end].mean(axis=1)
-        for unit_idx in np.argsort(sim_scores)[::-1]:
-            unit_idx = int(unit_idx)
-            if unit_idx < len(unit_to_word) and unit_to_word[unit_idx] is not None:
-                word_owners.append(unit_to_word[unit_idx])
-                break
-        else:
-            word_owners.append(None)
-    return word_owners
-
-
-def _word_runs(owners, words, patches):
+def _runs_from_indices(indices, visual_ranges, merge_gap_px=2):
+    ranges = [visual_ranges[i] for i in sorted(set(indices)) if 0 <= i < len(visual_ranges)]
+    if not ranges:
+        return []
+    ranges.sort(key=lambda pair: pair[0])
     runs = []
-    if not patches:
-        return runs
-
-    start_idx = 0
-    prev_owner = owners[0] if owners else None
-    for raw_idx in range(1, len(patches)):
-        owner = owners[raw_idx] if raw_idx < len(owners) else None
-        if owner != prev_owner:
-            runs.append((start_idx, raw_idx - 1, prev_owner))
-            start_idx = raw_idx
-            prev_owner = owner
-    runs.append((start_idx, len(patches) - 1, prev_owner))
-
-    labeled_runs = []
-    for start, end, owner in runs:
-        word = words[owner]["text"] if owner is not None and owner < len(words) else None
-        run_patches = patches[start:end + 1]
-        left = min(patch[1] for patch in run_patches)
-        right = max(patch[2] for patch in run_patches)
-        labeled_runs.append((left, right, word))
-    return labeled_runs
+    cur_left, cur_right = ranges[0]
+    for left, right in ranges[1:]:
+        if left <= cur_right + merge_gap_px:
+            cur_right = max(cur_right, right)
+        else:
+            runs.append((cur_left, cur_right))
+            cur_left, cur_right = left, right
+    runs.append((cur_left, cur_right))
+    return runs
 
 
-def _display_word_letters(word, max_len=18):
-    text = " ".join(str(word))
-    return text if len(text) <= max_len else text[: max_len - 3] + "..."
+def _draw_token_overlay(ax, image_np, records, visual_ranges, colors, max_labels=25, gap_px=3):
+    ax.imshow(image_np, aspect="auto")
+    labels_drawn = 0
+    gap = max(0.0, float(gap_px))
+    for record in records:
+        token = record.get("token", record.get("char", ""))
+        color = colors.get(token, (0.2, 0.2, 0.2, 1.0))
+        for left, right in _runs_from_indices(record.get("assigned_windows", []), visual_ranges):
+            draw_left = min(right, left + gap / 2.0)
+            draw_right = max(draw_left, right - gap / 2.0)
+            ax.axvspan(draw_left, draw_right, color=color, alpha=0.24)
+            if labels_drawn < max_labels and (draw_right - draw_left) >= 6:
+                ax.text(
+                    (draw_left + draw_right) / 2,
+                    5,
+                    _display_unit(token, max_len=8),
+                    ha="center",
+                    va="top",
+                    fontsize=6,
+                    color="white",
+                    bbox=dict(facecolor="black", alpha=0.55, pad=0.35),
+                )
+                labels_drawn += 1
 
 
-def _draw_space_row_guides(ax, units, n_cols, color="#ff2f92"):
-    """Draw full-width guide lines on DTW rows that represent spaces."""
-    if not units or n_cols <= 0:
-        return
-    x0, x1 = -0.5, n_cols - 0.5
-    for row_idx, unit in enumerate(units):
-        if unit != " ":
+def _draw_assignment_rectangles(ax, records, colors, n_rows, n_cols):
+    for record in records:
+        row = record.get("unit_index", record.get("char_index"))
+        if row is None or row >= n_rows:
             continue
-        ax.axhspan(row_idx - 0.5, row_idx + 0.5, color=color, alpha=0.08, zorder=3)
-        ax.hlines(
-            row_idx,
-            x0,
-            x1,
-            colors=color,
-            linestyles="-",
-            linewidth=1.4,
-            alpha=0.95,
-            zorder=4,
-        )
+        token = record.get("token", record.get("char", ""))
+        color = colors.get(token, (0.2, 0.2, 0.2, 1.0))
+        for col in record.get("assigned_windows", []):
+            if 0 <= col < n_cols:
+                ax.add_patch(plt.Rectangle((col - 0.5, row - 0.5), 1.0, 1.0, color=color, alpha=0.20))
 
 
-def _draw_word_row_bands(ax, units, spans, words, word_colors, n_cols):
-    """Tint each non-space text-unit row by the word it belongs to."""
-    if not units or not words or n_cols <= 0:
-        return
-    unit_to_word = _unit_word_map(spans, words)
-    x0, x1 = -0.5, n_cols - 0.5
-    for row_idx, word_idx in enumerate(unit_to_word):
-        if row_idx >= len(units) or units[row_idx] == " ":
-            continue
-        if word_idx is None or word_idx >= len(words):
-            continue
-        word = words[word_idx]["text"]
-        color = word_colors.get(word, (0.15, 0.15, 0.15, 1.0))
-        ax.axhspan(
-            row_idx - 0.5,
-            row_idx + 0.5,
-            xmin=0,
-            xmax=1,
-            color=color,
-            alpha=0.075,
-            zorder=3,
-        )
-        ax.hlines(
-            [row_idx - 0.5, row_idx + 0.5],
-            x0,
-            x1,
-            colors=[color, color],
-            linewidth=0.55,
-            alpha=0.5,
-            zorder=4,
-        )
+def _records_to_table(records, text_unit_type, max_rows):
+    rows = []
+    for record in records[: max(0, int(max_rows))]:
+        if text_unit_type == "char":
+            rows.append([
+                record["char_index"],
+                _display_unit(record["char"]),
+                ",".join(map(str, record["assigned_windows"][:18])),
+                record["num_windows"],
+                _display_unit(record["top1_pred"]) if record["top1_pred"] is not None else "n/a",
+                " ".join(_display_unit(u) for u in (record["top5_pred"] or [])) or "n/a",
+                "" if record["correct"] is None else ("✓" if record["correct"] else "✗"),
+            ])
+        else:
+            rows.append([
+                record["unit_index"],
+                _display_unit(record["token"]),
+                f"{record['span'][0]}-{record['span'][1]}",
+                ",".join(map(str, record["assigned_windows"][:18])),
+                record["num_windows"],
+                _display_unit(record["top1_pred"]) if record["top1_pred"] is not None else "n/a",
+                " ".join(_display_unit(u) for u in (record["top5_pred"] or [])) or "n/a",
+                "" if record["correct"] is None else ("✓" if record["correct"] else "✗"),
+            ])
+    if text_unit_type == "char":
+        labels = ["char index", "char", "assigned visual idx", "#vis", "top1", "top-k", "ok"]
+    else:
+        labels = ["unit index", "token", "span", "assigned visual idx", "#vis", "top1", "top-k", "ok"]
+    return rows, labels
 
 
-def _draw_window_word_rectangles(
-    ax,
-    window_word_owners,
-    words,
-    word_colors,
-    n_rows,
-    n_cols,
-    subfeatures,
-):
-    """Color each visual-window block in the heatmap by its assigned word."""
-    if not window_word_owners or not words or n_rows <= 0 or n_cols <= 0:
-        return
+def _write_json_csv(output_dir, stem, payload, records):
+    json_path = os.path.join(output_dir, f"{stem}.json")
+    csv_path = os.path.join(output_dir, f"{stem}.csv")
+    with open(json_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
 
-    subfeatures = max(1, int(subfeatures))
-    y0 = -0.5
-    height = n_rows
-    for raw_idx, word_idx in enumerate(window_word_owners):
-        start_col = raw_idx * subfeatures
-        if start_col >= n_cols:
-            break
-        end_col = min(n_cols, start_col + subfeatures)
-        if word_idx is None or word_idx >= len(words):
-            continue
-
-        word = words[word_idx]["text"]
-        color = word_colors.get(word, (0.15, 0.15, 0.15, 1.0))
-        left = start_col - 0.5
-        width = max(0.0, end_col - start_col)
-        ax.add_patch(Rectangle(
-            (left, y0),
-            width,
-            height,
-            facecolor=color,
-            edgecolor="none",
-            linewidth=0.0,
-            alpha=0.18,
-            zorder=3,
-        ))
-
-
-def _draw_window_word_overlay(
-    ax,
-    image_np,
-    patches,
-    window_word_owners,
-    words,
-    word_colors,
-    mask_gap_px=4,
-    use_flip=False,
-):
-    display_patches = list(reversed(patches)) if use_flip else patches
-    word_runs = _word_runs(window_word_owners, words, display_patches)
-
-    gap = max(0.0, float(mask_gap_px))
-    for left, right, word in word_runs:
-        if word is None:
-            continue
-        draw_left = min(right, left + gap / 2.0)
-        draw_right = max(draw_left, right - gap / 2.0)
-        color = word_colors.get(word, (0.15, 0.15, 0.15, 1.0))
-        ax.axvspan(draw_left, draw_right, color=color, alpha=0.26)
-
-    for left, right, word in word_runs:
-        if word is None:
-            continue
-        draw_left = min(right, left + gap / 2.0)
-        draw_right = max(draw_left, right - gap / 2.0)
-        ax.text(
-            (draw_left + draw_right) / 2,
-            5,
-            _display_word_letters(word),
-            ha="center",
-            va="top",
-            fontsize=6,
-            color="white",
-            bbox=dict(facecolor="black", alpha=0.55, pad=0.45),
-        )
-
-
-def _load_text_embeddings(text, chars, device, checkpoint):
-    bank_emb, char_to_idx, idx_to_char = load_char_bank_if_available(checkpoint, device)
-    if bank_emb is not None and char_to_idx is not None and all(ch in char_to_idx for ch in chars):
-        ids = torch.tensor([char_to_idx[ch] for ch in chars], device=device, dtype=torch.long)
-        return bank_emb[ids], bank_emb, char_to_idx, idx_to_char
-
-    print("  [fig13] Warning: char bank unavailable/incomplete; falling back to text embedder.")
-    text_embedder = load_text_embedder(device)
-    with torch.no_grad():
-        text_emb = normalize_func(text_embedder(text).to(device))
-    return text_emb, bank_emb, char_to_idx, idx_to_char
-
-
-def _window_patches(image_np, ws, stride, num_visual):
-    raw_windows = max(1, (image_np.shape[1] - ws) // stride + 1)
-    subfeatures = max(1, num_visual // raw_windows)
-    patches = []
-    for raw_idx in range(raw_windows):
-        x = image_np.shape[1] - ws - raw_idx * stride
-        patches.append((raw_idx, max(0, x), min(image_np.shape[1], x + ws)))
-    return patches, raw_windows, subfeatures
+    fieldnames = [
+        "unit_index", "char_index", "token", "char", "span", "assigned_windows",
+        "num_windows", "top1_pred", "top5_pred", "correct",
+    ]
+    with open(csv_path, "w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for record in records:
+            row = {key: record.get(key) for key in fieldnames}
+            for key in ("span", "assigned_windows", "top5_pred"):
+                row[key] = json.dumps(row[key], ensure_ascii=False)
+            writer.writerow(row)
+    return json_path, csv_path
 
 
 def generate_figure(
@@ -414,305 +315,211 @@ def generate_figure(
     sample_idx,
     output_dir,
     device,
-    window_overlap_mode="custom",
     show_topk=5,
-    text_unit_type="char",
+    text_unit_type=None,
     window_size=None,
     stride=None,
-    word_mask_gap_px=4,
+    max_y_labels=25,
+    max_table_rows=25,
+    token_mask_gap_px=3,
 ):
-    del window_overlap_mode  # Kept for backward-compatible CLI calls.
     device = torch.device(device)
-    if window_size is not None and int(window_size) <= 0:
-        raise ValueError("--window_size must be a positive integer.")
-    if stride is not None and int(stride) <= 0:
-        raise ValueError("--stride must be a positive integer.")
-    model = load_image_model(
-        checkpoint,
-        device,
-        window_size_override=window_size,
-        stride_override=stride,
-    )
-    image, transcript = load_sample(data_dir, sample_idx, transform=True)
+    cfg = _checkpoint_config(checkpoint)
+    text_unit_type = str(text_unit_type or cfg.get("text_unit_type", "char")).lower()
+    if text_unit_type not in {"char", "ngram"}:
+        raise ValueError("fig13 supports --text_unit_type char|ngram. Old word/bigram modes were removed.")
 
+    model = load_image_model(checkpoint, device, window_size_override=window_size, stride_override=stride)
+    image, transcript = load_sample(data_dir, sample_idx, transform=True)
     text_padded = " " + transcript + " "
-    text_unit_type = str(text_unit_type).lower()
 
     with torch.no_grad():
         visual_emb = normalize_func(model(image.unsqueeze(0).to(device)).squeeze(0).float())
-        if text_unit_type == "ngram":
-            ngram_tokenizer = load_ngram_tokenizer_if_available(checkpoint)
-            if ngram_tokenizer is None:
-                raise RuntimeError("fig13 --text_unit_type ngram requires ngram_vocab.json next to the checkpoint.")
-            text_embedder = load_text_embedder(device)
-            units, spans, text_emb = encode_text_units(
-                text_padded, "ngram", text_embedder, device, ngram_tokenizer=ngram_tokenizer
-            )
-            bank_emb, unit_to_idx, idx_to_unit = load_token_bank_if_available(checkpoint, device)
-        elif text_unit_type == "word":
-            text_embedder = load_text_embedder(device)
-            units, spans, text_emb = _encode_word_units(text_padded, text_embedder, device)
-            bank_emb, unit_to_idx, idx_to_unit = None, None, None
-        elif text_unit_type == "bigram":
-            text_embedder = load_text_embedder(device)
-            units, spans, text_emb = _encode_bigram_units(text_padded, text_embedder, device)
-            bank_emb, unit_to_idx, idx_to_unit = load_token_bank_if_available(checkpoint, device)
-        elif text_unit_type == "char":
-            units = list(text_padded)
-            spans = [(idx, idx + 1) for idx in range(len(units))]
-            text_emb, bank_emb, unit_to_idx, idx_to_unit = _load_text_embeddings(
-                text_padded, units, device, checkpoint
-            )
-        else:
-            raise ValueError(f"Unknown text_unit_type: {text_unit_type}")
+        units, spans, text_emb, bank_emb, unit_to_idx, idx_to_unit = _encode_units(
+            text_padded, text_unit_type, checkpoint, device
+        )
         result = compute_d3tw_char_pool_for_sample(
             visual_emb=visual_emb,
             text_emb=text_emb,
             transcript_chars=units,
             detach_assignment=True,
         )
-        bigram_rows = []
-        if text_unit_type in {"ngram", "bigram"}:
+
+        assert text_emb.shape[0] == len(units), f"text_emb rows {text_emb.shape[0]} != len(units) {len(units)}"
+        assert result["sim"].shape[0] == len(units), f"sim rows {result['sim'].shape[0]} != len(units) {len(units)}"
+        assert result["assignment"].shape[0] == len(units), "assignment rows must equal number of text units"
+        assert result["pooled_visual"].shape[0] == len(units), "pooled rows must equal number of text units"
+
+        if text_unit_type == "ngram":
             predictions, pred_stats = token_pool_predictions(
-                result["pooled_visual"],
-                units,
-                bank_emb,
-                unit_to_idx,
-                idx_to_unit,
-                valid_mask=result["valid_mask"],
-                topk=show_topk,
+                result["pooled_visual"], units, bank_emb, unit_to_idx, idx_to_unit,
+                valid_mask=result["valid_mask"], topk=show_topk,
             )
-        elif text_unit_type == "word":
-            predictions, pred_stats = None, {
-                "token_pool_top1": None,
-                "token_pool_top5": None,
-                "token_pool_valid_tokens": 0,
-            }
+            records = unit_group_records(units, spans, result["groups"], predictions)
         else:
             predictions, pred_stats = char_pool_predictions(
-                pooled_visual=result["pooled_visual"],
-                transcript_chars=units,
-                char_bank_embeddings=bank_emb,
-                char_to_idx=unit_to_idx,
-                idx_to_char=idx_to_unit,
-                valid_mask=result["valid_mask"],
-                topk=show_topk,
+                pooled_visual=result["pooled_visual"], transcript_chars=units,
+                char_bank_embeddings=bank_emb, char_to_idx=unit_to_idx, idx_to_char=idx_to_unit,
+                valid_mask=result["valid_mask"], topk=show_topk,
             )
-            token_emb, token_to_idx, idx_to_token = load_token_bank_if_available(checkpoint, device)
-            if token_emb is not None and token_to_idx is not None and idx_to_token is not None:
-                pair_visuals, target_ids, pair_meta = build_adjacent_pair_visuals(
-                    pooled_visual=result["pooled_visual"],
-                    transcript_chars=units,
-                    token_to_idx=token_to_idx,
-                    fusion="mean",
-                    skip_spaces=True,
-                )
-                if pair_visuals.numel() > 0:
-                    logits = normalize_func(pair_visuals) @ normalize_func(token_emb).T
-                    top_idx = logits.topk(min(show_topk, logits.shape[-1]), dim=-1).indices.cpu().tolist()
-                    targets = target_ids.cpu().tolist()
-                    for meta, preds, target in zip(pair_meta, top_idx, targets):
-                        pred_tokens = [idx_to_token[i] for i in preds]
-                        bigram_rows.append({
-                            **meta,
-                            "top1_pred": pred_tokens[0] if pred_tokens else None,
-                            "top5_pred": pred_tokens,
-                            "correct": bool(preds and preds[0] == target),
-                        })
+            records = group_records(units, result["groups"], predictions)
 
     sim = result["sim"].detach().cpu().numpy()
     assignment = result["assignment"].detach().cpu().numpy()
     pooled = result["pooled_visual"].detach().cpu().numpy()
+    counts = result["counts"].detach().cpu().numpy()
     path = result["path"]
-    groups = result["groups"]
-    if text_unit_type in {"ngram", "bigram", "word"}:
-        records = unit_group_records(units, spans, groups, predictions)
-    else:
-        records = group_records(units, groups, predictions)
 
     image_np = image.permute(1, 2, 0).cpu().numpy()
-    ws = int(getattr(model, "window_size", 16))
-    stride = int(getattr(model, "stride", ws))
-    patches, raw_windows, subfeatures = _window_patches(image_np, ws, stride, visual_emb.shape[0])
-    words_for_guides = _word_spans(text_padded)
-    unit_to_word_for_guides = _unit_word_map(spans, words_for_guides)
-    window_unit_owners = _window_unit_assignments(assignment, sim, raw_windows, subfeatures)
-    window_word_owners = _window_word_assignments(
-        window_unit_owners,
-        unit_to_word_for_guides,
-        assignment,
-        sim,
-        raw_windows,
-        subfeatures,
+    image_width = int(image_np.shape[1])
+    ws = int(getattr(model, "window_size", window_size or cfg.get("window_size", 16)))
+    stride_value = int(getattr(model, "stride", stride or cfg.get("stride", ws)))
+    use_flip = bool(getattr(model, "use_flip", False))
+    patches = _sliding_window_patches(image_width, ws, stride_value, rtl=use_flip)
+    visual_ranges, visual_mapping = _visual_index_ranges(
+        int(visual_emb.shape[0]), image_width, patches, use_flip
     )
-    word_colors_for_guides = _stable_unit_colors([word["text"] for word in words_for_guides])
+    if visual_mapping == "proportional":
+        print(
+            f"  [fig13] Warning: visual sequence length S={visual_emb.shape[0]} "
+            f"!= num_windows={len(patches)}; using proportional visual-index mapping."
+        )
+    elif visual_mapping.startswith("parent_window"):
+        print(
+            f"  [fig13] visual sequence length S={visual_emb.shape[0]} "
+            f"maps to num_windows={len(patches)} using {visual_mapping}."
+        )
 
-    fig = plt.figure(figsize=(34, 24), constrained_layout=False)
-    grid = fig.add_gridspec(
-        5,
-        2,
-        height_ratios=[2.2, 1.2, 4.0, 3.0, 4.0],
-        width_ratios=[1.25, 1.0],
-        hspace=0.42,
-        wspace=0.18,
-    )
+    print("[fig13 debug]")
+    print("  text_unit_type:", text_unit_type)
+    print("  text:", text_padded)
+    print("  units:", units)
+    print("  spans:", spans)
+    print("  num_units:", len(units))
+    print("  visual_sequence_len:", int(visual_emb.shape[0]))
+    print("  sim shape:", tuple(result["sim"].shape))
+    print("  assignment shape:", tuple(result["assignment"].shape))
+    print("  pooled shape:", tuple(result["pooled_visual"].shape))
+    print("  token/char bank size:", 0 if unit_to_idx is None else len(unit_to_idx))
+
+    if pred_stats.get("token_pool_top1") is not None and pred_stats["token_pool_top1"] <= 0.05:
+        print(
+            "  [fig13] Warning: token retrieval is very low "
+            f"(top1={pred_stats['token_pool_top1']:.3f}, top5={pred_stats['token_pool_top5']:.3f}). "
+            "Check that the checkpoint is trained and token_bank.json matches it."
+        )
+
+    colors = _stable_colors([record.get("token", record.get("char", "")) for record in records])
+    y_ticks, y_labels = _select_y_ticks(units, max_y_labels)
+
+    fig = plt.figure(figsize=(28, 22), constrained_layout=False)
+    grid = fig.add_gridspec(5, 2, height_ratios=[2.1, 1.1, 4.0, 2.8, 4.0], width_ratios=[1.25, 1.0], hspace=0.42, wspace=0.18)
 
     ax_img = fig.add_subplot(grid[0, :])
-    ax_img.imshow(image_np, aspect="auto")
+    _draw_token_overlay(ax_img, image_np, records, visual_ranges, colors, max_labels=max_table_rows, gap_px=token_mask_gap_px)
     ax_img.set_title(
-        f"Arabic line image with merged word masks from assigned {text_unit_type} windows "
-        f"- sample {sample_idx} (windows={raw_windows}, window={ws}, stride={stride})",
-        fontsize=16,
-    )
-    _draw_window_word_overlay(
-        ax_img,
-        image_np,
-        patches,
-        window_word_owners,
-        words_for_guides,
-        word_colors_for_guides,
-        mask_gap_px=word_mask_gap_px,
-        use_flip=bool(getattr(model, "use_flip", False)),
+        f"D3TW-assigned {text_unit_type} text-unit regions — sample {sample_idx} "
+        f"(num_windows={len(patches)}, visual S={visual_emb.shape[0]}, window={ws}, stride={stride_value}, mapping={visual_mapping})",
+        fontsize=15,
     )
     ax_img.axis("off")
 
     ax_pipe = fig.add_subplot(grid[1, :])
     ax_pipe.axis("off")
     ax_pipe.text(
-        0.5,
-        0.5,
-        "V[S,D] + E[K,D]  →  S = E @ Vᵀ  →  D3TW path  →  assignment A[K,S]  "
-        f"→  pooled M = normalized(A) @ V  →  {text_unit_type} token InfoNCE",
-        ha="center",
-        va="center",
-        fontsize=15,
-        fontweight="bold",
+        0.5, 0.5,
+        "V[S,D] + E[K,D]  →  sim = E @ Vᵀ [K,S]  →  D3TW path  →  "
+        "assignment A[K,S]  →  pooled M = normalized(A) @ V  →  token InfoNCE",
+        ha="center", va="center", fontsize=14, fontweight="bold",
         bbox=dict(boxstyle="round,pad=0.5", fc="#eef3fb", ec="#4c72b0"),
     )
 
     ax_sim = fig.add_subplot(grid[2, 0])
     im = ax_sim.imshow(sim, aspect="auto", origin="upper", cmap="viridis")
-    _draw_window_word_rectangles(
-        ax_sim,
-        window_word_owners,
-        words_for_guides,
-        word_colors_for_guides,
-        sim.shape[0],
-        sim.shape[1],
-        subfeatures,
-    )
-    _draw_space_row_guides(ax_sim, units, sim.shape[1])
+    _draw_assignment_rectangles(ax_sim, records, colors, sim.shape[0], sim.shape[1])
     if path:
         rows = [j for j, _ in path]
         cols = [i for _, i in path]
-        ax_sim.plot(cols, rows, color="red", linewidth=1.6, label="hard D3TW path")
+        ax_sim.plot(cols, rows, color="red", linewidth=1.5, label="hard D3TW path")
         ax_sim.legend(loc="upper right", fontsize=9)
-    ax_sim.set_title("Pre-pooling similarity matrix S[j,i] = E[j] · V[i]", fontsize=13)
-    ax_sim.set_xlabel("visual window/subfeature index i")
-    ax_sim.set_ylabel(f"transcript {text_unit_type} unit index j")
-    ax_sim.set_yticks(range(len(units)))
-    ax_sim.set_yticklabels([_display_char(ch) for ch in units], fontsize=8)
+    ax_sim.set_title("Pre-pooling similarity sim[j,i] = E[j] · V[i]", fontsize=13)
+    ax_sim.set_xlabel("visual position index i")
+    ax_sim.set_ylabel("text-unit index j")
+    ax_sim.set_yticks(y_ticks)
+    ax_sim.set_yticklabels(y_labels, fontsize=8)
     fig.colorbar(im, ax=ax_sim, fraction=0.025, pad=0.01)
 
     ax_assign = fig.add_subplot(grid[2, 1])
     im_a = ax_assign.imshow(assignment, aspect="auto", origin="upper", cmap="Greys")
-    _draw_window_word_rectangles(
-        ax_assign,
-        window_word_owners,
-        words_for_guides,
-        word_colors_for_guides,
-        assignment.shape[0],
-        assignment.shape[1],
-        subfeatures,
-    )
-    _draw_space_row_guides(ax_assign, units, assignment.shape[1])
-    ax_assign.set_title("D3TW assignment matrix A [T,S]", fontsize=13)
-    ax_assign.set_xlabel("visual index i")
-    ax_assign.set_ylabel(f"{text_unit_type} unit index j")
-    ax_assign.set_yticks(range(len(units)))
-    ax_assign.set_yticklabels([_display_char(ch) for ch in units], fontsize=8)
+    _draw_assignment_rectangles(ax_assign, records, colors, assignment.shape[0], assignment.shape[1])
+    ax_assign.set_title(f"D3TW assignment matrix A [K,S] = {assignment.shape}", fontsize=13)
+    ax_assign.set_xlabel("visual position index i")
+    ax_assign.set_ylabel("text-unit index j")
+    ax_assign.set_yticks(y_ticks)
+    ax_assign.set_yticklabels(y_labels, fontsize=8)
     fig.colorbar(im_a, ax=ax_assign, fraction=0.035, pad=0.01)
 
     ax_pool = fig.add_subplot(grid[3, :])
     im_p = ax_pool.imshow(pooled, aspect="auto", origin="upper", cmap="coolwarm")
     ax_pool.set_title(
-        f"Pooled {text_unit_type} unit vectors M = normalized(A) @ V "
-        f"(shape={pooled.shape[0]}×{pooled.shape[1]})",
+        f"Pooled text-unit vectors M = normalized(A) @ V (shape={pooled.shape[0]}×{pooled.shape[1]})",
         fontsize=13,
     )
     ax_pool.set_xlabel("embedding dimension")
-    ax_pool.set_ylabel(f"{text_unit_type} unit index")
-    ax_pool.set_yticks(range(len(units)))
-    ax_pool.set_yticklabels([_display_char(ch) for ch in units], fontsize=8)
+    ax_pool.set_ylabel("text-unit index")
+    ax_pool.set_yticks(y_ticks)
+    ax_pool.set_yticklabels(y_labels, fontsize=8)
     fig.colorbar(im_p, ax=ax_pool, fraction=0.015, pad=0.01)
 
     ax_table = fig.add_subplot(grid[4, :])
     ax_table.axis("off")
-    rows = []
-    if text_unit_type in {"ngram", "bigram", "word"}:
-        for record in records[: min(42, len(records))]:
-            rows.append([
-                record["unit_index"],
-                _display_char(record["token"]),
-                f"{record['span'][0]}-{record['span'][1]}",
-                ",".join(map(str, record["assigned_windows"])),
-                record["num_windows"],
-                _display_char(record["top1_pred"]) if record["top1_pred"] is not None else "n/a",
-                " ".join(_display_char(ch) for ch in record["top5_pred"])
-                if record["top5_pred"] else "n/a",
-                "" if record["correct"] is None else ("✓" if record["correct"] else "✗"),
-            ])
-        col_labels = ["unit index", text_unit_type, "span", "assigned windows", "#win", "top1", "top5", "ok"]
-    else:
-        for record in records[: min(42, len(records))]:
-            rows.append([
-                record["char_index"],
-                _display_char(record["char"]),
-                ",".join(map(str, record["assigned_windows"])),
-                record["num_windows"],
-                _display_char(record["top1_pred"]) if record["top1_pred"] is not None else "n/a",
-                " ".join(_display_char(ch) for ch in record["top5_pred"])
-                if record["top5_pred"] else "n/a",
-                "" if record["correct"] is None else ("✓" if record["correct"] else "✗"),
-            ])
-        col_labels = ["char index", "char", "assigned windows", "#win", "top1", "top5", "ok"]
-    if bigram_rows:
-        rows.append(["—", "BIGRAMS", "—", "—", "—", "—", "—"])
-        for idx, record in enumerate(bigram_rows[:12]):
-            rows.append([
-                f"p{idx}",
-                record["token"],
-                f"{record['start_char_index']}-{record['end_char_index']}",
-                "2 chars",
-                record["top1_pred"] or "n/a",
-                " ".join(record["top5_pred"]) if record["top5_pred"] else "n/a",
-                "✓" if record["correct"] else "✗",
-            ])
-    table = ax_table.table(
-        cellText=rows,
-        colLabels=col_labels,
-        loc="center",
-        cellLoc="center",
-    )
+    table_rows, col_labels = _records_to_table(records, text_unit_type, max_table_rows)
+    table = ax_table.table(cellText=table_rows, colLabels=col_labels, loc="center", cellLoc="center")
     table.auto_set_font_size(False)
     table.set_fontsize(8)
-    table.scale(1.0, 1.25)
+    table.scale(1.0, 1.20)
+    top1 = pred_stats.get("token_pool_top1", pred_stats.get("char_pool_top1"))
+    topk_value = pred_stats.get("token_pool_top5", pred_stats.get("char_pool_top5"))
+    metric_text = f"top1={top1:.3f}, top{show_topk}={topk_value:.3f}" if top1 is not None and topk_value is not None else "bank unavailable"
     ax_table.set_title(
-        f"{text_unit_type} text-unit/window groups from D3TW assignment"
-        + (
-            f" | top1={pred_stats.get('char_pool_top1', pred_stats.get('token_pool_top1')):.3f}, "
-            f"top5={pred_stats.get('char_pool_top5', pred_stats.get('token_pool_top5')):.3f}"
-            if pred_stats.get("char_pool_top1", pred_stats.get("token_pool_top1")) is not None
-            else " | bank unavailable"
-        ),
+        f"{text_unit_type} text-unit/window groups from D3TW assignment "
+        f"(showing {min(max_table_rows, len(records))}/{len(records)}) | {metric_text}",
         fontsize=13,
     )
 
     os.makedirs(output_dir, exist_ok=True)
     stem = f"fig13_d3tw_character_pooling_sample_{sample_idx}"
-    fig.savefig(os.path.join(output_dir, f"{stem}.pdf"), bbox_inches="tight")
+    pdf_path = os.path.join(output_dir, f"{stem}.pdf")
+    png_path = os.path.join(output_dir, f"{stem}.png")
+    fig.savefig(pdf_path, bbox_inches="tight")
+    fig.savefig(png_path, bbox_inches="tight", dpi=180)
     plt.close(fig)
-    print(f"Saved {stem}.pdf in {output_dir}")
+
+    payload = {
+        "text_unit_type": text_unit_type,
+        "text": text_padded,
+        "sample_idx": int(sample_idx),
+        "num_units": int(len(units)),
+        "num_visual": int(visual_emb.shape[0]),
+        "num_windows": int(len(patches)),
+        "window_size": int(ws),
+        "stride": int(stride_value),
+        "visual_index_mapping": visual_mapping,
+        "sim_shape": [int(v) for v in sim.shape],
+        "assignment_shape": [int(v) for v in assignment.shape],
+        "pooled_shape": [int(v) for v in pooled.shape],
+        "token_top1": pred_stats.get("token_pool_top1"),
+        "token_top5": pred_stats.get("token_pool_top5"),
+        "char_top1": pred_stats.get("char_pool_top1"),
+        "char_top5": pred_stats.get("char_pool_top5"),
+        "counts": [float(v) for v in counts.tolist()],
+        "units": records,
+    }
+    json_path, csv_path = _write_json_csv(output_dir, stem, payload, records)
+    print(f"Saved {pdf_path}")
+    print(f"Saved {png_path}")
+    print(f"Saved {json_path}")
+    print(f"Saved {csv_path}")
 
 
 def main():
@@ -723,16 +530,16 @@ def main():
     parser.add_argument("--sample_indices", type=int, nargs="+", default=[0, 1, 2])
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--window_overlap_mode", default="custom")
-    parser.add_argument("--window_size", type=int, default=None,
-                        help="Override checkpoint window size for figure generation.")
-    parser.add_argument("--stride", type=int, default=None,
-                        help="Override checkpoint sliding-window stride for figure generation.")
-    parser.add_argument("--word_mask_gap_px", type=float, default=4,
-                        help="Horizontal pixel gap between adjacent merged word masks.")
+    parser.add_argument("--window_overlap_mode", default=None, help="Ignored; kept for backward-compatible calls.")
+    parser.add_argument("--window_size", type=int, default=None, help="Override checkpoint window size for figure generation.")
+    parser.add_argument("--stride", type=int, default=None, help="Override checkpoint sliding-window stride for figure generation.")
     parser.add_argument("--show_topk", type=int, default=5)
-    parser.add_argument("--text_unit_type", default="word", choices=["char", "ngram", "bigram", "word"])
+    parser.add_argument("--text_unit_type", default=None, choices=["char", "ngram"], help="Default: checkpoint model_config text_unit_type.")
+    parser.add_argument("--max_y_labels", type=int, default=25)
+    parser.add_argument("--max_table_rows", type=int, default=25)
+    parser.add_argument("--token_mask_gap_px", type=float, default=3)
     args = parser.parse_args()
+
     indices = [args.sample_idx] if args.sample_idx is not None else args.sample_indices
     for idx in indices:
         generate_figure(
@@ -741,12 +548,13 @@ def main():
             sample_idx=idx,
             output_dir=args.output_dir,
             device=args.device,
-            window_overlap_mode=args.window_overlap_mode,
             show_topk=args.show_topk,
             text_unit_type=args.text_unit_type,
             window_size=args.window_size,
             stride=args.stride,
-            word_mask_gap_px=args.word_mask_gap_px,
+            max_y_labels=args.max_y_labels,
+            max_table_rows=args.max_table_rows,
+            token_mask_gap_px=args.token_mask_gap_px,
         )
 
 
