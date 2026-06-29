@@ -69,10 +69,13 @@ def _checkpoint_state(ckpt):
     return ckpt
 
 
-def _build_model(device, use_bilstm_override=None, stride_override=None,
+def _build_model(device, use_bilstm_override=None, window_size_override=None,
+                 stride_override=None,
                  model_config=None):
     cfg = model_config or {}
     ws = int(cfg.get("window_size", window_size))
+    if window_size_override is not None:
+        ws = int(window_size_override)
     sr = float(cfg.get("stride_ratio", stride_ratio))
     stride = stride_override
     if stride is None:
@@ -116,6 +119,7 @@ def _build_model(device, use_bilstm_override=None, stride_override=None,
 
 
 def load_image_model(checkpoint_path, device, use_bilstm_override=None,
+                     window_size_override=None,
                      stride_override=None):
     """Load EmbeddingModel from a checkpoint file. Returns eval-mode model."""
     if not os.path.isfile(checkpoint_path):
@@ -129,6 +133,7 @@ def load_image_model(checkpoint_path, device, use_bilstm_override=None,
     model = _build_model(
         device,
         use_bilstm_override,
+        window_size_override=window_size_override,
         stride_override=stride_override,
         model_config=cfg,
     )
