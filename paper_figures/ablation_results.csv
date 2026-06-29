@@ -1,6 +1,0 @@
-method,metric,value
-D3TW only,Top-1 Accuracy,
-D3TW + CharPool no-overlap,Top-1 Accuracy,
-D3TW + CharPool light-overlap,Top-1 Accuracy,
-D3TW + CharPool dot-confusion,Top-1 Accuracy,
-Transformer + D3TW + CharPool,Top-1 Accuracy,
