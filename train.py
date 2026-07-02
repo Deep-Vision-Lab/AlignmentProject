@@ -218,8 +218,7 @@ parser.add_argument('--cross_attention_type', type=str, default=None,
 parser.add_argument('--cross_attention_num_heads', type=int, default=None)
 parser.add_argument('--cross_attention_dropout', type=float, default=None)
 parser.add_argument('--cross_attention_weight', type=float, default=None)
-args = parser.parse_args()
-job_id = args.job_id
+job_id = None
 
 from wandb_config import (
     init_wandb,
@@ -1559,227 +1558,116 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
     return loss_lst
 
 
-if __name__ == '__main__':
-    # Apply CLI overrides to the imported Parameters module so downstream code
-    # picks them up without any other changes.
+def _apply_override(params_module, args, arg_name, param_name=None, transform=None):
+    value = getattr(args, arg_name)
+    if value is None:
+        return
+    if transform is not None:
+        value = transform(value)
+    target_name = param_name or arg_name
+    setattr(params_module, target_name, value)
+    globals()[target_name] = value
+
+
+def _apply_cli_overrides(args):
+    # Keep Parameters.py and train.py's imported globals in sync. Many helper
+    # functions in this module read these names directly.
     import Parameters as _params
-    if args.window_size is not None:
-        _params.window_size = args.window_size
-        window_size = args.window_size
-    if args.stride_ratio is not None:
-        _params.stride_ratio = args.stride_ratio
-        stride_ratio = args.stride_ratio
-    if args.window_overlap_mode is not None:
-        _params.window_overlap_mode = args.window_overlap_mode
-        window_overlap_mode = args.window_overlap_mode
-    if args.text_embedder is not None:
-        _params.text_embedder_type = args.text_embedder.lower()
-        text_embedder_type = _params.text_embedder_type
+
+    lowercase = str.lower
+    overrides = (
+        ("window_size",),
+        ("stride_ratio",),
+        ("window_overlap_mode", None, lowercase),
+        ("text_embedder", "text_embedder_type", lowercase),
+        ("loss_type", "contrastive_loss_type", lowercase),
+        ("epochs",),
+        ("learning_rate",),
+        ("alignment_loss_type", None, lowercase),
+        ("use_d3tw_char_pooling",),
+        ("char_pool_weight",),
+        ("char_pool_tau",),
+        ("char_pool_warmup_epochs",),
+        ("char_pool_ramp_epochs",),
+        ("char_pool_method",),
+        ("char_pool_detach_alignment",),
+        ("char_pool_skip_spaces",),
+        ("char_pool_min_windows_per_char",),
+        ("text_unit_type", None, lowercase),
+        ("ngram_min_n",),
+        ("ngram_max_n",),
+        ("ngram_min_freq",),
+        ("ngram_max_vocab_size",),
+        ("ngram_tokenizer_mode",),
+        ("ngram_skip_spaces",),
+        ("ngram_include_ligatures",),
+        ("token_pool_weight",),
+        ("token_pool_tau",),
+        ("token_pool_warmup_epochs",),
+        ("token_pool_ramp_epochs",),
+        ("token_pool_detach_alignment",),
+        ("token_pool_min_windows_per_token",),
+        ("use_char_aux_loss",),
+        ("char_aux_weight",),
+        ("char_aux_tau",),
+        ("char_aux_warmup_epochs",),
+        ("char_aux_ramp_epochs",),
+        ("use_bigram_token_loss",),
+        ("bigram_token_weight",),
+        ("bigram_token_tau",),
+        ("bigram_token_warmup_epochs",),
+        ("bigram_token_ramp_epochs",),
+        ("bigram_token_skip_spaces",),
+        ("bigram_token_min_freq",),
+        ("bigram_token_max_vocab_size",),
+        ("bigram_token_fusion",),
+        ("bigram_token_include_ligatures",),
+        ("ctc_weight",),
+        ("d3tw_weight",),
+        ("contrastive_ctc_loss_type", None, lowercase),
+        ("contrastive_ctc_tau",),
+        ("contrastive_ctc_margin",),
+        ("transformer_num_layers",),
+        ("transformer_num_heads",),
+        ("transformer_ff_dim",),
+        ("transformer_dropout",),
+        ("transformer_activation", None, lowercase),
+        ("transformer_norm_first",),
+        ("transformer_positional_encoding", None, lowercase),
+        ("transformer_max_len",),
+        ("return_attention_weights",),
+        ("use_cross_attention",),
+        ("cross_attention_type", None, lowercase),
+        ("cross_attention_num_heads",),
+        ("cross_attention_dropout",),
+        ("cross_attention_weight",),
+    )
+    for override in overrides:
+        _apply_override(_params, args, *override)
+
     if args.negative_mode is not None:
         _params.negative_mode = args.negative_mode.lower()
     if args.multi_scale:
         _params.multi_scale_enabled = True
-        multi_scale_enabled = True
-    if args.loss_type is not None:
-        _params.contrastive_loss_type = args.loss_type.lower()
-        contrastive_loss_type = _params.contrastive_loss_type
-    if args.epochs is not None:
-        _params.epochs = args.epochs
-        epochs = args.epochs
-    if args.learning_rate is not None:
-        _params.learning_rate = args.learning_rate
-        learning_rate = args.learning_rate
+        globals()["multi_scale_enabled"] = True
     if args.num_negatives is not None:
         _params.num_negatives = args.num_negatives
-        num_negatives = args.num_negatives
+        globals()["num_negatives"] = args.num_negatives
         import newDataLoader as _ndl
         _ndl.num_negatives = args.num_negatives
-    if args.alignment_loss_type is not None:
-        _params.alignment_loss_type = args.alignment_loss_type.lower()
-        alignment_loss_type = _params.alignment_loss_type
-    if args.use_d3tw_char_pooling is not None:
-        _params.use_d3tw_char_pooling = args.use_d3tw_char_pooling
-        use_d3tw_char_pooling = args.use_d3tw_char_pooling
-    if args.char_pool_weight is not None:
-        _params.char_pool_weight = args.char_pool_weight
-        char_pool_weight = args.char_pool_weight
-    if args.char_pool_tau is not None:
-        _params.char_pool_tau = args.char_pool_tau
-        char_pool_tau = args.char_pool_tau
-    if args.char_pool_warmup_epochs is not None:
-        _params.char_pool_warmup_epochs = args.char_pool_warmup_epochs
-        char_pool_warmup_epochs = args.char_pool_warmup_epochs
-    if args.char_pool_ramp_epochs is not None:
-        _params.char_pool_ramp_epochs = args.char_pool_ramp_epochs
-        char_pool_ramp_epochs = args.char_pool_ramp_epochs
-    if args.char_pool_method is not None:
-        _params.char_pool_method = args.char_pool_method
-        char_pool_method = args.char_pool_method
-    if args.char_pool_detach_alignment is not None:
-        _params.char_pool_detach_alignment = args.char_pool_detach_alignment
-        char_pool_detach_alignment = args.char_pool_detach_alignment
-    if args.char_pool_skip_spaces is not None:
-        _params.char_pool_skip_spaces = args.char_pool_skip_spaces
-        char_pool_skip_spaces = args.char_pool_skip_spaces
-    if args.char_pool_min_windows_per_char is not None:
-        _params.char_pool_min_windows_per_char = args.char_pool_min_windows_per_char
-        char_pool_min_windows_per_char = args.char_pool_min_windows_per_char
-    if args.text_unit_type is not None:
-        _params.text_unit_type = args.text_unit_type.lower()
-        text_unit_type = _params.text_unit_type
-    if args.ngram_min_n is not None:
-        _params.ngram_min_n = args.ngram_min_n
-        ngram_min_n = args.ngram_min_n
-    if args.ngram_max_n is not None:
-        _params.ngram_max_n = args.ngram_max_n
-        ngram_max_n = args.ngram_max_n
-    if args.ngram_min_freq is not None:
-        _params.ngram_min_freq = args.ngram_min_freq
-        ngram_min_freq = args.ngram_min_freq
-    if args.ngram_max_vocab_size is not None:
-        _params.ngram_max_vocab_size = args.ngram_max_vocab_size
-        ngram_max_vocab_size = args.ngram_max_vocab_size
-    if args.ngram_tokenizer_mode is not None:
-        _params.ngram_tokenizer_mode = args.ngram_tokenizer_mode
-        ngram_tokenizer_mode = args.ngram_tokenizer_mode
-    if args.ngram_skip_spaces is not None:
-        _params.ngram_skip_spaces = args.ngram_skip_spaces
-        ngram_skip_spaces = args.ngram_skip_spaces
-    if args.ngram_include_ligatures is not None:
-        _params.ngram_include_ligatures = args.ngram_include_ligatures
-        ngram_include_ligatures = args.ngram_include_ligatures
-    if args.token_pool_weight is not None:
-        _params.token_pool_weight = args.token_pool_weight
-        token_pool_weight = args.token_pool_weight
-    if args.token_pool_tau is not None:
-        _params.token_pool_tau = args.token_pool_tau
-        token_pool_tau = args.token_pool_tau
-    if args.token_pool_warmup_epochs is not None:
-        _params.token_pool_warmup_epochs = args.token_pool_warmup_epochs
-        token_pool_warmup_epochs = args.token_pool_warmup_epochs
-    if args.token_pool_ramp_epochs is not None:
-        _params.token_pool_ramp_epochs = args.token_pool_ramp_epochs
-        token_pool_ramp_epochs = args.token_pool_ramp_epochs
-    if args.token_pool_detach_alignment is not None:
-        _params.token_pool_detach_alignment = args.token_pool_detach_alignment
-        token_pool_detach_alignment = args.token_pool_detach_alignment
-    if args.token_pool_min_windows_per_token is not None:
-        _params.token_pool_min_windows_per_token = args.token_pool_min_windows_per_token
-        token_pool_min_windows_per_token = args.token_pool_min_windows_per_token
-    if args.use_char_aux_loss is not None:
-        _params.use_char_aux_loss = args.use_char_aux_loss
-        use_char_aux_loss = args.use_char_aux_loss
-    if args.char_aux_weight is not None:
-        _params.char_aux_weight = args.char_aux_weight
-        char_aux_weight = args.char_aux_weight
-    if args.char_aux_tau is not None:
-        _params.char_aux_tau = args.char_aux_tau
-        char_aux_tau = args.char_aux_tau
-    if args.char_aux_warmup_epochs is not None:
-        _params.char_aux_warmup_epochs = args.char_aux_warmup_epochs
-        char_aux_warmup_epochs = args.char_aux_warmup_epochs
-    if args.char_aux_ramp_epochs is not None:
-        _params.char_aux_ramp_epochs = args.char_aux_ramp_epochs
-        char_aux_ramp_epochs = args.char_aux_ramp_epochs
-    if args.use_bigram_token_loss is not None:
-        _params.use_bigram_token_loss = args.use_bigram_token_loss
-        use_bigram_token_loss = args.use_bigram_token_loss
-    if args.bigram_token_weight is not None:
-        _params.bigram_token_weight = args.bigram_token_weight
-        bigram_token_weight = args.bigram_token_weight
-    if args.bigram_token_tau is not None:
-        _params.bigram_token_tau = args.bigram_token_tau
-        bigram_token_tau = args.bigram_token_tau
-    if args.bigram_token_warmup_epochs is not None:
-        _params.bigram_token_warmup_epochs = args.bigram_token_warmup_epochs
-        bigram_token_warmup_epochs = args.bigram_token_warmup_epochs
-    if args.bigram_token_ramp_epochs is not None:
-        _params.bigram_token_ramp_epochs = args.bigram_token_ramp_epochs
-        bigram_token_ramp_epochs = args.bigram_token_ramp_epochs
-    if args.bigram_token_skip_spaces is not None:
-        _params.bigram_token_skip_spaces = args.bigram_token_skip_spaces
-        bigram_token_skip_spaces = args.bigram_token_skip_spaces
-    if args.bigram_token_min_freq is not None:
-        _params.bigram_token_min_freq = args.bigram_token_min_freq
-        bigram_token_min_freq = args.bigram_token_min_freq
-    if args.bigram_token_max_vocab_size is not None:
-        _params.bigram_token_max_vocab_size = args.bigram_token_max_vocab_size
-        bigram_token_max_vocab_size = args.bigram_token_max_vocab_size
-    if args.bigram_token_fusion is not None:
-        _params.bigram_token_fusion = args.bigram_token_fusion
-        bigram_token_fusion = args.bigram_token_fusion
-    if args.bigram_token_include_ligatures is not None:
-        _params.bigram_token_include_ligatures = args.bigram_token_include_ligatures
-        bigram_token_include_ligatures = args.bigram_token_include_ligatures
-    if args.ctc_weight is not None:
-        _params.ctc_weight = args.ctc_weight
-        ctc_weight = args.ctc_weight
-    if args.d3tw_weight is not None:
-        _params.d3tw_weight = args.d3tw_weight
-        d3tw_weight = args.d3tw_weight
-    if args.contrastive_ctc_loss_type is not None:
-        _params.contrastive_ctc_loss_type = args.contrastive_ctc_loss_type.lower()
-        contrastive_ctc_loss_type = _params.contrastive_ctc_loss_type
-    if args.contrastive_ctc_tau is not None:
-        _params.contrastive_ctc_tau = args.contrastive_ctc_tau
-        contrastive_ctc_tau = args.contrastive_ctc_tau
-    if args.contrastive_ctc_margin is not None:
-        _params.contrastive_ctc_margin = args.contrastive_ctc_margin
-        contrastive_ctc_margin = args.contrastive_ctc_margin
     if args.sequence_encoder_type is not None:
         _params.sequence_encoder_type = args.sequence_encoder_type.lower()
         _params.use_bilstm = _params.sequence_encoder_type == "bilstm"
-        sequence_encoder_type = _params.sequence_encoder_type
-        use_bilstm = _params.use_bilstm
-    if args.transformer_num_layers is not None:
-        _params.transformer_num_layers = args.transformer_num_layers
-        transformer_num_layers = args.transformer_num_layers
-    if args.transformer_num_heads is not None:
-        _params.transformer_num_heads = args.transformer_num_heads
-        transformer_num_heads = args.transformer_num_heads
-    if args.transformer_ff_dim is not None:
-        _params.transformer_ff_dim = args.transformer_ff_dim
-        transformer_ff_dim = args.transformer_ff_dim
-    if args.transformer_dropout is not None:
-        _params.transformer_dropout = args.transformer_dropout
-        transformer_dropout = args.transformer_dropout
-    if args.transformer_activation is not None:
-        _params.transformer_activation = args.transformer_activation.lower()
-        transformer_activation = _params.transformer_activation
-    if args.transformer_norm_first is not None:
-        _params.transformer_norm_first = args.transformer_norm_first
-        transformer_norm_first = args.transformer_norm_first
-    if args.transformer_positional_encoding is not None:
-        _params.transformer_positional_encoding = args.transformer_positional_encoding.lower()
-        transformer_positional_encoding = _params.transformer_positional_encoding
-    if args.transformer_max_len is not None:
-        _params.transformer_max_len = args.transformer_max_len
-        transformer_max_len = args.transformer_max_len
-    if args.return_attention_weights is not None:
-        _params.return_attention_weights = args.return_attention_weights
-        return_attention_weights = args.return_attention_weights
-    if args.use_cross_attention is not None:
-        _params.use_cross_attention = args.use_cross_attention
-        use_cross_attention = args.use_cross_attention
-    if args.cross_attention_type is not None:
-        _params.cross_attention_type = args.cross_attention_type.lower()
-        cross_attention_type = _params.cross_attention_type
-    if args.cross_attention_num_heads is not None:
-        _params.cross_attention_num_heads = args.cross_attention_num_heads
-        cross_attention_num_heads = args.cross_attention_num_heads
-    if args.cross_attention_dropout is not None:
-        _params.cross_attention_dropout = args.cross_attention_dropout
-        cross_attention_dropout = args.cross_attention_dropout
-    if args.cross_attention_weight is not None:
-        _params.cross_attention_weight = args.cross_attention_weight
-        cross_attention_weight = args.cross_attention_weight
+        globals()["sequence_encoder_type"] = _params.sequence_encoder_type
+        globals()["use_bilstm"] = _params.use_bilstm
 
-    if debug_wandb:
-        init_wandb(job_id)
+    return _params
 
+
+def _validate_alignment_config(params_module):
     if alignment_loss_type in {'d3tw_char_pool', 'contrastive_d3tw_char_pool'}:
-        _params.use_d3tw_char_pooling = True
-        use_d3tw_char_pooling = True
+        params_module.use_d3tw_char_pooling = True
+        globals()["use_d3tw_char_pooling"] = True
     if _uses_char_pool() and multi_scale_enabled:
         raise NotImplementedError("D3TW character pooling currently supports single-scale training only.")
     if _uses_char_pool() and not _needs_d3tw():
@@ -1801,22 +1689,16 @@ if __name__ == '__main__':
             "token_pool_loss is the main token-level supervision.",
             flush=True,
         )
-        import Parameters as _P
-        _P.use_bigram_token_loss = False
-        use_bigram_token_loss = False
+        params_module.use_bigram_token_loss = False
+        globals()["use_bigram_token_loss"] = False
     if _uses_bigram_token_loss() and not _uses_char_pool():
         raise ValueError("use_bigram_token_loss requires D3TW character pooling.")
     if _uses_bigram_token_loss() and bigram_token_fusion not in {"mean", "mlp"}:
         raise ValueError("bigram_token_fusion must be 'mean' or 'mlp'.")
 
-    stride = compute_stride(window_size, stride_ratio, window_overlap_mode)
-    print(
-        f"Using window_size={window_size}, stride={stride}, "
-        f"window_overlap_mode={window_overlap_mode}"
-    )
 
-    # Resolve dataset path & training schedule. Precedence:
-    #   --data_dir > --finetune (finetune_data_dir) > Parameters.py defaults
+def _prepare_training_inputs(args):
+    # Precedence: --data_dir > --finetune (finetune_data_dir) > Parameters.py defaults.
     if args.data_dir is not None:
         resolved_data_dir = args.data_dir
     elif args.finetune:
@@ -1833,30 +1715,49 @@ if __name__ == '__main__':
 
     if resolved_data_dir is not None:
         print(f"Loading dataset from: {resolved_data_dir}")
-        _train_dl, _valid_dl, _test_dl = build_dataloaders(resolved_data_dir)
+        train_loader, valid_loader, test_loader = build_dataloaders(resolved_data_dir)
     else:
-        _train_dl, _valid_dl, _test_dl = train_dataloader, valid_dataloader, test_dataloader
+        train_loader, valid_loader, test_loader = (
+            train_dataloader,
+            valid_dataloader,
+            test_dataloader,
+        )
 
     resume_ckpt = None
     if args.resume is not None:
         resume_ckpt = torch.load(args.resume, map_location=device)
 
-    textEmbedding = None
-    if _needs_d3tw():
-        # Pick the text embedder via Parameters.text_embedder_type
-        # ('char' = learned frozen table, 'fasttext' = facebook/fasttext-ar-vectors).
-        textEmbedding = build_text_embedder(embedding_dim=vector_size)
-        textEmbedding = textEmbedding.to(device)
-        for p in textEmbedding.parameters():
-            p.requires_grad_(False)
-        textEmbedding.eval()
-        assert not any(p.requires_grad for p in textEmbedding.parameters()), \
-            "Text branch must be fully frozen — some parameters still have requires_grad=True"
-        print(f"[TEXT EMBED] type={text_embedder_type}  out_dim={vector_size}  (frozen)", flush=True)
-    else:
-        print("[TEXT EMBED] skipped for CTC-only objective", flush=True)
+    return (
+        resolved_data_dir,
+        run_lr,
+        run_epochs,
+        train_loader,
+        valid_loader,
+        test_loader,
+        resume_ckpt,
+    )
 
-    imageEmbedding = EmbeddingModel(
+
+def _build_text_embedding():
+    if not _needs_d3tw():
+        print("[TEXT EMBED] skipped for CTC-only objective", flush=True)
+        return None
+
+    # Pick the text embedder via Parameters.text_embedder_type
+    # ('char' = learned frozen table, 'fasttext' = facebook/fasttext-ar-vectors).
+    text_embedding = build_text_embedder(embedding_dim=vector_size)
+    text_embedding = text_embedding.to(device)
+    for param in text_embedding.parameters():
+        param.requires_grad_(False)
+    text_embedding.eval()
+    assert not any(param.requires_grad for param in text_embedding.parameters()), \
+        "Text branch must be fully frozen — some parameters still have requires_grad=True"
+    print(f"[TEXT EMBED] type={text_embedder_type}  out_dim={vector_size}  (frozen)", flush=True)
+    return text_embedding
+
+
+def _build_image_embedding(stride):
+    return EmbeddingModel(
         window_size=window_size,
         stride=stride,
         vector_size=vector_size,
@@ -1878,28 +1779,34 @@ if __name__ == '__main__':
         return_attention_weights=return_attention_weights,
     )
 
-    cross_attention_module = None
-    if use_cross_attention:
-        if cross_attention_weight > 0 and _needs_d3tw():
-            cross_attention_module = CrossAttentionSimilarity(
-                dim=vector_size,
-                num_heads=cross_attention_num_heads,
-                dropout=cross_attention_dropout,
-                attention_type=cross_attention_type,
-            ).to(device)
-            print(
-                "[CROSS-ATTN] enabled as auxiliary similarity "
-                f"type={cross_attention_type} heads={cross_attention_num_heads} "
-                f"weight={cross_attention_weight}",
-                flush=True,
-            )
-        else:
-            print(
-                "[CROSS-ATTN] requested but inactive "
-                f"(needs_d3tw={_needs_d3tw()} weight={cross_attention_weight})",
-                flush=True,
-            )
 
+def _build_cross_attention_module():
+    if not use_cross_attention:
+        return None
+    if cross_attention_weight > 0 and _needs_d3tw():
+        cross_attention_module = CrossAttentionSimilarity(
+            dim=vector_size,
+            num_heads=cross_attention_num_heads,
+            dropout=cross_attention_dropout,
+            attention_type=cross_attention_type,
+        ).to(device)
+        print(
+            "[CROSS-ATTN] enabled as auxiliary similarity "
+            f"type={cross_attention_type} heads={cross_attention_num_heads} "
+            f"weight={cross_attention_weight}",
+            flush=True,
+        )
+        return cross_attention_module
+
+    print(
+        "[CROSS-ATTN] requested but inactive "
+        f"(needs_d3tw={_needs_d3tw()} weight={cross_attention_weight})",
+        flush=True,
+    )
+    return None
+
+
+def _prepare_image_embedding_for_training(args, image_embedding):
     # --resume restores model + optimizer + scheduler + epoch inside Train().
     # --pretrained_weights only loads model weights here (fresh optimizer/epoch).
     if args.resume is not None and args.pretrained_weights is not None:
@@ -1908,105 +1815,94 @@ if __name__ == '__main__':
     if args.pretrained_weights is not None:
         print(f"Loading pretrained weights from: {args.pretrained_weights}")
         loaded = torch.load(args.pretrained_weights, map_location=device)
-        imageEmbedding.load_state_dict(_extract_model_state(loaded))
+        image_embedding.load_state_dict(_extract_model_state(loaded))
         print("Pretrained weights loaded successfully.")
 
-    assert any(p.requires_grad for p in imageEmbedding.parameters()), \
+    assert any(param.requires_grad for param in image_embedding.parameters()), \
         "Image branch has no trainable parameters — check EmbeddingModel construction"
 
     if show_gradients:
-        for param in imageEmbedding.parameters():
+        for param in image_embedding.parameters():
             param.register_hook(check_grad)
 
-    ctc_vocab = None
-    ctc_head = None
-    if _needs_ctc():
-        if resume_ckpt is not None and resume_ckpt.get("ctc_vocab") is not None:
-            ctc_vocab = CTCVocabulary.from_dict(resume_ckpt["ctc_vocab"])
-        else:
-            vocab_texts = _collect_training_texts(_train_dl, resolved_data_dir)
-            if not vocab_texts:
-                raise RuntimeError("Could not collect transcripts to build CTC vocabulary.")
-            ctc_vocab = CTCVocabulary.from_texts(vocab_texts, blank_token=ctc_blank_token)
-        ctc_head = nn.Linear(vector_size, len(ctc_vocab)).to(device)
-        if save_ctc_vocab:
-            ctc_vocab_path = os.path.join(_weights_dir(job_id), "ctc_vocab.json")
-            ctc_vocab.save_json(ctc_vocab_path)
-            print(f"[CTC] saved vocabulary: {ctc_vocab_path}", flush=True)
-        print(
-            f"[CTC] vocab_size={len(ctc_vocab)} blank_idx={ctc_vocab.blank_idx} "
-            f"blank_token={ctc_vocab.blank_token!r}",
-            flush=True,
-        )
 
+def _build_ctc_components(train_loader, resolved_data_dir, resume_ckpt):
+    if not _needs_ctc():
+        return None, None
+
+    if resume_ckpt is not None and resume_ckpt.get("ctc_vocab") is not None:
+        ctc_vocab = CTCVocabulary.from_dict(resume_ckpt["ctc_vocab"])
+    else:
+        vocab_texts = _collect_training_texts(train_loader, resolved_data_dir)
+        if not vocab_texts:
+            raise RuntimeError("Could not collect transcripts to build CTC vocabulary.")
+        ctc_vocab = CTCVocabulary.from_texts(vocab_texts, blank_token=ctc_blank_token)
+
+    ctc_head = nn.Linear(vector_size, len(ctc_vocab)).to(device)
+    if save_ctc_vocab:
+        ctc_vocab_path = os.path.join(_weights_dir(job_id), "ctc_vocab.json")
+        ctc_vocab.save_json(ctc_vocab_path)
+        print(f"[CTC] saved vocabulary: {ctc_vocab_path}", flush=True)
+    print(
+        f"[CTC] vocab_size={len(ctc_vocab)} blank_idx={ctc_vocab.blank_idx} "
+        f"blank_token={ctc_vocab.blank_token!r}",
+        flush=True,
+    )
+    return ctc_vocab, ctc_head
+
+
+def _build_pooling_banks(train_loader, resolved_data_dir, text_embedding):
     char_bank = None
     token_bank = None
     bigram_fusion_mlp = None
     ngram_tokenizer = None
-    if _uses_char_pool():
-        bank_texts = _collect_training_texts(_train_dl, resolved_data_dir)
-        if not bank_texts:
-            raise RuntimeError("Could not collect training transcripts for pooling banks.")
 
-        if _uses_ngram_units():
-            tokens = collect_ngram_tokens(
-                bank_texts,
-                min_n=ngram_min_n,
-                max_n=ngram_max_n,
-                min_freq=ngram_min_freq,
-                max_vocab_size=ngram_max_vocab_size,
-                skip_spaces=ngram_skip_spaces,
-                include_ligatures=ngram_include_ligatures,
-                ligatures=ngram_ligatures,
-            )
-            if not tokens:
-                raise RuntimeError("No n-gram text-unit tokens were collected.")
-            ngram_tokenizer = NGramTokenizer(tokens, mode=ngram_tokenizer_mode)
-            token_embeddings, token_to_idx, idx_to_token = build_token_embedding_bank(
-                textEmbedding, tokens, device
-            )
-            token_bank = TokenBank(
-                token_to_idx=token_to_idx,
-                idx_to_token=idx_to_token,
-                embeddings=token_embeddings,
-            )
-            assert not token_bank.embeddings.requires_grad, "Token bank must be frozen"
-            vocab_path = os.path.join(_weights_dir(job_id), "ngram_vocab.json")
-            save_ngram_vocab_json(vocab_path, idx_to_token)
-            token_bank_path = _save_token_bank(token_bank, job_id)
-            _make_model_config._ngram_vocab_size = len(token_bank.idx_to_token)
-            print(
-                f"[NGRAM TOKEN] vocab size={len(token_bank.idx_to_token)} "
-                f"first 30 tokens={token_bank.idx_to_token[:30]} "
-                f"embedding dim={token_bank.embeddings.shape[1]} "
-                f"vocab={vocab_path} token_bank={token_bank_path}",
-                flush=True,
-            )
+    if not _uses_char_pool():
+        return char_bank, token_bank, bigram_fusion_mlp, ngram_tokenizer
 
-            if use_char_aux_loss:
-                chars = collect_unique_chars(bank_texts, skip_spaces=False)
-                bank_embeddings, char_to_idx, idx_to_char = build_char_bank(
-                    textEmbedding, chars, device
-                )
-                char_bank = CharacterBank(
-                    char_to_idx=char_to_idx,
-                    idx_to_char=idx_to_char,
-                    embeddings=bank_embeddings,
-                )
-                assert not char_bank.embeddings.requires_grad, "Character bank must be frozen"
-                char_bank_path = _save_char_bank(char_bank, job_id)
-                print(
-                    f"[CHAR AUX] char bank size={len(char_bank.idx_to_char)} "
-                    f"first 20 chars={char_bank.idx_to_char[:20]} "
-                    f"embedding dim={char_bank.embeddings.shape[1]} saved={char_bank_path}",
-                    flush=True,
-                )
-        else:
-            chars = collect_unique_chars(
-                bank_texts, skip_spaces=char_pool_skip_spaces
-            )
+    bank_texts = _collect_training_texts(train_loader, resolved_data_dir)
+    if not bank_texts:
+        raise RuntimeError("Could not collect training transcripts for pooling banks.")
+
+    if _uses_ngram_units():
+        tokens = collect_ngram_tokens(
+            bank_texts,
+            min_n=ngram_min_n,
+            max_n=ngram_max_n,
+            min_freq=ngram_min_freq,
+            max_vocab_size=ngram_max_vocab_size,
+            skip_spaces=ngram_skip_spaces,
+            include_ligatures=ngram_include_ligatures,
+            ligatures=ngram_ligatures,
+        )
+        if not tokens:
+            raise RuntimeError("No n-gram text-unit tokens were collected.")
+        ngram_tokenizer = NGramTokenizer(tokens, mode=ngram_tokenizer_mode)
+        token_embeddings, token_to_idx, idx_to_token = build_token_embedding_bank(
+            text_embedding, tokens, device
+        )
+        token_bank = TokenBank(
+            token_to_idx=token_to_idx,
+            idx_to_token=idx_to_token,
+            embeddings=token_embeddings,
+        )
+        assert not token_bank.embeddings.requires_grad, "Token bank must be frozen"
+        vocab_path = os.path.join(_weights_dir(job_id), "ngram_vocab.json")
+        save_ngram_vocab_json(vocab_path, idx_to_token)
+        token_bank_path = _save_token_bank(token_bank, job_id)
+        _make_model_config._ngram_vocab_size = len(token_bank.idx_to_token)
+        print(
+            f"[NGRAM TOKEN] vocab size={len(token_bank.idx_to_token)} "
+            f"first 30 tokens={token_bank.idx_to_token[:30]} "
+            f"embedding dim={token_bank.embeddings.shape[1]} "
+            f"vocab={vocab_path} token_bank={token_bank_path}",
+            flush=True,
+        )
+
+        if use_char_aux_loss:
+            chars = collect_unique_chars(bank_texts, skip_spaces=False)
             bank_embeddings, char_to_idx, idx_to_char = build_char_bank(
-                textEmbedding, chars, device
+                text_embedding, chars, device
             )
             char_bank = CharacterBank(
                 char_to_idx=char_to_idx,
@@ -2016,54 +1912,76 @@ if __name__ == '__main__':
             assert not char_bank.embeddings.requires_grad, "Character bank must be frozen"
             char_bank_path = _save_char_bank(char_bank, job_id)
             print(
-                f"[CHAR POOL] char bank size={len(char_bank.idx_to_char)} "
+                f"[CHAR AUX] char bank size={len(char_bank.idx_to_char)} "
                 f"first 20 chars={char_bank.idx_to_char[:20]} "
-                f"embedding dim={char_bank.embeddings.shape[1]} "
-                f"method={char_pool_method} saved={char_bank_path}",
+                f"embedding dim={char_bank.embeddings.shape[1]} saved={char_bank_path}",
                 flush=True,
             )
+    else:
+        chars = collect_unique_chars(
+            bank_texts, skip_spaces=char_pool_skip_spaces
+        )
+        bank_embeddings, char_to_idx, idx_to_char = build_char_bank(
+            text_embedding, chars, device
+        )
+        char_bank = CharacterBank(
+            char_to_idx=char_to_idx,
+            idx_to_char=idx_to_char,
+            embeddings=bank_embeddings,
+        )
+        assert not char_bank.embeddings.requires_grad, "Character bank must be frozen"
+        char_bank_path = _save_char_bank(char_bank, job_id)
+        print(
+            f"[CHAR POOL] char bank size={len(char_bank.idx_to_char)} "
+            f"first 20 chars={char_bank.idx_to_char[:20]} "
+            f"embedding dim={char_bank.embeddings.shape[1]} "
+            f"method={char_pool_method} saved={char_bank_path}",
+            flush=True,
+        )
 
-        if (not _uses_ngram_units()) and _uses_bigram_token_loss():
-            tokens = collect_bigram_tokens(
-                bank_texts,
-                skip_spaces=bigram_token_skip_spaces,
-                min_freq=bigram_token_min_freq,
-                max_vocab_size=bigram_token_max_vocab_size,
-                include_ligatures=bigram_token_include_ligatures,
+    if (not _uses_ngram_units()) and _uses_bigram_token_loss():
+        tokens = collect_bigram_tokens(
+            bank_texts,
+            skip_spaces=bigram_token_skip_spaces,
+            min_freq=bigram_token_min_freq,
+            max_vocab_size=bigram_token_max_vocab_size,
+            include_ligatures=bigram_token_include_ligatures,
+        )
+        if not tokens:
+            print(
+                "[BIGRAM TOKEN] WARNING: no bigram tokens found; disabling bigram token loss.",
+                flush=True,
             )
-            if not tokens:
-                print(
-                    "[BIGRAM TOKEN] WARNING: no bigram tokens found; disabling bigram token loss.",
-                    flush=True,
-                )
-                import Parameters as _P
-                _P.use_bigram_token_loss = False
-                use_bigram_token_loss = False
-            else:
-                token_embeddings, token_to_idx, idx_to_token = build_token_bank(
-                    textEmbedding, tokens, device
-                )
-                token_bank = TokenBank(
-                    token_to_idx=token_to_idx,
-                    idx_to_token=idx_to_token,
-                    embeddings=token_embeddings,
-                )
-                assert not token_bank.embeddings.requires_grad, "Token bank must be frozen"
-                token_bank_path = _save_token_bank(token_bank, job_id)
-                _make_model_config._bigram_token_vocab_size = len(token_bank.idx_to_token)
-                print(
-                    f"[BIGRAM TOKEN] token bank size={len(token_bank.idx_to_token)} "
-                    f"first 30 tokens={token_bank.idx_to_token[:30]} "
-                    f"embedding dim={token_bank.embeddings.shape[1]} "
-                    f"fusion={bigram_token_fusion} saved={token_bank_path}",
-                    flush=True,
-                )
-                if bigram_token_fusion == "mlp":
-                    bigram_fusion_mlp = BigramFusionMLP(vector_size).to(device)
+            import Parameters as _P
+            _P.use_bigram_token_loss = False
+            globals()["use_bigram_token_loss"] = False
+        else:
+            token_embeddings, token_to_idx, idx_to_token = build_token_bank(
+                text_embedding, tokens, device
+            )
+            token_bank = TokenBank(
+                token_to_idx=token_to_idx,
+                idx_to_token=idx_to_token,
+                embeddings=token_embeddings,
+            )
+            assert not token_bank.embeddings.requires_grad, "Token bank must be frozen"
+            token_bank_path = _save_token_bank(token_bank, job_id)
+            _make_model_config._bigram_token_vocab_size = len(token_bank.idx_to_token)
+            print(
+                f"[BIGRAM TOKEN] token bank size={len(token_bank.idx_to_token)} "
+                f"first 30 tokens={token_bank.idx_to_token[:30]} "
+                f"embedding dim={token_bank.embeddings.shape[1]} "
+                f"fusion={bigram_token_fusion} saved={token_bank_path}",
+                flush=True,
+            )
+            if bigram_token_fusion == "mlp":
+                bigram_fusion_mlp = BigramFusionMLP(vector_size).to(device)
 
-    criterion    = Loss_choice() if _needs_d3tw() else None
-    _model_cfg   = _make_model_config(window_size, stride, stride_ratio, ctc_vocab)
+    return char_bank, token_bank, bigram_fusion_mlp, ngram_tokenizer
 
+
+def _print_run_summary(args, stride, run_lr, run_epochs, resolved_data_dir,
+                       cross_attention_module):
     print(f"\n=== Architecture: Image Encoder (ResNet34 + {sequence_encoder_type}) ===")
     print(f"[OPT 1] job_id: {job_id}")
     print(f"[OPT 2] Sequence Encoder: {sequence_encoder_type}")
@@ -2135,6 +2053,58 @@ if __name__ == '__main__':
         print(f"[FINETUNE] Dataset override: {args.data_dir}")
     print(f"================================================\n")
 
+
+def main(args):
+    global job_id
+
+    _params = _apply_cli_overrides(args)
+    job_id = args.job_id
+
+    if debug_wandb:
+        init_wandb(job_id)
+
+    _validate_alignment_config(_params)
+
+    stride = compute_stride(window_size, stride_ratio, window_overlap_mode)
+    print(
+        f"Using window_size={window_size}, stride={stride}, "
+        f"window_overlap_mode={window_overlap_mode}"
+    )
+
+    (
+        resolved_data_dir,
+        run_lr,
+        run_epochs,
+        _train_dl,
+        _valid_dl,
+        _test_dl,
+        resume_ckpt,
+    ) = _prepare_training_inputs(args)
+
+    textEmbedding = _build_text_embedding()
+
+    imageEmbedding = _build_image_embedding(stride)
+
+    cross_attention_module = _build_cross_attention_module()
+
+    _prepare_image_embedding_for_training(args, imageEmbedding)
+
+    ctc_vocab, ctc_head = _build_ctc_components(
+        _train_dl, resolved_data_dir, resume_ckpt
+    )
+
+    char_bank, token_bank, bigram_fusion_mlp, ngram_tokenizer = _build_pooling_banks(
+        _train_dl, resolved_data_dir, textEmbedding
+    )
+
+    criterion    = Loss_choice() if _needs_d3tw() else None
+    _model_cfg   = _make_model_config(window_size, stride, stride_ratio, ctc_vocab)
+
+    _print_run_summary(
+        args, stride, run_lr, run_epochs, resolved_data_dir,
+        cross_attention_module,
+    )
+
     loss_lst = Train(
         imageEmbedding,
         textEmbedding,
@@ -2156,3 +2126,9 @@ if __name__ == '__main__':
 
     if debug_wandb:
         wandb.finish()
+
+    return loss_lst
+
+
+if __name__ == '__main__':
+    main(parser.parse_args())
