@@ -331,12 +331,12 @@ def generate_figure(
 
     model = load_image_model(checkpoint, device, window_size_override=window_size, stride_override=stride)
     image, transcript = load_sample(data_dir, sample_idx, transform=True)
-    text_padded = " " + transcript + " "
+    text_clean = transcript.strip()
 
     with torch.no_grad():
         visual_emb = normalize_func(model(image.unsqueeze(0).to(device)).squeeze(0).float())
         units, spans, text_emb, bank_emb, unit_to_idx, idx_to_unit = _encode_units(
-            text_padded, text_unit_type, checkpoint, device
+            text_clean, text_unit_type, checkpoint, device
         )
         result = compute_d3tw_char_pool_for_sample(
             visual_emb=visual_emb,
@@ -392,7 +392,7 @@ def generate_figure(
 
     print("[fig13 debug]")
     print("  text_unit_type:", text_unit_type)
-    print("  text:", text_padded)
+    print("  text:", text_clean)
     print("  units:", units)
     print("  spans:", spans)
     print("  num_units:", len(units))
@@ -497,7 +497,7 @@ def generate_figure(
 
     payload = {
         "text_unit_type": text_unit_type,
-        "text": text_padded,
+        "text": text_clean,
         "sample_idx": int(sample_idx),
         "num_units": int(len(units)),
         "num_visual": int(visual_emb.shape[0]),
