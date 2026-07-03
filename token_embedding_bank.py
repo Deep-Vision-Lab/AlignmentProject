@@ -7,6 +7,10 @@ import torch.nn.functional as F
 def embed_token_with_fallback(text_embedder, token, device):
     """Embed a token directly when possible, otherwise mean-pool characters."""
     token = str(token)
+    if hasattr(text_embedder, "embed_token"):
+        vec = text_embedder.embed_token(token)
+        return vec.to(device)
+
     try:
         emb = text_embedder(token)
         if emb.dim() == 1:

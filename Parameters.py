@@ -54,16 +54,18 @@ num_samples = 10000  # [10000, 50000, 100000]
 # ============================================================================
 # Text Embedding Selection
 # ============================================================================
-# 'char'               -> learned per-character table (random init, frozen).
+# 'char'               -> alias for orthogonal_char.
 # 'fasttext'           -> facebook/fasttext-ar-vectors pretrained vectors (frozen).
 #                         Linguistic vectors; may not align with visual features.
 # 'orthogonal_char'    -> deterministic unit-sphere random vectors (frozen).
-#                         Recommended visual-alignment baseline: no linguistic
+#                         Recommended default stable visual-alignment baseline: no linguistic
 #                         bias, each character gets a unique stable direction.
+# 'glyph_prototype'    -> experimental visual text embedding based on rendered
+#                         Arabic glyph shapes.
 # 'random_frozen_char' -> raw Gaussian random frozen vectors (ablation).
 # 'shape_group_char'   -> shape-aware Arabic embeddings; visually-confusable
 #                         letters (ب/ت/ث/ن/ي) blended toward a group centroid.
-text_embedder_type = os.environ.get('TEXT_EMBEDDER', 'fasttext').lower()
+text_embedder_type = os.environ.get('TEXT_EMBEDDER', 'orthogonal_char').lower()
 # Optional local path to a fasttext model.bin. If None, the file is
 # auto-downloaded from HuggingFace (facebook/fasttext-ar-vectors).
 text_embedder_model_path = os.environ.get('TEXT_EMBEDDER_MODEL_PATH') or None
@@ -73,6 +75,10 @@ text_embedder_cache_dir = os.environ.get('TEXT_EMBEDDER_CACHE_DIR') or None
 # inserted after the lookup. The fastText weights themselves stay frozen;
 # this flag only controls whether that small adapter is trainable.
 fasttext_projection_trainable = False
+glyph_font_path = os.environ.get("GLYPH_FONT_PATH") or None
+glyph_image_height = int(os.environ.get("GLYPH_IMAGE_HEIGHT", 32))
+glyph_image_width = int(os.environ.get("GLYPH_IMAGE_WIDTH", 96))
+glyph_projection_seed = int(os.environ.get("GLYPH_PROJECTION_SEED", 2468))
 
 # ============================================================================
 # Fine-tuning parameters

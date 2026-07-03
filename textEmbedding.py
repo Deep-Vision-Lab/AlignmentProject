@@ -1,6 +1,8 @@
 import os
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from PIL import Image, ImageDraw, ImageFont
 from Parameters import device
 
 
@@ -441,6 +443,152 @@ class RandomFrozenCharEmbedding(nn.Module):
 
 
 # ============================================================================
+# Rendered glyph prototype embedding (experimental visual baseline)
+# ============================================================================
+class GlyphPrototypeEmbedding(nn.Module):
+    """
+    Frozen deterministic embedding from rendered glyph images.
+
+    This experimental Arabic visual-alignment embedder renders each character or
+    n-gram token as a grayscale glyph image, flattens it, and applies a fixed
+    random projection. It carries visual shape information but no learned
+    linguistic semantics.
+    """
+
+    SPACE_TOKEN_IDX = 0
+    PAD_TOKEN_IDX = 1
+    _warned_font = False
+    _warned_reshaper = False
+
+    def __init__(
+        self,
+        embedding_dim,
+        vocab_size=65536,
+        font_path=None,
+        image_height=32,
+        image_width=96,
+        seed=2468,
+    ):
+        super().__init__()
+        self.embedding_dim = int(embedding_dim)
+        self.vocab_size = int(vocab_size)
+        self.image_height = int(image_height)
+        self.image_width = int(image_width)
+        self._cache = {}
+
+        generator = torch.Generator().manual_seed(int(seed))
+        projection = torch.randn(
+            self.image_height * self.image_width,
+            self.embedding_dim,
+            generator=generator,
+        )
+        projection = F.normalize(projection, p=2, dim=0)
+        self.register_buffer("projection", projection)
+        self.text_norm = nn.LayerNorm(self.embedding_dim, elementwise_affine=False)
+        self.fallback = OrthogonalCharEmbedding(
+            embedding_dim=self.embedding_dim,
+            vocab_size=self.vocab_size,
+        )
+        self.font = self._load_font(font_path)
+
+    def _load_font(self, font_path):
+        candidates = []
+        if font_path:
+            candidates.append(font_path)
+        candidates.extend([
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+        ])
+        font_size = max(10, int(self.image_height * 0.75))
+        for candidate in candidates:
+            if candidate and os.path.isfile(candidate):
+                try:
+                    return ImageFont.truetype(candidate, font_size)
+                except Exception:
+                    continue
+        if not GlyphPrototypeEmbedding._warned_font:
+            print(
+                "[GlyphPrototypeEmbedding] WARNING: no usable glyph font found; "
+                "falling back to PIL default font."
+            )
+            GlyphPrototypeEmbedding._warned_font = True
+        return ImageFont.load_default()
+
+    def _shape_text(self, token):
+        try:
+            import arabic_reshaper
+            from bidi.algorithm import get_display
+
+            return get_display(arabic_reshaper.reshape(token))
+        except Exception:
+            if not GlyphPrototypeEmbedding._warned_reshaper:
+                print(
+                    "[GlyphPrototypeEmbedding] WARNING: arabic_reshaper/python-bidi "
+                    "not available; rendering raw text."
+                )
+                GlyphPrototypeEmbedding._warned_reshaper = True
+            return token
+
+    def _render_token_image(self, token):
+        canvas = Image.new("L", (self.image_width, self.image_height), color=255)
+        if token:
+            draw = ImageDraw.Draw(canvas)
+            shaped = self._shape_text(token)
+            try:
+                bbox = draw.textbbox((0, 0), shaped, font=self.font)
+            except Exception:
+                bbox = self.font.getbbox(shaped)
+            text_w = max(1, bbox[2] - bbox[0])
+            text_h = max(1, bbox[3] - bbox[1])
+            x = max(0, (self.image_width - text_w) // 2 - bbox[0])
+            y = max(0, (self.image_height - text_h) // 2 - bbox[1])
+            draw.text((x, y), shaped, fill=0, font=self.font)
+        values = torch.tensor(list(canvas.getdata()), dtype=torch.float32)
+        return (255.0 - values) / 255.0
+
+    def char_to_index(self, char):
+        if char == " ":
+            return self.SPACE_TOKEN_IDX
+        return (ord(char) % (self.vocab_size - 2)) + 2
+
+    def text_to_indices(self, text):
+        indices = [self.char_to_index(c) for c in text]
+        return torch.tensor(indices, dtype=torch.long, device=device)
+
+    def embed_token(self, token):
+        token = str(token)
+        if token not in self._cache:
+            glyph = self._render_token_image(token).to(self.projection.device)
+            vec = glyph @ self.projection
+            vec = self.text_norm(vec)
+            vec = F.normalize(vec, p=2, dim=-1)
+            self._cache[token] = vec.detach()
+        return self._cache[token].to(self.projection.device)
+
+    def get_space_embedding(self):
+        return self.embed_token(" ")
+
+    def forward(self, text):
+        if isinstance(text, str):
+            return torch.stack([self.embed_token(ch) for ch in text], dim=0)
+        if isinstance(text, (list, tuple)):
+            sequences = [self.forward(item) for item in text]
+            if not sequences:
+                return torch.empty(0, 0, self.embedding_dim, device=self.projection.device)
+            return nn.utils.rnn.pad_sequence(
+                sequences,
+                batch_first=True,
+                padding_value=0.0,
+            )
+        if torch.is_tensor(text):
+            return self.fallback(text.to(device)).to(self.projection.device)
+        raise TypeError(
+            "GlyphPrototypeEmbedding.forward supports str, list/tuple[str], or tensor indices."
+        )
+
+
+# ============================================================================
 # Shape-group Arabic character embedding
 # ============================================================================
 # Letters that share a base glyph shape and differ only by dot count/position.
@@ -545,10 +693,14 @@ def build_text_embedder(kind=None, embedding_dim=None, **kwargs):
     Construct the text embedder selected in Parameters.py.
 
     Supported kinds:
-        'char'               — learned frozen char table (random init).
+        'char'               — alias for orthogonal_char, the recommended
+                               deterministic visual-alignment baseline.
         'fasttext'           — facebook/fasttext-ar-vectors (frozen, linguistic).
         'orthogonal_char'    — deterministic unit-sphere random vectors (frozen).
-                               Best baseline for visual alignment: no linguistic bias.
+                               Recommended default for visual alignment: no
+                               linguistic bias and stable across runs.
+        'glyph_prototype'    — deterministic rendered glyph image projection
+                               for experimental Arabic visual alignment.
         'random_frozen_char' — raw Gaussian random frozen vectors (ablation).
         'shape_group_char'   — shape-aware Arabic embeddings (visually-confusable
                                letters blended toward shared centroid).
@@ -566,7 +718,7 @@ def build_text_embedder(kind=None, embedding_dim=None, **kwargs):
 
     kind = kind.lower()
     if kind in ("char", "default", "learned"):
-        model = TextEmbedding(embedding_dim=embedding_dim, **kwargs)
+        model = OrthogonalCharEmbedding(embedding_dim=embedding_dim, **kwargs)
     elif kind in ("fasttext", "ft", "fasttext-ar"):
         from Parameters import (
             text_embedder_model_path,
@@ -582,6 +734,21 @@ def build_text_embedder(kind=None, embedding_dim=None, **kwargs):
         )
     elif kind in ("orthogonal_char", "orthogonal"):
         model = OrthogonalCharEmbedding(embedding_dim=embedding_dim, **kwargs)
+    elif kind in ("glyph_prototype", "glyph", "rendered_glyph"):
+        from Parameters import (
+            glyph_font_path,
+            glyph_image_height,
+            glyph_image_width,
+            glyph_projection_seed,
+        )
+        model = GlyphPrototypeEmbedding(
+            embedding_dim=embedding_dim,
+            font_path=glyph_font_path,
+            image_height=glyph_image_height,
+            image_width=glyph_image_width,
+            seed=glyph_projection_seed,
+            **kwargs,
+        )
     elif kind in ("random_frozen_char", "random_frozen"):
         model = RandomFrozenCharEmbedding(embedding_dim=embedding_dim, **kwargs)
     elif kind in ("shape_group_char", "shape_group"):
@@ -589,7 +756,7 @@ def build_text_embedder(kind=None, embedding_dim=None, **kwargs):
     else:
         raise ValueError(
             f"Unknown text_embedder_type {kind!r}. "
-            f"Expected 'char', 'fasttext', 'orthogonal_char', "
+            f"Expected 'char', 'fasttext', 'orthogonal_char', 'glyph_prototype', "
             f"'random_frozen_char', or 'shape_group_char'."
         )
     return model

@@ -408,7 +408,8 @@ def _make_model_config(ws, stride, sr, ctc_vocab=None):
 def save_model_weights(model, epoch, job_id, model_config=None,
                        ctc_head=None, ctc_vocab=None,
                        cross_attention_module=None,
-                       bigram_fusion_mlp=None):
+                       bigram_fusion_mlp=None,
+                       text_embedding=None):
     weights_path = os.path.join(_weights_dir(job_id), "model_latest.pth")
     payload = {
         'model_state_dict': model.state_dict(),
@@ -420,11 +421,14 @@ def save_model_weights(model, epoch, job_id, model_config=None,
         payload['cross_attention_state_dict'] = cross_attention_module.state_dict()
     if bigram_fusion_mlp is not None:
         payload['bigram_fusion_mlp_state_dict'] = bigram_fusion_mlp.state_dict()
+    if text_embedding is not None:
+        payload['text_embedder_state_dict'] = text_embedding.state_dict()
+        payload['text_embedder_type'] = text_embedder_type
     if ctc_vocab is not None:
         payload['ctc_vocab'] = ctc_vocab.to_dict()
     if model_config:
         payload['model_config'] = model_config
-    if ctc_head is not None or ctc_vocab is not None or model_config:
+    if ctc_head is not None or ctc_vocab is not None or model_config or text_embedding is not None:
         torch.save(payload, weights_path)
     else:
         torch.save(model.state_dict(), weights_path)
@@ -434,7 +438,8 @@ def save_model_weights(model, epoch, job_id, model_config=None,
 def save_checkpoint(model, optimizer, scheduler, scaler, epoch, job_id,
                     model_config=None, ctc_head=None, ctc_vocab=None,
                     cross_attention_module=None,
-                    bigram_fusion_mlp=None):
+                    bigram_fusion_mlp=None,
+                    text_embedding=None):
     """Save full training state so --resume can pick up exactly where we left off."""
     ckpt = {
         'epoch': epoch,
@@ -450,6 +455,9 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, job_id,
         ckpt['cross_attention_state_dict'] = cross_attention_module.state_dict()
     if bigram_fusion_mlp is not None:
         ckpt['bigram_fusion_mlp_state_dict'] = bigram_fusion_mlp.state_dict()
+    if text_embedding is not None:
+        ckpt['text_embedder_state_dict'] = text_embedding.state_dict()
+        ckpt['text_embedder_type'] = text_embedder_type
     if ctc_vocab is not None:
         ckpt['ctc_vocab'] = ctc_vocab.to_dict()
     if model_config:
@@ -529,12 +537,20 @@ def _save_char_bank(char_bank, job_id):
     }
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False)
+    torch.save(
+        char_bank.embeddings.detach().cpu(),
+        os.path.join(_weights_dir(job_id), "char_bank_embeddings.pt"),
+    )
     return path
 
 
 def _save_token_bank(token_bank, job_id):
     path = os.path.join(_weights_dir(job_id), "token_bank.json")
     save_token_bank_json(path, token_bank.token_to_idx, token_bank.idx_to_token)
+    torch.save(
+        token_bank.embeddings.detach().cpu(),
+        os.path.join(_weights_dir(job_id), "token_bank_embeddings.pt"),
+    )
     return path
 
 
@@ -809,6 +825,7 @@ def compute_d3tw_batch_loss(imageEmbed, textEmbed,
             save_model_weights(
                 imageEmbed, epoch, job_id, model_config=_cfg,
                 cross_attention_module=cross_attention_module,
+                text_embedding=textEmbed,
             )
 
     return total_loss, loss_dict, artifacts
@@ -1541,12 +1558,14 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
                         job_id, model_config=_model_config,
                         ctc_head=ctc_head, ctc_vocab=ctc_vocab,
                         cross_attention_module=cross_attention_module,
-                        bigram_fusion_mlp=bigram_fusion_mlp)
+                        bigram_fusion_mlp=bigram_fusion_mlp,
+                        text_embedding=textEmbedding)
         weights_path = save_model_weights(imageEmbedding, epoch, job_id,
                                           model_config=_model_config,
                                           ctc_head=ctc_head, ctc_vocab=ctc_vocab,
                                           cross_attention_module=cross_attention_module,
-                                          bigram_fusion_mlp=bigram_fusion_mlp)
+                                          bigram_fusion_mlp=bigram_fusion_mlp,
+                                          text_embedding=textEmbedding)
 
         if debug_wandb:
             # One W&B loss update per completed epoch.

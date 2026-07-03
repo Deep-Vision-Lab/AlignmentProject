@@ -147,7 +147,7 @@ def load_image_model(checkpoint_path, device, use_bilstm_override=None,
     return model
 
 
-def load_char_bank_if_available(checkpoint_dir_or_file, device):
+def load_char_bank_if_available(checkpoint_dir_or_file, device, return_info=False):
     """
     Load a frozen character bank saved next to a char-pooling checkpoint.
 
@@ -164,28 +164,44 @@ def load_char_bank_if_available(checkpoint_dir_or_file, device):
     bank_path = os.path.join(checkpoint_dir, "char_bank.json")
     if not os.path.isfile(bank_path):
         print(f"  [model_loading] Warning: char bank not found: {bank_path}")
-        return None, None, None
+        result = (None, None, None)
+        return (*result, False) if return_info else result
 
     with open(bank_path, "r", encoding="utf-8") as handle:
         bank = json.load(handle)
 
     idx_to_char = list(bank.get("idx_to_char", []))
     char_to_idx = dict(bank.get("char_to_idx", {ch: i for i, ch in enumerate(idx_to_char)}))
+    pt_path = os.path.join(checkpoint_dir, "char_bank_embeddings.pt")
+    if os.path.isfile(pt_path):
+        char_bank_embeddings = normalize_func(
+            torch.load(pt_path, map_location=device).to(device=device, dtype=torch.float32)
+        )
+        result = (char_bank_embeddings, char_to_idx, idx_to_char)
+        return (*result, True) if return_info else result
+
+    print(
+        "WARNING: rebuilding token/char embeddings because saved embeddings were not found; "
+        "results may not match training."
+    )
     embeddings = bank.get("embeddings")
     if embeddings is None:
         print(
             f"  [model_loading] Warning: {bank_path} has no embeddings; "
             "top-k char-pool predictions will be disabled."
         )
-        return None, char_to_idx, idx_to_char
+        result = (None, char_to_idx, idx_to_char)
+        return (*result, False) if return_info else result
 
     char_bank_embeddings = normalize_func(
         torch.tensor(embeddings, dtype=torch.float32, device=device)
     )
-    return char_bank_embeddings, char_to_idx, idx_to_char
+    result = (char_bank_embeddings, char_to_idx, idx_to_char)
+    return (*result, False) if return_info else result
 
 
-def load_token_bank_if_available(checkpoint_dir_or_file, device):
+def load_token_bank_if_available(checkpoint_dir_or_file, device, text_embedder=None,
+                                 return_info=False):
     """Load token-bank mapping and rebuild frozen token embeddings if possible."""
     checkpoint_dir = (
         os.path.dirname(checkpoint_dir_or_file)
@@ -195,7 +211,8 @@ def load_token_bank_if_available(checkpoint_dir_or_file, device):
     bank_path = os.path.join(checkpoint_dir, "token_bank.json")
     if not os.path.isfile(bank_path):
         print(f"  [model_loading] Warning: token bank not found: {bank_path}")
-        return None, None, None
+        result = (None, None, None)
+        return (*result, False) if return_info else result
 
     with open(bank_path, "r", encoding="utf-8") as handle:
         bank = json.load(handle)
@@ -205,19 +222,36 @@ def load_token_bank_if_available(checkpoint_dir_or_file, device):
     )
     if not idx_to_token:
         print(f"  [model_loading] Warning: empty token bank: {bank_path}")
-        return None, token_to_idx, idx_to_token
+        result = (None, token_to_idx, idx_to_token)
+        return (*result, False) if return_info else result
+
+    pt_path = os.path.join(checkpoint_dir, "token_bank_embeddings.pt")
+    if os.path.isfile(pt_path):
+        token_bank_embeddings = normalize_func(
+            torch.load(pt_path, map_location=device).to(device=device, dtype=torch.float32)
+        )
+        result = (token_bank_embeddings, token_to_idx, idx_to_token)
+        return (*result, True) if return_info else result
+
+    print(
+        "WARNING: rebuilding token/char embeddings because saved embeddings were not found; "
+        "results may not match training."
+    )
 
     try:
         from token_embedding_bank import build_token_embedding_bank
 
-        text_embedder = load_text_embedder(device)
+        if text_embedder is None:
+            text_embedder = load_text_embedder(device, checkpoint_dir_or_file)
         token_bank_embeddings, token_to_idx, idx_to_token = build_token_embedding_bank(
             text_embedder, idx_to_token, device
         )
-        return token_bank_embeddings, token_to_idx, idx_to_token
+        result = (token_bank_embeddings, token_to_idx, idx_to_token)
+        return (*result, False) if return_info else result
     except Exception as exc:
         print(f"  [model_loading] Warning: could not rebuild token bank embeddings: {exc}")
-        return None, token_to_idx, idx_to_token
+        result = (None, token_to_idx, idx_to_token)
+        return (*result, False) if return_info else result
 
 
 def load_ngram_tokenizer_if_available(checkpoint_dir_or_file):
@@ -304,19 +338,66 @@ def load_random_model(device, use_bilstm_override=None, stride_override=None):
     return model
 
 
-def load_text_embedder(device):
-    """Load and return the frozen text embedder (type from Parameters.py)."""
+def _resolve_checkpoint_file(checkpoint_dir_or_file):
+    if checkpoint_dir_or_file is None:
+        return None
+    if os.path.isfile(checkpoint_dir_or_file):
+        return checkpoint_dir_or_file
+    for name in ("checkpoint_latest.pth", "model_latest.pth"):
+        candidate = os.path.join(checkpoint_dir_or_file, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def load_text_embedder(device, checkpoint_path=None, return_info=False):
+    """Load the frozen text embedder, preferring checkpoint config/state."""
+    ckpt = None
+    cfg = {}
+    resolved_checkpoint = _resolve_checkpoint_file(checkpoint_path)
+    if resolved_checkpoint is not None:
+        ckpt = torch.load(resolved_checkpoint, map_location=device)
+        cfg = _checkpoint_config(ckpt)
+
+    kind = cfg.get(
+        "text_embedder_type",
+        ckpt.get("text_embedder_type") if isinstance(ckpt, dict) else text_embedder_type,
+    )
+    dim = int(cfg.get("vector_size", vector_size))
     try:
-        embedder = build_text_embedder(kind=text_embedder_type, embedding_dim=vector_size)
+        embedder = build_text_embedder(kind=kind, embedding_dim=dim)
     except Exception as e:
-        print(f"  [model_loading] Warning: could not load '{text_embedder_type}' embedder: {e}")
-        print("  [model_loading] Falling back to 'char' embedder.")
-        embedder = build_text_embedder(kind="char", embedding_dim=vector_size)
+        print(f"  [model_loading] Warning: could not load '{kind}' embedder: {e}")
+        print("  [model_loading] Falling back to 'orthogonal_char' embedder.")
+        kind = "orthogonal_char"
+        embedder = build_text_embedder(kind=kind, embedding_dim=dim)
 
     embedder = embedder.to(device)
+    loaded_state = False
+    if isinstance(ckpt, dict) and ckpt.get("text_embedder_state_dict") is not None:
+        missing, unexpected = embedder.load_state_dict(
+            ckpt["text_embedder_state_dict"], strict=False
+        )
+        loaded_state = True
+        if missing:
+            print(f"  [model_loading] Warning: text embedder missing keys: {missing[:3]}")
+        if unexpected:
+            print(f"  [model_loading] Warning: text embedder unexpected keys: {unexpected[:3]}")
+    elif resolved_checkpoint is not None:
+        print(
+            "WARNING: rebuilding text embedder because text_embedder_state_dict "
+            "was not found; results may not match training."
+        )
+    print(f"  [model_loading] loaded_text_embedder_state: {loaded_state}")
     embedder.eval()
     for p in embedder.parameters():
         p.requires_grad_(False)
+    if return_info:
+        return embedder, {
+            "text_embedder_type": kind,
+            "loaded_text_embedder_state": loaded_state,
+            "vector_size": dim,
+        }
     return embedder
 
 

@@ -30,8 +30,7 @@ sys.path.insert(0, _HERE)
 from NormalizeFuncs import normalize_func
 from Parameters import vector_size
 from ngram_tokenizer import NGramTokenizer, load_ngram_vocab_json
-from textEmbedding import build_text_embedder
-from token_embedding_bank import build_token_embedding_bank, encode_text_units
+from token_embedding_bank import encode_text_units
 from utils.char_pooling import (
     char_pool_predictions,
     compute_d3tw_char_pool_for_sample,
@@ -39,7 +38,13 @@ from utils.char_pooling import (
     token_pool_predictions,
     unit_group_records,
 )
-from utils.model_loading import load_char_bank_if_available, load_image_model, load_sample
+from utils.model_loading import (
+    load_char_bank_if_available,
+    load_image_model,
+    load_sample,
+    load_text_embedder,
+    load_token_bank_if_available,
+)
 
 
 def _display_unit(unit, max_len=14):
@@ -59,23 +64,12 @@ def _checkpoint_config(checkpoint_path):
 
 
 def _load_text_embedder_for_checkpoint(checkpoint_path, device):
-    cfg = _checkpoint_config(checkpoint_path)
-    kind = cfg.get("text_embedder_type", None)
-    dim = int(cfg.get("vector_size", vector_size))
-    try:
-        embedder = build_text_embedder(kind=kind, embedding_dim=dim)
-    except Exception as exc:
-        print(
-            f"  [fig13] Warning: could not load checkpoint text embedder "
-            f"kind={kind!r}, dim={dim}: {exc}. Falling back to Parameters.py."
-        )
-        embedder = build_text_embedder(embedding_dim=dim)
-    embedder = embedder.to(device)
-    embedder.eval()
-    for parameter in embedder.parameters():
-        parameter.requires_grad_(False)
-    print(f"  [fig13] text embedder kind={kind or 'Parameters.py default'} dim={dim} (frozen)")
-    return embedder
+    embedder, info = load_text_embedder(device, checkpoint_path, return_info=True)
+    print(
+        f"  [fig13] text embedder kind={info['text_embedder_type']} "
+        f"dim={info['vector_size']} (frozen)"
+    )
+    return embedder, info
 
 
 def _load_ngram_tokenizer_from_checkpoint(checkpoint_path):
@@ -89,27 +83,23 @@ def _load_ngram_tokenizer_from_checkpoint(checkpoint_path):
 
 
 def _load_token_bank_from_checkpoint(checkpoint_path, device, text_embedder):
-    bank_path = Path(checkpoint_path).resolve().parent / "token_bank.json"
-    if not bank_path.is_file():
-        print(f"  [fig13] Warning: token bank not found: {bank_path}")
-        return None, None, None
-    with bank_path.open("r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-    idx_to_token = list(payload.get("idx_to_token", []))
-    token_to_idx = dict(payload.get("token_to_idx", {t: i for i, t in enumerate(idx_to_token)}))
-    if not idx_to_token:
-        print(f"  [fig13] Warning: empty token bank: {bank_path}")
-        return None, token_to_idx, idx_to_token
-    embeddings, token_to_idx, idx_to_token = build_token_embedding_bank(
-        text_embedder, idx_to_token, device
+    embeddings, token_to_idx, idx_to_token, loaded_embeddings = load_token_bank_if_available(
+        checkpoint_path, device, text_embedder=text_embedder, return_info=True
     )
-    print(f"  [fig13] loaded token bank: {bank_path} ({len(idx_to_token)} tokens)")
-    return embeddings, token_to_idx, idx_to_token
+    if idx_to_token is not None:
+        print(f"  [fig13] loaded token bank ({len(idx_to_token)} tokens)")
+    return embeddings, token_to_idx, idx_to_token, loaded_embeddings
 
 
 def _encode_units(text, text_unit_type, checkpoint_path, device):
-    text_embedder = _load_text_embedder_for_checkpoint(checkpoint_path, device)
+    text_embedder, embedder_info = _load_text_embedder_for_checkpoint(checkpoint_path, device)
     text_unit_type = str(text_unit_type).lower()
+    diagnostics = {
+        "text_embedder_type": embedder_info["text_embedder_type"],
+        "loaded_text_embedder_state": embedder_info["loaded_text_embedder_state"],
+        "loaded_token_bank_embeddings": False,
+        "loaded_char_bank_embeddings": False,
+    }
 
     if text_unit_type == "ngram":
         tokenizer = _load_ngram_tokenizer_from_checkpoint(checkpoint_path)
@@ -124,15 +114,19 @@ def _encode_units(text, text_unit_type, checkpoint_path, device):
             device=device,
             ngram_tokenizer=tokenizer,
         )
-        bank_emb, unit_to_idx, idx_to_unit = _load_token_bank_from_checkpoint(
+        bank_emb, unit_to_idx, idx_to_unit, loaded_token_embeddings = _load_token_bank_from_checkpoint(
             checkpoint_path, device, text_embedder
         )
-        return units, spans, text_emb, bank_emb, unit_to_idx, idx_to_unit
+        diagnostics["loaded_token_bank_embeddings"] = loaded_token_embeddings
+        return units, spans, text_emb, bank_emb, unit_to_idx, idx_to_unit, diagnostics
 
     if text_unit_type == "char":
         units = list(text)
         spans = [(idx, idx + 1) for idx in range(len(units))]
-        bank_emb, unit_to_idx, idx_to_unit = load_char_bank_if_available(checkpoint_path, device)
+        bank_emb, unit_to_idx, idx_to_unit, loaded_char_embeddings = load_char_bank_if_available(
+            checkpoint_path, device, return_info=True
+        )
+        diagnostics["loaded_char_bank_embeddings"] = loaded_char_embeddings
         if bank_emb is not None and unit_to_idx is not None and all(unit in unit_to_idx for unit in units):
             ids = torch.tensor([unit_to_idx[unit] for unit in units], device=device, dtype=torch.long)
             text_emb = normalize_func(bank_emb[ids])
@@ -140,7 +134,7 @@ def _encode_units(text, text_unit_type, checkpoint_path, device):
             print("  [fig13] Warning: char bank unavailable/incomplete; using frozen text embedder.")
             with torch.no_grad():
                 text_emb = normalize_func(text_embedder(text).to(device=device, dtype=torch.float32))
-        return units, spans, text_emb, bank_emb, unit_to_idx, idx_to_unit
+        return units, spans, text_emb, bank_emb, unit_to_idx, idx_to_unit, diagnostics
 
     raise ValueError("fig13 supports only --text_unit_type char|ngram.")
 
@@ -335,7 +329,7 @@ def generate_figure(
 
     with torch.no_grad():
         visual_emb = normalize_func(model(image.unsqueeze(0).to(device)).squeeze(0).float())
-        units, spans, text_emb, bank_emb, unit_to_idx, idx_to_unit = _encode_units(
+        units, spans, text_emb, bank_emb, unit_to_idx, idx_to_unit, diagnostics = _encode_units(
             text_clean, text_unit_type, checkpoint, device
         )
         result = compute_d3tw_char_pool_for_sample(
@@ -392,6 +386,10 @@ def generate_figure(
 
     print("[fig13 debug]")
     print("  text_unit_type:", text_unit_type)
+    print("  text_embedder_type:", diagnostics["text_embedder_type"])
+    print("  loaded_text_embedder_state:", diagnostics["loaded_text_embedder_state"])
+    print("  loaded_token_bank_embeddings:", diagnostics["loaded_token_bank_embeddings"])
+    print("  loaded_char_bank_embeddings:", diagnostics["loaded_char_bank_embeddings"])
     print("  text:", text_clean)
     print("  units:", units)
     print("  spans:", spans)
