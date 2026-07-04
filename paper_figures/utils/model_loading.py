@@ -18,9 +18,8 @@ from Parameters import (
     transformer_dropout, transformer_activation, transformer_norm_first,
     transformer_positional_encoding, transformer_max_len,
 )
-from embeddingModel import EmbeddingModel, CrossAttentionSimilarity
+from embeddingModel import EmbeddingModel
 from textEmbedding import build_text_embedder
-from ctc_utils import CTCVocabulary
 from NormalizeFuncs import normalize_func
 
 _IMG_H, _IMG_W = 128, 1024
@@ -272,62 +271,6 @@ def load_ngram_tokenizer_if_available(checkpoint_dir_or_file):
     except Exception as exc:
         print(f"  [model_loading] Warning: could not load ngram tokenizer: {exc}")
         return None
-
-
-def load_cross_attention_module(checkpoint_path, device, use_for_figures=False):
-    """
-    Load optional cross-attention similarity for figure diagnostics.
-
-    Returns (module, weight). By default this returns (None, 0.0) even if the
-    checkpoint contains cross-attention, preserving dot-product similarity for
-    fair comparisons.
-    """
-    if not use_for_figures:
-        return None, 0.0
-    ckpt = torch.load(checkpoint_path, map_location=device)
-    cfg = _checkpoint_config(ckpt)
-    if not cfg.get("use_cross_attention", False):
-        return None, 0.0
-    weight = float(cfg.get("cross_attention_weight", 0.0))
-    state = ckpt.get("cross_attention_state_dict") if isinstance(ckpt, dict) else None
-    if state is None or weight <= 0:
-        return None, 0.0
-    module = CrossAttentionSimilarity(
-        dim=int(cfg.get("vector_size", vector_size)),
-        num_heads=int(cfg.get("cross_attention_num_heads", 4)),
-        dropout=float(cfg.get("cross_attention_dropout", 0.1)),
-        attention_type=cfg.get("cross_attention_type", "text_to_image"),
-    ).to(device)
-    module.load_state_dict(state)
-    module.eval()
-    print("  [model_loading] Loaded cross-attention similarity for figures.")
-    return module, weight
-
-
-def load_ctc_components(checkpoint_path, device, stride_override=None):
-    """Load image model, CTC head, and CTCVocabulary from a CTC checkpoint."""
-    ckpt = torch.load(checkpoint_path, map_location=device)
-    cfg = _checkpoint_config(ckpt)
-    vocab_data = ckpt.get("ctc_vocab")
-    if vocab_data is None:
-        vocab_path = os.path.join(os.path.dirname(checkpoint_path), "ctc_vocab.json")
-        if not os.path.isfile(vocab_path):
-            raise KeyError(
-                "Checkpoint does not contain ctc_vocab and ctc_vocab.json was not found."
-            )
-        ctc_vocab = CTCVocabulary.load_json(vocab_path)
-    else:
-        ctc_vocab = CTCVocabulary.from_dict(vocab_data)
-
-    model = load_image_model(checkpoint_path, device, stride_override=stride_override)
-    head_state = ckpt.get("ctc_head_state_dict")
-    if head_state is None:
-        raise KeyError("Checkpoint does not contain ctc_head_state_dict.")
-    head_in_dim = int(cfg.get("vector_size", vector_size))
-    head = torch.nn.Linear(head_in_dim, len(ctc_vocab)).to(device)
-    head.load_state_dict(head_state)
-    head.eval()
-    return model, head, ctc_vocab
 
 
 def load_random_model(device, use_bilstm_override=None, stride_override=None):

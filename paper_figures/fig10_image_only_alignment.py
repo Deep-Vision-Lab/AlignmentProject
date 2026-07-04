@@ -122,8 +122,6 @@ def main():
                         help="Multiple image-pair indices to render.")
     parser.add_argument("--output_dir",  default="paper_figures/outputs")
     parser.add_argument("--device",      default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--use_cross_attention_for_figures", action="store_true",
-                        help="Accepted for consistency; ignored for image-only figures.")
     args = parser.parse_args()
 
     os.chdir(_PROJ_ROOT)

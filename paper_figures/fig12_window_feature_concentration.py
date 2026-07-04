@@ -81,7 +81,7 @@ from Parameters import window_size, stride_ratio, lang, vector_size
 from embeddingModel import sliding_window
 from utils.model_loading import (
     load_image_model, load_text_embedder, load_sample,
-    load_cross_attention_module, load_char_bank_if_available,
+    load_char_bank_if_available,
 )
 from utils.similarity import compute_text_embeddings, compute_text_image_similarity
 from utils.alignment import hard_dtw_path_restricted
@@ -150,8 +150,6 @@ def parse_args():
     p.add_argument("--save_metadata", action="store_true", default=False,
                    help="Deprecated; figure scripts are PDF-only by default.")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    p.add_argument("--use_cross_attention_for_figures", action="store_true",
-                   help="Use saved cross-attention similarity for D3TW alignment diagnostics.")
     return p.parse_args()
 
 
@@ -347,9 +345,7 @@ def make_score_fn(target_mode, w_start, w_end,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_alignment(img_tensor, model, text_padded, text_embedder,
-                       total_windows, subfeat, device,
-                       cross_attention_module=None,
-                       cross_attention_weight=0.0):
+                       total_windows, subfeat, device):
     """
     DTW-based window → character alignment.
 
@@ -374,11 +370,7 @@ def compute_alignment(img_tensor, model, text_padded, text_embedder,
         img_win = img_feat
     img_win = F.normalize(img_win, p=2, dim=-1)
 
-    sim    = compute_text_image_similarity(
-        text_emb, img_win,
-        cross_attention_module=cross_attention_module,
-        cross_attention_weight=cross_attention_weight,
-    )   # [T, W]
+    sim    = compute_text_image_similarity(text_emb, img_win)   # [T, W]
     sim_np = sim.detach().cpu().numpy()
 
     path = hard_dtw_path_restricted(sim_np)
@@ -763,8 +755,6 @@ def main():
             ]
             if args.window_indices:
                 cmd.extend(["--window_indices", *[str(w) for w in args.window_indices]])
-            if args.use_cross_attention_for_figures:
-                cmd.append("--use_cross_attention_for_figures")
             print(f"[fig12] Running sample {idx}")
             subprocess.run(cmd, check=True)
         return
@@ -783,10 +773,6 @@ def main():
     print("[fig12] Loading model …")
     model = load_image_model(args.checkpoint, device)
     model.eval()
-    cross_module, cross_weight = load_cross_attention_module(
-        args.checkpoint, device,
-        use_for_figures=args.use_cross_attention_for_figures,
-    )
     model_window_size = int(getattr(model, "window_size", window_size))
     model_stride = int(getattr(model, "stride", _STRIDE))
     print(f"  model window_size={model_window_size} stride={model_stride}")
@@ -879,8 +865,6 @@ def main():
         _, _, win_to_char, chars, text_emb = compute_alignment(
             img_tensor, model, text_padded, text_embedder,
             total_windows, subfeat, device,
-            cross_attention_module=cross_module,
-            cross_attention_weight=cross_weight,
         )
         if args.target_mode == "max_similarity":
             win_to_char = {}   # alignment not used for char targeting in max_sim mode

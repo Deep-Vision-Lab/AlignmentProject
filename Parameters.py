@@ -29,18 +29,7 @@ def _env_bool(name, default):
 # ============================================================================
 # Alignment Loss Selection
 # ============================================================================
-alignment_loss_type = str(_env_value('ALIGNMENT_LOSS_TYPE', 'd3tw')).lower()
-
-# CTC / hybrid weights and settings
-ctc_weight = _env_float('CTC_WEIGHT', 1.0)
-d3tw_weight = _env_float('D3TW_WEIGHT', 1.0)
-ctc_blank_token = _env_value('CTC_BLANK_TOKEN', '<ctc_blank>')
-ctc_zero_infinity = _env_bool('CTC_ZERO_INFINITY', True)
-ctc_reduction = str(_env_value('CTC_REDUCTION', 'mean')).lower()
-contrastive_ctc_loss_type = str(_env_value('CONTRASTIVE_CTC_LOSS_TYPE', 'infonce')).lower()
-contrastive_ctc_tau = _env_float('CONTRASTIVE_CTC_TAU', 0.1)
-contrastive_ctc_margin = _env_float('CONTRASTIVE_CTC_MARGIN', 0.2)
-save_ctc_vocab = _env_bool('SAVE_CTC_VOCAB', True)
+alignment_loss_type = str(_env_value('ALIGNMENT_LOSS_TYPE', 'd3tw_char_pool')).lower()
 
 # Data parameters
 # For clean synthetic data, window_size=16 works well.
@@ -188,14 +177,6 @@ transformer_positional_encoding = str(_env_value(
 transformer_max_len = int(_env_value('TRANSFORMER_MAX_LEN', 4096))
 return_attention_weights = _env_bool('RETURN_ATTENTION_WEIGHTS', False)
 
-# Optional auxiliary cross-attention similarity. Disabled by default and never
-# required for image-only inference/evaluation.
-use_cross_attention = _env_bool('USE_CROSS_ATTENTION', False)
-cross_attention_type = str(_env_value('CROSS_ATTENTION_TYPE', 'text_to_image')).lower()
-cross_attention_num_heads = int(_env_value('CROSS_ATTENTION_NUM_HEADS', 4))
-cross_attention_dropout = _env_float('CROSS_ATTENTION_DROPOUT', 0.1)
-cross_attention_weight = _env_float('CROSS_ATTENTION_WEIGHT', 0.0)
-
 # ============================================================================
 # Contrastive Soft-DTW Parameters (CUDA-accelerated)
 # ============================================================================
@@ -272,7 +253,7 @@ multi_scale_alpha = 0.5              # Weight for micro-scale loss (start at 0.5
 # Blank / Transition Token Support
 # ============================================================================
 # use_blank_token=True prepends/appends a boundary space so alignment can
-# assign background windows to a non-character anchor (like CTC blank).
+# assign background windows to a non-character anchor.
 # blank_insert_mode controls where blanks are inserted beyond boundaries:
 #   'boundaries'    -> only at start and end of transcript (default, safe).
 #   'between_words' -> also between every word.

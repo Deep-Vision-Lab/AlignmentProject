@@ -28,22 +28,18 @@ sys.path.insert(0, _PROJ_ROOT)
 sys.path.insert(0, _HERE)
 
 from utils.model_loading import (
-    load_image_model, load_text_embedder, load_ctc_components, load_char_bank_if_available,
+    load_image_model, load_text_embedder, load_char_bank_if_available,
 )
 from utils.sample_data import make_sample, ARABIC_SENTENCES, FIG_STRIDE, FIG_NUM_PATCHES, pad_text
 from utils.similarity import (compute_image_embeddings, compute_text_embeddings,
                                compute_text_image_similarity, compute_dtw_cost)
 from utils.char_pooling import compute_d3tw_char_pool_for_sample, char_pool_predictions
-from ctc_utils import compute_ctc_cost
 from utils.negatives import generate_hard_negatives
 from utils.plotting import setup_paper_style, save_figure, arabic_label
 
 
-def _get_cost(text_embedder, img_emb, text, device,
-              cost_type="d3tw", ctc_head=None, ctc_vocab=None):
+def _get_cost(text_embedder, img_emb, text, device):
     try:
-        if cost_type == "ctc":
-            return compute_ctc_cost(img_emb, text, ctc_head, ctc_vocab, device)
         txt_emb = compute_text_embeddings(text_embedder, text)
         sim     = compute_text_image_similarity(txt_emb, img_emb)
         S = sim.shape[1]
@@ -58,21 +54,14 @@ def _get_cost(text_embedder, img_emb, text, device,
 
 def draw_hard_negative_case(checkpoint, sentence_idx, num_negatives,
                              output_dir, device, negative_mode="length_controlled",
-                             cost_type="d3tw", include_char_pool_stats=False):
+                             include_char_pool_stats=False):
     setup_paper_style()
 
     pil_img, text  = make_sample(sentence_idx, transform=False)
     img_tensor, _  = make_sample(sentence_idx, transform=True)
 
-    cost_type = cost_type.lower()
-    if cost_type == "ctc":
-        model, ctc_head, ctc_vocab = load_ctc_components(checkpoint, device)
-        text_embedder = None
-    else:
-        model = load_image_model(checkpoint, device, stride_override=FIG_STRIDE)
-        text_embedder = load_text_embedder(device)
-        ctc_head = None
-        ctc_vocab = None
+    model = load_image_model(checkpoint, device, stride_override=FIG_STRIDE)
+    text_embedder = load_text_embedder(device)
     img_emb       = compute_image_embeddings(model, img_tensor, device)
 
     all_texts = list(ARABIC_SENTENCES)
@@ -80,10 +69,9 @@ def draw_hard_negative_case(checkpoint, sentence_idx, num_negatives,
                                    k=num_negatives, negative_mode=negative_mode)
 
     rows = []
-    pos_cost = _get_cost(text_embedder, img_emb, pad_text(text), device,
-                         cost_type=cost_type, ctc_head=ctc_head, ctc_vocab=ctc_vocab)
+    pos_cost = _get_cost(text_embedder, img_emb, pad_text(text), device)
     char_pool_summary = {}
-    if include_char_pool_stats and cost_type == "d3tw":
+    if include_char_pool_stats:
         try:
             chars = list(pad_text(text))
             txt_emb = compute_text_embeddings(text_embedder, pad_text(text))
@@ -110,8 +98,7 @@ def draw_hard_negative_case(checkpoint, sentence_idx, num_negatives,
             char_pool_summary = {"char_pool_warning": str(exc)}
     rows.append({"text": text,       "type": "positive", "cost": pos_cost, "is_pos": True})
     for neg_text, neg_type in negs:
-        nc = _get_cost(text_embedder, img_emb, pad_text(neg_text), device,
-                       cost_type=cost_type, ctc_head=ctc_head, ctc_vocab=ctc_vocab)
+        nc = _get_cost(text_embedder, img_emb, pad_text(neg_text), device)
         rows.append({"text": neg_text, "type": neg_type, "cost": nc, "is_pos": False})
 
     # Rank by cost (lower = better alignment)
@@ -135,7 +122,7 @@ def draw_hard_negative_case(checkpoint, sentence_idx, num_negatives,
     case_label = "Hard Negative Case Study" if pos_is_top else "Hard Negative Case Study (Failure)"
     ax_img.set_title(
         f"Sentence {sentence_idx} — {case_label}\n"
-        f"\"{arabic_label(text)}\"  |  neg_mode={negative_mode}  |  cost={cost_type}",
+        f"\"{arabic_label(text)}\"  |  neg_mode={negative_mode}  |  cost=d3tw",
         fontsize=11, pad=6,
     )
     ax_img.axis("off")
@@ -144,7 +131,7 @@ def draw_hard_negative_case(checkpoint, sentence_idx, num_negatives,
     ax_tbl = fig.add_subplot(gs[1])
     ax_tbl.axis("off")
 
-    col_labels = ["Rank", "Transcript", "Type", f"{cost_type.upper()} Cost", "Match"]
+    col_labels = ["Rank", "Transcript", "Type", "D3TW Cost", "Match"]
     table_data = []
     row_colors = []
     GREEN = "#d4efdf"
@@ -214,7 +201,6 @@ def main():
     parser.add_argument("--negative_mode",  default="length_controlled",
                         choices=["mixed", "length_controlled", "dot_confusion",
                                  "same_length_random", "shuffle_only"])
-    parser.add_argument("--cost_type", default="d3tw", choices=["d3tw", "ctc"])
     parser.add_argument("--include_char_pool_stats", action="store_true")
     parser.add_argument("--output_dir",    default="paper_figures/outputs")
     parser.add_argument("--device",        default="cuda" if torch.cuda.is_available() else "cpu")
@@ -230,7 +216,6 @@ def main():
             args.output_dir,
             args.device,
             negative_mode=args.negative_mode,
-            cost_type=args.cost_type,
             include_char_pool_stats=args.include_char_pool_stats,
         )
 

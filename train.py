@@ -17,11 +17,6 @@ from embeddingModel import *
 from embeddingModel import img_embed_timer
 from NormalizeFuncs import *
 from LossFunctionWithHelpers import *
-from ctc_utils import (
-    CTCVocabulary,
-    compute_ctc_loss,
-    compute_contrastive_ctc_loss,
-)
 from alignment_pooling import (
     CharacterBank,
     build_char_bank,
@@ -54,7 +49,7 @@ from token_embedding_bank import (
     compute_token_pool_contrastive_loss,
     encode_text_units,
 )
-# SimilarityTransformer removed - using direct cosine similarity between CNN+BiLSTM and text embeddings
+# Similarity uses direct cosine scores between image and text embeddings.
 
 import os
 import gc
@@ -132,8 +127,7 @@ parser.add_argument('--learning_rate', type=float, default=None,
 parser.add_argument('--num_negatives', type=int, default=None,
                     help='Override Parameters.num_negatives for this run.')
 parser.add_argument('--alignment_loss_type', type=str, default=None,
-                    choices=['d3tw', 'ctc', 'contrastive_ctc', 'ctc_d3tw',
-                             'contrastive_ctc_d3tw', 'd3tw_char_pool',
+                    choices=['d3tw', 'd3tw_char_pool',
                              'contrastive_d3tw_char_pool'],
                     help='Alignment objective to train.')
 parser.add_argument('--use_d3tw_char_pooling', type=_str2bool, nargs='?', const=True,
@@ -184,17 +178,6 @@ parser.add_argument('--bigram_token_max_vocab_size', type=int, default=None)
 parser.add_argument('--bigram_token_fusion', choices=['mean', 'mlp'], default=None)
 parser.add_argument('--bigram_token_include_ligatures', type=_str2bool, nargs='?', const=True,
                     default=None)
-parser.add_argument('--ctc_weight', type=float, default=None,
-                    help='Weight for CTC loss in hybrid modes.')
-parser.add_argument('--d3tw_weight', type=float, default=None,
-                    help='Weight for D3TW loss in hybrid modes.')
-parser.add_argument('--contrastive_ctc_loss_type', type=str, default=None,
-                    choices=['infonce', 'margin'],
-                    help='Contrastive CTC ranking objective.')
-parser.add_argument('--contrastive_ctc_tau', type=float, default=None,
-                    help='Temperature for InfoNCE over CTC costs.')
-parser.add_argument('--contrastive_ctc_margin', type=float, default=None,
-                    help='Margin for contrastive CTC loss.')
 parser.add_argument('--sequence_encoder_type', type=str, default=None,
                     choices=['bilstm', 'transformer', 'none'],
                     help='Sequence encoder after CNN features.')
@@ -211,13 +194,6 @@ parser.add_argument('--transformer_positional_encoding', type=str, default=None,
 parser.add_argument('--transformer_max_len', type=int, default=None)
 parser.add_argument('--return_attention_weights', action=argparse.BooleanOptionalAction,
                     default=None)
-parser.add_argument('--use_cross_attention', action='store_true', default=None,
-                    help='Enable optional auxiliary cross-attention similarity.')
-parser.add_argument('--cross_attention_type', type=str, default=None,
-                    choices=['text_to_image', 'image_to_text', 'bidirectional'])
-parser.add_argument('--cross_attention_num_heads', type=int, default=None)
-parser.add_argument('--cross_attention_dropout', type=float, default=None)
-parser.add_argument('--cross_attention_weight', type=float, default=None)
 job_id = None
 
 from wandb_config import (
@@ -321,7 +297,7 @@ def _weights_dir(job_id):
     return path
 
 
-def _make_model_config(ws, stride, sr, ctc_vocab=None):
+def _make_model_config(ws, stride, sr):
     """Collect current training config into a dict for the checkpoint."""
     import Parameters as _P
     cfg = {
@@ -344,11 +320,6 @@ def _make_model_config(ws, stride, sr, ctc_vocab=None):
         'transformer_positional_encoding': _P.transformer_positional_encoding,
         'transformer_max_len': _P.transformer_max_len,
         'return_attention_weights': _P.return_attention_weights,
-        'use_cross_attention': _P.use_cross_attention,
-        'cross_attention_type': _P.cross_attention_type,
-        'cross_attention_num_heads': _P.cross_attention_num_heads,
-        'cross_attention_dropout': _P.cross_attention_dropout,
-        'cross_attention_weight': _P.cross_attention_weight,
         'lang':               _P.lang,
         'text_embedder_type': _P.text_embedder_type,
         'negative_mode':      getattr(_P, 'negative_mode', 'mixed'),
@@ -397,17 +368,10 @@ def _make_model_config(ws, stride, sr, ctc_vocab=None):
         'bigram_token_include_ligatures': _P.bigram_token_include_ligatures,
         'bigram_token_vocab_size': int(getattr(_make_model_config, "_bigram_token_vocab_size", 0)),
     }
-    if ctc_vocab is not None:
-        cfg.update({
-            'ctc_vocab_size': len(ctc_vocab),
-            'ctc_blank_idx': ctc_vocab.blank_idx,
-        })
     return cfg
 
 
 def save_model_weights(model, epoch, job_id, model_config=None,
-                       ctc_head=None, ctc_vocab=None,
-                       cross_attention_module=None,
                        bigram_fusion_mlp=None,
                        text_embedding=None):
     weights_path = os.path.join(_weights_dir(job_id), "model_latest.pth")
@@ -415,20 +379,14 @@ def save_model_weights(model, epoch, job_id, model_config=None,
         'model_state_dict': model.state_dict(),
         'image_model_state_dict': model.state_dict(),
     }
-    if ctc_head is not None:
-        payload['ctc_head_state_dict'] = ctc_head.state_dict()
-    if cross_attention_module is not None:
-        payload['cross_attention_state_dict'] = cross_attention_module.state_dict()
     if bigram_fusion_mlp is not None:
         payload['bigram_fusion_mlp_state_dict'] = bigram_fusion_mlp.state_dict()
     if text_embedding is not None:
         payload['text_embedder_state_dict'] = text_embedding.state_dict()
         payload['text_embedder_type'] = text_embedder_type
-    if ctc_vocab is not None:
-        payload['ctc_vocab'] = ctc_vocab.to_dict()
     if model_config:
         payload['model_config'] = model_config
-    if ctc_head is not None or ctc_vocab is not None or model_config or text_embedding is not None:
+    if model_config or text_embedding is not None:
         torch.save(payload, weights_path)
     else:
         torch.save(model.state_dict(), weights_path)
@@ -436,8 +394,7 @@ def save_model_weights(model, epoch, job_id, model_config=None,
 
 
 def save_checkpoint(model, optimizer, scheduler, scaler, epoch, job_id,
-                    model_config=None, ctc_head=None, ctc_vocab=None,
-                    cross_attention_module=None,
+                    model_config=None,
                     bigram_fusion_mlp=None,
                     text_embedding=None):
     """Save full training state so --resume can pick up exactly where we left off."""
@@ -449,17 +406,11 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, job_id,
         'scheduler_state_dict': scheduler.state_dict(),
         'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
     }
-    if ctc_head is not None:
-        ckpt['ctc_head_state_dict'] = ctc_head.state_dict()
-    if cross_attention_module is not None:
-        ckpt['cross_attention_state_dict'] = cross_attention_module.state_dict()
     if bigram_fusion_mlp is not None:
         ckpt['bigram_fusion_mlp_state_dict'] = bigram_fusion_mlp.state_dict()
     if text_embedding is not None:
         ckpt['text_embedder_state_dict'] = text_embedding.state_dict()
         ckpt['text_embedder_type'] = text_embedder_type
-    if ctc_vocab is not None:
-        ckpt['ctc_vocab'] = ctc_vocab.to_dict()
     if model_config:
         ckpt['model_config'] = model_config
     torch.save(ckpt, os.path.join(_weights_dir(job_id), "checkpoint_latest.pth"))
@@ -474,14 +425,8 @@ def _extract_model_state(loaded):
     return loaded
 
 
-def _needs_ctc():
-    return alignment_loss_type in {'ctc', 'contrastive_ctc', 'ctc_d3tw',
-                                   'contrastive_ctc_d3tw'}
-
-
 def _needs_d3tw():
-    return alignment_loss_type in {'d3tw', 'ctc_d3tw',
-                                   'contrastive_ctc_d3tw', 'd3tw_char_pool',
+    return alignment_loss_type in {'d3tw', 'd3tw_char_pool',
                                    'contrastive_d3tw_char_pool'}
 
 
@@ -579,8 +524,6 @@ def _embed_negatives(textEmbed, neg_texts):
 
 
 def compute_varlen_similarities(textEmbed, norm_img, pos_texts, neg_texts,
-                                cross_attention_module=None,
-                                cross_attention_weight=0.0,
                                 ngram_tokenizer=None):
     """
     Build per-sample similarity matrices without padded text rows.
@@ -601,9 +544,6 @@ def compute_varlen_similarities(textEmbed, norm_img, pos_texts, neg_texts,
         sim_pos_list: list[B] of Tensor[T_i, S]
         sim_neg_list: list[B] of list[K] of Tensor[T_neg_ik, S]
     """
-    use_cross = (
-        cross_attention_module is not None and cross_attention_weight > 0
-    )
     sim_pos_list = []
     sim_neg_list = []
     pos_units_list = []
@@ -622,14 +562,9 @@ def compute_varlen_similarities(textEmbed, norm_img, pos_texts, neg_texts,
         pos_spans_list.append(spans)
 
         # sim carries grad via norm_img[i]. Dot-product remains the primary
-        # D3TW matrix; optional cross-attention is only an additive auxiliary.
+        # D3TW matrix.
         dot_pos = torch.einsum("td,sd->ts", txt_emb, norm_img[i])
-        if use_cross:
-            attn_pos = cross_attention_module(txt_emb, norm_img[i])
-            sim_pos = dot_pos + cross_attention_weight * attn_pos
-        else:
-            sim_pos = dot_pos
-        sim_pos_list.append(sim_pos)
+        sim_pos_list.append(dot_pos)
 
         sample_neg_sims = []
         for neg_text in neg_texts[i]:
@@ -641,13 +576,7 @@ def compute_varlen_similarities(textEmbed, norm_img, pos_texts, neg_texts,
                 ngram_tokenizer=ngram_tokenizer,
             )
             neg_emb = normalize_func(neg_emb)
-            dot_neg = torch.einsum("td,sd->ts", neg_emb, norm_img[i])
-            if use_cross:
-                attn_neg = cross_attention_module(neg_emb, norm_img[i])
-                sim_neg = dot_neg + cross_attention_weight * attn_neg
-            else:
-                sim_neg = dot_neg
-            sample_neg_sims.append(sim_neg)
+            sample_neg_sims.append(torch.einsum("td,sd->ts", neg_emb, norm_img[i]))
 
         sim_neg_list.append(sample_neg_sims)
 
@@ -657,7 +586,6 @@ def compute_varlen_similarities(textEmbed, norm_img, pos_texts, neg_texts,
 def compute_d3tw_batch_loss(imageEmbed, textEmbed,
                             images, pos_texts, neg_texts,
                             criterion,
-                            cross_attention_module=None,
                             ngram_tokenizer=None,
                             epoch=0, batch_idx=0, dataloader_length=0, debug=False, timer=None):
     """
@@ -695,28 +623,7 @@ def compute_d3tw_batch_loss(imageEmbed, textEmbed,
             norm_img_s = normalize_func(img_emb_s)
             dot_pos_s = torch.einsum('bsv,btv->bst', norm_pos_text, norm_img_s)
             dot_neg_s = torch.einsum('bktv,bsv->bkts', stacked_neg, norm_img_s)
-            if (
-                cross_attention_module is not None
-                and use_cross_attention
-                and cross_attention_weight > 0
-            ):
-                attn_pos_s = cross_attention_module(norm_pos_text, norm_img_s)
-                B, K, T, D = stacked_neg.shape
-                flat_neg = stacked_neg.reshape(B * K, T, D)
-                flat_img = (
-                    norm_img_s.unsqueeze(1)
-                    .expand(B, K, norm_img_s.size(1), norm_img_s.size(2))
-                    .reshape(B * K, norm_img_s.size(1), norm_img_s.size(2))
-                )
-                attn_neg_s = cross_attention_module(flat_neg, flat_img).reshape(
-                    B, K, T, norm_img_s.size(1)
-                )
-                sim_pos_s = dot_pos_s + cross_attention_weight * attn_pos_s
-                sim_neg_s = dot_neg_s + cross_attention_weight * attn_neg_s
-            else:
-                sim_pos_s = dot_pos_s
-                sim_neg_s = dot_neg_s
-            return sim_pos_s, sim_neg_s
+            return dot_pos_s, dot_neg_s
 
         macro_ws, micro_ws = multi_scale_window_sizes
 
@@ -766,12 +673,6 @@ def compute_d3tw_batch_loss(imageEmbed, textEmbed,
             norm_img=norm_img,
             pos_texts=pos_texts,
             neg_texts=neg_texts,
-            cross_attention_module=cross_attention_module,
-            cross_attention_weight=(
-                cross_attention_weight
-                if use_cross_attention and cross_attention_weight > 0
-                else 0.0
-            ),
             ngram_tokenizer=ngram_tokenizer,
         )
         timer.stop('4_varlen_similarities')
@@ -821,12 +722,10 @@ def compute_d3tw_batch_loss(imageEmbed, textEmbed,
         )
         # model_config injected by Train() via a closure attribute
         _cfg = getattr(compute_batch_loss, '_model_config', None)
-        if not _needs_ctc():
-            save_model_weights(
-                imageEmbed, epoch, job_id, model_config=_cfg,
-                cross_attention_module=cross_attention_module,
-                text_embedding=textEmbed,
-            )
+        save_model_weights(
+            imageEmbed, epoch, job_id, model_config=_cfg,
+            text_embedding=textEmbed,
+        )
 
     return total_loss, loss_dict, artifacts
 
@@ -1188,7 +1087,6 @@ def _print_loss_summary(loss_dict, batch_idx):
         return
     parts = [f"alignment_loss_type={alignment_loss_type}"]
     for key in (
-        "ctc_loss", "ctc_pos_cost", "ctc_neg_cost", "ctc_gap", "ctc_top1",
         "d3tw_loss", "d3tw_cost_pos", "d3tw_cost_neg", "total_loss",
         "char_pool_loss", "effective_char_pool_weight", "char_pool_acc_top1",
         "char_pool_acc_top5", "char_pool_valid_chars", "char_pool_num_chars",
@@ -1215,12 +1113,10 @@ def _print_loss_summary(loss_dict, batch_idx):
 def compute_batch_loss(imageEmbed, textEmbed,
                        images, pos_texts, neg_texts,
                        criterion,
-                       ctc_head=None, ctc_vocab=None,
                        char_bank=None,
                        token_bank=None,
                        bigram_fusion_mlp=None,
                        ngram_tokenizer=None,
-                       cross_attention_module=None,
                        epoch=0, batch_idx=0, dataloader_length=0, debug=False, timer=None):
     if timer is None:
         timer = global_timer
@@ -1229,44 +1125,17 @@ def compute_batch_loss(imageEmbed, textEmbed,
         return torch.amp.autocast('cuda', dtype=AMP_DTYPE, enabled=USE_AMP)
 
     loss_dict = {}
-    ctc_loss_value = None
     d3tw_loss_value = None
     char_pool_loss_value = None
     bigram_token_loss_value = None
     token_pool_loss_value = None
     char_aux_loss_value = None
 
-    if _needs_ctc():
-        if ctc_head is None or ctc_vocab is None:
-            raise RuntimeError("CTC mode requires ctc_head and ctc_vocab.")
-        timer.start('1_image_embedding')
-        with _autocast():
-            img_emb = imageEmbed(images, show_dims=False, timer=timer)
-        img_emb = img_emb.float()
-        timer.stop('1_image_embedding')
-
-        timer.start('6_ctc_loss_computation')
-        if alignment_loss_type in {'ctc', 'ctc_d3tw'}:
-            ctc_loss_value, ctc_dict = compute_ctc_loss(
-                img_emb, pos_texts, ctc_head, ctc_vocab, device
-            )
-        else:
-            ctc_loss_value, ctc_dict = compute_contrastive_ctc_loss(
-                img_emb, pos_texts, neg_texts, ctc_head, ctc_vocab,
-                tau=contrastive_ctc_tau,
-                margin=contrastive_ctc_margin,
-                loss_type=contrastive_ctc_loss_type,
-                device=device,
-            )
-        timer.stop('6_ctc_loss_computation')
-        loss_dict.update(ctc_dict)
-
     if _needs_d3tw():
         if textEmbed is None:
             raise RuntimeError("D3TW mode requires a text embedder.")
         d3tw_loss_value, d3tw_dict, d3tw_artifacts = compute_d3tw_batch_loss(
             imageEmbed, textEmbed, images, pos_texts, neg_texts, criterion,
-            cross_attention_module=cross_attention_module,
             ngram_tokenizer=ngram_tokenizer,
             epoch=epoch, batch_idx=batch_idx,
             dataloader_length=dataloader_length, debug=debug, timer=timer
@@ -1302,40 +1171,16 @@ def compute_batch_loss(imageEmbed, textEmbed,
                                // imageEmbed.stride + 1,
             })
 
-    if alignment_loss_type == "ctc":
-        total_loss = ctc_loss_value
-    elif alignment_loss_type == "contrastive_ctc":
-        total_loss = ctc_loss_value
-    elif alignment_loss_type == "ctc_d3tw":
-        total_loss = ctc_weight * ctc_loss_value + d3tw_weight * d3tw_loss_value
-        if _uses_char_pool():
-            if _uses_ngram_units():
-                total_loss = total_loss + loss_dict["effective_token_pool_weight"] * token_pool_loss_value
-                total_loss = total_loss + loss_dict["effective_char_aux_weight"] * char_aux_loss_value
-            else:
-                total_loss = total_loss + loss_dict["effective_char_pool_weight"] * char_pool_loss_value
-                if _uses_bigram_token_loss():
-                    total_loss = total_loss + loss_dict["effective_bigram_token_weight"] * bigram_token_loss_value
-    elif alignment_loss_type == "contrastive_ctc_d3tw":
-        total_loss = ctc_weight * ctc_loss_value + d3tw_weight * d3tw_loss_value
-        if _uses_char_pool():
-            if _uses_ngram_units():
-                total_loss = total_loss + loss_dict["effective_token_pool_weight"] * token_pool_loss_value
-                total_loss = total_loss + loss_dict["effective_char_aux_weight"] * char_aux_loss_value
-            else:
-                total_loss = total_loss + loss_dict["effective_char_pool_weight"] * char_pool_loss_value
-                if _uses_bigram_token_loss():
-                    total_loss = total_loss + loss_dict["effective_bigram_token_weight"] * bigram_token_loss_value
-    elif alignment_loss_type in {"d3tw_char_pool", "contrastive_d3tw_char_pool"}:
+    if alignment_loss_type in {"d3tw_char_pool", "contrastive_d3tw_char_pool"}:
         if _uses_ngram_units():
             total_loss = (
-                d3tw_weight * d3tw_loss_value
+                d3tw_loss_value
                 + loss_dict["effective_token_pool_weight"] * token_pool_loss_value
                 + loss_dict["effective_char_aux_weight"] * char_aux_loss_value
             )
         else:
             total_loss = (
-                d3tw_weight * d3tw_loss_value
+                d3tw_loss_value
                 + loss_dict["effective_char_pool_weight"] * char_pool_loss_value
             )
             if _uses_bigram_token_loss():
@@ -1344,13 +1189,13 @@ def compute_batch_loss(imageEmbed, textEmbed,
         if _uses_char_pool():
             if _uses_ngram_units():
                 total_loss = (
-                    d3tw_weight * d3tw_loss_value
+                    d3tw_loss_value
                     + loss_dict["effective_token_pool_weight"] * token_pool_loss_value
                     + loss_dict["effective_char_aux_weight"] * char_aux_loss_value
                 )
             else:
                 total_loss = (
-                    d3tw_weight * d3tw_loss_value
+                    d3tw_loss_value
                     + loss_dict["effective_char_pool_weight"] * char_pool_loss_value
                 )
                 if _uses_bigram_token_loss():
@@ -1366,12 +1211,10 @@ def compute_batch_loss(imageEmbed, textEmbed,
 
 
 def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
-          ctc_head=None, ctc_vocab=None,
           char_bank=None,
           token_bank=None,
           bigram_fusion_mlp=None,
           ngram_tokenizer=None,
-          cross_attention_module=None,
           lr=None, total_epochs=None, resume_path=None, model_config=None):
     """Train the image-text alignment model (CRNN: ResNet34 + BiLSTM)."""
     imageEmbedding.train()
@@ -1392,13 +1235,6 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
     other_params = [p for p in imageEmbedding.parameters() if id(p) not in cnn_param_ids]
 
     optim_params = cnn_params + other_params
-    if ctc_head is not None:
-        optim_params += list(ctc_head.parameters())
-    if cross_attention_module is not None and cross_attention_weight > 0:
-        cross_params = [
-            p for p in cross_attention_module.parameters() if p.requires_grad
-        ]
-        optim_params += cross_params
     if bigram_fusion_mlp is not None:
         optim_params += [p for p in bigram_fusion_mlp.parameters() if p.requires_grad]
     optimizer = optim.Adam(optim_params, lr=lr)
@@ -1419,13 +1255,6 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
         print(f"Resuming from checkpoint: {resume_path}")
         ckpt = torch.load(resume_path, map_location=device)
         imageEmbedding.load_state_dict(_extract_model_state(ckpt))
-        if ctc_head is not None and ckpt.get('ctc_head_state_dict') is not None:
-            ctc_head.load_state_dict(ckpt['ctc_head_state_dict'])
-        if (
-            cross_attention_module is not None
-            and ckpt.get('cross_attention_state_dict') is not None
-        ):
-            cross_attention_module.load_state_dict(ckpt['cross_attention_state_dict'])
         if (
             bigram_fusion_mlp is not None
             and ckpt.get('bigram_fusion_mlp_state_dict') is not None
@@ -1451,10 +1280,6 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
             print(f"Epoch {epoch+1} - Soft-DTW gamma: {contrastive_soft_dtw_gamma:.6f}", flush=True)
 
         imageEmbedding.train()
-        if ctc_head is not None:
-            ctc_head.train()
-        if cross_attention_module is not None:
-            cross_attention_module.train()
         if bigram_fusion_mlp is not None:
             bigram_fusion_mlp.train()
         global_timer.reset()
@@ -1474,13 +1299,10 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
                 imageEmbedding, textEmbedding,
                 images, pos_texts, neg_texts,
                 criterion,
-                ctc_head=ctc_head,
-                ctc_vocab=ctc_vocab,
                 char_bank=char_bank,
                 token_bank=token_bank,
                 bigram_fusion_mlp=bigram_fusion_mlp,
                 ngram_tokenizer=ngram_tokenizer,
-                cross_attention_module=cross_attention_module,
                 epoch=epoch, batch_idx=batch_idx, dataloader_length=len(trainLoader),
                 debug=debug, timer=global_timer
             )
@@ -1509,10 +1331,6 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
 
         # Validation phase
         imageEmbedding.eval()
-        if ctc_head is not None:
-            ctc_head.eval()
-        if cross_attention_module is not None:
-            cross_attention_module.eval()
         if bigram_fusion_mlp is not None:
             bigram_fusion_mlp.eval()
         val_loss = 0.0
@@ -1524,13 +1342,10 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
                     imageEmbedding, textEmbedding,
                     images, pos_texts, neg_texts,
                     criterion=criterion
-	                    , ctc_head=ctc_head,
-	                    ctc_vocab=ctc_vocab
 	                    , char_bank=char_bank
 	                    , token_bank=token_bank
 	                    , bigram_fusion_mlp=bigram_fusion_mlp
 	                    , ngram_tokenizer=ngram_tokenizer
-	                    , cross_attention_module=cross_attention_module
                     , epoch=epoch
                     , batch_idx=batch_idx
                 )
@@ -1556,14 +1371,10 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
         # Save full checkpoint each epoch so --resume can recover exactly.
         save_checkpoint(imageEmbedding, optimizer, scheduler, scaler, epoch,
                         job_id, model_config=_model_config,
-                        ctc_head=ctc_head, ctc_vocab=ctc_vocab,
-                        cross_attention_module=cross_attention_module,
                         bigram_fusion_mlp=bigram_fusion_mlp,
                         text_embedding=textEmbedding)
         weights_path = save_model_weights(imageEmbedding, epoch, job_id,
                                           model_config=_model_config,
-                                          ctc_head=ctc_head, ctc_vocab=ctc_vocab,
-                                          cross_attention_module=cross_attention_module,
                                           bigram_fusion_mlp=bigram_fusion_mlp,
                                           text_embedding=textEmbedding)
 
@@ -1641,11 +1452,6 @@ def _apply_cli_overrides(args):
         ("bigram_token_max_vocab_size",),
         ("bigram_token_fusion",),
         ("bigram_token_include_ligatures",),
-        ("ctc_weight",),
-        ("d3tw_weight",),
-        ("contrastive_ctc_loss_type", None, lowercase),
-        ("contrastive_ctc_tau",),
-        ("contrastive_ctc_margin",),
         ("transformer_num_layers",),
         ("transformer_num_heads",),
         ("transformer_ff_dim",),
@@ -1655,11 +1461,6 @@ def _apply_cli_overrides(args):
         ("transformer_positional_encoding", None, lowercase),
         ("transformer_max_len",),
         ("return_attention_weights",),
-        ("use_cross_attention",),
-        ("cross_attention_type", None, lowercase),
-        ("cross_attention_num_heads",),
-        ("cross_attention_dropout",),
-        ("cross_attention_weight",),
     )
     for override in overrides:
         _apply_override(_params, args, *override)
@@ -1758,10 +1559,6 @@ def _prepare_training_inputs(args):
 
 
 def _build_text_embedding():
-    if not _needs_d3tw():
-        print("[TEXT EMBED] skipped for CTC-only objective", flush=True)
-        return None
-
     # Pick the text embedder via Parameters.text_embedder_type
     # ('char' = learned frozen table, 'fasttext' = facebook/fasttext-ar-vectors).
     text_embedding = build_text_embedder(embedding_dim=vector_size)
@@ -1799,32 +1596,6 @@ def _build_image_embedding(stride):
     )
 
 
-def _build_cross_attention_module():
-    if not use_cross_attention:
-        return None
-    if cross_attention_weight > 0 and _needs_d3tw():
-        cross_attention_module = CrossAttentionSimilarity(
-            dim=vector_size,
-            num_heads=cross_attention_num_heads,
-            dropout=cross_attention_dropout,
-            attention_type=cross_attention_type,
-        ).to(device)
-        print(
-            "[CROSS-ATTN] enabled as auxiliary similarity "
-            f"type={cross_attention_type} heads={cross_attention_num_heads} "
-            f"weight={cross_attention_weight}",
-            flush=True,
-        )
-        return cross_attention_module
-
-    print(
-        "[CROSS-ATTN] requested but inactive "
-        f"(needs_d3tw={_needs_d3tw()} weight={cross_attention_weight})",
-        flush=True,
-    )
-    return None
-
-
 def _prepare_image_embedding_for_training(args, image_embedding):
     # --resume restores model + optimizer + scheduler + epoch inside Train().
     # --pretrained_weights only loads model weights here (fresh optimizer/epoch).
@@ -1843,31 +1614,6 @@ def _prepare_image_embedding_for_training(args, image_embedding):
     if show_gradients:
         for param in image_embedding.parameters():
             param.register_hook(check_grad)
-
-
-def _build_ctc_components(train_loader, resolved_data_dir, resume_ckpt):
-    if not _needs_ctc():
-        return None, None
-
-    if resume_ckpt is not None and resume_ckpt.get("ctc_vocab") is not None:
-        ctc_vocab = CTCVocabulary.from_dict(resume_ckpt["ctc_vocab"])
-    else:
-        vocab_texts = _collect_training_texts(train_loader, resolved_data_dir)
-        if not vocab_texts:
-            raise RuntimeError("Could not collect transcripts to build CTC vocabulary.")
-        ctc_vocab = CTCVocabulary.from_texts(vocab_texts, blank_token=ctc_blank_token)
-
-    ctc_head = nn.Linear(vector_size, len(ctc_vocab)).to(device)
-    if save_ctc_vocab:
-        ctc_vocab_path = os.path.join(_weights_dir(job_id), "ctc_vocab.json")
-        ctc_vocab.save_json(ctc_vocab_path)
-        print(f"[CTC] saved vocabulary: {ctc_vocab_path}", flush=True)
-    print(
-        f"[CTC] vocab_size={len(ctc_vocab)} blank_idx={ctc_vocab.blank_idx} "
-        f"blank_token={ctc_vocab.blank_token!r}",
-        flush=True,
-    )
-    return ctc_vocab, ctc_head
 
 
 def _build_pooling_banks(train_loader, resolved_data_dir, text_embedding):
@@ -1999,8 +1745,7 @@ def _build_pooling_banks(train_loader, resolved_data_dir, text_embedding):
     return char_bank, token_bank, bigram_fusion_mlp, ngram_tokenizer
 
 
-def _print_run_summary(args, stride, run_lr, run_epochs, resolved_data_dir,
-                       cross_attention_module):
+def _print_run_summary(args, stride, run_lr, run_epochs, resolved_data_dir):
     print(f"\n=== Architecture: Image Encoder (ResNet34 + {sequence_encoder_type}) ===")
     print(f"[OPT 1] job_id: {job_id}")
     print(f"[OPT 2] Sequence Encoder: {sequence_encoder_type}")
@@ -2018,14 +1763,8 @@ def _print_run_summary(args, stride, run_lr, run_epochs, resolved_data_dir,
     )
     print(f"[OPT 4] In-Batch Negatives: num_negatives={num_negatives}")
     print(f"[OPT 5] alignment_loss_type={alignment_loss_type}")
-    if _needs_ctc():
-        print(f"[OPT 6] CTC: weight={ctc_weight} loss={contrastive_ctc_loss_type} tau={contrastive_ctc_tau} margin={contrastive_ctc_margin}")
     if _needs_d3tw():
-        print(f"[OPT 7] D3TW: weight={d3tw_weight}")
-        print(
-            f"[OPT 7a] Cross-Attention: enabled={cross_attention_module is not None} "
-            f"type={cross_attention_type} weight={cross_attention_weight}"
-        )
+        print("[OPT 7] D3TW objective active")
     if _uses_char_pool():
         if _uses_ngram_units():
             print(
@@ -2104,24 +1843,17 @@ def main(args):
 
     imageEmbedding = _build_image_embedding(stride)
 
-    cross_attention_module = _build_cross_attention_module()
-
     _prepare_image_embedding_for_training(args, imageEmbedding)
-
-    ctc_vocab, ctc_head = _build_ctc_components(
-        _train_dl, resolved_data_dir, resume_ckpt
-    )
 
     char_bank, token_bank, bigram_fusion_mlp, ngram_tokenizer = _build_pooling_banks(
         _train_dl, resolved_data_dir, textEmbedding
     )
 
     criterion    = Loss_choice() if _needs_d3tw() else None
-    _model_cfg   = _make_model_config(window_size, stride, stride_ratio, ctc_vocab)
+    _model_cfg   = _make_model_config(window_size, stride, stride_ratio)
 
     _print_run_summary(
         args, stride, run_lr, run_epochs, resolved_data_dir,
-        cross_attention_module,
     )
 
     loss_lst = Train(
@@ -2130,13 +1862,10 @@ def main(args):
         _train_dl,
         _valid_dl,
         criterion,
-        ctc_head=ctc_head,
-        ctc_vocab=ctc_vocab,
         char_bank=char_bank,
         token_bank=token_bank,
         bigram_fusion_mlp=bigram_fusion_mlp,
         ngram_tokenizer=ngram_tokenizer,
-        cross_attention_module=cross_attention_module,
         lr=run_lr,
         total_epochs=run_epochs,
         resume_path=args.resume,

@@ -28,23 +28,17 @@ sys.path.insert(0, _PROJ_ROOT)
 sys.path.insert(0, _HERE)
 
 from utils.model_loading import (load_image_model, load_random_model,
-                                  load_text_embedder,
-                                  load_cross_attention_module)
+                                  load_text_embedder)
 from utils.sample_data import make_sample, FIG_STRIDE, FIG_NUM_PATCHES, get_fig_windows, pad_text
 from utils.similarity import (compute_image_embeddings, compute_text_embeddings,
                                compute_text_image_similarity)
 from utils.plotting import setup_paper_style, save_figure, plot_similarity_heatmap, attach_window_strip, arabic_label
 
 
-def _get_sim(img_model, text_embedder, img_tensor, text, device,
-             cross_attention_module=None, cross_attention_weight=0.0):
+def _get_sim(img_model, text_embedder, img_tensor, text, device):
     img_emb = compute_image_embeddings(img_model, img_tensor, device)
     txt_emb = compute_text_embeddings(text_embedder, text)
-    sim     = compute_text_image_similarity(
-        txt_emb, img_emb,
-        cross_attention_module=cross_attention_module,
-        cross_attention_weight=cross_attention_weight,
-    )
+    sim     = compute_text_image_similarity(txt_emb, img_emb)
     S = sim.shape[1]
     if S != FIG_NUM_PATCHES and S % FIG_NUM_PATCHES == 0:
         subfeat = S // FIG_NUM_PATCHES
@@ -53,8 +47,7 @@ def _get_sim(img_model, text_embedder, img_tensor, text, device,
 
 
 def draw_cnn_vs_bilstm(checkpoint_cnn, checkpoint_bilstm,
-                        sentence_idx, output_dir, device,
-                        use_cross_attention_for_figures=False):
+                        sentence_idx, output_dir, device):
     setup_paper_style()
 
     img_tensor, text = make_sample(sentence_idx)
@@ -67,33 +60,22 @@ def draw_cnn_vs_bilstm(checkpoint_cnn, checkpoint_bilstm,
         model_cnn = load_image_model(checkpoint_cnn, device,
                                      use_bilstm_override=False,
                                      stride_override=FIG_STRIDE)
-        cnn_cross_module, cnn_cross_weight = load_cross_attention_module(
-            checkpoint_cnn, device, use_for_figures=use_cross_attention_for_figures
-        )
         cnn_label = "(a) CNN-only\n(trained checkpoint)"
     else:
         model_cnn = load_random_model(device, use_bilstm_override=False,
                                       stride_override=FIG_STRIDE)
-        cnn_cross_module, cnn_cross_weight = None, 0.0
         cnn_label = "(a) CNN-only\n(randomly initialised)"
         print("  [fig07] No CNN-only checkpoint provided; using random initialisation.")
 
     model_bilstm = load_image_model(checkpoint_bilstm, device,
                                     stride_override=FIG_STRIDE)
-    bilstm_cross_module, bilstm_cross_weight = load_cross_attention_module(
-        checkpoint_bilstm, device, use_for_figures=use_cross_attention_for_figures
-    )
     bilstm_label = "(b) CNN + BiLSTM\n(trained checkpoint)"
 
     sim_cnn    = _get_sim(
         model_cnn, text_embedder, img_tensor, text_padded, device,
-        cross_attention_module=cnn_cross_module,
-        cross_attention_weight=cnn_cross_weight,
     )
     sim_bilstm = _get_sim(
         model_bilstm, text_embedder, img_tensor, text_padded, device,
-        cross_attention_module=bilstm_cross_module,
-        cross_attention_weight=bilstm_cross_weight,
     )
 
     vmin = min(sim_cnn.min(), sim_bilstm.min())
@@ -153,8 +135,6 @@ def main():
                         help="Index into the built-in Arabic sentence pool")
     parser.add_argument("--output_dir",   default="paper_figures/outputs")
     parser.add_argument("--device",       default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--use_cross_attention_for_figures", action="store_true",
-                        help="Use saved cross-attention similarity in addition to dot-product.")
     args = parser.parse_args()
 
     os.chdir(_PROJ_ROOT)
@@ -163,7 +143,6 @@ def main():
         args.checkpoint_bilstm,
         args.sentence_idx,
         args.output_dir, args.device,
-        use_cross_attention_for_figures=args.use_cross_attention_for_figures,
     )
 
 

@@ -24,7 +24,6 @@ sys.path.insert(0, _HERE)
 
 from utils.model_loading import (
     load_image_model, load_text_embedder,
-    load_cross_attention_module,
     load_ngram_tokenizer_if_available,
 )
 from utils.sample_data import make_sample, FIG_STRIDE, FIG_NUM_PATCHES, get_fig_windows, pad_text
@@ -35,7 +34,6 @@ from token_embedding_bank import encode_text_units
 
 
 def _sim_matrix(img_model, text_embedder, img_tensor, text, device,
-                cross_attention_module=None, cross_attention_weight=0.0,
                 text_unit_type="char", ngram_tokenizer=None):
     img_emb = compute_image_embeddings(img_model, img_tensor, device)
     if text_unit_type == "ngram":
@@ -45,11 +43,7 @@ def _sim_matrix(img_model, text_embedder, img_tensor, text, device,
     else:
         units = list(text)
         txt_emb = compute_text_embeddings(text_embedder, text)
-    sim     = compute_text_image_similarity(
-        txt_emb, img_emb,
-        cross_attention_module=cross_attention_module,
-        cross_attention_weight=cross_attention_weight,
-    )
+    sim     = compute_text_image_similarity(txt_emb, img_emb)
     S = sim.shape[1]
     if S != FIG_NUM_PATCHES and S % FIG_NUM_PATCHES == 0:
         subfeat = S // FIG_NUM_PATCHES
@@ -58,17 +52,13 @@ def _sim_matrix(img_model, text_embedder, img_tensor, text, device,
 
 
 def draw_before_after(checkpoint, sentence_idx, output_dir, device,
-                      use_cross_attention_for_figures=False, show_path=False,
-                      text_unit_type="char"):
+                      show_path=False, text_unit_type="char"):
     setup_paper_style()
 
     img_tensor, text = make_sample(sentence_idx)
     text_padded      = pad_text(text)
     text_embedder    = load_text_embedder(device)
     trained_model    = load_image_model(checkpoint, device, stride_override=FIG_STRIDE)
-    cross_module, cross_weight = load_cross_attention_module(
-        checkpoint, device, use_for_figures=use_cross_attention_for_figures
-    )
     ngram_tokenizer = None
     if text_unit_type == "ngram":
         ngram_tokenizer = load_ngram_tokenizer_if_available(checkpoint)
@@ -77,8 +67,6 @@ def draw_before_after(checkpoint, sentence_idx, output_dir, device,
 
     sim_after, units = _sim_matrix(
         trained_model, text_embedder, img_tensor, text_padded, device,
-        cross_attention_module=cross_module,
-        cross_attention_weight=cross_weight,
         text_unit_type=text_unit_type,
         ngram_tokenizer=ngram_tokenizer,
     )
@@ -138,8 +126,6 @@ def main():
                         help="Multiple built-in sentence indices to render.")
     parser.add_argument("--output_dir",    default="paper_figures/outputs")
     parser.add_argument("--device",        default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--use_cross_attention_for_figures", action="store_true",
-                        help="Use saved cross-attention similarity in addition to dot-product.")
     parser.add_argument("--show_path", action="store_true",
                         help="Overlay hard restricted-D3TW path on each similarity matrix.")
     parser.add_argument("--text_unit_type", default="char", choices=["char", "ngram"])
@@ -153,7 +139,6 @@ def main():
             idx,
             args.output_dir,
             args.device,
-            use_cross_attention_for_figures=args.use_cross_attention_for_figures,
             show_path=args.show_path,
             text_unit_type=args.text_unit_type,
         )
