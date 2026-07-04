@@ -37,9 +37,9 @@ export GRADIENT_CHECK_INTERVAL="${GRADIENT_CHECK_INTERVAL:-50}"
 export GRADIENT_CHECK_FIRST_N_BATCHES="${GRADIENT_CHECK_FIRST_N_BATCHES:-3}"
 export GRADIENT_FAIL_FAST="${GRADIENT_FAIL_FAST:-1}"
 
-export NUM_SAMPLES="${NUM_SAMPLES:-50000}"
-JOB_ID="${JOB_ID:-offline_d3tw_ngram_w32_light_50k_v1}"
-DATA_DIR="${DATA_DIR:-DataSet/Synthetic_Arabic_${NUM_SAMPLES}}"
+export NUM_SAMPLES="${NUM_SAMPLES:-10000}"
+JOB_ID="${JOB_ID:-offline_d3tw_ngram_w32_light_100k_v1}"
+DATA_DIR="${DATA_DIR:-DataSet/Synthetic_Arabic}"
 
 EPOCHS="${EPOCHS:-60}"
 LR="${LR:-1e-4}"
