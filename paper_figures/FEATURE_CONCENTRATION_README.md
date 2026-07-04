@@ -64,9 +64,9 @@ The model may confuse character families that share a body but differ only
 in dot count or position (ب / ت / ث / ن / ي).
 
 Possible fixes:
-- Use **multi-scale windows** (`multi_scale_enabled = True` in Parameters.py).
-  Large windows capture body; small windows capture dots.
 - Increase window size (`window_size = 32`) for single-scale training.
+- Use denser single-scale overlap (`window_overlap_mode = dense_overlap`) when
+  dots need more local coverage.
 - Add **dot-confusion hard negatives** — pairs where the transcript differs only
   in dot count.
 

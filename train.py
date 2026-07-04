@@ -116,8 +116,6 @@ parser.add_argument('--negative_mode',  type=str,   default=None,
                          '(mixed|length_controlled|dot_confusion|same_length_random|shuffle_only).')
 parser.add_argument('--window_overlap_mode', type=str, default=None,
                     choices=['no_overlap', 'light_overlap', 'dense_overlap', 'custom'])
-parser.add_argument('--multi_scale',    action='store_true', default=False,
-                    help='Enable multi-scale alignment (overrides Parameters.multi_scale_enabled).')
 parser.add_argument('--loss_type',      type=str,   default=None,
                     help='Override Parameters.contrastive_loss_type (margin|infonce|hybrid).')
 parser.add_argument('--epochs', type=int, default=None,
@@ -323,7 +321,6 @@ def _make_model_config(ws, stride, sr):
         'lang':               _P.lang,
         'text_embedder_type': _P.text_embedder_type,
         'negative_mode':      getattr(_P, 'negative_mode', 'mixed'),
-        'multi_scale_enabled': _P.multi_scale_enabled,
         'char_pool_weight': _P.char_pool_weight,
         'char_pool_tau': _P.char_pool_tau,
         'char_pool_method': _P.char_pool_method,
@@ -597,121 +594,63 @@ def compute_d3tw_batch_loss(imageEmbed, textEmbed,
     if timer is None:
         timer = global_timer
 
-    # ==================== Text Embeddings (no_grad: textEmbed is frozen) ====================
-    timer.start('2_text_embedding')
-    with torch.no_grad():
-        pos_text_emb = textEmbed(pos_texts)              # [B, text_len, vec_size]
-        stacked_neg = _embed_negatives(textEmbed, neg_texts)  # [B, K, neg_len, vec_size]
-        stacked_neg = normalize_func(stacked_neg)
-        norm_pos_text = normalize_func(pos_text_emb)
-    timer.stop('2_text_embedding')
-
     def _autocast():
         return torch.amp.autocast('cuda', dtype=AMP_DTYPE, enabled=USE_AMP)
 
-    artifacts = None
-    if multi_scale_enabled:
-        # Variable-length varlen is not yet implemented for multi-scale.
-        # Using padded batched similarity here until forward_varlen is extended
-        # to support dual-scale inputs.
-        def _similarities_at_scale(ws, sr):
-            s = max(1, int(ws * sr))
-            with _autocast():
-                img_emb_s = imageEmbed.forward_at_scale(images, ws, s,
-                                                        show_dims=False, timer=timer)
-            img_emb_s = img_emb_s.float()
-            norm_img_s = normalize_func(img_emb_s)
-            dot_pos_s = torch.einsum('bsv,btv->bst', norm_pos_text, norm_img_s)
-            dot_neg_s = torch.einsum('bktv,bsv->bkts', stacked_neg, norm_img_s)
-            return dot_pos_s, dot_neg_s
+    timer.start('1_image_embedding')
+    with _autocast():
+        img_emb = imageEmbed(images, show_dims=False, timer=timer)
+    img_emb = img_emb.float()
+    timer.stop('1_image_embedding')
 
-        macro_ws, micro_ws = multi_scale_window_sizes
+    timer.start('3b_norm_img')
+    norm_img = normalize_func(img_emb)
+    timer.stop('3b_norm_img')
 
-        timer.start('4_macro_scale')
-        sim_pos_macro, sim_neg_macro = _similarities_at_scale(macro_ws, stride_ratio)
-        timer.stop('4_macro_scale')
+    # Use variable-length similarities so padded text rows never enter DTW.
+    timer.start('4_varlen_similarities')
+    sim_pos_list, sim_neg_list, pos_units_list, pos_spans_list = compute_varlen_similarities(
+        textEmbed=textEmbed,
+        norm_img=norm_img,
+        pos_texts=pos_texts,
+        neg_texts=neg_texts,
+        ngram_tokenizer=ngram_tokenizer,
+    )
+    timer.stop('4_varlen_similarities')
 
-        timer.start('4_micro_scale')
-        sim_pos_micro, sim_neg_micro = _similarities_at_scale(micro_ws, stride_ratio)
-        timer.stop('4_micro_scale')
+    # One-time sanity check: print shapes for the first batch of training.
+    if batch_idx == 0 and epoch == 0:
+        expected_units = len(pos_units_list[0])
+        print(f"[SANITY] sim_pos_list[0].shape = {sim_pos_list[0].shape}  "
+              f"(expected [{expected_units}, {norm_img.shape[1]}], "
+              f"text_unit_type={text_unit_type})", flush=True)
+        assert sim_pos_list[0].shape[0] == expected_units, \
+            f"Padded text rows detected: got {sim_pos_list[0].shape[0]} rows but text has {expected_units} text units"
 
-        timer.start('5_loss_computation')
-        total_loss, loss_dict = criterion(
-            sim_pos_macro, sim_neg_macro,
-            sim_pos_micro, sim_neg_micro,
+    timer.start('6_loss_computation')
+    total_loss, loss_dict = criterion.forward_varlen(sim_pos_list, sim_neg_list)
+    timer.stop('6_loss_computation')
+
+    # Use first sample's sim for visualization (no padding).
+    sim_pos_for_viz = sim_pos_list[0].unsqueeze(0)
+    artifacts = {
+        "norm_img": norm_img,
+        "sim_pos_list": sim_pos_list,
+        "unit_lists": pos_units_list,
+        "unit_spans": pos_spans_list,
+    }
+
+    if batch_idx % 10 == 0:
+        print(
+            f"[DTW] raw: pos={loss_dict['cost_pos']:.1f}  neg={loss_dict['cost_neg']:.1f}"
+            f"  |  prob: pos_wins={loss_dict['pos_prob']:.3f} (goal→1.0)"
+            f"  |  gap={loss_dict['gap']:.3f}  loss={total_loss.item():.4f}",
+            flush=True,
         )
-        timer.stop('5_loss_computation')
-
-        sim_pos_for_viz = sim_pos_macro
-
-        if batch_idx % 10 == 0:
-            print(
-                f"[Multi-Scale DTW]"
-                f"  macro: raw pos={loss_dict['macro_cost_pos']:.1f} neg={loss_dict['macro_cost_neg']:.1f}"
-                f"  pos_wins={loss_dict['macro_pos_prob']:.3f}"
-                f"  |  micro: raw pos={loss_dict['micro_cost_pos']:.1f} neg={loss_dict['micro_cost_neg']:.1f}"
-                f"  pos_wins={loss_dict['micro_pos_prob']:.3f}"
-                f"  |  loss={total_loss.item():.4f}",
-                flush=True,
-            )
-
-    else:
-        timer.start('1_image_embedding')
-        with _autocast():
-            img_emb = imageEmbed(images, show_dims=False, timer=timer)
-        img_emb = img_emb.float()
-        timer.stop('1_image_embedding')
-
-        timer.start('3b_norm_img')
-        norm_img = normalize_func(img_emb)
-        timer.stop('3b_norm_img')
-
-        # Use variable-length similarities so padded text rows never enter DTW
-        timer.start('4_varlen_similarities')
-        sim_pos_list, sim_neg_list, pos_units_list, pos_spans_list = compute_varlen_similarities(
-            textEmbed=textEmbed,
-            norm_img=norm_img,
-            pos_texts=pos_texts,
-            neg_texts=neg_texts,
-            ngram_tokenizer=ngram_tokenizer,
-        )
-        timer.stop('4_varlen_similarities')
-
-        # One-time sanity check: print shapes for the first batch of training
-        if batch_idx == 0 and epoch == 0:
-            expected_units = len(pos_units_list[0])
-            print(f"[SANITY] sim_pos_list[0].shape = {sim_pos_list[0].shape}  "
-                  f"(expected [{expected_units}, {norm_img.shape[1]}], "
-                  f"text_unit_type={text_unit_type})", flush=True)
-            assert sim_pos_list[0].shape[0] == expected_units, \
-                f"Padded text rows detected: got {sim_pos_list[0].shape[0]} rows but text has {expected_units} text units"
-
-        timer.start('6_loss_computation')
-        total_loss, loss_dict = criterion.forward_varlen(sim_pos_list, sim_neg_list)
-        timer.stop('6_loss_computation')
-
-        # Use first sample's sim for visualization (no padding)
-        sim_pos_for_viz = sim_pos_list[0].unsqueeze(0)
-        artifacts = {
-            "norm_img": norm_img,
-            "sim_pos_list": sim_pos_list,
-            "unit_lists": pos_units_list,
-            "unit_spans": pos_spans_list,
-        }
-
-        if batch_idx % 10 == 0:
-            print(
-                f"[DTW] raw: pos={loss_dict['cost_pos']:.1f}  neg={loss_dict['cost_neg']:.1f}"
-                f"  |  prob: pos_wins={loss_dict['pos_prob']:.3f} (goal→1.0)"
-                f"  |  gap={loss_dict['gap']:.3f}  loss={total_loss.item():.4f}",
-                flush=True,
-            )
 
     # Debugging: Save visualizations for the first batch every 10 epochs
     if debug and batch_idx == 0 and epoch % 10 == 0:
-        # For multi-scale, sim_pos_for_viz is a padded [B, T, S] tensor.
-        # For single-scale, it is sim_pos_list[0].unsqueeze(0) — shape [1, T_0, S].
-        # save_debug_visualizations handles both; max_samples=1 keeps it fast.
+        # sim_pos_for_viz is sim_pos_list[0].unsqueeze(0), shape [1, T_0, S].
         save_debug_visualizations(
             imageEmbed,
             pos_texts[:1],
@@ -736,7 +675,7 @@ def compute_char_pool_batch_loss(
 ):
     """Pool one D3TW group per character and classify against the frozen bank."""
     if artifacts is None:
-        raise RuntimeError("D3TW character pooling is not supported with multi_scale_enabled.")
+        raise RuntimeError("D3TW character pooling requires D3TW artifacts.")
     if char_pool_method == "soft_weighted":
         raise NotImplementedError(
             "char_pool_method='soft_weighted' requires Soft-DTW alignment weights, "
@@ -909,7 +848,7 @@ def compute_token_pool_batch_loss(
 ):
     """Pool one D3TW group per n-gram token and classify against token bank."""
     if artifacts is None:
-        raise RuntimeError("D3TW token pooling is not supported with multi_scale_enabled.")
+        raise RuntimeError("D3TW token pooling requires D3TW artifacts.")
     if token_bank is None:
         raise RuntimeError("text_unit_type='ngram' requires a frozen token bank.")
 
@@ -1467,9 +1406,6 @@ def _apply_cli_overrides(args):
 
     if args.negative_mode is not None:
         _params.negative_mode = args.negative_mode.lower()
-    if args.multi_scale:
-        _params.multi_scale_enabled = True
-        globals()["multi_scale_enabled"] = True
     if args.num_negatives is not None:
         _params.num_negatives = args.num_negatives
         globals()["num_negatives"] = args.num_negatives
@@ -1488,8 +1424,6 @@ def _validate_alignment_config(params_module):
     if alignment_loss_type in {'d3tw_char_pool', 'contrastive_d3tw_char_pool'}:
         params_module.use_d3tw_char_pooling = True
         globals()["use_d3tw_char_pooling"] = True
-    if _uses_char_pool() and multi_scale_enabled:
-        raise NotImplementedError("D3TW character pooling currently supports single-scale training only.")
     if _uses_char_pool() and not _needs_d3tw():
         raise ValueError("use_d3tw_char_pooling requires an alignment mode containing D3TW.")
     if _uses_char_pool() and char_pool_method == "soft_weighted":
@@ -1797,8 +1731,6 @@ def _print_run_summary(args, stride, run_lr, run_epochs, resolved_data_dir):
             f"skip_spaces={bigram_token_skip_spaces} min_freq={bigram_token_min_freq} "
             f"max_vocab={bigram_token_max_vocab_size} fusion={bigram_token_fusion}"
         )
-    if multi_scale_enabled:
-        print(f"[OPT 8] Multi-Scale Alignment: windows={multi_scale_window_sizes}, alpha={multi_scale_alpha}")
     print(f"[SPEED] AMP={USE_AMP} (dtype={AMP_DTYPE})  Profiling={ENABLE_PROFILING}")
     print(f"[RUN]   lr={run_lr}  epochs={run_epochs}")
     if args.finetune:

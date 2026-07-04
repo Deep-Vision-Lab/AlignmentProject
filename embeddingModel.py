@@ -431,7 +431,7 @@ class EmbeddingModel(nn.Module):
 
 
     # Maximum number of patches to push through the CNN in one shot.
-    # Keeps peak GPU allocation bounded when using multi-scale windows.
+    # Keeps peak GPU allocation bounded for dense sliding-window runs.
     CNN_CHUNK_SIZE = 512
 
     def _process_cnn_branch(self, tokens_a, show_dims=False):
@@ -532,58 +532,6 @@ class EmbeddingModel(nn.Module):
         t.start('img_1f_sequence_encoder')
         features_vector_a = self._apply_sequence_encoder(features_vector_a)
         t.stop('img_1f_sequence_encoder')
-
-        # Apply LayerNorm before computing similarity
-        features_vector_a = self.vision_norm(features_vector_a)
-
-        return features_vector_a
-
-    def forward_at_scale(self, image_a, scale_window_size, scale_stride,
-                         show_dims=False, debug=False, timer=None):
-        """
-        Forward pass at an arbitrary window/stride scale.
-
-        Re-uses the SAME CNN and sequence encoder weights —
-        only the sliding-window granularity changes, producing a different
-        sequence length for each scale.
-
-        Args:
-            image_a:           [B, C, H, W] input images
-            scale_window_size: patch width for this scale
-            scale_stride:      stride for this scale
-        Returns:
-            features_vector_a: [B, seq_len_scale, vec_size]
-        """
-        t = timer if timer is not None else img_embed_timer
-
-        # ---- Sliding window at the requested scale ----
-        t.start(f'img_scale_{scale_window_size}_sw')
-        tokens_a = sliding_window(
-            image_a, scale_window_size, scale_stride, debug_mode=debug
-        )
-        t.stop(f'img_scale_{scale_window_size}_sw')
-
-        batches_num, windows_num = tokens_a.shape[:2]
-
-        if self.use_flip:
-            tokens_a = torch.flip(tokens_a, dims=[1])
-
-        # ---- CNN encoding (shared weights) ----
-        t.start(f'img_scale_{scale_window_size}_cnn')
-        encoded_tokens_a, batches_num, windows_num = self._process_cnn_branch(
-            tokens_a, show_dims
-        )
-        t.stop(f'img_scale_{scale_window_size}_cnn')
-
-        features_vector_a = encoded_tokens_a.view(
-            batches_num, -1, self.vector_size
-        )
-        del encoded_tokens_a
-
-        # ---- Sequence encoder ----
-        t.start(f'img_scale_{scale_window_size}_seq_enc')
-        features_vector_a = self._apply_sequence_encoder(features_vector_a)
-        t.stop(f'img_scale_{scale_window_size}_seq_enc')
 
         # Apply LayerNorm before computing similarity
         features_vector_a = self.vision_norm(features_vector_a)

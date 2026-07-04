@@ -33,8 +33,8 @@ alignment_loss_type = str(_env_value('ALIGNMENT_LOSS_TYPE', 'd3tw_char_pool')).l
 
 # Data parameters
 # For clean synthetic data, window_size=16 works well.
-# For Arabic manuscripts, consider window_size=32 or multi_scale_window_sizes=[32, 16]
-# because connected strokes and dots may need larger visual context.
+# For Arabic manuscripts, consider window_size=32 because connected strokes
+# and dots may need larger visual context.
 window_size = 16
 vector_size = 128
 lang = 'Arabic' # ['English', 'Arabic']
@@ -237,17 +237,6 @@ num_negatives = 10
 matchScore    =  10    # reward for a matching character/patch
 mismatchScore = -27    # penalty for a mismatch
 gapScore      = -10    # penalty per gap step
-
-# ============================================================================
-# MULTI-SCALE ALIGNMENT (Multi-Resolution Loss)
-# ============================================================================
-# Computes Contrastive Soft-DTW at two window sizes simultaneously:
-#   - Large window (macro): learns global structure (word spacing, ascenders)
-#   - Small window (micro): learns fine-grained details (dots, diacritics)
-# Loss_total = Loss_norm(macro) + alpha * Loss_norm(micro)
-multi_scale_enabled = os.environ.get('MULTI_SCALE_ENABLED', 'False').lower() in ('true', '1', 't')
-multi_scale_window_sizes = [32, 16]   # [macro_window, micro_window]  — see window_size comment above
-multi_scale_alpha = 0.5              # Weight for micro-scale loss (start at 0.5, tune later)
 
 # ============================================================================
 # Blank / Transition Token Support
