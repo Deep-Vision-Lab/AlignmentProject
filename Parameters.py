@@ -274,3 +274,13 @@ debug = True # Set to True to save patches and heatmaps for debugging
 debug_wandb = True # Set to True to log training to Weights & Biases
 show_gradients = False # Set to True to print gradients for debugging
 preprocess = 'none' # ['none', 'Normalize', 'ExtractPatches']
+
+# ============================================================================
+# Gradient Health Checking
+# ============================================================================
+gradient_check_enabled = _env_bool("GRADIENT_CHECK_ENABLED", True)
+gradient_check_interval = int(_env_value("GRADIENT_CHECK_INTERVAL", 50))
+gradient_check_first_n_batches = int(_env_value("GRADIENT_CHECK_FIRST_N_BATCHES", 3))
+gradient_fail_fast = _env_bool("GRADIENT_FAIL_FAST", True)
+gradient_min_total_norm = _env_float("GRADIENT_MIN_TOTAL_NORM", 1e-12)
+gradient_max_total_norm = _env_float("GRADIENT_MAX_TOTAL_NORM", 1e6)

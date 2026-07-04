@@ -1149,6 +1149,154 @@ def compute_batch_loss(imageEmbed, textEmbed,
     return total_loss
 
 
+def _grad_group_stats(module):
+    """Return (norm, has_grad) for a module's trainable parameter gradients."""
+    if module is None:
+        return None, False
+    squared_norm = 0.0
+    has_grad = False
+    for parameter in module.parameters():
+        if not parameter.requires_grad or parameter.grad is None:
+            continue
+        grad = parameter.grad.detach()
+        has_grad = True
+        squared_norm += float(torch.sum(grad.float() * grad.float()).item())
+    if not has_grad:
+        return None, False
+    return squared_norm ** 0.5, True
+
+
+def gradient_health_check(model, optimizer_params, loss, epoch, batch_idx,
+                          extra_modules=None):
+    """Validate unscaled gradients after backward and before clipping."""
+    extra_modules = extra_modules or {}
+    params = [p for p in optimizer_params if getattr(p, "requires_grad", False)]
+    trainable_count = len(params)
+    none_count = 0
+    zero_count = 0
+    nan_count = 0
+    inf_count = 0
+    total_sq = 0.0
+    max_abs = 0.0
+    has_any_grad = False
+
+    loss_value = float(loss.detach().float().item())
+    loss_is_finite = bool(torch.isfinite(loss.detach()).item())
+    loss_requires_grad = bool(loss.requires_grad)
+
+    for parameter in params:
+        grad = parameter.grad
+        if grad is None:
+            none_count += 1
+            continue
+        has_any_grad = True
+        grad = grad.detach()
+        finite_grad = grad.float()
+        if torch.isnan(grad).any().item():
+            nan_count += 1
+        if torch.isinf(grad).any().item():
+            inf_count += 1
+        if torch.count_nonzero(grad).item() == 0:
+            zero_count += 1
+        total_sq += float(torch.sum(finite_grad * finite_grad).item())
+        max_abs = max(max_abs, float(grad.abs().max().item()))
+
+    total_norm = total_sq ** 0.5
+    cnn_norm, cnn_has_grad = _grad_group_stats(getattr(model, "cnn_encoder", None))
+    seq_norm, seq_has_grad = _grad_group_stats(getattr(model, "sequence_encoder", None))
+    vision_norm_value, _ = _grad_group_stats(getattr(model, "vision_norm", None))
+    bigram_norm, _ = _grad_group_stats(extra_modules.get("bigram_fusion_mlp"))
+
+    def _fmt(value):
+        return "none" if value is None else f"{value:.2e}"
+
+    parts = [
+        f"[GRAD] epoch={epoch + 1} batch={batch_idx}",
+        f"loss={loss_value:.4f}",
+        f"loss_requires_grad={loss_requires_grad}",
+        f"total_norm={total_norm:.2e}",
+        f"max_abs={max_abs:.2e}",
+        f"trainable={trainable_count}",
+        f"none={none_count}",
+        f"zero={zero_count}",
+        f"nan={nan_count}",
+        f"inf={inf_count}",
+        f"cnn={_fmt(cnn_norm)}",
+        f"seq={_fmt(seq_norm)}",
+        f"vision_norm={_fmt(vision_norm_value)}",
+    ]
+    if "bigram_fusion_mlp" in extra_modules:
+        parts.append(f"bigram_fusion_mlp={_fmt(bigram_norm)}")
+    print(" ".join(parts), flush=True)
+
+    issues = []
+    if not loss_is_finite:
+        issues.append("loss is NaN or Inf")
+    if not loss_requires_grad:
+        issues.append("loss.requires_grad is False during training")
+    if trainable_count == 0:
+        issues.append("optimizer has no trainable parameters")
+    if not has_any_grad or none_count == trainable_count:
+        issues.append("all trainable parameters have grad=None")
+    if nan_count > 0:
+        issues.append(f"{nan_count} parameter tensors have NaN gradients")
+    if inf_count > 0:
+        issues.append(f"{inf_count} parameter tensors have Inf gradients")
+    if not torch.isfinite(torch.tensor(total_norm)).item():
+        issues.append("total_grad_norm is NaN or Inf")
+    if total_norm < gradient_min_total_norm:
+        issues.append(
+            f"total_grad_norm {total_norm:.3e} < gradient_min_total_norm "
+            f"{gradient_min_total_norm:.3e}"
+        )
+    if total_norm > gradient_max_total_norm:
+        issues.append(
+            f"total_grad_norm {total_norm:.3e} > gradient_max_total_norm "
+            f"{gradient_max_total_norm:.3e}"
+        )
+    if (not cnn_has_grad) or cnn_norm is None or cnn_norm <= 0:
+        issues.append("cnn_encoder grad norm is zero or missing")
+
+    sequence_type = str(getattr(model, "sequence_encoder_type", "none")).lower()
+    if sequence_type in {"bilstm", "transformer"}:
+        if (not seq_has_grad) or seq_norm is None or seq_norm <= 0:
+            issues.append(f"{sequence_type} sequence_encoder grad norm is zero or missing")
+
+    if debug_wandb and wandb.run is not None:
+        wandb.log(
+            {
+                "grad_total_norm": float(total_norm),
+                "grad_max_abs": float(max_abs),
+                "grad_none_params": int(none_count),
+                "grad_zero_params": int(zero_count),
+                "grad_nan_params": int(nan_count),
+                "grad_inf_params": int(inf_count),
+                "grad_cnn_norm": 0.0 if cnn_norm is None else float(cnn_norm),
+                "grad_sequence_norm": 0.0 if seq_norm is None else float(seq_norm),
+                "grad_vision_norm": 0.0 if vision_norm_value is None else float(vision_norm_value),
+            },
+            commit=False,
+        )
+
+    if issues:
+        message = "[GRAD] " + "; ".join(issues)
+        if gradient_fail_fast:
+            raise RuntimeError(message)
+        print("WARNING: " + message, flush=True)
+
+    return {
+        "total_norm": total_norm,
+        "max_abs": max_abs,
+        "none_params": none_count,
+        "zero_params": zero_count,
+        "nan_params": nan_count,
+        "inf_params": inf_count,
+        "cnn_norm": cnn_norm,
+        "sequence_norm": seq_norm,
+        "vision_norm": vision_norm_value,
+    }
+
+
 def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
           char_bank=None,
           token_bank=None,
@@ -1256,6 +1404,26 @@ def Train(imageEmbedding, textEmbedding, trainLoader, validLoader, criterion,
             # Unscale before clipping so the clip threshold applies to the
             # real (unscaled) gradients.
             scaler.unscale_(optimizer)
+            should_check_gradients = (
+                gradient_check_enabled
+                and (
+                    batch_idx < gradient_check_first_n_batches
+                    or (
+                        gradient_check_interval > 0
+                        and batch_idx % gradient_check_interval == 0
+                    )
+                )
+            )
+            if should_check_gradients:
+                gradient_health_check(
+                    imageEmbedding,
+                    optim_params,
+                    loss,
+                    epoch,
+                    batch_idx,
+                    extra_modules={"bigram_fusion_mlp": bigram_fusion_mlp}
+                    if bigram_fusion_mlp is not None else None,
+                )
             torch.nn.utils.clip_grad_norm_(optim_params, max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
