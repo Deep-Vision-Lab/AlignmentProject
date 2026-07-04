@@ -38,7 +38,7 @@ alignment_loss_type = str(_env_value('ALIGNMENT_LOSS_TYPE', 'd3tw_char_pool')).l
 window_size = 16
 vector_size = 128
 lang = 'Arabic' # ['English', 'Arabic']
-num_samples = 10000  # [10000, 50000, 100000]
+num_samples = int(os.environ.get("NUM_SAMPLES", 10000))  # [10000, 50000, 100000]
 
 # ============================================================================
 # Text Embedding Selection
