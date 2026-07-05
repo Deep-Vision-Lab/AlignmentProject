@@ -215,6 +215,9 @@ ENABLE_PROFILING = os.environ.get('PROFILE_TIMING', '0') == '1'
 USE_AMP = torch.cuda.is_available() and os.environ.get('USE_AMP', '1') == '1'
 _amp_dtype_env = os.environ.get('AMP_DTYPE', 'fp16').lower()
 AMP_DTYPE = torch.bfloat16 if _amp_dtype_env in ('bf16', 'bfloat16') else torch.float16
+VERBOSE_TRAIN_PRINTS = os.environ.get(
+    'VERBOSE_TRAIN_PRINTS', '0'
+).lower() in {'1', 'true', 't', 'yes', 'y', 'on'}
 
 # cuDNN benchmark picks the fastest conv algo for fixed input shapes (we have one).
 if torch.cuda.is_available():
@@ -618,12 +621,14 @@ def compute_d3tw_batch_loss(imageEmbed, textEmbed,
     )
     timer.stop('4_varlen_similarities')
 
-    # One-time sanity check: print shapes for the first batch of training.
+    # One-time sanity check for the first batch of training. Keep the assert
+    # active, but only print the details when verbose logging is requested.
     if batch_idx == 0 and epoch == 0:
         expected_units = len(pos_units_list[0])
-        print(f"[SANITY] sim_pos_list[0].shape = {sim_pos_list[0].shape}  "
-              f"(expected [{expected_units}, {norm_img.shape[1]}], "
-              f"text_unit_type={text_unit_type})", flush=True)
+        if VERBOSE_TRAIN_PRINTS:
+            print(f"[SANITY] sim_pos_list[0].shape = {sim_pos_list[0].shape}  "
+                  f"(expected [{expected_units}, {norm_img.shape[1]}], "
+                  f"text_unit_type={text_unit_type})", flush=True)
         assert sim_pos_list[0].shape[0] == expected_units, \
             f"Padded text rows detected: got {sim_pos_list[0].shape[0]} rows but text has {expected_units} text units"
 
@@ -640,7 +645,7 @@ def compute_d3tw_batch_loss(imageEmbed, textEmbed,
         "unit_spans": pos_spans_list,
     }
 
-    if batch_idx % 10 == 0:
+    if VERBOSE_TRAIN_PRINTS and batch_idx % 10 == 0:
         print(
             f"[DTW] raw: pos={loss_dict['cost_pos']:.1f}  neg={loss_dict['cost_neg']:.1f}"
             f"  |  prob: pos_wins={loss_dict['pos_prob']:.3f} (goal→1.0)"
@@ -901,7 +906,7 @@ def compute_token_pool_batch_loss(
 
         path = hard_d3tw_path_from_similarity(sim)
         if not path:
-            if epoch == 0 and batch_idx == 0 and sample_idx == 0:
+            if VERBOSE_TRAIN_PRINTS and epoch == 0 and batch_idx == 0 and sample_idx == 0:
                 print(
                     f"[TOKEN POOL GROUPS] Transcript: {transcript}\n"
                     f"no restricted path exists for K={sim.shape[0]}, S={sim.shape[1]} "
@@ -926,7 +931,7 @@ def compute_token_pool_batch_loss(
         if effective_token_weight > 0 and torch.is_grad_enabled():
             assert pooled_token_visual.requires_grad, "Pooled token vectors lost image gradient path"
 
-        if epoch == 0 and batch_idx == 0 and sample_idx == 0:
+        if VERBOSE_TRAIN_PRINTS and epoch == 0 and batch_idx == 0 and sample_idx == 0:
             print(f"[NGRAM TOKENIZATION] Original transcript: {transcript}", flush=True)
             for unit_idx, (unit, span) in enumerate(zip(units[:40], spans[:40])):
                 print(f"[{unit_idx}] token={unit!r} span={span}", flush=True)
@@ -1022,6 +1027,8 @@ def compute_token_pool_batch_loss(
 
 
 def _print_loss_summary(loss_dict, batch_idx):
+    if not VERBOSE_TRAIN_PRINTS:
+        return
     if batch_idx % 10 != 0:
         return
     parts = [f"alignment_loss_type={alignment_loss_type}"]

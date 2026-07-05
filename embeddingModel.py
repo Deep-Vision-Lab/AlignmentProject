@@ -501,7 +501,7 @@ class EmbeddingModel(nn.Module):
         # One-shot sanity check: save patches[0] (rightmost patch after flip) and
         # patches[-1] (leftmost patch after flip) so we can verify the flip maps
         # patch index 0 to the first Arabic character (rightmost in the image).
-        if self.use_flip and not self._flip_verified:
+        if debug and self.use_flip and not self._flip_verified:
             import os, torchvision
             os.makedirs("debug_flip", exist_ok=True)
             # patches[0] after flip = was the RIGHTMOST patch (first Arabic char)
