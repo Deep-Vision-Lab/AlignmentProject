@@ -6,8 +6,7 @@ import torch.nn.functional as F
 from saveDATA import *
 from Visualization import *
 from embeddingModel import EmbeddingModel
-from DiffNWAlgo import * # Assuming sliding_window is not here
-from newDataLoader import test_dataloader
+from newDataLoader import build_dataloaders
 from pathExtractor import *
 from LossFunctionWithHelpers import *
 
@@ -115,14 +114,11 @@ if __name__ == '__main__':
     import argparse
     from Parameters import (
         window_size, stride_ratio, vector_size, use_bilstm, bilstm_layers,
-        bilstm_hidden_dim, model_dropout, lang, transformer_num_layers,
-        transformer_num_heads, transformer_ff_dim, transformer_dropout,
-        transformer_activation, transformer_norm_first,
-        transformer_positional_encoding, transformer_max_len,
+        bilstm_hidden_dim, lang,
     )
     from embeddingModel import EmbeddingModel
     from textEmbedding import TextEmbedding
-    from newDataLoader import test_dataloader
+    from newDataLoader import build_dataloaders
 
     parser = argparse.ArgumentParser(description='Retrieval evaluation (R@1, R@5, R@10, MRR)')
     parser.add_argument('--weights',   type=str, default='model_epoch_80.pth',
@@ -138,10 +134,6 @@ if __name__ == '__main__':
     cfg = checkpoint.get("model_config", {}) if isinstance(checkpoint, dict) else {}
     ws = int(cfg.get("window_size", window_size))
     stride = int(cfg.get("stride", max(1, int(ws * stride_ratio))))
-    seq_type = str(cfg.get(
-        "sequence_encoder_type",
-        "bilstm" if cfg.get("use_bilstm", use_bilstm) else "none",
-    )).lower()
 
     img_model = EmbeddingModel(
         window_size=ws,
@@ -149,21 +141,9 @@ if __name__ == '__main__':
         vector_size=int(cfg.get("vector_size", vector_size)),
         device=device,
         use_flip=(str(cfg.get("lang", lang)).lower() == "arabic"),
-        sequence_encoder_type=seq_type,
-        use_bilstm=(seq_type == "bilstm"),
+        use_bilstm=bool(cfg.get("use_bilstm", use_bilstm)),
         bilstm_layers=int(cfg.get("bilstm_layers", bilstm_layers)),
         bilstm_hidden_dim=cfg.get("bilstm_hidden_dim", bilstm_hidden_dim),
-        dropout=model_dropout,
-        transformer_num_layers=int(cfg.get("transformer_num_layers", transformer_num_layers)),
-        transformer_num_heads=int(cfg.get("transformer_num_heads", transformer_num_heads)),
-        transformer_ff_dim=int(cfg.get("transformer_ff_dim", transformer_ff_dim)),
-        transformer_dropout=float(cfg.get("transformer_dropout", transformer_dropout)),
-        transformer_activation=cfg.get("transformer_activation", transformer_activation),
-        transformer_norm_first=bool(cfg.get("transformer_norm_first", transformer_norm_first)),
-        transformer_positional_encoding=cfg.get(
-            "transformer_positional_encoding", transformer_positional_encoding
-        ),
-        transformer_max_len=int(cfg.get("transformer_max_len", transformer_max_len)),
     ).to(device)
 
     if isinstance(checkpoint, dict) and 'image_model_state_dict' in checkpoint:
@@ -179,6 +159,7 @@ if __name__ == '__main__':
 
     txt_model = TextEmbedding(embedding_dim=vector_size).to(device)
     txt_model.eval()
+    _, _, test_dataloader = build_dataloaders()
 
     # ── run evaluation ────────────────────────────────────────────────────
     print(f"Building {args.n_samples}-way ranking pool from test set …")

@@ -1,15 +1,15 @@
 import torch
 import random
+import os
 import torch.nn.functional as F  # Added for interpolate and conv2d
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 from newDataSet import TextLineModern, window_size
 
 from Parameters import *
-from DiffNWAlgo import *
 
 
-_default_data_dir = f'DataSet/Synthetic_{lang}'
+_default_data_dir = f'DataSet/Synthetic_{lang}_{num_samples}'
 
 
 # Plain ToTensor + Resize. Inputs are NEVER differentiated wrt; setting
@@ -74,22 +74,9 @@ def build_dataloaders(data_dir=None):
     return _make_loader(train_ds, shuffle=True), _make_loader(valid_ds, shuffle=False), _make_loader(test_ds, shuffle=False)
 
 
-# Module-level defaults (used when newDataLoader is imported without a custom data_dir)
-new_dataset = {
-    "images": os.path.join(_default_data_dir, "images"),
-    "matrices": os.path.join(_default_data_dir, "matrices"),
-    "diffNWmatrices": os.path.join(_default_data_dir, "diffNWmatrices"),
-    "similarity_matrices": os.path.join(_default_data_dir, "similarity_matrices"),
-    "texts": os.path.join(_default_data_dir, "texts"),
-}
-
-full_dataset = TextLineModern(new_dataset=new_dataset, transform=transform)
-
-train_size = int(0.6 * len(full_dataset))
-valid_size = int(0.2 * len(full_dataset))
-test_size = len(full_dataset) - train_size - valid_size
-
-train_dataset, valid_dataset, test_dataset = random_split(full_dataset, [train_size, valid_size, test_size])
+train_dataloader = None
+valid_dataloader = None
+test_dataloader = None
 
 
 # ---- Hard Negative Generators (applied to the POSITIVE text) ----
@@ -301,13 +288,8 @@ def pad_matrices(matrices, smooth=False, kernel_size=5, sigma=1.0):
     return torch.stack(processed_matrices, dim=0).to(device)
 
 
-# Create DataLoaders for training and testing
-train_dataloader = _make_loader(train_dataset, shuffle=True)
-valid_dataloader = _make_loader(valid_dataset, shuffle=False)
-test_dataloader = _make_loader(test_dataset, shuffle=False)
-
-
 if __name__ == "__main__":
+    train_dataloader, valid_dataloader, test_dataloader = build_dataloaders()
     for batch in train_dataloader:
         images, pos_texts, neg_texts = batch
         print(f'Batch images shape: {images.shape}')

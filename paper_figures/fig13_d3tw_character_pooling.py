@@ -13,11 +13,27 @@ import argparse
 import csv
 import json
 import os
+import plistlib
+import subprocess
 import sys
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
+
+if sys.platform == "darwin":
+    _orig_check_output = subprocess.check_output
+
+    def _safe_check_output(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and list(cmd[:3]) == ["system_profiler", "-xml", "SPFontsDataType"]
+        ):
+            return plistlib.dumps([{"_items": []}])
+        return _orig_check_output(cmd, *args, **kwargs)
+
+    subprocess.check_output = _safe_check_output
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -44,6 +60,7 @@ from utils.model_loading import (
     load_sample,
     load_text_embedder,
     load_token_bank_if_available,
+    resolve_device,
 )
 
 
@@ -159,9 +176,12 @@ def _visual_index_ranges(num_visual, image_width, patches, use_flip):
         ranges = []
         for idx in range(num_visual):
             parent = min(num_windows - 1, idx // subfeatures)
+            sub_idx = idx % subfeatures
             _, x0, x1 = patches[parent]
-            ranges.append((x0, x1))
-        return ranges, f"parent_window_x{subfeatures}"
+            sub_left = x0 + (sub_idx / subfeatures) * (x1 - x0)
+            sub_right = x0 + ((sub_idx + 1) / subfeatures) * (x1 - x0)
+            ranges.append((sub_left, sub_right))
+        return ranges, f"parent_window_x{subfeatures}_split"
 
     ranges = []
     for idx in range(num_visual):
@@ -214,10 +234,11 @@ def _runs_from_indices(indices, visual_ranges, merge_gap_px=2):
     return runs
 
 
-def _draw_token_overlay(ax, image_np, records, visual_ranges, colors, max_labels=25, gap_px=3):
+def _draw_token_overlay(ax, image_np, records, visual_ranges, colors, max_labels=None, gap_px=3):
     ax.imshow(image_np, aspect="auto")
     labels_drawn = 0
     gap = max(0.0, float(gap_px))
+    max_labels = len(records) if max_labels is None else int(max_labels)
     for record in records:
         token = record.get("token", record.get("char", ""))
         color = colors.get(token, (0.2, 0.2, 0.2, 1.0))
@@ -225,16 +246,19 @@ def _draw_token_overlay(ax, image_np, records, visual_ranges, colors, max_labels
             draw_left = min(right, left + gap / 2.0)
             draw_right = max(draw_left, right - gap / 2.0)
             ax.axvspan(draw_left, draw_right, color=color, alpha=0.24)
-            if labels_drawn < max_labels and (draw_right - draw_left) >= 6:
+            width = max(1.0, draw_right - draw_left)
+            if labels_drawn < max_labels:
+                fontsize = 6 if width >= 14 else 5
                 ax.text(
                     (draw_left + draw_right) / 2,
                     5,
-                    _display_unit(token, max_len=8),
+                    _display_unit(token, max_len=8 if width >= 14 else 5),
                     ha="center",
                     va="top",
-                    fontsize=6,
+                    fontsize=fontsize,
                     color="white",
-                    bbox=dict(facecolor="black", alpha=0.55, pad=0.35),
+                    clip_on=True,
+                    bbox=dict(facecolor="black", alpha=0.62, pad=0.25),
                 )
                 labels_drawn += 1
 
@@ -317,7 +341,7 @@ def generate_figure(
     max_table_rows=25,
     token_mask_gap_px=3,
 ):
-    device = torch.device(device)
+    device = resolve_device(device)
     cfg = _checkpoint_config(checkpoint)
     text_unit_type = str(text_unit_type or cfg.get("text_unit_type", "char")).lower()
     if text_unit_type not in {"char", "ngram"}:
@@ -416,7 +440,7 @@ def generate_figure(
     grid = fig.add_gridspec(5, 2, height_ratios=[2.1, 1.1, 4.0, 2.8, 4.0], width_ratios=[1.25, 1.0], hspace=0.42, wspace=0.18)
 
     ax_img = fig.add_subplot(grid[0, :])
-    _draw_token_overlay(ax_img, image_np, records, visual_ranges, colors, max_labels=max_table_rows, gap_px=token_mask_gap_px)
+    _draw_token_overlay(ax_img, image_np, records, visual_ranges, colors, max_labels=None, gap_px=token_mask_gap_px)
     ax_img.set_title(
         f"D3TW-assigned {text_unit_type} text-unit regions — sample {sample_idx} "
         f"(num_windows={len(patches)}, visual S={visual_emb.shape[0]}, window={ws}, stride={stride_value}, mapping={visual_mapping})",

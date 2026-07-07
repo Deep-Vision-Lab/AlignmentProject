@@ -30,6 +30,15 @@ _transform = transforms.Compose([
 ])
 
 
+def resolve_device(device):
+    """Return a usable torch.device, falling back to CPU when CUDA is unavailable."""
+    resolved = torch.device(device)
+    if resolved.type == "cuda" and not torch.cuda.is_available():
+        print("  [model_loading] Warning: CUDA requested but unavailable; using CPU.")
+        return torch.device("cpu")
+    return resolved
+
+
 def compute_stride(window_size_px, stride_ratio_value, window_overlap_mode="custom"):
     """Match train.py stride selection for figure generation."""
     window_size_px = int(window_size_px)
@@ -71,6 +80,7 @@ def _checkpoint_state(ckpt):
 def _build_model(device, use_bilstm_override=None, window_size_override=None,
                  stride_override=None,
                  model_config=None):
+    device = resolve_device(device)
     cfg = model_config or {}
     ws = int(cfg.get("window_size", window_size))
     if window_size_override is not None:
@@ -121,6 +131,7 @@ def load_image_model(checkpoint_path, device, use_bilstm_override=None,
                      window_size_override=None,
                      stride_override=None):
     """Load EmbeddingModel from a checkpoint file. Returns eval-mode model."""
+    device = resolve_device(device)
     if not os.path.isfile(checkpoint_path):
         raise FileNotFoundError(
             f"Checkpoint not found: {checkpoint_path}\n"
@@ -155,6 +166,7 @@ def load_char_bank_if_available(checkpoint_dir_or_file, device, return_info=Fals
         with a warning when unavailable. This helper never trains or modifies
         the text embedder.
     """
+    device = resolve_device(device)
     checkpoint_dir = (
         os.path.dirname(checkpoint_dir_or_file)
         if os.path.isfile(checkpoint_dir_or_file)
@@ -202,6 +214,7 @@ def load_char_bank_if_available(checkpoint_dir_or_file, device, return_info=Fals
 def load_token_bank_if_available(checkpoint_dir_or_file, device, text_embedder=None,
                                  return_info=False):
     """Load token-bank mapping and rebuild frozen token embeddings if possible."""
+    device = resolve_device(device)
     checkpoint_dir = (
         os.path.dirname(checkpoint_dir_or_file)
         if os.path.isfile(checkpoint_dir_or_file)
@@ -275,6 +288,7 @@ def load_ngram_tokenizer_if_available(checkpoint_dir_or_file):
 
 def load_random_model(device, use_bilstm_override=None, stride_override=None):
     """Build a randomly initialized EmbeddingModel (for before/after comparison)."""
+    device = resolve_device(device)
     model = _build_model(device, use_bilstm_override, stride_override=stride_override)
     model.eval()
     model._flip_verified = True
@@ -295,6 +309,7 @@ def _resolve_checkpoint_file(checkpoint_dir_or_file):
 
 def load_text_embedder(device, checkpoint_path=None, return_info=False):
     """Load the frozen text embedder, preferring checkpoint config/state."""
+    device = resolve_device(device)
     ckpt = None
     cfg = {}
     resolved_checkpoint = _resolve_checkpoint_file(checkpoint_path)

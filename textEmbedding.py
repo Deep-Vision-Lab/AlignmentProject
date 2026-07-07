@@ -705,14 +705,13 @@ def build_text_embedder(kind=None, embedding_dim=None, **kwargs):
         'shape_group_char'   — shape-aware Arabic embeddings (visually-confusable
                                letters blended toward shared centroid).
 
-    Falls back to Parameters.text_embedder_type / vector_size if args are None.
+    Falls back to the character embedder and Parameters.vector_size if args are None.
     """
     if kind is None or embedding_dim is None:
         # Local import avoids a circular-import risk at module load time.
-        from Parameters import text_embedder_type as _default_kind
         from Parameters import vector_size as _default_dim
         if kind is None:
-            kind = _default_kind
+            kind = "char"
         if embedding_dim is None:
             embedding_dim = _default_dim
 
@@ -755,7 +754,7 @@ def build_text_embedder(kind=None, embedding_dim=None, **kwargs):
         model = ShapeGroupCharEmbedding(embedding_dim=embedding_dim, **kwargs)
     else:
         raise ValueError(
-            f"Unknown text_embedder_type {kind!r}. "
+            f"Unknown text embedder {kind!r}. "
             f"Expected 'char', 'fasttext', 'orthogonal_char', 'glyph_prototype', "
             f"'random_frozen_char', or 'shape_group_char'."
         )
