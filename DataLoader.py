@@ -4,7 +4,7 @@ import os
 import torch.nn.functional as F  # Added for interpolate and conv2d
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
-from newDataSet import TextLineModern, window_size
+from DataSet import TextLineModern, window_size
 
 from Parameters import *
 

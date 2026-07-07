@@ -9,7 +9,7 @@ import torch.optim as optim
 import Parameters as P
 from LossFunctionWithHelpers import ContrastiveSoftDTW
 from embeddingModel import EmbeddingModel
-from newDataLoader import build_dataloaders
+from DataLoader import build_dataloaders
 from textEmbedding import TextEmbedding
 
 
@@ -271,9 +271,9 @@ def apply_overrides(args):
         P.negative_mode = args.negative_mode.lower()
     if args.num_negatives is not None:
         P.num_negatives = args.num_negatives
-        import newDataLoader
+        import DataLoader
 
-        newDataLoader.num_negatives = args.num_negatives
+        DataLoader.num_negatives = args.num_negatives
     if args.use_bilstm is not None:
         P.use_bilstm = args.use_bilstm
 
