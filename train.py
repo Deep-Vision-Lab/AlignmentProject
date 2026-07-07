@@ -5,6 +5,7 @@ import time
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.cuda.amp import GradScaler, autocast
 
 import Parameters as P
 from LossFunctionWithHelpers import ContrastiveSoftDTW
@@ -145,7 +146,7 @@ def compute_similarity_lists(text_embedder, norm_img, pos_texts, neg_texts):
 
 def compute_batch_loss(image_embedder, text_embedder, criterion, images, pos_texts, neg_texts):
     # Image encoder is the only trainable branch.
-    with torch.amp.autocast("cuda", dtype=AMP_DTYPE, enabled=USE_AMP):
+    with autocast(dtype=AMP_DTYPE, enabled=USE_AMP):
         img_emb = image_embedder(images)
     norm_img = F.normalize(img_emb.float(), p=2, dim=-1)
 
@@ -203,7 +204,7 @@ def train(model, text_embedder, criterion, train_loader, valid_loader, args, con
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=args.learning_rate * 0.01
     )
-    scaler = torch.cuda.amp.GradScaler(enabled=USE_AMP)
+    scaler = GradScaler(enabled=USE_AMP)
     start_epoch = 0
 
     if args.resume:

@@ -21,7 +21,7 @@ num_samples = int(os.environ.get("NUM_SAMPLES", 10000))
 # Fine-tuning
 finetune_lang = "English"
 finetune_num_samples = 10000
-finetune_data_dir = f"DataSet/Synthetic_{finetune_lang}_{finetune_num_samples}"
+finetune_data_dir = f"DataSet/Synthetic_{finetune_lang}"
 finetune_learning_rate = 1e-5
 finetune_epochs = 30
 
