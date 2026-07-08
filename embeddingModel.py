@@ -59,13 +59,12 @@ class ModifiedOCRResNet34(nn.Module):
             base_resnet.layer3,
             base_resnet.layer4,
         )
-        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, None))
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
         self.feature_proj = nn.Linear(512, vector_size)
 
     def forward(self, x):
         x = self.backbone(x)
-        x = self.adaptive_pool(x).squeeze(2)
-        x = x.permute(0, 2, 1)
+        x = self.adaptive_pool(x).flatten(1)
         return self.feature_proj(x)
 
 
@@ -106,23 +105,13 @@ class EmbeddingModel(nn.Module):
         total_patches = batch_size * windows_num
         patches = patches.reshape(total_patches, channels, height, width)
 
-        if total_patches <= self.CNN_CHUNK_SIZE:
-            encoded = self.cnn_encoder(patches)
-        else:
-            first = self.cnn_encoder(patches[: self.CNN_CHUNK_SIZE])
-            encoded = torch.empty(
-                total_patches,
-                first.shape[1],
-                first.shape[2],
-                device=first.device,
-                dtype=first.dtype,
-            )
-            encoded[: self.CNN_CHUNK_SIZE] = first
-            for start in range(self.CNN_CHUNK_SIZE, total_patches, self.CNN_CHUNK_SIZE):
-                end = min(start + self.CNN_CHUNK_SIZE, total_patches)
-                encoded[start:end] = self.cnn_encoder(patches[start:end])
+        chunks = []
+        for start in range(0, total_patches, self.CNN_CHUNK_SIZE):
+            end = min(start + self.CNN_CHUNK_SIZE, total_patches)
+            chunks.append(self.cnn_encoder(patches[start:end]))
 
-        return encoded.view(batch_size, -1, self.vector_size)
+        encoded = torch.cat(chunks, dim=0)
+        return encoded.view(batch_size, windows_num, self.vector_size)
 
     def forward(self, image, show_dims=False):
         patches = sliding_window(image, self.window_size, self.stride)

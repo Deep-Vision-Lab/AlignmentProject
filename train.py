@@ -475,6 +475,13 @@ def main():
         flush=True,
     )
 
+    if os.environ.get("DEBUG_IMAGE_SHAPE", "0") == "1":
+        images, _pos_texts, _neg_texts = next(iter(train_loader))
+        images = images.to(P.device, non_blocking=True)
+        with torch.no_grad():
+            img_emb = model(images[:1], show_dims=True)
+        print(f"DEBUG image embedding shape: {tuple(img_emb.shape)}", flush=True)
+
     train(model, text_encoder, criterion, train_loader, valid_loader, args, config)
 
 
