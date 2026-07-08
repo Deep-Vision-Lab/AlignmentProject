@@ -68,6 +68,7 @@ def model_config(stride):
         "max_windows_per_span": P.max_windows_per_span,
         "strip_span_text_edges": P.strip_span_text_edges,
         "span_negative_grad_mode": P.span_negative_grad_mode,
+        "span_dtw_backend": P.span_dtw_backend,
         "valid_every_n_epochs": P.valid_every_n_epochs,
         "valid_max_batches": P.valid_max_batches,
     }
@@ -357,10 +358,11 @@ def train(model, text_encoder, criterion, train_loader, valid_loader, args, conf
             log_values[f"valid/{key}"] = value
         wandb_log(run, log_values)
 
-        should_save = ((epoch + 1) % 10 == 0) or ((epoch + 1) == args.epochs)
-        if should_save:
-            save_checkpoint(model, text_encoder, optimizer, scheduler, scaler, epoch, args.job_id, config)
-            save_model_weights(model, text_encoder, args.job_id, config)
+        save_checkpoint(model, text_encoder, optimizer, scheduler, scaler, epoch, args.job_id, config)
+        save_model_weights(model, text_encoder, args.job_id, config)
+
+        should_visualize = ((epoch + 1) % 10 == 0) or ((epoch + 1) == args.epochs)
+        if should_visualize:
             vis_path = save_d3tw_visualization(
                 model,
                 text_encoder,
@@ -468,6 +470,7 @@ def main():
             temperature=P.contrastive_temperature,
             max_windows_per_span=P.max_windows_per_span,
             negative_grad_mode=P.span_negative_grad_mode,
+            backend=P.span_dtw_backend,
         )
     else:
         criterion = ContrastiveSoftDTW(
@@ -488,7 +491,8 @@ def main():
             f"text_encoder=ArabicSpanTextEncoder model={P.arabic_text_model_name} "
             f"max_span_chars={P.max_text_span_chars} max_windows_per_span={P.max_windows_per_span} "
             f"strip_text_edges={P.strip_span_text_edges} "
-            f"negative_grad_mode={P.span_negative_grad_mode} freeze_backbone=True",
+            f"negative_grad_mode={P.span_negative_grad_mode} span_dtw_backend={P.span_dtw_backend} "
+            "freeze_backbone=True",
             flush=True,
         )
     elif P.text_encoder_type == "arabic_token":

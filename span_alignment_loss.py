@@ -94,8 +94,8 @@ def _infeasible_negative_cost(image_embeddings, text_length, temperature):
 
 def _transition_cost(span_embedding, image_window_embeddings, temperature, window_count_penalty):
     # Non-negative cosine distance: good match -> near 0, bad match -> larger cost.
-    similarities = torch.matmul(image_window_embeddings, span_embedding)
-    window_costs = (1.0 - similarities) / temperature
+    cosine_similarities = torch.matmul(image_window_embeddings, span_embedding)
+    window_costs = (1.0 - cosine_similarities) / temperature
     return window_costs.mean() + window_count_penalty * (image_window_embeddings.shape[0] - 1)
 
 
@@ -111,8 +111,8 @@ def _precompute_transition_costs(
     image_steps = image_embeddings.shape[0]
     max_windows = min(max_windows_per_span, image_steps)
 
-    similarities = torch.matmul(span_embeddings, image_embeddings.T)
-    window_costs = (1.0 - similarities) / temperature
+    cosine_similarities = torch.matmul(span_embeddings, image_embeddings.T)
+    window_costs = (1.0 - cosine_similarities) / temperature
     prefix = torch.cat(
         [
             torch.zeros(
@@ -134,6 +134,47 @@ def _precompute_transition_costs(
             range_means + window_count_penalty * (window_count - 1)
         )
     return costs_by_window_count
+
+
+def _dense_transition_costs(
+    span_encoding,
+    image_embeddings,
+    temperature,
+    max_windows_per_span,
+    window_count_penalty,
+):
+    text_steps = span_encoding.text_length
+    image_steps = image_embeddings.shape[0]
+    max_span_chars = max(
+        int(getattr(span_encoding, "max_span_chars", 0)),
+        max(span_encoding.lengths, default=0),
+    )
+    transition_costs = _precompute_transition_costs(
+        span_encoding,
+        image_embeddings,
+        temperature,
+        max_windows_per_span,
+        window_count_penalty,
+    )
+    dense = image_embeddings.new_full(
+        (
+            max_span_chars + 1,
+            max_windows_per_span + 1,
+            text_steps + 1,
+            image_steps + 1,
+        ),
+        1e6,
+    )
+
+    for span_idx, (start, span_len) in enumerate(zip(span_encoding.starts, span_encoding.lengths)):
+        if span_len > max_span_chars or start + span_len > text_steps:
+            continue
+        for window_count, costs in transition_costs.items():
+            if costs.shape[1] == 0:
+                continue
+            dense[span_len, window_count, start, : costs.shape[1]] = costs[span_idx]
+
+    return dense
 
 
 def hard_span_dtw_path(
@@ -236,6 +277,7 @@ class SpanContrastiveSoftDTW(nn.Module):
         max_windows_per_span=max_windows_per_span,
         window_count_penalty=0.01,
         negative_grad_mode="hardest",
+        backend="torch",
     ):
         super().__init__()
         self.gamma = gamma
@@ -244,17 +286,23 @@ class SpanContrastiveSoftDTW(nn.Module):
         self.max_windows_per_span = max_windows_per_span
         self.window_count_penalty = window_count_penalty
         self.negative_grad_mode = str(negative_grad_mode).lower()
+        self.backend = str(backend).lower()
+        self._warned_jax_backend = False
         if self.negative_grad_mode not in {"all", "hardest", "none"}:
             raise ValueError(
                 "negative_grad_mode must be one of: all, hardest, none. "
                 f"Got {negative_grad_mode!r}."
             )
+        if self.backend not in {"torch", "jax"}:
+            raise ValueError("backend must be 'torch' or 'jax'")
 
     def _span_dtw_cost(self, span_encoding, image_embeddings):
-        span_lookup = span_index_by_start_and_length(span_encoding)
+        if self.backend == "torch":
+            return self._span_dtw_cost_torch(span_encoding, image_embeddings)
+        return self._span_dtw_cost_jax(span_encoding, image_embeddings)
+
+    def _check_path_feasible(self, span_encoding, image_steps):
         text_steps = span_encoding.text_length
-        image_steps = image_embeddings.shape[0]
-        device = image_embeddings.device
         min_required = _min_required_spans(span_encoding)
         if min_required == float("inf") or image_steps < min_required:
             raise ValueError(
@@ -277,6 +325,14 @@ class SpanContrastiveSoftDTW(nn.Module):
                     reason="too_many_windows",
                 )
             )
+        return min_required
+
+    def _span_dtw_cost_torch(self, span_encoding, image_embeddings):
+        span_lookup = span_index_by_start_and_length(span_encoding)
+        text_steps = span_encoding.text_length
+        image_steps = image_embeddings.shape[0]
+        device = image_embeddings.device
+        min_required = self._check_path_feasible(span_encoding, image_steps)
         transition_costs = _precompute_transition_costs(
             span_encoding,
             image_embeddings,
@@ -337,6 +393,37 @@ class SpanContrastiveSoftDTW(nn.Module):
                 )
             )
         return dp[text_steps][image_steps]
+
+    def _span_dtw_cost_jax(self, span_encoding, image_embeddings):
+        if not self._warned_jax_backend:
+            print(
+                "SPAN_DTW_BACKEND=jax may compile once per distinct text/image shape. "
+                "For best speed, keep WINDOW_SIZE, STRIDE_RATIO, MAX_TEXT_SPAN_CHARS, "
+                "and MAX_WINDOWS_PER_SPAN fixed.",
+                flush=True,
+            )
+            self._warned_jax_backend = True
+
+        image_steps = image_embeddings.shape[0]
+        self._check_path_feasible(span_encoding, image_steps)
+        transition_costs_dense = _dense_transition_costs(
+            span_encoding,
+            image_embeddings,
+            self.temperature,
+            self.max_windows_per_span,
+            self.window_count_penalty,
+        )
+
+        try:
+            from jax_span_dtw import JaxSpanDTWFunction
+        except RuntimeError:
+            raise
+        except ImportError as exc:
+            raise RuntimeError(
+                "SPAN_DTW_BACKEND=jax requires JAX to be installed. "
+                "Use SPAN_DTW_BACKEND=torch or install the JAX packages from requirements.txt."
+            ) from exc
+        return JaxSpanDTWFunction.apply(transition_costs_dense, self.gamma)
 
     def forward_varlen(self, text_encoder, norm_img, pos_texts, neg_texts):
         losses = []

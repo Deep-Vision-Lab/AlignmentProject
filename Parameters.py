@@ -47,6 +47,7 @@ bilstm_hidden_dim = vector_size
 contrastive_soft_dtw_gamma = float(os.environ.get("CONTRASTIVE_SOFT_DTW_GAMMA", 0.1))
 contrastive_margin = float(os.environ.get("CONTRASTIVE_MARGIN", 10.0))
 contrastive_temperature = float(os.environ.get("CONTRASTIVE_TEMPERATURE", 0.07))
+span_dtw_backend = os.environ.get("SPAN_DTW_BACKEND", "torch").lower()
 
 # Negatives
 negative_mode = os.environ.get("NEGATIVE_MODE", "mixed").lower()
