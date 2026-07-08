@@ -67,6 +67,8 @@ def model_config(stride):
         "max_text_span_chars": P.max_text_span_chars,
         "max_windows_per_span": P.max_windows_per_span,
         "span_negative_grad_mode": P.span_negative_grad_mode,
+        "valid_every_n_epochs": P.valid_every_n_epochs,
+        "valid_max_batches": P.valid_max_batches,
     }
 
 
@@ -223,12 +225,15 @@ def train_one_epoch(model, text_encoder, criterion, optimizer, scaler, loader):
     stats_list = []
 
     for batch_idx, (images, pos_texts, neg_texts) in enumerate(loader):
+        batch_started = time.time()
         images = images.to(P.device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
 
         loss, stats = compute_batch_loss(
             model, text_encoder, criterion, images, pos_texts, neg_texts
         )
+        forward_elapsed = time.time() - batch_started
+        backward_started = time.time()
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(
@@ -237,12 +242,15 @@ def train_one_epoch(model, text_encoder, criterion, optimizer, scaler, loader):
         )
         scaler.step(optimizer)
         scaler.update()
+        backward_elapsed = time.time() - backward_started
+        elapsed = time.time() - batch_started
 
         total += loss.item()
         stats_list.append(stats)
         print(
             f"batch={batch_idx + 1}/{len(loader)} "
-            f"loss={loss.item():.4f} pos={stats['cost_pos']:.2f} neg={stats['cost_neg']:.2f}",
+            f"loss={loss.item():.4f} pos={stats['cost_pos']:.2f} neg={stats['cost_neg']:.2f} "
+            f"forward={forward_elapsed:.1f}s backward={backward_elapsed:.1f}s time={elapsed:.1f}s",
             flush=True,
         )
 
@@ -250,19 +258,21 @@ def train_one_epoch(model, text_encoder, criterion, optimizer, scaler, loader):
 
 
 @torch.no_grad()
-def validate(model, text_encoder, criterion, loader):
+def validate(model, text_encoder, criterion, loader, max_batches=0):
     model.eval()
     text_encoder.eval()
     total = 0.0
     stats_list = []
 
-    for images, pos_texts, neg_texts in loader:
+    for batch_idx, (images, pos_texts, neg_texts) in enumerate(loader):
+        if max_batches and batch_idx >= max_batches:
+            break
         images = images.to(P.device, non_blocking=True)
         loss, stats = compute_batch_loss(model, text_encoder, criterion, images, pos_texts, neg_texts)
         total += loss.item()
         stats_list.append(stats)
 
-    return total / max(len(loader), 1), average_stats(stats_list)
+    return total / max(len(stats_list), 1), average_stats(stats_list)
 
 
 def init_wandb(args, config):
@@ -316,7 +326,21 @@ def train(model, text_encoder, criterion, train_loader, valid_loader, args, conf
         train_loss, train_stats = train_one_epoch(
             model, text_encoder, criterion, optimizer, scaler, train_loader
         )
-        val_loss, val_stats = validate(model, text_encoder, criterion, valid_loader)
+        should_validate = (
+            ((epoch + 1) % P.valid_every_n_epochs == 0)
+            or ((epoch + 1) == args.epochs)
+        )
+        if should_validate:
+            val_loss, val_stats = validate(
+                model,
+                text_encoder,
+                criterion,
+                valid_loader,
+                max_batches=P.valid_max_batches,
+            )
+        else:
+            val_loss = float("nan")
+            val_stats = {}
         scheduler.step()
 
         log_values = {

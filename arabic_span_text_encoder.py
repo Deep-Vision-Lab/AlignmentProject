@@ -65,6 +65,7 @@ class ArabicSpanTextEncoder(nn.Module):
 
         self.projection = nn.Linear(hidden_size, output_dim)
         self.norm = nn.LayerNorm(output_dim)
+        self._span_feature_cache = {}
         self.to(self.device)
 
     def train(self, mode=True):
@@ -120,7 +121,55 @@ class ArabicSpanTextEncoder(nn.Module):
         counts = pool_mask.sum(dim=1).clamp_min(1.0)
         return summed / counts
 
+    def clear_cache(self):
+        self._span_feature_cache.clear()
+
+    def _get_frozen_span_features(self, text):
+        cached = self._span_feature_cache.get(text)
+        if cached is not None:
+            starts, lengths, spans, pooled_cpu = cached
+            return starts, lengths, spans, pooled_cpu.to(self.device, non_blocking=True)
+
+        starts, lengths, spans = self.enumerate_spans(text)
+        if not spans:
+            pooled = torch.empty(
+                0,
+                self.projection.in_features,
+                device=self.device,
+            )
+            return starts, lengths, spans, pooled
+
+        encoded = self._encoded_inputs(spans)
+        backbone_inputs = {
+            key: value
+            for key, value in encoded.items()
+            if key != "special_tokens_mask"
+        }
+
+        with torch.no_grad():
+            outputs = self.backbone(**backbone_inputs)
+            pooled = self._pool_non_special_tokens(outputs.last_hidden_state, encoded)
+
+        self._span_feature_cache[text] = (
+            starts,
+            lengths,
+            spans,
+            pooled.detach().cpu(),
+        )
+        return starts, lengths, spans, pooled
+
     def forward(self, text):
+        if self.freeze_backbone:
+            starts, lengths, spans, pooled = self._get_frozen_span_features(text)
+            projected = self.projection(pooled)
+            return SpanEncoding(
+                embeddings=self.norm(projected),
+                starts=starts,
+                lengths=lengths,
+                texts=spans,
+                text_length=len(text),
+            )
+
         starts, lengths, spans = self.enumerate_spans(text)
         if not spans:
             return SpanEncoding(

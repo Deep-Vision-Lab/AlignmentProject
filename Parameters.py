@@ -9,6 +9,8 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 batch_size = int(os.environ.get("BATCH_SIZE", 32))
 epochs = int(os.environ.get("EPOCHS", 100))
 learning_rate = float(os.environ.get("LEARNING_RATE", 1e-4))
+valid_every_n_epochs = int(os.environ.get("VALID_EVERY_N_EPOCHS", 1))
+valid_max_batches = int(os.environ.get("VALID_MAX_BATCHES", 0))
 
 # Data
 window_size = int(os.environ.get("WINDOW_SIZE", 16))

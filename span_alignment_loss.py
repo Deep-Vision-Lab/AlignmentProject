@@ -30,6 +30,43 @@ def _transition_cost(span_embedding, image_window_embeddings, temperature, windo
     return window_costs.mean() + window_count_penalty * (image_window_embeddings.shape[0] - 1)
 
 
+def _precompute_transition_costs(
+    span_encoding,
+    image_embeddings,
+    temperature,
+    max_windows_per_span,
+    window_count_penalty,
+):
+    span_embeddings = F.normalize(span_encoding.embeddings.float(), p=2, dim=-1)
+    image_embeddings = F.normalize(image_embeddings.float(), p=2, dim=-1)
+    image_steps = image_embeddings.shape[0]
+    max_windows = min(max_windows_per_span, image_steps)
+
+    similarities = torch.matmul(span_embeddings, image_embeddings.T)
+    window_costs = (1.0 - similarities) / temperature
+    prefix = torch.cat(
+        [
+            torch.zeros(
+                window_costs.shape[0],
+                1,
+                device=window_costs.device,
+                dtype=window_costs.dtype,
+            ),
+            window_costs.cumsum(dim=1),
+        ],
+        dim=1,
+    )
+
+    costs_by_window_count = {}
+    for window_count in range(1, max_windows + 1):
+        range_sums = prefix[:, window_count:] - prefix[:, :-window_count]
+        range_means = range_sums / window_count
+        costs_by_window_count[window_count] = (
+            range_means + window_count_penalty * (window_count - 1)
+        )
+    return costs_by_window_count
+
+
 def hard_span_dtw_path(
     span_encoding,
     image_embeddings,
@@ -37,11 +74,16 @@ def hard_span_dtw_path(
     max_windows=max_windows_per_span,
     window_count_penalty=0.01,
 ):
-    span_embeddings = F.normalize(span_encoding.embeddings.float(), p=2, dim=-1)
-    image_embeddings = F.normalize(image_embeddings.float(), p=2, dim=-1)
     span_lookup = span_index_by_start_and_length(span_encoding)
     text_steps = span_encoding.text_length
     image_steps = image_embeddings.shape[0]
+    transition_costs = _precompute_transition_costs(
+        span_encoding,
+        image_embeddings,
+        temperature,
+        max_windows,
+        window_count_penalty,
+    )
 
     dp = torch.full((text_steps + 1, image_steps + 1), float("inf"))
     back = [[None for _ in range(image_steps + 1)] for _ in range(text_steps + 1)]
@@ -58,12 +100,7 @@ def hard_span_dtw_path(
                 for window_count in range(1, min(max_windows, image_steps - j) + 1):
                     next_i = i + span_len
                     next_j = j + window_count
-                    cost = _transition_cost(
-                        span_embeddings[span_idx],
-                        image_embeddings[j:next_j],
-                        temperature,
-                        window_count_penalty,
-                    )
+                    cost = transition_costs[window_count][span_idx, j]
                     candidate = dp[i, j] + cost.detach().cpu()
                     if candidate < dp[next_i, next_j]:
                         dp[next_i, next_j] = candidate
@@ -117,11 +154,17 @@ class SpanContrastiveSoftDTW(nn.Module):
             )
 
     def _span_dtw_cost(self, span_encoding, image_embeddings):
-        span_embeddings = F.normalize(span_encoding.embeddings.float(), p=2, dim=-1)
         span_lookup = span_index_by_start_and_length(span_encoding)
         text_steps = span_encoding.text_length
         image_steps = image_embeddings.shape[0]
         device = image_embeddings.device
+        transition_costs = _precompute_transition_costs(
+            span_encoding,
+            image_embeddings,
+            self.temperature,
+            self.max_windows_per_span,
+            self.window_count_penalty,
+        )
 
         zero = torch.zeros((), device=device, dtype=image_embeddings.dtype)
         # Keep one accumulated soft-min value per DP cell instead of a list of
@@ -153,12 +196,7 @@ class SpanContrastiveSoftDTW(nn.Module):
                     for window_count in range(1, min(self.max_windows_per_span, image_steps - j) + 1):
                         next_i = i + span_len
                         next_j = j + window_count
-                        transition = _transition_cost(
-                            span_embeddings[span_idx],
-                            image_embeddings[j:next_j],
-                            self.temperature,
-                            self.window_count_penalty,
-                        )
+                        transition = transition_costs[window_count][span_idx, j]
                         candidate = current + transition
                         previous = dp[next_i][next_j]
                         if previous is None:
