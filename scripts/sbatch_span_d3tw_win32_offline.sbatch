@@ -11,7 +11,6 @@
 #
 #SBATCH --job-name=span_d3tw_w32
 #SBATCH --output=out/%x_%J.out
-#SBATCH --error=out/%x_%J.err
 #SBATCH --partition=rtx4090
 #SBATCH --gpus=rtx_4090:1
 #SBATCH --time=03-00:00:00
