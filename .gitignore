@@ -29,6 +29,7 @@ __pycache__
 out/
 *.pdf
 *.tar.gz
+.*/*
 
 
 # .pth files

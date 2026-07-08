@@ -24,7 +24,9 @@ def span_index_by_start_and_length(span_encoding):
 
 
 def _transition_cost(span_embedding, image_window_embeddings, temperature, window_count_penalty):
-    window_costs = -torch.matmul(image_window_embeddings, span_embedding) / temperature
+    # Non-negative cosine distance: good match -> near 0, bad match -> larger cost.
+    similarities = torch.matmul(image_window_embeddings, span_embedding)
+    window_costs = (1.0 - similarities) / temperature
     return window_costs.mean() + window_count_penalty * (image_window_embeddings.shape[0] - 1)
 
 
@@ -99,6 +101,7 @@ class SpanContrastiveSoftDTW(nn.Module):
         temperature=contrastive_temperature,
         max_windows_per_span=max_windows_per_span,
         window_count_penalty=0.01,
+        negative_grad_mode="hardest",
     ):
         super().__init__()
         self.gamma = gamma
@@ -106,6 +109,12 @@ class SpanContrastiveSoftDTW(nn.Module):
         self.temperature = temperature
         self.max_windows_per_span = max_windows_per_span
         self.window_count_penalty = window_count_penalty
+        self.negative_grad_mode = str(negative_grad_mode).lower()
+        if self.negative_grad_mode not in {"all", "hardest", "none"}:
+            raise ValueError(
+                "negative_grad_mode must be one of: all, hardest, none. "
+                f"Got {negative_grad_mode!r}."
+            )
 
     def _span_dtw_cost(self, span_encoding, image_embeddings):
         span_embeddings = F.normalize(span_encoding.embeddings.float(), p=2, dim=-1)
@@ -115,14 +124,28 @@ class SpanContrastiveSoftDTW(nn.Module):
         device = image_embeddings.device
 
         zero = torch.zeros((), device=device, dtype=image_embeddings.dtype)
-        candidates = [[[] for _ in range(image_steps + 1)] for _ in range(text_steps + 1)]
-        candidates[0][0].append(zero)
+        # Keep one accumulated soft-min value per DP cell instead of a list of
+        # every incoming candidate. The previous implementation created:
+        #
+        #   candidates = [[[] for image_step] for text_step]
+        #
+        # for every positive and negative transcript, then appended graph
+        # tensors to those lists. With B samples and N negatives this creates
+        # B*(1+N) large list grids per batch and keeps many duplicate transition
+        # tensors alive until backward, which is exactly the kind of object that
+        # causes host RAM OOM in span-D3TW.
+        #
+        # Incremental softmin is equivalent because:
+        #   softmin(softmin(a, b), c) == softmin(a, b, c)
+        # for the log-sum-exp definition used here.
+        dp = [[None for _ in range(image_steps + 1)] for _ in range(text_steps + 1)]
+        dp[0][0] = zero
 
         for i in range(text_steps + 1):
             for j in range(image_steps + 1):
-                if not candidates[i][j]:
+                current = dp[i][j]
+                if current is None:
                     continue
-                current = softmin(torch.stack(candidates[i][j]), self.gamma)
                 for span_len in range(1, text_steps - i + 1):
                     span_idx = span_lookup.get((i, span_len))
                     if span_idx is None:
@@ -136,14 +159,22 @@ class SpanContrastiveSoftDTW(nn.Module):
                             self.temperature,
                             self.window_count_penalty,
                         )
-                        candidates[next_i][next_j].append(current + transition)
+                        candidate = current + transition
+                        previous = dp[next_i][next_j]
+                        if previous is None:
+                            dp[next_i][next_j] = candidate
+                        else:
+                            dp[next_i][next_j] = softmin(
+                                torch.stack((previous, candidate)),
+                                self.gamma,
+                            )
 
-        if not candidates[text_steps][image_steps]:
+        if dp[text_steps][image_steps] is None:
             raise ValueError(
                 f"No valid span-DTW path for text length {text_steps} and {image_steps} image windows. "
                 f"Increase MAX_WINDOWS_PER_SPAN or reduce image windows."
             )
-        return softmin(torch.stack(candidates[text_steps][image_steps]), self.gamma)
+        return dp[text_steps][image_steps]
 
     def forward_varlen(self, text_encoder, norm_img, pos_texts, neg_texts):
         losses = []
@@ -161,24 +192,75 @@ class SpanContrastiveSoftDTW(nn.Module):
 
             neg_costs = []
             norm_negs = []
-            for neg_text in neg_texts[sample_idx]:
-                neg_encoding = text_encoder(neg_text)
-                neg_cost = self._span_dtw_cost(neg_encoding, norm_img[sample_idx])
-                neg_costs.append(neg_cost)
-                norm_negs.append(neg_cost / max(neg_encoding.text_length, norm_img[sample_idx].shape[0]))
+            neg_text_list = list(neg_texts[sample_idx])
 
-            neg_costs = torch.stack(neg_costs)
-            norm_negs = torch.stack(norm_negs)
+            if self.negative_grad_mode == "all":
+                for neg_text in neg_text_list:
+                    neg_encoding = text_encoder(neg_text)
+                    neg_cost = self._span_dtw_cost(neg_encoding, norm_img[sample_idx])
+                    neg_costs.append(neg_cost)
+                    norm_negs.append(neg_cost / max(neg_encoding.text_length, norm_img[sample_idx].shape[0]))
+                neg_costs = torch.stack(neg_costs)
+                norm_negs = torch.stack(norm_negs)
+            else:
+                # Memory-critical path: each span-DTW cost builds a non-trivial
+                # autograd graph. Keeping all negative graphs for a full batch
+                # creates B*num_negatives repeated DP graphs before backward.
+                # Score every negative without grad, then optionally recompute
+                # only the hardest negative with grad. This keeps the hard
+                # contrastive signal while avoiding the repeated object/graph
+                # explosion that was OOM-killing the SLURM job in epoch 1.
+                scored_neg_costs = []
+                scored_norm_negs = []
+                with torch.no_grad():
+                    for neg_text in neg_text_list:
+                        neg_encoding = text_encoder(neg_text)
+                        neg_cost = self._span_dtw_cost(neg_encoding, norm_img[sample_idx])
+                        scored_neg_costs.append(neg_cost.detach())
+                        scored_norm_negs.append(
+                            (neg_cost / max(neg_encoding.text_length, norm_img[sample_idx].shape[0])).detach()
+                        )
+
+                if not scored_norm_negs:
+                    raise ValueError("SpanContrastiveSoftDTW requires at least one negative text per sample.")
+
+                scored_neg_costs = torch.stack(scored_neg_costs)
+                scored_norm_negs = torch.stack(scored_norm_negs)
+                hard_idx = int(torch.argmin(scored_norm_negs).item())
+
+                if self.negative_grad_mode == "hardest":
+                    hard_neg_encoding = text_encoder(neg_text_list[hard_idx])
+                    hard_neg_cost = self._span_dtw_cost(hard_neg_encoding, norm_img[sample_idx])
+                    hard_norm_neg = hard_neg_cost / max(
+                        hard_neg_encoding.text_length,
+                        norm_img[sample_idx].shape[0],
+                    )
+                    neg_costs = hard_neg_cost.view(1)
+                    norm_negs = hard_norm_neg.view(1)
+                else:
+                    # "none": no negative branch graph is kept. The margin still
+                    # gates positive alignment updates using the hardest cached
+                    # negative score.
+                    neg_costs = scored_neg_costs[hard_idx].view(1)
+                    norm_negs = scored_norm_negs[hard_idx].view(1)
+
+                stats_neg_costs = scored_neg_costs
+                stats_norm_negs = scored_norm_negs
+
             sample_loss = torch.clamp(norm_pos - norm_negs + self.margin, min=0.0).mean()
             losses.append(sample_loss)
 
-            all_costs = torch.cat([norm_pos.view(1), norm_negs], dim=0)
+            if self.negative_grad_mode == "all":
+                stats_neg_costs = neg_costs.detach()
+                stats_norm_negs = norm_negs.detach()
+
+            all_costs = torch.cat([norm_pos.detach().view(1), stats_norm_negs], dim=0)
             pos_cost_values.append(pos_cost.detach())
-            neg_cost_values.append(neg_costs.mean().detach())
+            neg_cost_values.append(stats_neg_costs.mean().detach())
             norm_pos_values.append(norm_pos.detach())
-            norm_neg_values.append(norm_negs.mean().detach())
+            norm_neg_values.append(stats_norm_negs.mean().detach())
             pos_prob_values.append(torch.softmax(-all_costs, dim=0)[0].detach())
-            gap_values.append((norm_pos - norm_negs.mean()).detach())
+            gap_values.append((norm_pos.detach() - stats_norm_negs.mean()).detach())
 
         loss = torch.stack(losses).mean()
         return loss, {

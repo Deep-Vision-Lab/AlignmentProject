@@ -66,6 +66,7 @@ def model_config(stride):
         "max_text_token_chars": P.max_text_token_chars,
         "max_text_span_chars": P.max_text_span_chars,
         "max_windows_per_span": P.max_windows_per_span,
+        "span_negative_grad_mode": P.span_negative_grad_mode,
     }
 
 
@@ -440,6 +441,7 @@ def main():
             margin=P.contrastive_margin,
             temperature=P.contrastive_temperature,
             max_windows_per_span=P.max_windows_per_span,
+            negative_grad_mode=P.span_negative_grad_mode,
         )
     else:
         criterion = ContrastiveSoftDTW(
@@ -459,7 +461,7 @@ def main():
         print(
             f"text_encoder=ArabicSpanTextEncoder model={P.arabic_text_model_name} "
             f"max_span_chars={P.max_text_span_chars} max_windows_per_span={P.max_windows_per_span} "
-            "freeze_backbone=True",
+            f"negative_grad_mode={P.span_negative_grad_mode} freeze_backbone=True",
             flush=True,
         )
     elif P.text_encoder_type == "arabic_token":

@@ -11,8 +11,8 @@ export ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_NAME:-aubmindlab/bert-base-ar
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${PROJECT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 export HF_HOME="${HF_HOME:-${PROJECT_DIR}/.hf_cache}"
-export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-${HF_HOME}/transformers}"
-mkdir -p "${HF_HOME}" "${TRANSFORMERS_CACHE}"
+unset TRANSFORMERS_CACHE
+mkdir -p "${HF_HOME}"
 
 # shellcheck disable=SC1091
 source "$(conda info --base)/etc/profile.d/conda.sh"

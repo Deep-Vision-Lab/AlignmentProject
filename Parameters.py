@@ -22,8 +22,8 @@ arabic_text_model_name = os.environ.get(
     "ARABIC_TEXT_MODEL_NAME",
     "aubmindlab/bert-base-arabertv02",
 )
-max_text_token_chars = 3
-max_text_span_chars = int(os.environ.get("MAX_TEXT_SPAN_CHARS", 3))
+max_text_token_chars = int(os.environ.get("MAX_TEXT_TOKEN_CHARS", 2))
+max_text_span_chars = int(os.environ.get("MAX_TEXT_SPAN_CHARS", 2))
 max_windows_per_span = int(os.environ.get("MAX_WINDOWS_PER_SPAN", 4))
 
 # Fine-tuning
@@ -46,3 +46,4 @@ contrastive_temperature = float(os.environ.get("CONTRASTIVE_TEMPERATURE", 0.07))
 # Negatives
 negative_mode = os.environ.get("NEGATIVE_MODE", "mixed").lower()
 num_negatives = int(os.environ.get("NUM_NEGATIVES", 10))
+span_negative_grad_mode = os.environ.get("SPAN_NEGATIVE_GRAD_MODE", "hardest").lower()

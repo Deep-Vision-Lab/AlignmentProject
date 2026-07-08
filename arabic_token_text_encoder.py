@@ -1,3 +1,5 @@
+import os
+
 import torch
 import torch.nn as nn
 
@@ -29,8 +31,21 @@ class ArabicTokenTextEncoder(nn.Module):
                 "Install it or use TEXT_ENCODER_TYPE=char."
             )
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.backbone = AutoModel.from_pretrained(model_name)
+        cache_dir = os.environ.get("HF_HOME") or os.environ.get("TRANSFORMERS_CACHE") or None
+        local_files_only = (
+            os.environ.get("HF_HUB_OFFLINE", "0").lower() in {"1", "true", "yes", "on"}
+            or os.environ.get("TRANSFORMERS_OFFLINE", "0").lower() in {"1", "true", "yes", "on"}
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
+        )
+        self.backbone = AutoModel.from_pretrained(
+            model_name,
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
+        )
         hidden_size = self.backbone.config.hidden_size
 
         if freeze_backbone:
