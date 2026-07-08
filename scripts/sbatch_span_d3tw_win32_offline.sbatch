@@ -27,7 +27,8 @@ PROJECT_DIR="${PROJECT_DIR:-${SLURM_SUBMIT_DIR:-/home/ahmedmas/BGU-Lab/Alignment
 cd "${PROJECT_DIR}"
 mkdir -p out logs
 
-if [[ -n "${CONDA_ENV:-}" ]]; then
+CONDA_ENV="${CONDA_ENV:-manucripts_align}"
+if [[ -n "${CONDA_ENV}" ]]; then
   # shellcheck disable=SC1091
   source "$(conda info --base)/etc/profile.d/conda.sh"
   conda activate "${CONDA_ENV}"
