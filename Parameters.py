@@ -17,6 +17,12 @@ window_overlap_mode = os.environ.get("WINDOW_OVERLAP_MODE", "custom").lower()
 vector_size = int(os.environ.get("VECTOR_SIZE", 128))
 lang = os.environ.get("LANGUAGE", "Arabic")
 num_samples = int(os.environ.get("NUM_SAMPLES", 10000))
+text_encoder_type = os.environ.get("TEXT_ENCODER_TYPE", "char").lower()
+arabic_text_model_name = os.environ.get(
+    "ARABIC_TEXT_MODEL_NAME",
+    "aubmindlab/bert-base-arabertv02",
+)
+max_text_token_chars = 3
 
 # Fine-tuning
 finetune_lang = "English"

@@ -8,10 +8,17 @@ import torch.optim as optim
 from torch.cuda.amp import GradScaler, autocast
 
 import Parameters as P
+from alignment_visualization import save_d3tw_visualization
+from arabic_token_text_encoder import ArabicTokenTextEncoder
 from LossFunctionWithHelpers import ContrastiveSoftDTW
 from embeddingModel import EmbeddingModel
 from DataLoader import build_dataloaders
 from textEmbedding import TextEmbedding
+
+try:
+    import wandb
+except ImportError:
+    wandb = None
 
 
 USE_AMP = torch.cuda.is_available() and os.environ.get("USE_AMP", "1") == "1"
@@ -52,17 +59,23 @@ def model_config(stride):
         "contrastive_soft_dtw_gamma": P.contrastive_soft_dtw_gamma,
         "contrastive_margin": P.contrastive_margin,
         "contrastive_temperature": P.contrastive_temperature,
+        "text_encoder_type": P.text_encoder_type,
+        "arabic_text_model_name": P.arabic_text_model_name,
+        "max_text_token_chars": P.max_text_token_chars,
     }
 
 
-def save_model_weights(model, text_embedder, job_id, config):
+def save_model_weights(model, text_encoder, job_id, config):
     path = os.path.join(weights_dir(job_id), "model_latest.pth")
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "image_model_state_dict": model.state_dict(),
-            "text_embedder_state_dict": text_embedder.state_dict(),
-            "text_embedding_class": "TextEmbedding",
+            "text_encoder_state_dict": text_encoder.state_dict(),
+            "text_embedder_state_dict": text_encoder.state_dict(),
+            "text_encoder_class": text_encoder.__class__.__name__,
+            "text_embedding_class": text_encoder.__class__.__name__,
+            "text_encoder_type": P.text_encoder_type,
             "model_config": config,
         },
         path,
@@ -70,14 +83,17 @@ def save_model_weights(model, text_embedder, job_id, config):
     return path
 
 
-def save_checkpoint(model, text_embedder, optimizer, scheduler, scaler, epoch, job_id, config):
+def save_checkpoint(model, text_encoder, optimizer, scheduler, scaler, epoch, job_id, config):
     torch.save(
         {
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "image_model_state_dict": model.state_dict(),
-            "text_embedder_state_dict": text_embedder.state_dict(),
-            "text_embedding_class": "TextEmbedding",
+            "text_encoder_state_dict": text_encoder.state_dict(),
+            "text_embedder_state_dict": text_encoder.state_dict(),
+            "text_encoder_class": text_encoder.__class__.__name__,
+            "text_embedding_class": text_encoder.__class__.__name__,
+            "text_encoder_type": P.text_encoder_type,
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
             "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
@@ -95,14 +111,24 @@ def extract_model_state(loaded):
     return loaded
 
 
-def build_text_embedding():
-    # TextEmbedding is frozen; only the image encoder is optimized.
-    text_embedder = TextEmbedding(embedding_dim=P.vector_size)
-    text_embedder = text_embedder.to(P.device)
-    for parameter in text_embedder.parameters():
-        parameter.requires_grad_(False)
-    text_embedder.eval()
-    return text_embedder
+def build_text_encoder():
+    if P.text_encoder_type == "arabic_token":
+        text_encoder = ArabicTokenTextEncoder(
+            model_name=P.arabic_text_model_name,
+            output_dim=P.vector_size,
+            max_token_chars=P.max_text_token_chars,
+            freeze_backbone=True,
+            device=P.device,
+        )
+    elif P.text_encoder_type == "char":
+        text_encoder = TextEmbedding(embedding_dim=P.vector_size)
+        for parameter in text_encoder.parameters():
+            parameter.requires_grad_(False)
+    else:
+        raise ValueError(f"Unknown text_encoder_type: {P.text_encoder_type}")
+
+    text_encoder = text_encoder.to(P.device)
+    return text_encoder
 
 
 def build_image_embedding(stride):
@@ -118,24 +144,31 @@ def build_image_embedding(stride):
     )
 
 
-def embed_single_text(text_embedder, text):
-    with torch.no_grad():
-        embedding = text_embedder(text)
+def has_trainable_parameters(module):
+    return any(parameter.requires_grad for parameter in module.parameters())
+
+
+def embed_single_text(text_encoder, text):
+    if has_trainable_parameters(text_encoder):
+        embedding = text_encoder(text)
+    else:
+        with torch.no_grad():
+            embedding = text_encoder(text)
     return F.normalize(embedding.float(), p=2, dim=-1)
 
 
-def compute_similarity_lists(text_embedder, norm_img, pos_texts, neg_texts):
+def compute_similarity_lists(text_encoder, norm_img, pos_texts, neg_texts):
     sim_pos_list = []
     sim_neg_list = []
 
     for sample_idx, pos_text in enumerate(pos_texts):
-        norm_pos_text = embed_single_text(text_embedder, pos_text)
+        norm_pos_text = embed_single_text(text_encoder, pos_text)
         sim_pos = torch.einsum("sv,tv->st", norm_pos_text, norm_img[sample_idx])
         sim_pos_list.append(sim_pos)
 
         sample_neg_sims = []
         for neg_text in neg_texts[sample_idx]:
-            norm_neg_text = embed_single_text(text_embedder, neg_text)
+            norm_neg_text = embed_single_text(text_encoder, neg_text)
             sample_neg_sims.append(
                 torch.einsum("tv,sv->ts", norm_neg_text, norm_img[sample_idx])
             )
@@ -144,72 +177,115 @@ def compute_similarity_lists(text_embedder, norm_img, pos_texts, neg_texts):
     return sim_pos_list, sim_neg_list
 
 
-def compute_batch_loss(image_embedder, text_embedder, criterion, images, pos_texts, neg_texts):
-    # Image encoder is the only trainable branch.
+def compute_batch_loss(image_embedder, text_encoder, criterion, images, pos_texts, neg_texts):
     with autocast(dtype=AMP_DTYPE, enabled=USE_AMP):
         img_emb = image_embedder(images)
     norm_img = F.normalize(img_emb.float(), p=2, dim=-1)
 
-    # Frozen character text embeddings feed direct cosine similarities.
     sim_pos_list, sim_neg_list = compute_similarity_lists(
-        text_embedder, norm_img, pos_texts, neg_texts
+        text_encoder, norm_img, pos_texts, neg_texts
     )
     return criterion.forward_varlen(sim_pos_list, sim_neg_list)
 
 
-def train_one_epoch(model, text_embedder, criterion, optimizer, scaler, loader):
+def average_stats(stats_list):
+    if not stats_list:
+        return {}
+    return {
+        key: sum(stats[key] for stats in stats_list) / len(stats_list)
+        for key in stats_list[0]
+    }
+
+
+def train_one_epoch(model, text_encoder, criterion, optimizer, scaler, loader):
     model.train()
-    text_embedder.eval()
+    if has_trainable_parameters(text_encoder):
+        text_encoder.train()
+    else:
+        text_encoder.eval()
     total = 0.0
+    stats_list = []
 
     for batch_idx, (images, pos_texts, neg_texts) in enumerate(loader):
         images = images.to(P.device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
 
         loss, stats = compute_batch_loss(
-            model, text_embedder, criterion, images, pos_texts, neg_texts
+            model, text_encoder, criterion, images, pos_texts, neg_texts
         )
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(
+            [parameter for group in optimizer.param_groups for parameter in group["params"]],
+            max_norm=1.0,
+        )
         scaler.step(optimizer)
         scaler.update()
 
         total += loss.item()
+        stats_list.append(stats)
         print(
             f"batch={batch_idx + 1}/{len(loader)} "
             f"loss={loss.item():.4f} pos={stats['cost_pos']:.2f} neg={stats['cost_neg']:.2f}",
             flush=True,
         )
 
-    return total / max(len(loader), 1)
+    return total / max(len(loader), 1), average_stats(stats_list)
 
 
 @torch.no_grad()
-def validate(model, text_embedder, criterion, loader):
+def validate(model, text_encoder, criterion, loader):
     model.eval()
-    text_embedder.eval()
+    text_encoder.eval()
     total = 0.0
+    stats_list = []
 
     for images, pos_texts, neg_texts in loader:
         images = images.to(P.device, non_blocking=True)
-        loss, _ = compute_batch_loss(model, text_embedder, criterion, images, pos_texts, neg_texts)
+        loss, stats = compute_batch_loss(model, text_encoder, criterion, images, pos_texts, neg_texts)
         total += loss.item()
+        stats_list.append(stats)
 
-    return total / max(len(loader), 1)
+    return total / max(len(loader), 1), average_stats(stats_list)
 
 
-def train(model, text_embedder, criterion, train_loader, valid_loader, args, config):
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+def init_wandb(args, config):
+    if os.environ.get("USE_WANDB", "1") == "0":
+        return None
+    if wandb is None:
+        print("wandb is not installed; continuing without W&B.", flush=True)
+        return None
+    return wandb.init(
+        project=os.environ.get("WANDB_PROJECT", "alignment-project"),
+        name=args.job_id,
+        config=config,
+    )
+
+
+def wandb_log(run, values):
+    if run is not None:
+        wandb.log(values)
+
+
+def train(model, text_encoder, criterion, train_loader, valid_loader, args, config):
+    trainable_params = list(model.parameters()) + [
+        parameter for parameter in text_encoder.parameters() if parameter.requires_grad
+    ]
+    optimizer = optim.Adam(trainable_params, lr=args.learning_rate)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=args.learning_rate * 0.01
     )
     scaler = GradScaler(enabled=USE_AMP)
+    run = init_wandb(args, config)
     start_epoch = 0
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=P.device)
         model.load_state_dict(extract_model_state(checkpoint))
+        if "text_encoder_state_dict" in checkpoint:
+            text_encoder.load_state_dict(checkpoint["text_encoder_state_dict"], strict=False)
+        elif "text_embedder_state_dict" in checkpoint:
+            text_encoder.load_state_dict(checkpoint["text_embedder_state_dict"], strict=False)
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         if checkpoint.get("scaler_state_dict") is not None:
@@ -221,12 +297,39 @@ def train(model, text_embedder, criterion, train_loader, valid_loader, args, con
         started = time.time()
         print(f"epoch={epoch + 1}/{args.epochs}", flush=True)
 
-        train_loss = train_one_epoch(model, text_embedder, criterion, optimizer, scaler, train_loader)
-        val_loss = validate(model, text_embedder, criterion, valid_loader)
+        train_loss, train_stats = train_one_epoch(
+            model, text_encoder, criterion, optimizer, scaler, train_loader
+        )
+        val_loss, val_stats = validate(model, text_encoder, criterion, valid_loader)
         scheduler.step()
 
-        save_checkpoint(model, text_embedder, optimizer, scheduler, scaler, epoch, args.job_id, config)
-        save_model_weights(model, text_embedder, args.job_id, config)
+        log_values = {
+            "epoch": epoch + 1,
+            "train/loss": train_loss,
+            "valid/loss": val_loss,
+            "lr": scheduler.get_last_lr()[0],
+        }
+        for key, value in train_stats.items():
+            log_values[f"train/{key}"] = value
+        for key, value in val_stats.items():
+            log_values[f"valid/{key}"] = value
+        wandb_log(run, log_values)
+
+        should_save = ((epoch + 1) % 10 == 0) or ((epoch + 1) == args.epochs)
+        if should_save:
+            save_checkpoint(model, text_encoder, optimizer, scheduler, scaler, epoch, args.job_id, config)
+            save_model_weights(model, text_encoder, args.job_id, config)
+            vis_path = save_d3tw_visualization(
+                model,
+                text_encoder,
+                valid_loader,
+                criterion,
+                epoch + 1,
+                args.job_id,
+                P.device,
+            )
+            if vis_path is not None and run is not None:
+                wandb.log({"alignment/d3tw": wandb.Image(vis_path), "epoch": epoch + 1})
 
         history.append(train_loss)
         elapsed = time.time() - started
@@ -236,6 +339,8 @@ def train(model, text_embedder, criterion, train_loader, valid_loader, args, con
             flush=True,
         )
 
+    if run is not None:
+        run.finish()
     return history
 
 
@@ -303,12 +408,16 @@ def main():
     stride = compute_stride(P.window_size, P.stride_ratio, P.window_overlap_mode)
     train_loader, valid_loader, _test_loader = select_dataloaders(args)
 
-    text_embedder = build_text_embedding()
+    text_encoder = build_text_encoder()
     model = build_image_embedding(stride).to(P.device)
 
     if args.pretrained_weights:
         loaded = torch.load(args.pretrained_weights, map_location=P.device)
         model.load_state_dict(extract_model_state(loaded))
+        if isinstance(loaded, dict) and "text_encoder_state_dict" in loaded:
+            text_encoder.load_state_dict(loaded["text_encoder_state_dict"], strict=False)
+        elif isinstance(loaded, dict) and "text_embedder_state_dict" in loaded:
+            text_encoder.load_state_dict(loaded["text_embedder_state_dict"], strict=False)
 
     criterion = ContrastiveSoftDTW(
         gamma=P.contrastive_soft_dtw_gamma,
@@ -323,13 +432,20 @@ def main():
         f"window_size={P.window_size} stride={stride} negatives={P.num_negatives}",
         flush=True,
     )
+    if P.text_encoder_type == "arabic_token":
+        print(
+            f"text_encoder=ArabicTokenTextEncoder model={P.arabic_text_model_name} "
+            f"max_token_chars={P.max_text_token_chars} freeze_backbone=True",
+            flush=True,
+        )
+    else:
+        print("text_encoder=TextEmbedding", flush=True)
     print(
-        f"text_embedder=TextEmbedding use_bilstm={P.use_bilstm} "
-        f"soft_dtw_gamma={P.contrastive_soft_dtw_gamma}",
+        f"use_bilstm={P.use_bilstm} soft_dtw_gamma={P.contrastive_soft_dtw_gamma}",
         flush=True,
     )
 
-    train(model, text_embedder, criterion, train_loader, valid_loader, args, config)
+    train(model, text_encoder, criterion, train_loader, valid_loader, args, config)
 
 
 if __name__ == "__main__":
