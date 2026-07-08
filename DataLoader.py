@@ -9,7 +9,7 @@ from DataSet import TextLineModern, window_size
 from Parameters import *
 
 
-_default_data_dir = f'DataSet/Synthetic_{lang}_{num_samples}'
+_default_data_dir = f'DataSet/Synthetic_{lang}'
 
 
 # Plain ToTensor + Resize. Inputs are NEVER differentiated wrt; setting
