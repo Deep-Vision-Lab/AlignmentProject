@@ -18,6 +18,7 @@ class SpanEncoding:
     lengths: list[int]
     texts: list[str]
     text_length: int
+    max_span_chars: int
 
 
 class ArabicSpanTextEncoder(nn.Module):
@@ -28,12 +29,14 @@ class ArabicSpanTextEncoder(nn.Module):
         max_span_chars=3,
         freeze_backbone=True,
         device="cpu",
+        strip_text_edges=True,
     ):
         super().__init__()
         self.model_name = model_name
         self.max_span_chars = max_span_chars
         self.freeze_backbone = freeze_backbone
         self.device = torch.device(device)
+        self.strip_text_edges = strip_text_edges
 
         if AutoTokenizer is None or AutoModel is None:
             raise ImportError(
@@ -73,6 +76,11 @@ class ArabicSpanTextEncoder(nn.Module):
         if self.freeze_backbone:
             self.backbone.eval()
         return self
+
+    def _prepare_text(self, text):
+        if self.strip_text_edges:
+            return text.strip()
+        return text
 
     def enumerate_spans(self, text):
         starts = []
@@ -125,6 +133,7 @@ class ArabicSpanTextEncoder(nn.Module):
         self._span_feature_cache.clear()
 
     def _get_frozen_span_features(self, text):
+        text = self._prepare_text(text)
         cached = self._span_feature_cache.get(text)
         if cached is not None:
             starts, lengths, spans, pooled_cpu = cached
@@ -160,6 +169,7 @@ class ArabicSpanTextEncoder(nn.Module):
 
     def forward(self, text):
         if self.freeze_backbone:
+            text = self._prepare_text(text)
             starts, lengths, spans, pooled = self._get_frozen_span_features(text)
             projected = self.projection(pooled)
             return SpanEncoding(
@@ -168,8 +178,10 @@ class ArabicSpanTextEncoder(nn.Module):
                 lengths=lengths,
                 texts=spans,
                 text_length=len(text),
+                max_span_chars=self.max_span_chars,
             )
 
+        text = self._prepare_text(text)
         starts, lengths, spans = self.enumerate_spans(text)
         if not spans:
             return SpanEncoding(
@@ -178,6 +190,7 @@ class ArabicSpanTextEncoder(nn.Module):
                 lengths=[],
                 texts=[],
                 text_length=len(text),
+                max_span_chars=self.max_span_chars,
             )
 
         encoded = self._encoded_inputs(spans)
@@ -201,4 +214,5 @@ class ArabicSpanTextEncoder(nn.Module):
             lengths=lengths,
             texts=spans,
             text_length=len(text),
+            max_span_chars=self.max_span_chars,
         )

@@ -27,6 +27,9 @@ arabic_text_model_name = os.environ.get(
 max_text_token_chars = int(os.environ.get("MAX_TEXT_TOKEN_CHARS", 2))
 max_text_span_chars = int(os.environ.get("MAX_TEXT_SPAN_CHARS", 2))
 max_windows_per_span = int(os.environ.get("MAX_WINDOWS_PER_SPAN", 4))
+strip_span_text_edges = os.environ.get("STRIP_SPAN_TEXT_EDGES", "1").lower() in {
+    "1", "true", "yes", "on"
+}
 
 # Fine-tuning
 finetune_lang = "English"

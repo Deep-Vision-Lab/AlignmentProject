@@ -19,6 +19,7 @@ def make_encoding():
         lengths=[1, 2, 1],
         texts=["a", "ab", "b"],
         text_length=2,
+        max_span_chars=2,
     )
 
 

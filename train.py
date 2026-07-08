@@ -66,6 +66,7 @@ def model_config(stride):
         "max_text_token_chars": P.max_text_token_chars,
         "max_text_span_chars": P.max_text_span_chars,
         "max_windows_per_span": P.max_windows_per_span,
+        "strip_span_text_edges": P.strip_span_text_edges,
         "span_negative_grad_mode": P.span_negative_grad_mode,
         "valid_every_n_epochs": P.valid_every_n_epochs,
         "valid_max_batches": P.valid_max_batches,
@@ -126,6 +127,7 @@ def build_text_encoder():
             max_span_chars=P.max_text_span_chars,
             freeze_backbone=True,
             device=P.device,
+            strip_text_edges=P.strip_span_text_edges,
         )
     elif P.text_encoder_type == "arabic_token":
         text_encoder = ArabicTokenTextEncoder(
@@ -485,6 +487,7 @@ def main():
         print(
             f"text_encoder=ArabicSpanTextEncoder model={P.arabic_text_model_name} "
             f"max_span_chars={P.max_text_span_chars} max_windows_per_span={P.max_windows_per_span} "
+            f"strip_text_edges={P.strip_span_text_edges} "
             f"negative_grad_mode={P.span_negative_grad_mode} freeze_backbone=True",
             flush=True,
         )

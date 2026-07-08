@@ -23,6 +23,75 @@ def span_index_by_start_and_length(span_encoding):
     }
 
 
+def _spans_by_start(span_encoding):
+    spans = {}
+    for start, length in zip(span_encoding.starts, span_encoding.lengths):
+        spans.setdefault(start, []).append(length)
+    return spans
+
+
+def _min_required_spans(span_encoding):
+    text_length = span_encoding.text_length
+    inf = float("inf")
+    min_spans = [inf] * (text_length + 1)
+    min_spans[0] = 0
+    spans_by_start = _spans_by_start(span_encoding)
+
+    for i in range(text_length):
+        if min_spans[i] == inf:
+            continue
+        for span_length in spans_by_start.get(i, []):
+            next_i = i + span_length
+            if next_i <= text_length:
+                min_spans[next_i] = min(min_spans[next_i], min_spans[i] + 1)
+
+    return min_spans[text_length]
+
+
+def _span_no_path_message(span_encoding, image_steps, max_windows_per_span, min_required_spans, reason=None):
+    max_span_chars = getattr(span_encoding, "max_span_chars", "unknown")
+    prefix = "No valid span-DTW path. "
+    if reason == "too_few_windows":
+        detail = "There are too few image windows for the text length. "
+        fix = (
+            "Fix by: "
+            "1. decreasing STRIDE_RATIO, for example 0.5 instead of 1.0; "
+            "2. increasing MAX_TEXT_SPAN_CHARS, for example 3; "
+            "3. using a smaller WINDOW_SIZE only if it increases usable windows. "
+            "Do not fix this by increasing MAX_WINDOWS_PER_SPAN."
+        )
+    elif reason == "too_many_windows":
+        detail = (
+            "There are too many image windows for this text under MAX_WINDOWS_PER_SPAN. "
+        )
+        fix = (
+            "Fix by increasing MAX_WINDOWS_PER_SPAN for this mode, reducing image windows, "
+            "or treating this transcript as an infeasible/easy negative."
+        )
+    else:
+        detail = (
+            "This usually means the text/window constraints are infeasible. "
+        )
+        fix = (
+            "Check STRIDE_RATIO, MAX_TEXT_SPAN_CHARS, MAX_WINDOWS_PER_SPAN, and transcript length."
+        )
+    return (
+        prefix
+        + detail
+        + f"text_length={span_encoding.text_length}, image_windows={image_steps}, "
+        f"minimum_required_spans={min_required_spans}, "
+        f"max_text_span_chars={max_span_chars}, "
+        f"max_windows_per_span={max_windows_per_span}. "
+        + fix
+    )
+
+
+def _infeasible_negative_cost(image_embeddings, text_length, temperature):
+    return image_embeddings.new_tensor(
+        max(1, int(image_embeddings.shape[0]), int(text_length)) * (2.0 / temperature)
+    )
+
+
 def _transition_cost(span_embedding, image_window_embeddings, temperature, window_count_penalty):
     # Non-negative cosine distance: good match -> near 0, bad match -> larger cost.
     similarities = torch.matmul(image_window_embeddings, span_embedding)
@@ -77,6 +146,28 @@ def hard_span_dtw_path(
     span_lookup = span_index_by_start_and_length(span_encoding)
     text_steps = span_encoding.text_length
     image_steps = image_embeddings.shape[0]
+    min_required = _min_required_spans(span_encoding)
+    if min_required == float("inf") or image_steps < min_required:
+        raise ValueError(
+            _span_no_path_message(
+                span_encoding,
+                image_steps,
+                max_windows,
+                min_required,
+                reason="too_few_windows",
+            )
+        )
+    max_possible_windows = span_encoding.text_length * max_windows
+    if image_steps > max_possible_windows:
+        raise ValueError(
+            _span_no_path_message(
+                span_encoding,
+                image_steps,
+                max_windows,
+                min_required,
+                reason="too_many_windows",
+            )
+        )
     transition_costs = _precompute_transition_costs(
         span_encoding,
         image_embeddings,
@@ -108,7 +199,13 @@ def hard_span_dtw_path(
 
     if back[text_steps][image_steps] is None:
         raise ValueError(
-            f"No valid span-DTW path for text length {text_steps} and {image_steps} image windows."
+            _span_no_path_message(
+                span_encoding,
+                image_steps,
+                max_windows,
+                min_required,
+                reason="generic",
+            )
         )
 
     path = []
@@ -158,6 +255,28 @@ class SpanContrastiveSoftDTW(nn.Module):
         text_steps = span_encoding.text_length
         image_steps = image_embeddings.shape[0]
         device = image_embeddings.device
+        min_required = _min_required_spans(span_encoding)
+        if min_required == float("inf") or image_steps < min_required:
+            raise ValueError(
+                _span_no_path_message(
+                    span_encoding,
+                    image_steps,
+                    self.max_windows_per_span,
+                    min_required,
+                    reason="too_few_windows",
+                )
+            )
+        max_possible_windows = text_steps * self.max_windows_per_span
+        if image_steps > max_possible_windows:
+            raise ValueError(
+                _span_no_path_message(
+                    span_encoding,
+                    image_steps,
+                    self.max_windows_per_span,
+                    min_required,
+                    reason="too_many_windows",
+                )
+            )
         transition_costs = _precompute_transition_costs(
             span_encoding,
             image_embeddings,
@@ -209,8 +328,13 @@ class SpanContrastiveSoftDTW(nn.Module):
 
         if dp[text_steps][image_steps] is None:
             raise ValueError(
-                f"No valid span-DTW path for text length {text_steps} and {image_steps} image windows. "
-                f"Increase MAX_WINDOWS_PER_SPAN or reduce image windows."
+                _span_no_path_message(
+                    span_encoding,
+                    image_steps,
+                    self.max_windows_per_span,
+                    min_required,
+                    reason="generic",
+                )
             )
         return dp[text_steps][image_steps]
 
@@ -235,7 +359,14 @@ class SpanContrastiveSoftDTW(nn.Module):
             if self.negative_grad_mode == "all":
                 for neg_text in neg_text_list:
                     neg_encoding = text_encoder(neg_text)
-                    neg_cost = self._span_dtw_cost(neg_encoding, norm_img[sample_idx])
+                    try:
+                        neg_cost = self._span_dtw_cost(neg_encoding, norm_img[sample_idx])
+                    except ValueError:
+                        neg_cost = _infeasible_negative_cost(
+                            norm_img[sample_idx],
+                            neg_encoding.text_length,
+                            self.temperature,
+                        )
                     neg_costs.append(neg_cost)
                     norm_negs.append(neg_cost / max(neg_encoding.text_length, norm_img[sample_idx].shape[0]))
                 neg_costs = torch.stack(neg_costs)
@@ -250,14 +381,25 @@ class SpanContrastiveSoftDTW(nn.Module):
                 # explosion that was OOM-killing the SLURM job in epoch 1.
                 scored_neg_costs = []
                 scored_norm_negs = []
+                neg_feasible = []
                 with torch.no_grad():
                     for neg_text in neg_text_list:
                         neg_encoding = text_encoder(neg_text)
-                        neg_cost = self._span_dtw_cost(neg_encoding, norm_img[sample_idx])
+                        try:
+                            neg_cost = self._span_dtw_cost(neg_encoding, norm_img[sample_idx])
+                            feasible = True
+                        except ValueError:
+                            neg_cost = _infeasible_negative_cost(
+                                norm_img[sample_idx],
+                                neg_encoding.text_length,
+                                self.temperature,
+                            )
+                            feasible = False
                         scored_neg_costs.append(neg_cost.detach())
                         scored_norm_negs.append(
                             (neg_cost / max(neg_encoding.text_length, norm_img[sample_idx].shape[0])).detach()
                         )
+                        neg_feasible.append(feasible)
 
                 if not scored_norm_negs:
                     raise ValueError("SpanContrastiveSoftDTW requires at least one negative text per sample.")
@@ -268,7 +410,10 @@ class SpanContrastiveSoftDTW(nn.Module):
 
                 if self.negative_grad_mode == "hardest":
                     hard_neg_encoding = text_encoder(neg_text_list[hard_idx])
-                    hard_neg_cost = self._span_dtw_cost(hard_neg_encoding, norm_img[sample_idx])
+                    if neg_feasible[hard_idx]:
+                        hard_neg_cost = self._span_dtw_cost(hard_neg_encoding, norm_img[sample_idx])
+                    else:
+                        hard_neg_cost = scored_neg_costs[hard_idx]
                     hard_norm_neg = hard_neg_cost / max(
                         hard_neg_encoding.text_length,
                         norm_img[sample_idx].shape[0],
