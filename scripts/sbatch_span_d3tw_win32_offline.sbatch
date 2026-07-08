@@ -17,7 +17,6 @@
 #SBATCH --time=03-00:00:00
 #SBATCH --tasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
 
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ahmedmas@post.bgu.ac.il
@@ -88,7 +87,7 @@ export VALID_EVERY_N_EPOCHS="${VALID_EVERY_N_EPOCHS:-5}"
 export VALID_MAX_BATCHES="${VALID_MAX_BATCHES:-0}"
 export DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-4}"
 
-DATA_DIR="${DATA_DIR:-DataSet/Synthetic_${LANGUAGE}_${NUM_SAMPLES}}"
+DATA_DIR="${DATA_DIR:-DataSet/Synthetic_${LANGUAGE}}"
 JOB_ID="${JOB_ID:-span_jax_best_quality_win32_offline}"
 EPOCHS="${EPOCHS:-150}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
@@ -103,7 +102,7 @@ python -c "from transformers import AutoModel, AutoTokenizer; import os; model=o
 
 if [[ ! -d "${DATA_DIR}" ]]; then
   echo "ERROR: DATA_DIR does not exist: ${DATA_DIR}" >&2
-  echo "Set DATA_DIR=/path/to/dataset or create DataSet/Synthetic_${LANGUAGE}_${NUM_SAMPLES}." >&2
+  echo "Set DATA_DIR=/path/to/dataset or create DataSet/Synthetic_${LANGUAGE}" >&2
   exit 1
 fi
 
