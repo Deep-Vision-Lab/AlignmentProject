@@ -137,7 +137,7 @@ tzdata==2023.3
 unicodedata2==15.1.0
 urllib3==2.2.3
 wandb==0.19.2
-transformers
+transformers==4.44.2
 yacs==0.1.8
 zict==3.0.0
 zipp==3.19.2

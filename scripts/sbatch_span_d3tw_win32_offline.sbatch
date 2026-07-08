@@ -25,6 +25,9 @@ set -euo pipefail
 PROJECT_DIR="${PROJECT_DIR:-${SLURM_SUBMIT_DIR:-/home/ahmedmas/BGU-Lab/AlignmentProject_clone}}"
 cd "${PROJECT_DIR}"
 mkdir -p out logs
+export HF_HOME="${HF_HOME:-${PROJECT_DIR}/.hf_cache}"
+export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-${HF_HOME}/transformers}"
+mkdir -p "${HF_HOME}" "${TRANSFORMERS_CACHE}"
 
 CONDA_ENV="${CONDA_ENV:-manucripts_align}"
 if [[ -n "${CONDA_ENV}" ]]; then
@@ -33,8 +36,8 @@ if [[ -n "${CONDA_ENV}" ]]; then
   conda activate "${CONDA_ENV}"
 fi
 
-python -c "import transformers" >/dev/null 2>&1 || {
-  echo "ERROR: Python package 'transformers' is missing from conda env '${CONDA_ENV}'." >&2
+python -c "import torch, transformers; from transformers import AutoModel; print(f'torch={torch.__version__} transformers={transformers.__version__}')" || {
+  echo "ERROR: PyTorch-compatible transformers is not ready in conda env '${CONDA_ENV}'." >&2
   echo "Run once before submitting:" >&2
   echo "  bash scripts/setup_manucripts_align_span_env.sh" >&2
   exit 1
@@ -59,8 +62,9 @@ export MAX_TEXT_SPAN_CHARS=3
 export MAX_WINDOWS_PER_SPAN=4
 export USE_BILSTM=1
 
-python -c "from transformers import AutoModel, AutoTokenizer; import os; model=os.environ['ARABIC_TEXT_MODEL_NAME']; AutoTokenizer.from_pretrained(model, local_files_only=True); AutoModel.from_pretrained(model, local_files_only=True)" >/dev/null 2>&1 || {
+python -c "from transformers import AutoModel, AutoTokenizer; import os; model=os.environ['ARABIC_TEXT_MODEL_NAME']; cache=os.environ['HF_HOME']; AutoTokenizer.from_pretrained(model, cache_dir=cache, local_files_only=True); AutoModel.from_pretrained(model, cache_dir=cache, local_files_only=True)" >/dev/null 2>&1 || {
   echo "ERROR: '${ARABIC_TEXT_MODEL_NAME}' is not cached for offline Hugging Face loading." >&2
+  echo "Expected cache directory: ${HF_HOME}" >&2
   echo "Run once before submitting:" >&2
   echo "  bash scripts/setup_manucripts_align_span_env.sh" >&2
   exit 1
