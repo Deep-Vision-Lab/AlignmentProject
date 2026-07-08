@@ -23,6 +23,8 @@ arabic_text_model_name = os.environ.get(
     "aubmindlab/bert-base-arabertv02",
 )
 max_text_token_chars = 3
+max_text_span_chars = int(os.environ.get("MAX_TEXT_SPAN_CHARS", 3))
+max_windows_per_span = int(os.environ.get("MAX_WINDOWS_PER_SPAN", 4))
 
 # Fine-tuning
 finetune_lang = "English"

@@ -1,0 +1,141 @@
+from dataclasses import dataclass
+
+import torch
+import torch.nn as nn
+
+try:
+    from transformers import AutoModel, AutoTokenizer
+except ImportError:
+    AutoModel = None
+    AutoTokenizer = None
+
+
+@dataclass
+class SpanEncoding:
+    embeddings: torch.Tensor
+    starts: list[int]
+    lengths: list[int]
+    texts: list[str]
+    text_length: int
+
+
+class ArabicSpanTextEncoder(nn.Module):
+    def __init__(
+        self,
+        model_name="aubmindlab/bert-base-arabertv02",
+        output_dim=128,
+        max_span_chars=3,
+        freeze_backbone=True,
+        device="cpu",
+    ):
+        super().__init__()
+        self.model_name = model_name
+        self.max_span_chars = max_span_chars
+        self.freeze_backbone = freeze_backbone
+        self.device = torch.device(device)
+
+        if AutoTokenizer is None or AutoModel is None:
+            raise ImportError(
+                "transformers is required for ArabicSpanTextEncoder. "
+                "Install it or use TEXT_ENCODER_TYPE=char."
+            )
+
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.backbone = AutoModel.from_pretrained(model_name)
+        hidden_size = self.backbone.config.hidden_size
+
+        if freeze_backbone:
+            for parameter in self.backbone.parameters():
+                parameter.requires_grad_(False)
+            self.backbone.eval()
+
+        self.projection = nn.Linear(hidden_size, output_dim)
+        self.norm = nn.LayerNorm(output_dim)
+        self.to(self.device)
+
+    def train(self, mode=True):
+        super().train(mode)
+        if self.freeze_backbone:
+            self.backbone.eval()
+        return self
+
+    def enumerate_spans(self, text):
+        starts = []
+        lengths = []
+        texts = []
+
+        for start, char in enumerate(text):
+            if char.isspace():
+                starts.append(start)
+                lengths.append(1)
+                texts.append(char)
+                continue
+
+            max_end = min(len(text), start + self.max_span_chars)
+            for end in range(start + 1, max_end + 1):
+                span = text[start:end]
+                if any(ch.isspace() for ch in span):
+                    break
+                starts.append(start)
+                lengths.append(end - start)
+                texts.append(span)
+
+        return starts, lengths, texts
+
+    def _encoded_inputs(self, spans):
+        encoded = self.tokenizer(
+            spans,
+            padding=True,
+            return_tensors="pt",
+            return_attention_mask=True,
+            return_special_tokens_mask=True,
+        )
+        return {key: value.to(self.device) for key, value in encoded.items()}
+
+    def _pool_non_special_tokens(self, hidden, encoded):
+        attention_mask = encoded["attention_mask"].unsqueeze(-1).float()
+        if "special_tokens_mask" in encoded:
+            non_special = (1 - encoded["special_tokens_mask"]).unsqueeze(-1).float()
+            pool_mask = attention_mask * non_special
+            empty_rows = pool_mask.sum(dim=1, keepdim=True) == 0
+            pool_mask = torch.where(empty_rows, attention_mask, pool_mask)
+        else:
+            pool_mask = attention_mask
+
+        summed = (hidden * pool_mask).sum(dim=1)
+        counts = pool_mask.sum(dim=1).clamp_min(1.0)
+        return summed / counts
+
+    def forward(self, text):
+        starts, lengths, spans = self.enumerate_spans(text)
+        if not spans:
+            return SpanEncoding(
+                embeddings=torch.empty(0, self.projection.out_features, device=self.device),
+                starts=[],
+                lengths=[],
+                texts=[],
+                text_length=len(text),
+            )
+
+        encoded = self._encoded_inputs(spans)
+        backbone_inputs = {
+            key: value
+            for key, value in encoded.items()
+            if key != "special_tokens_mask"
+        }
+
+        if self.freeze_backbone:
+            with torch.no_grad():
+                outputs = self.backbone(**backbone_inputs)
+        else:
+            outputs = self.backbone(**backbone_inputs)
+
+        pooled = self._pool_non_special_tokens(outputs.last_hidden_state, encoded)
+        projected = self.projection(pooled)
+        return SpanEncoding(
+            embeddings=self.norm(projected),
+            starts=starts,
+            lengths=lengths,
+            texts=spans,
+            text_length=len(text),
+        )

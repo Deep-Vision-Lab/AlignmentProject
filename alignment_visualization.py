@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 
+from span_alignment_loss import hard_span_dtw_path
+
 
 def hard_restricted_dtw_path(sim, temperature=0.07):
     centered = sim - sim.mean(dim=0, keepdim=True)
@@ -47,6 +49,44 @@ def _text_tokens(text_encoder, text):
     return list(text)
 
 
+def _save_span_visualization(text_encoder, img_emb, pos_text, epoch, output_path):
+    span_encoding = text_encoder(pos_text)
+    if span_encoding.embeddings.numel() == 0 or img_emb.numel() == 0:
+        return None
+
+    path = hard_span_dtw_path(span_encoding, img_emb)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.set_xlim(0, img_emb.shape[0])
+    ax.set_ylim(span_encoding.text_length, 0)
+    ax.set_xlabel("image windows")
+    ax.set_ylabel("text character index")
+    ax.grid(True, linewidth=0.4, alpha=0.3)
+
+    for segment in path:
+        y = segment["text_start"] + 0.5
+        x0 = segment["window_start"]
+        x1 = segment["window_end"]
+        ax.hlines(y, x0, x1, color="red", linewidth=2)
+        ax.vlines([x0, x1], segment["text_start"], segment["text_end"], color="red", linewidth=1)
+        ax.text(
+            (x0 + x1) / 2,
+            y,
+            segment["text"],
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            color="black",
+        )
+
+    title_text = pos_text.strip()
+    if len(title_text) > 80:
+        title_text = title_text[:77] + "..."
+    ax.set_title(f"Epoch {epoch} span-D3TW: {title_text}")
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
 @torch.no_grad()
 def save_d3tw_visualization(
     model,
@@ -71,6 +111,14 @@ def save_d3tw_visualization(
 
     img_emb = model(image)
     norm_img = F.normalize(img_emb[0].float(), p=2, dim=-1)
+
+    output_dir = os.path.join(os.path.dirname(__file__), "Weights", job_id)
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f"d3tw_epoch_{epoch:04d}.png")
+
+    if hasattr(text_encoder, "enumerate_spans"):
+        return _save_span_visualization(text_encoder, norm_img, pos_text, epoch, output_path)
+
     norm_text = F.normalize(text_encoder(pos_text).float(), p=2, dim=-1)
     if norm_text.numel() == 0 or norm_img.numel() == 0:
         return None
@@ -79,10 +127,6 @@ def save_d3tw_visualization(
     path = hard_restricted_dtw_path(sim)
     path_y = [point[0] for point in path]
     path_x = [point[1] for point in path]
-
-    output_dir = os.path.join(os.path.dirname(__file__), "Weights", job_id)
-    os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, f"d3tw_epoch_{epoch:04d}.png")
 
     tokens = _text_tokens(text_encoder, pos_text)
     fig, ax = plt.subplots(figsize=(10, 5))

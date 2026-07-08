@@ -9,10 +9,12 @@ from torch.cuda.amp import GradScaler, autocast
 
 import Parameters as P
 from alignment_visualization import save_d3tw_visualization
+from arabic_span_text_encoder import ArabicSpanTextEncoder
 from arabic_token_text_encoder import ArabicTokenTextEncoder
 from LossFunctionWithHelpers import ContrastiveSoftDTW
 from embeddingModel import EmbeddingModel
 from DataLoader import build_dataloaders
+from span_alignment_loss import SpanContrastiveSoftDTW
 from textEmbedding import TextEmbedding
 
 try:
@@ -62,6 +64,8 @@ def model_config(stride):
         "text_encoder_type": P.text_encoder_type,
         "arabic_text_model_name": P.arabic_text_model_name,
         "max_text_token_chars": P.max_text_token_chars,
+        "max_text_span_chars": P.max_text_span_chars,
+        "max_windows_per_span": P.max_windows_per_span,
     }
 
 
@@ -112,7 +116,15 @@ def extract_model_state(loaded):
 
 
 def build_text_encoder():
-    if P.text_encoder_type == "arabic_token":
+    if P.text_encoder_type == "arabic_span":
+        text_encoder = ArabicSpanTextEncoder(
+            model_name=P.arabic_text_model_name,
+            output_dim=P.vector_size,
+            max_span_chars=P.max_text_span_chars,
+            freeze_backbone=True,
+            device=P.device,
+        )
+    elif P.text_encoder_type == "arabic_token":
         text_encoder = ArabicTokenTextEncoder(
             model_name=P.arabic_text_model_name,
             output_dim=P.vector_size,
@@ -181,6 +193,9 @@ def compute_batch_loss(image_embedder, text_encoder, criterion, images, pos_text
     with autocast(dtype=AMP_DTYPE, enabled=USE_AMP):
         img_emb = image_embedder(images)
     norm_img = F.normalize(img_emb.float(), p=2, dim=-1)
+
+    if P.text_encoder_type == "arabic_span":
+        return criterion.forward_varlen(text_encoder, norm_img, pos_texts, neg_texts)
 
     sim_pos_list, sim_neg_list = compute_similarity_lists(
         text_encoder, norm_img, pos_texts, neg_texts
@@ -419,12 +434,20 @@ def main():
         elif isinstance(loaded, dict) and "text_embedder_state_dict" in loaded:
             text_encoder.load_state_dict(loaded["text_embedder_state_dict"], strict=False)
 
-    criterion = ContrastiveSoftDTW(
-        gamma=P.contrastive_soft_dtw_gamma,
-        use_cuda=torch.cuda.is_available(),
-        margin=P.contrastive_margin,
-        temperature=P.contrastive_temperature,
-    )
+    if P.text_encoder_type == "arabic_span":
+        criterion = SpanContrastiveSoftDTW(
+            gamma=P.contrastive_soft_dtw_gamma,
+            margin=P.contrastive_margin,
+            temperature=P.contrastive_temperature,
+            max_windows_per_span=P.max_windows_per_span,
+        )
+    else:
+        criterion = ContrastiveSoftDTW(
+            gamma=P.contrastive_soft_dtw_gamma,
+            use_cuda=torch.cuda.is_available(),
+            margin=P.contrastive_margin,
+            temperature=P.contrastive_temperature,
+        )
     config = model_config(stride)
 
     print(
@@ -432,7 +455,14 @@ def main():
         f"window_size={P.window_size} stride={stride} negatives={P.num_negatives}",
         flush=True,
     )
-    if P.text_encoder_type == "arabic_token":
+    if P.text_encoder_type == "arabic_span":
+        print(
+            f"text_encoder=ArabicSpanTextEncoder model={P.arabic_text_model_name} "
+            f"max_span_chars={P.max_text_span_chars} max_windows_per_span={P.max_windows_per_span} "
+            "freeze_backbone=True",
+            flush=True,
+        )
+    elif P.text_encoder_type == "arabic_token":
         print(
             f"text_encoder=ArabicTokenTextEncoder model={P.arabic_text_model_name} "
             f"max_token_chars={P.max_text_token_chars} freeze_backbone=True",
