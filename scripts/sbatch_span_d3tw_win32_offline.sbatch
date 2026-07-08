@@ -33,6 +33,13 @@ if [[ -n "${CONDA_ENV}" ]]; then
   conda activate "${CONDA_ENV}"
 fi
 
+python -c "import transformers" >/dev/null 2>&1 || {
+  echo "ERROR: Python package 'transformers' is missing from conda env '${CONDA_ENV}'." >&2
+  echo "Run once before submitting:" >&2
+  echo "  bash scripts/setup_manucripts_align_span_env.sh" >&2
+  exit 1
+}
+
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 export TOKENIZERS_PARALLELISM=false
@@ -51,6 +58,13 @@ export WINDOW_OVERLAP_MODE=custom
 export MAX_TEXT_SPAN_CHARS=3
 export MAX_WINDOWS_PER_SPAN=4
 export USE_BILSTM=1
+
+python -c "from transformers import AutoModel, AutoTokenizer; import os; model=os.environ['ARABIC_TEXT_MODEL_NAME']; AutoTokenizer.from_pretrained(model, local_files_only=True); AutoModel.from_pretrained(model, local_files_only=True)" >/dev/null 2>&1 || {
+  echo "ERROR: '${ARABIC_TEXT_MODEL_NAME}' is not cached for offline Hugging Face loading." >&2
+  echo "Run once before submitting:" >&2
+  echo "  bash scripts/setup_manucripts_align_span_env.sh" >&2
+  exit 1
+}
 
 python train.py \
   --job_id span_d3tw_win32_offline \
