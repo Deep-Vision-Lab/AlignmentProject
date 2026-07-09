@@ -18,6 +18,11 @@ from span_alignment_loss import SpanContrastiveSoftDTW
 from textEmbedding import TextEmbedding
 
 try:
+    import psutil
+except ImportError:
+    psutil = None
+
+try:
     import wandb
 except ImportError:
     wandb = None
@@ -25,6 +30,7 @@ except ImportError:
 
 USE_AMP = torch.cuda.is_available() and os.environ.get("USE_AMP", "1") == "1"
 AMP_DTYPE = torch.float16
+_PROCESS = psutil.Process(os.getpid()) if psutil is not None else None
 
 
 def compute_stride(window_size, stride_ratio, window_overlap_mode):
@@ -67,10 +73,13 @@ def model_config(stride):
         "max_text_span_chars": P.max_text_span_chars,
         "max_windows_per_span": P.max_windows_per_span,
         "strip_span_text_edges": P.strip_span_text_edges,
+        "span_feature_cache_size": P.span_feature_cache_size,
+        "span_feature_cache_dtype": P.span_feature_cache_dtype,
         "span_negative_grad_mode": P.span_negative_grad_mode,
         "span_dtw_backend": P.span_dtw_backend,
         "valid_every_n_epochs": P.valid_every_n_epochs,
         "valid_max_batches": P.valid_max_batches,
+        "log_memory_every_n_batches": P.log_memory_every_n_batches,
     }
 
 
@@ -129,6 +138,8 @@ def build_text_encoder():
             freeze_backbone=True,
             device=P.device,
             strip_text_edges=P.strip_span_text_edges,
+            cache_size=P.span_feature_cache_size,
+            cache_dtype=P.span_feature_cache_dtype,
         )
     elif P.text_encoder_type == "arabic_token":
         text_encoder = ArabicTokenTextEncoder(
@@ -218,6 +229,20 @@ def average_stats(stats_list):
     }
 
 
+def _format_memory(text_encoder):
+    parts = []
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024 ** 3)
+        reserved = torch.cuda.memory_reserved() / (1024 ** 3)
+        parts.append(f"gpu={allocated:.2f}/{reserved:.2f}GB")
+    if _PROCESS is not None:
+        rss = _PROCESS.memory_info().rss / (1024 ** 3)
+        parts.append(f"rss={rss:.2f}GB")
+    if hasattr(text_encoder, "cache_size_current"):
+        parts.append(f"span_cache={text_encoder.cache_size_current()}")
+    return " ".join(parts)
+
+
 def train_one_epoch(model, text_encoder, criterion, optimizer, scaler, loader):
     model.train()
     if has_trainable_parameters(text_encoder):
@@ -250,10 +275,22 @@ def train_one_epoch(model, text_encoder, criterion, optimizer, scaler, loader):
 
         total += loss.item()
         stats_list.append(stats)
+        mem_suffix = ""
+        if P.log_memory_every_n_batches > 0 and (
+            batch_idx == 0 or (batch_idx + 1) % P.log_memory_every_n_batches == 0
+        ):
+            mem_suffix = " " + _format_memory(text_encoder)
         print(
             f"batch={batch_idx + 1}/{len(loader)} "
-            f"loss={loss.item():.4f} pos={stats['cost_pos']:.2f} neg={stats['cost_neg']:.2f} "
-            f"forward={forward_elapsed:.1f}s backward={backward_elapsed:.1f}s time={elapsed:.1f}s",
+            f"loss={loss.item():.4f} "
+            f"norm_pos={stats.get('norm_pos', float('nan')):.4f} "
+            f"norm_neg={stats.get('norm_neg', float('nan')):.4f} "
+            f"gap={stats.get('gap', float('nan')):.4f} "
+            f"pos_prob={stats.get('pos_prob', float('nan')):.4f} "
+            f"cost_pos={stats.get('cost_pos', float('nan')):.2f} "
+            f"cost_neg={stats.get('cost_neg', float('nan')):.2f} "
+            f"forward={forward_elapsed:.1f}s backward={backward_elapsed:.1f}s time={elapsed:.1f}s"
+            f"{mem_suffix}",
             flush=True,
         )
 
@@ -293,14 +330,16 @@ def init_wandb(args, config):
 
 def wandb_log_epoch_metrics(run, epoch, train_loss, val_loss, train_stats):
     if run is not None:
-        # Keep W&B intentionally minimal: one epoch update with only
-        # training loss, validation loss, positive cost, and negative cost.
         wandb.log(
             {
                 "loss": float(train_loss),
                 "validation_loss": float(val_loss),
-                "pos": float(train_stats.get("cost_pos", float("nan"))),
-                "negative": float(train_stats.get("cost_neg", float("nan"))),
+                "pos": float(train_stats.get("norm_pos", float("nan"))),
+                "negative": float(train_stats.get("norm_neg", float("nan"))),
+                "raw_pos_cost": float(train_stats.get("cost_pos", float("nan"))),
+                "raw_negative_cost": float(train_stats.get("cost_neg", float("nan"))),
+                "gap": float(train_stats.get("gap", float("nan"))),
+                "pos_prob": float(train_stats.get("pos_prob", float("nan"))),
             },
             step=int(epoch),
             commit=True,
@@ -364,7 +403,7 @@ def train(model, text_encoder, criterion, train_loader, valid_loader, args, conf
 
         should_visualize = ((epoch + 1) % 10 == 0) or ((epoch + 1) == args.epochs)
         if should_visualize:
-            vis_path = save_d3tw_visualization(
+            save_d3tw_visualization(
                 model,
                 text_encoder,
                 valid_loader,
@@ -490,6 +529,7 @@ def main():
             f"text_encoder=ArabicSpanTextEncoder model={P.arabic_text_model_name} "
             f"max_span_chars={P.max_text_span_chars} max_windows_per_span={P.max_windows_per_span} "
             f"strip_text_edges={P.strip_span_text_edges} "
+            f"span_cache_size={P.span_feature_cache_size} span_cache_dtype={P.span_feature_cache_dtype} "
             f"negative_grad_mode={P.span_negative_grad_mode} span_dtw_backend={P.span_dtw_backend} "
             "freeze_backbone=True",
             flush=True,
