@@ -14,19 +14,22 @@ def init_wandb(job_id):
     return run
 
 
-def update_wandb(epoch, train_loss, val_loss):
-    """Commit exactly one W&B update per epoch containing only losses."""
+def update_wandb(epoch, loss, validation_loss, pos, negative):
+    """Commit one W&B update per epoch containing only loss/validation/pos/negative."""
     wandb.log(
         {
-            "train_loss": float(train_loss),
-            "val_loss": float(val_loss),
+            "loss": float(loss),
+            "validation_loss": float(validation_loss),
+            "pos": float(pos),
+            "negative": float(negative),
         },
         step=int(epoch),
         commit=True,
     )
     print(
         f"[WANDB] logged epoch={int(epoch)} "
-        f"train_loss={float(train_loss):.6f} val_loss={float(val_loss):.6f}",
+        f"loss={float(loss):.6f} validation_loss={float(validation_loss):.6f} "
+        f"pos={float(pos):.6f} negative={float(negative):.6f}",
         flush=True,
     )
 

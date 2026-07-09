@@ -291,9 +291,20 @@ def init_wandb(args, config):
     )
 
 
-def wandb_log(run, values):
+def wandb_log_epoch_metrics(run, epoch, train_loss, val_loss, train_stats):
     if run is not None:
-        wandb.log(values)
+        # Keep W&B intentionally minimal: one epoch update with only
+        # training loss, validation loss, positive cost, and negative cost.
+        wandb.log(
+            {
+                "loss": float(train_loss),
+                "validation_loss": float(val_loss),
+                "pos": float(train_stats.get("cost_pos", float("nan"))),
+                "negative": float(train_stats.get("cost_neg", float("nan"))),
+            },
+            step=int(epoch),
+            commit=True,
+        )
 
 
 def train(model, text_encoder, criterion, train_loader, valid_loader, args, config):
@@ -346,17 +357,7 @@ def train(model, text_encoder, criterion, train_loader, valid_loader, args, conf
             val_stats = {}
         scheduler.step()
 
-        log_values = {
-            "epoch": epoch + 1,
-            "train/loss": train_loss,
-            "valid/loss": val_loss,
-            "lr": scheduler.get_last_lr()[0],
-        }
-        for key, value in train_stats.items():
-            log_values[f"train/{key}"] = value
-        for key, value in val_stats.items():
-            log_values[f"valid/{key}"] = value
-        wandb_log(run, log_values)
+        wandb_log_epoch_metrics(run, epoch + 1, train_loss, val_loss, train_stats)
 
         save_checkpoint(model, text_encoder, optimizer, scheduler, scaler, epoch, args.job_id, config)
         save_model_weights(model, text_encoder, args.job_id, config)
@@ -372,8 +373,6 @@ def train(model, text_encoder, criterion, train_loader, valid_loader, args, conf
                 args.job_id,
                 P.device,
             )
-            if vis_path is not None and run is not None:
-                wandb.log({"alignment/d3tw": wandb.Image(vis_path), "epoch": epoch + 1})
 
         history.append(train_loss)
         elapsed = time.time() - started
