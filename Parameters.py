@@ -11,6 +11,7 @@ epochs = int(os.environ.get("EPOCHS", 100))
 learning_rate = float(os.environ.get("LEARNING_RATE", 1e-4))
 valid_every_n_epochs = int(os.environ.get("VALID_EVERY_N_EPOCHS", 1))
 valid_max_batches = int(os.environ.get("VALID_MAX_BATCHES", 0))
+log_memory_every_n_batches = int(os.environ.get("LOG_MEMORY_EVERY_N_BATCHES", 25))
 
 # Data
 window_size = int(os.environ.get("WINDOW_SIZE", 16))
@@ -30,6 +31,13 @@ max_windows_per_span = int(os.environ.get("MAX_WINDOWS_PER_SPAN", 4))
 strip_span_text_edges = os.environ.get("STRIP_SPAN_TEXT_EDGES", "1").lower() in {
     "1", "true", "yes", "on"
 }
+
+# Frozen span feature cache. The AraBERT backbone is frozen, so caching pooled
+# backbone features is safe, but an unbounded cache can OOM host RAM when many
+# negative texts are generated. 0 disables the cache; -1 keeps the old unlimited
+# behavior. Default is bounded and stored in float16 on CPU.
+span_feature_cache_size = int(os.environ.get("SPAN_FEATURE_CACHE_SIZE", 2048))
+span_feature_cache_dtype = os.environ.get("SPAN_FEATURE_CACHE_DTYPE", "float16").lower()
 
 # Fine-tuning
 finetune_lang = "English"
