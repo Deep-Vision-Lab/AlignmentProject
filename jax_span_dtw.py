@@ -3,6 +3,7 @@ import warnings
 import torch
 
 
+INVALID_COST_THRESHOLD = 1e5
 _warned_dlpack_fallback = False
 
 
@@ -32,11 +33,10 @@ def _require_jax():
 
 
 def _masked_softmin(candidates, gamma):
-    """Stable soft-min over only finite candidates.
+    """Stable soft-min over valid candidates only.
 
-    Invalid transitions are represented by +inf and ignored completely. This
-    avoids fake invalid paths and prevents the impossible huge negative costs
-    seen in some logs.
+    Invalid transitions are ignored completely. This avoids fake invalid paths
+    and prevents the impossible huge negative costs seen in the offline log.
     """
     _require_jax()
     finite = jnp.isfinite(candidates)
@@ -64,6 +64,7 @@ def jax_soft_span_dtw_cost(transition_costs_dense, gamma):
     image_steps = transition_costs_dense.shape[3] - 1
     dtype = transition_costs_dense.dtype
     inf = jnp.array(jnp.inf, dtype=dtype)
+    invalid_cost_threshold = jnp.asarray(INVALID_COST_THRESHOLD, dtype=dtype)
 
     dp = jnp.full((text_steps + 1, image_steps + 1), inf, dtype=dtype)
     dp = dp.at[0, 0].set(jnp.array(0.0, dtype=dtype))
@@ -87,7 +88,10 @@ def jax_soft_span_dtw_cost(transition_costs_dense, gamma):
                     safe_prev_j,
                 ]
                 value = prev_value + transition
-                valid_value = valid_index & jnp.isfinite(prev_value) & jnp.isfinite(transition)
+                # transition_costs_dense currently uses 1e6 for invalid entries.
+                # Treat both +inf and that finite sentinel as invalid.
+                valid_transition = jnp.isfinite(transition) & (transition < invalid_cost_threshold)
+                valid_value = valid_index & jnp.isfinite(prev_value) & valid_transition
                 return jnp.where(valid_value, value, inf)
 
             candidates = []
@@ -151,25 +155,34 @@ def _jax_to_torch(array, device, dtype):
 
 class JaxSpanDTWFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, transition_costs_dense, gamma):
+    def forward(ctx, transition_costs_dense, gamma, needs_gradient=True):
         _require_jax()
         jax_transition_costs = _torch_to_jax(transition_costs_dense)
-        cost, grad = _jax_value_and_grad(jax_transition_costs, float(gamma))
+
+        if bool(needs_gradient):
+            cost, grad = _jax_value_and_grad(jax_transition_costs, float(gamma))
+            grad_torch = _jax_to_torch(
+                grad,
+                device=transition_costs_dense.device,
+                dtype=transition_costs_dense.dtype,
+            )
+        else:
+            cost = jax_soft_span_dtw_cost(jax_transition_costs, float(gamma))
+            grad_torch = None
 
         cost_torch = _jax_to_torch(
             cost,
             device=transition_costs_dense.device,
             dtype=transition_costs_dense.dtype,
         )
-        grad_torch = _jax_to_torch(
-            grad,
-            device=transition_costs_dense.device,
-            dtype=transition_costs_dense.dtype,
-        )
-        ctx.save_for_backward(grad_torch)
+        ctx.needs_gradient = bool(needs_gradient)
+        if grad_torch is not None:
+            ctx.save_for_backward(grad_torch)
         return cost_torch.reshape(())
 
     @staticmethod
     def backward(ctx, grad_output):
+        if not ctx.needs_gradient:
+            return None, None, None
         (grad_transition_costs,) = ctx.saved_tensors
-        return grad_output.to(grad_transition_costs.dtype) * grad_transition_costs, None
+        return grad_output.to(grad_transition_costs.dtype) * grad_transition_costs, None, None
