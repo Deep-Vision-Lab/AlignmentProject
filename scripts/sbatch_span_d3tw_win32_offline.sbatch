@@ -99,7 +99,13 @@ export VALID_MAX_BATCHES="${VALID_MAX_BATCHES:-0}"
 export DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-0}"
 export ALLOW_JAX_DATALOADER_WORKERS="${ALLOW_JAX_DATALOADER_WORKERS:-0}"
 
-DATA_DIR="${DATA_DIR:-DataSet/Synthetic_${LANGUAGE}_${NUM_SAMPLES}}"
+if [[ -z "${DATA_DIR:-}" ]]; then
+  if [[ -d "DataSet/Synthetic_${LANGUAGE}_${NUM_SAMPLES}" ]]; then
+    DATA_DIR="DataSet/Synthetic_${LANGUAGE}_${NUM_SAMPLES}"
+  else
+    DATA_DIR="DataSet/Synthetic_${LANGUAGE}"
+  fi
+fi
 JOB_ID="${JOB_ID:-span_jax_best_quality_win32_offline}"
 EPOCHS="${EPOCHS:-150}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
@@ -114,7 +120,7 @@ python -c "from transformers import AutoModel, AutoTokenizer; import os; model=o
 
 if [[ ! -d "${DATA_DIR}" ]]; then
   echo "ERROR: DATA_DIR does not exist: ${DATA_DIR}" >&2
-  echo "Set DATA_DIR=/path/to/dataset or create DataSet/Synthetic_${LANGUAGE}_${NUM_SAMPLES}." >&2
+  echo "Set DATA_DIR=/path/to/dataset or create DataSet/Synthetic_${LANGUAGE}_${NUM_SAMPLES} or DataSet/Synthetic_${LANGUAGE}." >&2
   exit 1
 fi
 
