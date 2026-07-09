@@ -73,9 +73,10 @@ class ArabicSpanTextEncoder(nn.Module):
 
         self.projection = nn.Linear(hidden_size, output_dim)
         self.norm = nn.LayerNorm(output_dim)
-        # LRU cache for frozen AraBERT pooled span features. This must be bounded:
-        # with hard negatives the old unbounded cache could store tens of thousands
-        # of unique generated negative strings and OOM host RAM during epoch 1.
+        # LRU cache for frozen AraBERT pooled span features. Important:
+        # generated hard negatives are usually unique and should not be cached
+        # during training. By default, forward(..., use_cache=None) disables this
+        # cache while self.training=True and enables it for eval/inference only.
         self._span_feature_cache = OrderedDict()
         self.to(self.device)
 
@@ -143,6 +144,14 @@ class ArabicSpanTextEncoder(nn.Module):
     def cache_size_current(self):
         return len(self._span_feature_cache)
 
+    def _should_use_cache(self, use_cache):
+        if use_cache is not None:
+            return bool(use_cache)
+        # Training texts include many generated negatives that are nearly never
+        # reused. Caching them causes RAM growth across batches, so the safe
+        # default is: no cache while training, cache only for eval/inference.
+        return not self.training
+
     def _cache_storage_dtype(self):
         if self.cache_dtype in {"float16", "fp16", "half"}:
             return torch.float16
@@ -155,8 +164,8 @@ class ArabicSpanTextEncoder(nn.Module):
             f"Got {self.cache_dtype!r}."
         )
 
-    def _cache_get(self, text):
-        if self.cache_size == 0:
+    def _cache_get(self, text, use_cache=True):
+        if not use_cache or self.cache_size == 0:
             return None
         cached = self._span_feature_cache.get(text)
         if cached is None:
@@ -170,8 +179,8 @@ class ArabicSpanTextEncoder(nn.Module):
             pooled = pooled.to(dtype=self.projection.weight.dtype)
         return starts, lengths, spans, pooled
 
-    def _cache_put(self, text, starts, lengths, spans, pooled):
-        if self.cache_size == 0:
+    def _cache_put(self, text, starts, lengths, spans, pooled, use_cache=True):
+        if not use_cache or self.cache_size == 0:
             return
         pooled_cpu = pooled.detach().to(device="cpu", dtype=self._cache_storage_dtype())
         self._span_feature_cache[text] = (starts, lengths, spans, pooled_cpu)
@@ -180,9 +189,10 @@ class ArabicSpanTextEncoder(nn.Module):
             while len(self._span_feature_cache) > self.cache_size:
                 self._span_feature_cache.popitem(last=False)
 
-    def _get_frozen_span_features(self, text):
+    def _get_frozen_span_features(self, text, use_cache=None):
         text = self._prepare_text(text)
-        cached = self._cache_get(text)
+        use_cache = self._should_use_cache(use_cache)
+        cached = self._cache_get(text, use_cache=use_cache)
         if cached is not None:
             return cached
 
@@ -206,13 +216,16 @@ class ArabicSpanTextEncoder(nn.Module):
             outputs = self.backbone(**backbone_inputs)
             pooled = self._pool_non_special_tokens(outputs.last_hidden_state, encoded)
 
-        self._cache_put(text, starts, lengths, spans, pooled)
+        self._cache_put(text, starts, lengths, spans, pooled, use_cache=use_cache)
         return starts, lengths, spans, pooled
 
-    def forward(self, text):
+    def forward(self, text, use_cache=None):
         if self.freeze_backbone:
             text = self._prepare_text(text)
-            starts, lengths, spans, pooled = self._get_frozen_span_features(text)
+            starts, lengths, spans, pooled = self._get_frozen_span_features(
+                text,
+                use_cache=use_cache,
+            )
             projected = self.projection(pooled)
             return SpanEncoding(
                 embeddings=self.norm(projected),
