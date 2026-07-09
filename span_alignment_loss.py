@@ -9,6 +9,9 @@ from Parameters import (
     contrastive_soft_dtw_gamma,
     contrastive_temperature,
     max_windows_per_span,
+    span_dtw_bucket_text_lengths,
+    span_dtw_max_text_bucket,
+    span_dtw_text_bucket_size,
 )
 
 
@@ -48,7 +51,19 @@ def _current_memory_summary():
     return " ".join(parts)
 
 
-def _debug_jax_dense_tensor(span_encoding, image_embeddings, dense):
+def _bucket_length(length, bucket_size, max_bucket, enabled=True):
+    length = int(length)
+    if not enabled:
+        return length
+    bucket_size = max(1, int(bucket_size))
+    max_bucket = max(1, int(max_bucket))
+    bucketed = ((length + bucket_size - 1) // bucket_size) * bucket_size
+    if length <= max_bucket:
+        bucketed = min(bucketed, max_bucket)
+    return max(length, bucketed)
+
+
+def _debug_jax_dense_tensor(span_encoding, image_embeddings, dense, text_steps_padded=None):
     global _JAX_DENSE_CALL_COUNT
     _JAX_DENSE_CALL_COUNT += 1
     shape = tuple(dense.shape)
@@ -69,7 +84,8 @@ def _debug_jax_dense_tensor(span_encoding, image_embeddings, dense):
         f"new_shape={previous_shape_count == 0} "
         f"unique_dense_shapes={len(_JAX_DENSE_SHAPE_COUNTS)} "
         f"dense_shape={shape} dense_mb={dense_mb:.2f} "
-        f"text_length={span_encoding.text_length} "
+        f"actual_text_length={span_encoding.text_length} "
+        f"bucketed_text_length={text_steps_padded or span_encoding.text_length} "
         f"num_valid_spans={len(span_encoding.starts)} "
         f"image_windows={image_embeddings.shape[0]} "
         f"{_current_memory_summary()}",
@@ -223,8 +239,15 @@ def _dense_transition_costs(
     temperature,
     max_windows_per_span,
     window_count_penalty,
+    text_steps_padded=None,
 ):
-    text_steps = span_encoding.text_length
+    actual_text_steps = span_encoding.text_length
+    dense_text_steps = int(text_steps_padded or actual_text_steps)
+    if dense_text_steps < actual_text_steps:
+        raise ValueError(
+            f"text_steps_padded={dense_text_steps} is smaller than actual text length "
+            f"{actual_text_steps}."
+        )
     image_steps = image_embeddings.shape[0]
     max_span_chars = max(
         int(getattr(span_encoding, "max_span_chars", 0)),
@@ -241,14 +264,14 @@ def _dense_transition_costs(
         (
             max_span_chars + 1,
             max_windows_per_span + 1,
-            text_steps + 1,
+            dense_text_steps + 1,
             image_steps + 1,
         ),
-        1e6,
+        float("inf"),
     )
 
     for span_idx, (start, span_len) in enumerate(zip(span_encoding.starts, span_encoding.lengths)):
-        if span_len > max_span_chars or start + span_len > text_steps:
+        if span_len > max_span_chars or start + span_len > actual_text_steps:
             continue
         for window_count, costs in transition_costs.items():
             if costs.shape[1] == 0:
@@ -478,24 +501,38 @@ class SpanContrastiveSoftDTW(nn.Module):
     def _span_dtw_cost_jax(self, span_encoding, image_embeddings):
         if not self._warned_jax_backend:
             print(
-                "SPAN_DTW_BACKEND=jax may compile once per distinct text/image shape. "
-                "For best speed, keep WINDOW_SIZE, STRIDE_RATIO, MAX_TEXT_SPAN_CHARS, "
-                "and MAX_WINDOWS_PER_SPAN fixed.",
+                "SPAN_DTW_BACKEND=jax compiles by dense tensor shape. "
+                "Text lengths are bucketed when SPAN_DTW_BUCKET_TEXT_LENGTHS=1; "
+                "also keep WINDOW_SIZE, STRIDE_RATIO, MAX_TEXT_SPAN_CHARS, "
+                "and MAX_WINDOWS_PER_SPAN fixed for best reuse.",
                 flush=True,
             )
             self._warned_jax_backend = True
 
         image_steps = image_embeddings.shape[0]
         self._check_path_feasible(span_encoding, image_steps)
+        actual_text_steps = int(span_encoding.text_length)
+        text_steps_padded = _bucket_length(
+            actual_text_steps,
+            span_dtw_text_bucket_size,
+            span_dtw_max_text_bucket,
+            enabled=span_dtw_bucket_text_lengths,
+        )
         transition_costs_dense = _dense_transition_costs(
             span_encoding,
             image_embeddings,
             self.temperature,
             self.max_windows_per_span,
             self.window_count_penalty,
+            text_steps_padded=text_steps_padded,
         )
         if _SPAN_DTW_MEM_DEBUG:
-            _debug_jax_dense_tensor(span_encoding, image_embeddings, transition_costs_dense)
+            _debug_jax_dense_tensor(
+                span_encoding,
+                image_embeddings,
+                transition_costs_dense,
+                text_steps_padded=text_steps_padded,
+            )
 
         try:
             from jax_span_dtw import JaxSpanDTWFunction
@@ -507,7 +544,13 @@ class SpanContrastiveSoftDTW(nn.Module):
                 "Use SPAN_DTW_BACKEND=torch or install the JAX packages from requirements.txt."
             ) from exc
         needs_gradient = torch.is_grad_enabled() and transition_costs_dense.requires_grad
-        cost = JaxSpanDTWFunction.apply(transition_costs_dense, self.gamma, needs_gradient)
+        cost = JaxSpanDTWFunction.apply(
+            transition_costs_dense,
+            actual_text_steps,
+            int(image_steps),
+            self.gamma,
+            needs_gradient,
+        )
         _debug_jax_cost(span_encoding, image_embeddings, cost)
         return cost
 
@@ -521,7 +564,7 @@ class SpanContrastiveSoftDTW(nn.Module):
         gap_values = []
 
         for sample_idx, pos_text in enumerate(pos_texts):
-            pos_encoding = text_encoder(pos_text)
+            pos_encoding = text_encoder(pos_text, use_cache=False if text_encoder.training else None)
             pos_cost = self._span_dtw_cost(pos_encoding, norm_img[sample_idx])
             norm_pos = pos_cost / max(pos_encoding.text_length, norm_img[sample_idx].shape[0])
 
@@ -531,7 +574,7 @@ class SpanContrastiveSoftDTW(nn.Module):
 
             if self.negative_grad_mode == "all":
                 for neg_text in neg_text_list:
-                    neg_encoding = text_encoder(neg_text)
+                    neg_encoding = text_encoder(neg_text, use_cache=False)
                     try:
                         neg_cost = self._span_dtw_cost(neg_encoding, norm_img[sample_idx])
                     except ValueError:
@@ -557,7 +600,7 @@ class SpanContrastiveSoftDTW(nn.Module):
                 neg_feasible = []
                 with torch.no_grad():
                     for neg_text in neg_text_list:
-                        neg_encoding = text_encoder(neg_text)
+                        neg_encoding = text_encoder(neg_text, use_cache=False)
                         try:
                             neg_cost = self._span_dtw_cost(neg_encoding, norm_img[sample_idx])
                             feasible = True
@@ -582,7 +625,7 @@ class SpanContrastiveSoftDTW(nn.Module):
                 hard_idx = int(torch.argmin(scored_norm_negs).item())
 
                 if self.negative_grad_mode == "hardest":
-                    hard_neg_encoding = text_encoder(neg_text_list[hard_idx])
+                    hard_neg_encoding = text_encoder(neg_text_list[hard_idx], use_cache=False)
                     if neg_feasible[hard_idx]:
                         hard_neg_cost = self._span_dtw_cost(hard_neg_encoding, norm_img[sample_idx])
                     else:

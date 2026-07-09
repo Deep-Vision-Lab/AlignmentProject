@@ -165,7 +165,7 @@ class ArabicSpanTextEncoder(nn.Module):
         )
 
     def _cache_get(self, text, use_cache=True):
-        if not use_cache or self.cache_size == 0:
+        if not use_cache or self.cache_size <= 0:
             return None
         cached = self._span_feature_cache.get(text)
         if cached is None:
@@ -180,7 +180,7 @@ class ArabicSpanTextEncoder(nn.Module):
         return starts, lengths, spans, pooled
 
     def _cache_put(self, text, starts, lengths, spans, pooled, use_cache=True):
-        if not use_cache or self.cache_size == 0:
+        if not use_cache or self.cache_size <= 0:
             return
         pooled_cpu = pooled.detach().to(device="cpu", dtype=self._cache_storage_dtype())
         self._span_feature_cache[text] = (starts, lengths, spans, pooled_cpu)

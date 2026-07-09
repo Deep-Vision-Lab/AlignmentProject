@@ -33,11 +33,14 @@ strip_span_text_edges = os.environ.get("STRIP_SPAN_TEXT_EDGES", "1").lower() in 
 }
 
 # Frozen span feature cache. The AraBERT backbone is frozen, so caching pooled
-# backbone features is safe, but an unbounded cache can OOM host RAM when many
-# negative texts are generated. 0 disables the cache; -1 keeps the old unlimited
-# behavior. Default is bounded and stored in float16 on CPU.
+# backbone features is safe for eval/inference, but generated training negatives
+# are often unique. Keep the cache bounded and store it on CPU in reduced
+# precision by default.
 span_feature_cache_size = int(os.environ.get("SPAN_FEATURE_CACHE_SIZE", 2048))
 span_feature_cache_dtype = os.environ.get("SPAN_FEATURE_CACHE_DTYPE", "float16").lower()
+clear_span_cache_each_epoch = os.environ.get("CLEAR_SPAN_CACHE_EACH_EPOCH", "1").lower() in {
+    "1", "true", "yes", "on"
+}
 
 # Fine-tuning
 finetune_lang = "English"
@@ -56,6 +59,11 @@ contrastive_soft_dtw_gamma = float(os.environ.get("CONTRASTIVE_SOFT_DTW_GAMMA", 
 contrastive_margin = float(os.environ.get("CONTRASTIVE_MARGIN", 10.0))
 contrastive_temperature = float(os.environ.get("CONTRASTIVE_TEMPERATURE", 0.07))
 span_dtw_backend = os.environ.get("SPAN_DTW_BACKEND", "torch").lower()
+span_dtw_bucket_text_lengths = os.environ.get("SPAN_DTW_BUCKET_TEXT_LENGTHS", "1").lower() in {
+    "1", "true", "yes", "on"
+}
+span_dtw_text_bucket_size = int(os.environ.get("SPAN_DTW_TEXT_BUCKET_SIZE", 16))
+span_dtw_max_text_bucket = int(os.environ.get("SPAN_DTW_MAX_TEXT_BUCKET", 256))
 
 # Negatives
 negative_mode = os.environ.get("NEGATIVE_MODE", "mixed").lower()

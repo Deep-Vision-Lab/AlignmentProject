@@ -75,8 +75,12 @@ def model_config(stride):
         "strip_span_text_edges": P.strip_span_text_edges,
         "span_feature_cache_size": P.span_feature_cache_size,
         "span_feature_cache_dtype": P.span_feature_cache_dtype,
+        "clear_span_cache_each_epoch": P.clear_span_cache_each_epoch,
         "span_negative_grad_mode": P.span_negative_grad_mode,
         "span_dtw_backend": P.span_dtw_backend,
+        "span_dtw_bucket_text_lengths": P.span_dtw_bucket_text_lengths,
+        "span_dtw_text_bucket_size": P.span_dtw_text_bucket_size,
+        "span_dtw_max_text_bucket": P.span_dtw_max_text_bucket,
         "valid_every_n_epochs": P.valid_every_n_epochs,
         "valid_max_batches": P.valid_max_batches,
         "log_memory_every_n_batches": P.log_memory_every_n_batches,
@@ -243,6 +247,11 @@ def _format_memory(text_encoder):
     return " ".join(parts)
 
 
+def clear_text_encoder_cache(text_encoder):
+    if hasattr(text_encoder, "clear_cache"):
+        text_encoder.clear_cache()
+
+
 def train_one_epoch(model, text_encoder, criterion, optimizer, scaler, loader):
     model.train()
     if has_trainable_parameters(text_encoder):
@@ -384,6 +393,7 @@ def train(model, text_encoder, criterion, train_loader, valid_loader, args, conf
             or ((epoch + 1) == args.epochs)
         )
         if should_validate:
+            clear_text_encoder_cache(text_encoder)
             val_loss, val_stats = validate(
                 model,
                 text_encoder,
@@ -391,6 +401,7 @@ def train(model, text_encoder, criterion, train_loader, valid_loader, args, conf
                 valid_loader,
                 max_batches=P.valid_max_batches,
             )
+            clear_text_encoder_cache(text_encoder)
         else:
             val_loss = float("nan")
             val_stats = {}
@@ -412,6 +423,10 @@ def train(model, text_encoder, criterion, train_loader, valid_loader, args, conf
                 args.job_id,
                 P.device,
             )
+            clear_text_encoder_cache(text_encoder)
+
+        if P.clear_span_cache_each_epoch:
+            clear_text_encoder_cache(text_encoder)
 
         history.append(train_loss)
         elapsed = time.time() - started
@@ -530,7 +545,11 @@ def main():
             f"max_span_chars={P.max_text_span_chars} max_windows_per_span={P.max_windows_per_span} "
             f"strip_text_edges={P.strip_span_text_edges} "
             f"span_cache_size={P.span_feature_cache_size} span_cache_dtype={P.span_feature_cache_dtype} "
+            f"clear_span_cache_each_epoch={P.clear_span_cache_each_epoch} "
             f"negative_grad_mode={P.span_negative_grad_mode} span_dtw_backend={P.span_dtw_backend} "
+            f"span_dtw_bucket_text_lengths={P.span_dtw_bucket_text_lengths} "
+            f"span_dtw_text_bucket_size={P.span_dtw_text_bucket_size} "
+            f"span_dtw_max_text_bucket={P.span_dtw_max_text_bucket} "
             "freeze_backbone=True",
             flush=True,
         )

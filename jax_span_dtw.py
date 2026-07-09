@@ -3,7 +3,6 @@ import warnings
 import torch
 
 
-INVALID_COST_THRESHOLD = 1e5
 _warned_dlpack_fallback = False
 
 
@@ -56,7 +55,12 @@ def _masked_softmin(candidates, gamma):
     return jnp.where(has_candidate, value, jnp.inf)
 
 
-def jax_soft_span_dtw_cost(transition_costs_dense, gamma):
+def jax_soft_span_dtw_cost(
+    transition_costs_dense,
+    actual_text_length,
+    actual_image_steps,
+    gamma,
+):
     _require_jax()
     max_span_len = transition_costs_dense.shape[0] - 1
     max_window_count = transition_costs_dense.shape[1] - 1
@@ -64,7 +68,6 @@ def jax_soft_span_dtw_cost(transition_costs_dense, gamma):
     image_steps = transition_costs_dense.shape[3] - 1
     dtype = transition_costs_dense.dtype
     inf = jnp.array(jnp.inf, dtype=dtype)
-    invalid_cost_threshold = jnp.asarray(INVALID_COST_THRESHOLD, dtype=dtype)
 
     dp = jnp.full((text_steps + 1, image_steps + 1), inf, dtype=dtype)
     dp = dp.at[0, 0].set(jnp.array(0.0, dtype=dtype))
@@ -88,9 +91,7 @@ def jax_soft_span_dtw_cost(transition_costs_dense, gamma):
                     safe_prev_j,
                 ]
                 value = prev_value + transition
-                # transition_costs_dense currently uses 1e6 for invalid entries.
-                # Treat both +inf and that finite sentinel as invalid.
-                valid_transition = jnp.isfinite(transition) & (transition < invalid_cost_threshold)
+                valid_transition = jnp.isfinite(transition)
                 valid_value = valid_index & jnp.isfinite(prev_value) & valid_transition
                 return jnp.where(valid_value, value, inf)
 
@@ -106,7 +107,13 @@ def jax_soft_span_dtw_cost(transition_costs_dense, gamma):
         return dp_in.at[i, :].set(row_values)
 
     dp = jax.lax.fori_loop(0, text_steps + 1, fill_row, dp)
-    return dp[text_steps, image_steps]
+    actual_text_length = jnp.asarray(actual_text_length, dtype=jnp.int32)
+    actual_image_steps = jnp.asarray(actual_image_steps, dtype=jnp.int32)
+    return jax.lax.dynamic_slice(
+        dp,
+        (actual_text_length, actual_image_steps),
+        (1, 1),
+    )[0, 0]
 
 
 if is_jax_available():
@@ -155,19 +162,38 @@ def _jax_to_torch(array, device, dtype):
 
 class JaxSpanDTWFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, transition_costs_dense, gamma, needs_gradient=True):
+    def forward(
+        ctx,
+        transition_costs_dense,
+        actual_text_length,
+        actual_image_steps,
+        gamma,
+        needs_gradient=True,
+    ):
         _require_jax()
         jax_transition_costs = _torch_to_jax(transition_costs_dense)
+        jax_actual_text_length = jnp.asarray(int(actual_text_length), dtype=jnp.int32)
+        jax_actual_image_steps = jnp.asarray(int(actual_image_steps), dtype=jnp.int32)
 
         if bool(needs_gradient):
-            cost, grad = _jax_value_and_grad(jax_transition_costs, float(gamma))
+            cost, grad = _jax_value_and_grad(
+                jax_transition_costs,
+                jax_actual_text_length,
+                jax_actual_image_steps,
+                float(gamma),
+            )
             grad_torch = _jax_to_torch(
                 grad,
                 device=transition_costs_dense.device,
                 dtype=transition_costs_dense.dtype,
             )
         else:
-            cost = jax_soft_span_dtw_cost(jax_transition_costs, float(gamma))
+            cost = jax_soft_span_dtw_cost(
+                jax_transition_costs,
+                jax_actual_text_length,
+                jax_actual_image_steps,
+                float(gamma),
+            )
             grad_torch = None
 
         cost_torch = _jax_to_torch(
@@ -183,6 +209,12 @@ class JaxSpanDTWFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         if not ctx.needs_gradient:
-            return None, None, None
+            return None, None, None, None, None
         (grad_transition_costs,) = ctx.saved_tensors
-        return grad_output.to(grad_transition_costs.dtype) * grad_transition_costs, None, None
+        return (
+            grad_output.to(grad_transition_costs.dtype) * grad_transition_costs,
+            None,
+            None,
+            None,
+            None,
+        )
