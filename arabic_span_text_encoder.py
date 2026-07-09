@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from dataclasses import dataclass
 import os
 
@@ -30,6 +31,8 @@ class ArabicSpanTextEncoder(nn.Module):
         freeze_backbone=True,
         device="cpu",
         strip_text_edges=True,
+        cache_size=2048,
+        cache_dtype="float16",
     ):
         super().__init__()
         self.model_name = model_name
@@ -37,6 +40,8 @@ class ArabicSpanTextEncoder(nn.Module):
         self.freeze_backbone = freeze_backbone
         self.device = torch.device(device)
         self.strip_text_edges = strip_text_edges
+        self.cache_size = int(cache_size)
+        self.cache_dtype = str(cache_dtype).lower()
 
         if AutoTokenizer is None or AutoModel is None:
             raise ImportError(
@@ -68,7 +73,10 @@ class ArabicSpanTextEncoder(nn.Module):
 
         self.projection = nn.Linear(hidden_size, output_dim)
         self.norm = nn.LayerNorm(output_dim)
-        self._span_feature_cache = {}
+        # LRU cache for frozen AraBERT pooled span features. This must be bounded:
+        # with hard negatives the old unbounded cache could store tens of thousands
+        # of unique generated negative strings and OOM host RAM during epoch 1.
+        self._span_feature_cache = OrderedDict()
         self.to(self.device)
 
     def train(self, mode=True):
@@ -132,12 +140,51 @@ class ArabicSpanTextEncoder(nn.Module):
     def clear_cache(self):
         self._span_feature_cache.clear()
 
+    def cache_size_current(self):
+        return len(self._span_feature_cache)
+
+    def _cache_storage_dtype(self):
+        if self.cache_dtype in {"float16", "fp16", "half"}:
+            return torch.float16
+        if self.cache_dtype in {"bfloat16", "bf16"}:
+            return torch.bfloat16
+        if self.cache_dtype in {"float32", "fp32", "full"}:
+            return torch.float32
+        raise ValueError(
+            "SPAN_FEATURE_CACHE_DTYPE must be one of float16, bfloat16, or float32. "
+            f"Got {self.cache_dtype!r}."
+        )
+
+    def _cache_get(self, text):
+        if self.cache_size == 0:
+            return None
+        cached = self._span_feature_cache.get(text)
+        if cached is None:
+            return None
+        self._span_feature_cache.move_to_end(text)
+        starts, lengths, spans, pooled_cpu = cached
+        pooled = pooled_cpu.to(self.device, non_blocking=True)
+        # Projection weights are normally float32. Convert cached half precision
+        # features back before Linear to avoid dtype mismatch outside autocast.
+        if pooled.dtype != self.projection.weight.dtype:
+            pooled = pooled.to(dtype=self.projection.weight.dtype)
+        return starts, lengths, spans, pooled
+
+    def _cache_put(self, text, starts, lengths, spans, pooled):
+        if self.cache_size == 0:
+            return
+        pooled_cpu = pooled.detach().to(device="cpu", dtype=self._cache_storage_dtype())
+        self._span_feature_cache[text] = (starts, lengths, spans, pooled_cpu)
+        self._span_feature_cache.move_to_end(text)
+        if self.cache_size > 0:
+            while len(self._span_feature_cache) > self.cache_size:
+                self._span_feature_cache.popitem(last=False)
+
     def _get_frozen_span_features(self, text):
         text = self._prepare_text(text)
-        cached = self._span_feature_cache.get(text)
+        cached = self._cache_get(text)
         if cached is not None:
-            starts, lengths, spans, pooled_cpu = cached
-            return starts, lengths, spans, pooled_cpu.to(self.device, non_blocking=True)
+            return cached
 
         starts, lengths, spans = self.enumerate_spans(text)
         if not spans:
@@ -159,12 +206,7 @@ class ArabicSpanTextEncoder(nn.Module):
             outputs = self.backbone(**backbone_inputs)
             pooled = self._pool_non_special_tokens(outputs.last_hidden_state, encoded)
 
-        self._span_feature_cache[text] = (
-            starts,
-            lengths,
-            spans,
-            pooled.detach().cpu(),
-        )
+        self._cache_put(text, starts, lengths, spans, pooled)
         return starts, lengths, spans, pooled
 
     def forward(self, text):
