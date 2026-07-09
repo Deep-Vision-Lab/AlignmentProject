@@ -17,6 +17,7 @@
 #SBATCH --time=03-00:00:00
 #SBATCH --tasks=1
 #SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
 
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ahmedmas@post.bgu.ac.il
@@ -75,6 +76,13 @@ export MAX_TEXT_SPAN_CHARS="${MAX_TEXT_SPAN_CHARS:-3}"
 export MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-4}"
 export STRIP_SPAN_TEXT_EDGES="${STRIP_SPAN_TEXT_EDGES:-1}"
 
+# Bounded frozen AraBERT span-feature cache. This prevents host RAM OOM when
+# many unique hard negatives are generated in one epoch.
+export SPAN_FEATURE_CACHE_SIZE="${SPAN_FEATURE_CACHE_SIZE:-2048}"
+export SPAN_FEATURE_CACHE_DTYPE="${SPAN_FEATURE_CACHE_DTYPE:-float16}"
+export LOG_MEMORY_EVERY_N_BATCHES="${LOG_MEMORY_EVERY_N_BATCHES:-25}"
+export SPAN_DTW_MEM_DEBUG="${SPAN_DTW_MEM_DEBUG:-0}"
+
 # Quality-focused contrastive setup. Override NUM_NEGATIVES=2 if the job is too slow.
 export BATCH_SIZE="${BATCH_SIZE:-32}"
 export NUM_NEGATIVES="${NUM_NEGATIVES:-4}"
@@ -85,9 +93,13 @@ export USE_BILSTM="${USE_BILSTM:-1}"
 # Full validation every 5 epochs. Set VALID_MAX_BATCHES=10 for faster monitoring.
 export VALID_EVERY_N_EPOCHS="${VALID_EVERY_N_EPOCHS:-5}"
 export VALID_MAX_BATCHES="${VALID_MAX_BATCHES:-0}"
-export DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-4}"
 
-DATA_DIR="${DATA_DIR:-DataSet/Synthetic_${LANGUAGE}}"
+# JAX is multithreaded. Forking PyTorch DataLoader workers after JAX has started
+# can deadlock or duplicate large memory state, so keep workers at 0 by default.
+export DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-0}"
+export ALLOW_JAX_DATALOADER_WORKERS="${ALLOW_JAX_DATALOADER_WORKERS:-0}"
+
+DATA_DIR="${DATA_DIR:-DataSet/Synthetic_${LANGUAGE}_${NUM_SAMPLES}}"
 JOB_ID="${JOB_ID:-span_jax_best_quality_win32_offline}"
 EPOCHS="${EPOCHS:-150}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
@@ -102,7 +114,7 @@ python -c "from transformers import AutoModel, AutoTokenizer; import os; model=o
 
 if [[ ! -d "${DATA_DIR}" ]]; then
   echo "ERROR: DATA_DIR does not exist: ${DATA_DIR}" >&2
-  echo "Set DATA_DIR=/path/to/dataset or create DataSet/Synthetic_${LANGUAGE}" >&2
+  echo "Set DATA_DIR=/path/to/dataset or create DataSet/Synthetic_${LANGUAGE}_${NUM_SAMPLES}." >&2
   exit 1
 fi
 
@@ -113,6 +125,8 @@ echo "JOB_ID=${JOB_ID}"
 echo "SPAN_DTW_BACKEND=${SPAN_DTW_BACKEND}"
 echo "BATCH_SIZE=${BATCH_SIZE} NUM_NEGATIVES=${NUM_NEGATIVES} SPAN_NEGATIVE_GRAD_MODE=${SPAN_NEGATIVE_GRAD_MODE}"
 echo "MAX_TEXT_SPAN_CHARS=${MAX_TEXT_SPAN_CHARS} MAX_WINDOWS_PER_SPAN=${MAX_WINDOWS_PER_SPAN}"
+echo "SPAN_FEATURE_CACHE_SIZE=${SPAN_FEATURE_CACHE_SIZE} SPAN_FEATURE_CACHE_DTYPE=${SPAN_FEATURE_CACHE_DTYPE}"
+echo "DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS} ALLOW_JAX_DATALOADER_WORKERS=${ALLOW_JAX_DATALOADER_WORKERS}"
 echo "VALID_EVERY_N_EPOCHS=${VALID_EVERY_N_EPOCHS} VALID_MAX_BATCHES=${VALID_MAX_BATCHES}"
 
 python train.py \
