@@ -1,3 +1,5 @@
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,8 +12,87 @@ from Parameters import (
 )
 
 
+_SPAN_DTW_MEM_DEBUG = os.environ.get("SPAN_DTW_MEM_DEBUG", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+_SPAN_DTW_MEM_DEBUG_INTERVAL = max(1, int(os.environ.get("SPAN_DTW_MEM_DEBUG_INTERVAL", "50")))
+_JAX_DENSE_CALL_COUNT = 0
+_JAX_DENSE_SHAPE_COUNTS = {}
+
+
 def softmin(values, gamma):
     return -gamma * torch.logsumexp(-values / gamma, dim=0)
+
+
+def _current_memory_summary():
+    parts = []
+    try:
+        import psutil
+
+        process = psutil.Process(os.getpid())
+        parts.append(f"rss_mb={process.memory_info().rss / (1024 ** 2):.1f}")
+    except Exception:
+        pass
+
+    if torch.cuda.is_available():
+        parts.extend(
+            [
+                f"cuda_alloc_mb={torch.cuda.memory_allocated() / (1024 ** 2):.1f}",
+                f"cuda_reserved_mb={torch.cuda.memory_reserved() / (1024 ** 2):.1f}",
+                f"cuda_max_alloc_mb={torch.cuda.max_memory_allocated() / (1024 ** 2):.1f}",
+            ]
+        )
+    return " ".join(parts)
+
+
+def _debug_jax_dense_tensor(span_encoding, image_embeddings, dense):
+    global _JAX_DENSE_CALL_COUNT
+    _JAX_DENSE_CALL_COUNT += 1
+    shape = tuple(dense.shape)
+    previous_shape_count = _JAX_DENSE_SHAPE_COUNTS.get(shape, 0)
+    _JAX_DENSE_SHAPE_COUNTS[shape] = previous_shape_count + 1
+
+    should_print = (
+        previous_shape_count == 0
+        or (_JAX_DENSE_CALL_COUNT % _SPAN_DTW_MEM_DEBUG_INTERVAL == 0)
+    )
+    if not should_print:
+        return
+
+    dense_mb = dense.numel() * dense.element_size() / (1024 ** 2)
+    print(
+        "[SPAN_MEM_DEBUG] "
+        f"jax_dense_call={_JAX_DENSE_CALL_COUNT} "
+        f"new_shape={previous_shape_count == 0} "
+        f"unique_dense_shapes={len(_JAX_DENSE_SHAPE_COUNTS)} "
+        f"dense_shape={shape} dense_mb={dense_mb:.2f} "
+        f"text_length={span_encoding.text_length} "
+        f"num_valid_spans={len(span_encoding.starts)} "
+        f"image_windows={image_embeddings.shape[0]} "
+        f"{_current_memory_summary()}",
+        flush=True,
+    )
+
+
+def _debug_jax_cost(span_encoding, image_embeddings, cost):
+    if not _SPAN_DTW_MEM_DEBUG:
+        return
+    detached = cost.detach()
+    is_bad = (not torch.isfinite(detached).all().item()) or detached.item() < -1e-3
+    if not is_bad:
+        return
+    print(
+        "[SPAN_MEM_DEBUG_BAD_COST] "
+        f"cost={detached.item()} "
+        f"text_length={span_encoding.text_length} "
+        f"image_windows={image_embeddings.shape[0]} "
+        f"num_valid_spans={len(span_encoding.starts)} "
+        f"{_current_memory_summary()}",
+        flush=True,
+    )
 
 
 def span_index_by_start_and_length(span_encoding):
@@ -413,6 +494,8 @@ class SpanContrastiveSoftDTW(nn.Module):
             self.max_windows_per_span,
             self.window_count_penalty,
         )
+        if _SPAN_DTW_MEM_DEBUG:
+            _debug_jax_dense_tensor(span_encoding, image_embeddings, transition_costs_dense)
 
         try:
             from jax_span_dtw import JaxSpanDTWFunction
@@ -423,7 +506,10 @@ class SpanContrastiveSoftDTW(nn.Module):
                 "SPAN_DTW_BACKEND=jax requires JAX to be installed. "
                 "Use SPAN_DTW_BACKEND=torch or install the JAX packages from requirements.txt."
             ) from exc
-        return JaxSpanDTWFunction.apply(transition_costs_dense, self.gamma)
+        needs_gradient = torch.is_grad_enabled() and transition_costs_dense.requires_grad
+        cost = JaxSpanDTWFunction.apply(transition_costs_dense, self.gamma, needs_gradient)
+        _debug_jax_cost(span_encoding, image_embeddings, cost)
+        return cost
 
     def forward_varlen(self, text_encoder, norm_img, pos_texts, neg_texts):
         losses = []

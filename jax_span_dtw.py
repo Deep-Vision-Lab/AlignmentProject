@@ -128,25 +128,33 @@ def _jax_to_torch(array, device, dtype):
 
 class JaxSpanDTWFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, transition_costs_dense, gamma):
+    def forward(ctx, transition_costs_dense, gamma, needs_gradient):
         _require_jax()
         jax_transition_costs = _torch_to_jax(transition_costs_dense)
-        cost, grad = _jax_value_and_grad(jax_transition_costs, float(gamma))
+        if needs_gradient:
+            cost, grad = _jax_value_and_grad(jax_transition_costs, float(gamma))
+        else:
+            cost = jax_soft_span_dtw_cost(jax_transition_costs, float(gamma))
+            grad = None
 
         cost_torch = _jax_to_torch(
             cost,
             device=transition_costs_dense.device,
             dtype=transition_costs_dense.dtype,
         )
-        grad_torch = _jax_to_torch(
-            grad,
-            device=transition_costs_dense.device,
-            dtype=transition_costs_dense.dtype,
-        )
-        ctx.save_for_backward(grad_torch)
+        ctx.has_gradient = bool(needs_gradient)
+        if ctx.has_gradient:
+            grad_torch = _jax_to_torch(
+                grad,
+                device=transition_costs_dense.device,
+                dtype=transition_costs_dense.dtype,
+            )
+            ctx.save_for_backward(grad_torch)
         return cost_torch.reshape(())
 
     @staticmethod
     def backward(ctx, grad_output):
+        if not ctx.has_gradient:
+            return None, None, None
         (grad_transition_costs,) = ctx.saved_tensors
-        return grad_output.to(grad_transition_costs.dtype) * grad_transition_costs, None
+        return grad_output.to(grad_transition_costs.dtype) * grad_transition_costs, None, None

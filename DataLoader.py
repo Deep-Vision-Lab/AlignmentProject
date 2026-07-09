@@ -25,7 +25,17 @@ transform = transforms.Compose([
 
 
 # ---------- Tunables for the DataLoader (override via env vars) ----------
-_num_workers = int(os.environ.get('DATALOADER_NUM_WORKERS', 4))
+_requested_num_workers = int(os.environ.get('DATALOADER_NUM_WORKERS', 4))
+_allow_jax_workers = os.environ.get('ALLOW_JAX_DATALOADER_WORKERS', '0').lower() in {
+    '1', 'true', 'yes', 'on'
+}
+if span_dtw_backend == 'jax' and not _allow_jax_workers:
+    # JAX is multithreaded; forking DataLoader workers after JAX starts can
+    # deadlock or duplicate large process state. Keep JAX span-DTW jobs single
+    # process unless explicitly overridden.
+    _num_workers = 0
+else:
+    _num_workers = _requested_num_workers
 _pin_memory = torch.cuda.is_available()
 _persistent_workers = _num_workers > 0
 _prefetch_factor = int(os.environ.get('DATALOADER_PREFETCH', 4)) if _num_workers > 0 else None
