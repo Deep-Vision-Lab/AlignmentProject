@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Visualize the strongest local image-to-image alignment between two line images.
+Visualize the strongest local image-to-image alignment between manuscript line images.
 
 This inference script uses the trained image encoder only:
 
@@ -16,7 +16,7 @@ line to align. It finds the best matching region. The visualization then masks
 only the longest consecutive aligned part from the SW path, not the whole
 min/max range if the path contains gaps.
 
-Example:
+Single-pair example:
     python scripts/visualize_sw_longest_alignment.py \
         --line1 DataSet/Synthetic_Arabic/images/img1_3.png \
         --line2 DataSet/Synthetic_Arabic/images/img2_3.png \
@@ -28,6 +28,30 @@ Example:
         --threshold 0.45 \
         --gap -0.3 \
         --use-flip
+
+Batch examples:
+    # Run indices 1, 2, 3, 10
+    python scripts/visualize_sw_longest_alignment.py \
+        --batch \
+        --data-dir DataSet/Synthetic_Arabic \
+        --indices 1,2,3,10 \
+        --weights Weights/span_jax_best_quality_win32/model_latest.pth \
+        --output-dir Results/Evaluation/SW_Longest \
+        --window-size 32 \
+        --stride 16 \
+        --use-flip
+
+    # Run 20 samples starting from index 1
+    python scripts/visualize_sw_longest_alignment.py \
+        --batch \
+        --data-dir DataSet/Synthetic_Arabic \
+        --start-index 1 \
+        --n-samples 20 \
+        --weights Weights/span_jax_best_quality_win32/model_latest.pth \
+        --output-dir Results/Evaluation/SW_Longest \
+        --window-size 32 \
+        --stride 16 \
+        --use-flip
 """
 
 from __future__ import annotations
@@ -35,9 +59,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from dataclasses import asdict, dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import matplotlib
 
@@ -438,47 +463,20 @@ def save_debug_heatmap(sim: np.ndarray, H: np.ndarray, path, output: str):
 
 
 # ---------------------------------------------------------------------------
-# CLI
+# Inference runners
 # ---------------------------------------------------------------------------
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Smith-Waterman inference visualization: mask longest consecutive aligned part."
-    )
-    parser.add_argument("--line1", required=True, help="Path to first line image")
-    parser.add_argument("--line2", required=True, help="Path to second line image")
-    parser.add_argument("--weights", required=True, help="Path to trained model .pth")
-    parser.add_argument("--output", required=True, help="Output visualization path")
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--window-size", type=int, default=32)
-    parser.add_argument("--stride", type=int, default=16)
-    parser.add_argument("--height", type=int, default=128)
-    parser.add_argument("--vector-size", type=int, default=128)
-    parser.add_argument("--threshold", type=float, default=0.45)
-    parser.add_argument("--gap", type=float, default=-0.3, help="Smith-Waterman gap penalty; should be negative")
-    parser.add_argument("--min-run-length", type=int, default=2)
-    parser.add_argument("--use-flip", action="store_true", help="Use when Arabic windows were encoded right-to-left")
-    parser.add_argument("--no-bilstm", action="store_true", help="Disable BiLSTM even if checkpoint config is missing")
-    parser.add_argument("--heatmap", action="store_true", help="Also save similarity/SW debug heatmap")
-    parser.add_argument("--json", default=None, help="Optional JSON output for selected run metadata")
-    args = parser.parse_args()
-
-    if args.gap > 0:
-        raise ValueError("--gap should be negative for Smith-Waterman, for example --gap -0.3")
-
-    model = load_image_model(
-        args.weights,
-        args.device,
-        window_size=args.window_size,
-        stride=args.stride,
-        vector_size=args.vector_size,
-        use_bilstm=False if args.no_bilstm else None,
-        use_flip=args.use_flip,
-    )
-
-    img1, tensor1 = preprocess_line_image(args.line1, target_height=args.height)
-    img2, tensor2 = preprocess_line_image(args.line2, target_height=args.height)
+def infer_one_pair(
+    model,
+    line1: str,
+    line2: str,
+    output: str,
+    args,
+    sample_id: Optional[str] = None,
+) -> Dict:
+    img1, tensor1 = preprocess_line_image(line1, target_height=args.height)
+    img2, tensor2 = preprocess_line_image(line2, target_height=args.height)
 
     emb1 = image_embeddings(model, tensor1, args.device)
     emb2 = image_embeddings(model, tensor2, args.device)
@@ -497,6 +495,7 @@ def main():
             "Try lowering --threshold or --min-run-length."
         )
 
+    title_suffix = f" sample {sample_id}" if sample_id is not None else ""
     draw_longest_run(
         img1,
         img2,
@@ -505,19 +504,21 @@ def main():
         num_windows2=emb2.shape[0],
         window_size=args.window_size,
         stride=args.stride,
-        output=args.output,
+        output=output,
         use_flip=args.use_flip,
-        title="Smith-Waterman longest consecutive local alignment",
+        title=f"Smith-Waterman longest consecutive local alignment{title_suffix}",
     )
 
     if args.heatmap:
-        save_debug_heatmap(sim, H, sw_path, args.output)
+        save_debug_heatmap(sim, H, sw_path, output)
 
-    json_output = args.json or os.path.splitext(args.output)[0] + ".json"
+    json_output = args.json if args.json and not args.batch else os.path.splitext(output)[0] + ".json"
     metadata = {
-        "line1": args.line1,
-        "line2": args.line2,
+        "sample_id": sample_id,
+        "line1": line1,
+        "line2": line2,
         "weights": args.weights,
+        "output": output,
         "num_windows_line1": int(emb1.shape[0]),
         "num_windows_line2": int(emb2.shape[0]),
         "threshold": float(args.threshold),
@@ -529,12 +530,196 @@ def main():
     with open(json_output, "w", encoding="utf-8") as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)
 
-    print(f"line1 windows: {emb1.shape[0]}")
-    print(f"line2 windows: {emb2.shape[0]}")
-    print(f"SW path length: {len(sw_path)}")
-    print(f"selected run: {run}")
-    print(f"Saved visualization: {args.output}")
-    print(f"Saved metadata: {json_output}")
+    print(
+        f"[{sample_id or 'single'}] "
+        f"line1_windows={emb1.shape[0]} line2_windows={emb2.shape[0]} "
+        f"sw_path={len(sw_path)} run_len={run.length} mean_sim={run.mean_similarity:.3f} "
+        f"saved={output}",
+        flush=True,
+    )
+    return metadata
+
+
+def parse_indices(indices: Optional[str]) -> Optional[List[int]]:
+    if indices is None or not indices.strip():
+        return None
+    values = []
+    for part in indices.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_s, end_s = part.split("-", 1)
+            start_i, end_i = int(start_s), int(end_s)
+            step = 1 if end_i >= start_i else -1
+            values.extend(range(start_i, end_i + step, step))
+        else:
+            values.append(int(part))
+    return values
+
+
+def discover_indices(data_dir: str) -> List[int]:
+    images_dir = os.path.join(data_dir, "images")
+    if not os.path.isdir(images_dir):
+        raise FileNotFoundError(f"Images directory not found: {images_dir}")
+    indices = []
+    pattern = re.compile(r"^img1_(\d+)\.png$")
+    for name in os.listdir(images_dir):
+        match = pattern.match(name)
+        if match:
+            idx = int(match.group(1))
+            if os.path.exists(os.path.join(images_dir, f"img2_{idx}.png")):
+                indices.append(idx)
+    return sorted(indices)
+
+
+def resolve_batch_indices(args) -> List[int]:
+    explicit = parse_indices(args.indices)
+    if explicit is not None:
+        return explicit
+
+    all_indices = discover_indices(args.data_dir)
+    if args.start_index is not None:
+        all_indices = [idx for idx in all_indices if idx >= args.start_index]
+    if args.n_samples is not None and args.n_samples > 0:
+        all_indices = all_indices[: args.n_samples]
+    return all_indices
+
+
+def paths_for_index(data_dir: str, idx: int) -> Tuple[str, str]:
+    images_dir = os.path.join(data_dir, "images")
+    return (
+        os.path.join(images_dir, f"img1_{idx}.png"),
+        os.path.join(images_dir, f"img2_{idx}.png"),
+    )
+
+
+def run_batch(model, args):
+    indices = resolve_batch_indices(args)
+    if not indices:
+        raise RuntimeError(
+            "No samples found for batch inference. Check --data-dir or pass --indices."
+        )
+
+    os.makedirs(args.output_dir, exist_ok=True)
+    print(f"Running batch inference on {len(indices)} samples", flush=True)
+
+    successes = []
+    failures = []
+    for pos, idx in enumerate(indices, start=1):
+        line1, line2 = paths_for_index(args.data_dir, idx)
+        output = os.path.join(args.output_dir, f"sw_longest_{idx}.png")
+        if not os.path.exists(line1) or not os.path.exists(line2):
+            message = f"missing image pair for index {idx}: {line1}, {line2}"
+            failures.append({"sample_id": idx, "error": message})
+            print(f"[{pos}/{len(indices)}] SKIP {message}", flush=True)
+            if args.strict:
+                raise FileNotFoundError(message)
+            continue
+
+        try:
+            metadata = infer_one_pair(
+                model,
+                line1,
+                line2,
+                output,
+                args,
+                sample_id=str(idx),
+            )
+            successes.append(metadata)
+        except Exception as exc:
+            failure = {"sample_id": idx, "line1": line1, "line2": line2, "error": str(exc)}
+            failures.append(failure)
+            print(f"[{pos}/{len(indices)}] FAILED sample {idx}: {exc}", flush=True)
+            if args.strict:
+                raise
+        finally:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    summary = {
+        "weights": args.weights,
+        "data_dir": args.data_dir,
+        "output_dir": args.output_dir,
+        "num_requested": len(indices),
+        "num_success": len(successes),
+        "num_failed": len(failures),
+        "threshold": float(args.threshold),
+        "gap": float(args.gap),
+        "min_run_length": int(args.min_run_length),
+        "successes": successes,
+        "failures": failures,
+    }
+    summary_path = os.path.join(args.output_dir, "summary.json")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
+    print(
+        f"Batch done: success={len(successes)} failed={len(failures)} summary={summary_path}",
+        flush=True,
+    )
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Smith-Waterman inference visualization: mask longest consecutive aligned part."
+    )
+    parser.add_argument("--weights", required=True, help="Path to trained model .pth")
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--window-size", type=int, default=32)
+    parser.add_argument("--stride", type=int, default=16)
+    parser.add_argument("--height", type=int, default=128)
+    parser.add_argument("--vector-size", type=int, default=128)
+    parser.add_argument("--threshold", type=float, default=0.45)
+    parser.add_argument("--gap", type=float, default=-0.3, help="Smith-Waterman gap penalty; should be negative")
+    parser.add_argument("--min-run-length", type=int, default=2)
+    parser.add_argument("--use-flip", action="store_true", help="Use when Arabic windows were encoded right-to-left")
+    parser.add_argument("--no-bilstm", action="store_true", help="Disable BiLSTM even if checkpoint config is missing")
+    parser.add_argument("--heatmap", action="store_true", help="Also save similarity/SW debug heatmap")
+    parser.add_argument("--strict", action="store_true", help="In batch mode, stop on first failed sample")
+
+    # Single-pair options.
+    parser.add_argument("--line1", default=None, help="Path to first line image")
+    parser.add_argument("--line2", default=None, help="Path to second line image")
+    parser.add_argument("--output", default=None, help="Output visualization path for single-pair mode")
+    parser.add_argument("--json", default=None, help="Optional JSON output for single-pair metadata")
+
+    # Batch options.
+    parser.add_argument("--batch", action="store_true", help="Run more than one sample")
+    parser.add_argument("--data-dir", default="DataSet/Synthetic_Arabic")
+    parser.add_argument("--indices", default=None, help="Comma/range list, e.g. 1,2,5-10")
+    parser.add_argument("--start-index", type=int, default=None)
+    parser.add_argument("--n-samples", type=int, default=None)
+    parser.add_argument("--output-dir", default="Results/Evaluation/SW_Longest")
+    args = parser.parse_args()
+
+    if args.gap > 0:
+        raise ValueError("--gap should be negative for Smith-Waterman, for example --gap -0.3")
+
+    model = load_image_model(
+        args.weights,
+        args.device,
+        window_size=args.window_size,
+        stride=args.stride,
+        vector_size=args.vector_size,
+        use_bilstm=False if args.no_bilstm else None,
+        use_flip=args.use_flip,
+    )
+
+    if args.batch:
+        run_batch(model, args)
+        return
+
+    if not args.line1 or not args.line2:
+        raise ValueError("Single-pair mode requires --line1 and --line2. Use --batch for multiple samples.")
+    output = args.output or "Results/Evaluation/sw_longest.png"
+    infer_one_pair(model, args.line1, args.line2, output, args)
 
 
 if __name__ == "__main__":
