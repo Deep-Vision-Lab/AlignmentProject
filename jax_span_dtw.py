@@ -3,7 +3,6 @@ import warnings
 import torch
 
 
-INF = 1e6
 _warned_dlpack_fallback = False
 
 
@@ -11,13 +10,12 @@ def _import_jax():
     try:
         import jax
         import jax.numpy as jnp
-        import jax.scipy.special as jsp_special
     except ImportError as exc:
-        return None, None, None, exc
-    return jax, jnp, jsp_special, None
+        return None, None, exc
+    return jax, jnp, None
 
 
-jax, jnp, jsp_special, _JAX_IMPORT_ERROR = _import_jax()
+jax, jnp, _JAX_IMPORT_ERROR = _import_jax()
 
 
 def is_jax_available():
@@ -30,12 +28,32 @@ def _require_jax():
             "SPAN_DTW_BACKEND=jax requires JAX to be installed. "
             "Use SPAN_DTW_BACKEND=torch or install the JAX packages from requirements.txt."
         ) from _JAX_IMPORT_ERROR
-    return jax, jnp, jsp_special
+    return jax, jnp
 
 
-def _jax_softmin(candidates, gamma):
+def _masked_softmin(candidates, gamma):
+    """Stable soft-min over only finite candidates.
+
+    Invalid transitions are represented by +inf and ignored completely. This
+    avoids fake invalid paths and prevents the impossible huge negative costs
+    seen in some logs.
+    """
     _require_jax()
-    return -gamma * jsp_special.logsumexp(-candidates / gamma)
+    finite = jnp.isfinite(candidates)
+    has_candidate = jnp.any(finite)
+    safe_candidates = jnp.where(finite, candidates, jnp.inf)
+    min_value = jnp.min(safe_candidates)
+    min_value = jnp.where(has_candidate, min_value, jnp.array(0.0, dtype=candidates.dtype))
+    gamma = jnp.asarray(gamma, dtype=candidates.dtype)
+    shifted = jnp.where(
+        finite,
+        jnp.exp(-(safe_candidates - min_value) / gamma),
+        jnp.array(0.0, dtype=candidates.dtype),
+    )
+    denom = jnp.sum(shifted)
+    tiny = jnp.asarray(jnp.finfo(candidates.dtype).tiny, dtype=candidates.dtype)
+    value = min_value - gamma * jnp.log(jnp.maximum(denom, tiny))
+    return jnp.where(has_candidate, value, jnp.inf)
 
 
 def jax_soft_span_dtw_cost(transition_costs_dense, gamma):
@@ -45,7 +63,7 @@ def jax_soft_span_dtw_cost(transition_costs_dense, gamma):
     text_steps = transition_costs_dense.shape[2] - 1
     image_steps = transition_costs_dense.shape[3] - 1
     dtype = transition_costs_dense.dtype
-    inf = jnp.array(INF, dtype=dtype)
+    inf = jnp.array(jnp.inf, dtype=dtype)
 
     dp = jnp.full((text_steps + 1, image_steps + 1), inf, dtype=dtype)
     dp = dp.at[0, 0].set(jnp.array(0.0, dtype=dtype))
@@ -58,20 +76,25 @@ def jax_soft_span_dtw_cost(transition_costs_dense, gamma):
             def candidate(span_len, window_count):
                 prev_i = i - span_len
                 prev_j = j - window_count
-                valid = (i > 0) & (j > 0) & (prev_i >= 0) & (prev_j >= 0)
+                valid_index = (i > 0) & (j > 0) & (prev_i >= 0) & (prev_j >= 0)
                 safe_prev_i = jnp.maximum(prev_i, 0)
                 safe_prev_j = jnp.maximum(prev_j, 0)
-                value = (
-                    dp_in[safe_prev_i, safe_prev_j]
-                    + transition_costs_dense[span_len, window_count, safe_prev_i, safe_prev_j]
-                )
-                return jnp.where(valid, value, inf)
+                prev_value = dp_in[safe_prev_i, safe_prev_j]
+                transition = transition_costs_dense[
+                    span_len,
+                    window_count,
+                    safe_prev_i,
+                    safe_prev_j,
+                ]
+                value = prev_value + transition
+                valid_value = valid_index & jnp.isfinite(prev_value) & jnp.isfinite(transition)
+                return jnp.where(valid_value, value, inf)
 
             candidates = []
             for span_len in range(1, max_span_len + 1):
                 for window_count in range(1, max_window_count + 1):
                     candidates.append(candidate(span_len, window_count))
-            value = _jax_softmin(jnp.stack(candidates), gamma)
+            value = _masked_softmin(jnp.stack(candidates), gamma)
             return jnp.where((i == 0) & (j == 0), dp_in[0, 0], value)
 
         columns = jnp.arange(image_steps + 1)
@@ -128,33 +151,25 @@ def _jax_to_torch(array, device, dtype):
 
 class JaxSpanDTWFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, transition_costs_dense, gamma, needs_gradient):
+    def forward(ctx, transition_costs_dense, gamma):
         _require_jax()
         jax_transition_costs = _torch_to_jax(transition_costs_dense)
-        if needs_gradient:
-            cost, grad = _jax_value_and_grad(jax_transition_costs, float(gamma))
-        else:
-            cost = jax_soft_span_dtw_cost(jax_transition_costs, float(gamma))
-            grad = None
+        cost, grad = _jax_value_and_grad(jax_transition_costs, float(gamma))
 
         cost_torch = _jax_to_torch(
             cost,
             device=transition_costs_dense.device,
             dtype=transition_costs_dense.dtype,
         )
-        ctx.has_gradient = bool(needs_gradient)
-        if ctx.has_gradient:
-            grad_torch = _jax_to_torch(
-                grad,
-                device=transition_costs_dense.device,
-                dtype=transition_costs_dense.dtype,
-            )
-            ctx.save_for_backward(grad_torch)
+        grad_torch = _jax_to_torch(
+            grad,
+            device=transition_costs_dense.device,
+            dtype=transition_costs_dense.dtype,
+        )
+        ctx.save_for_backward(grad_torch)
         return cost_torch.reshape(())
 
     @staticmethod
     def backward(ctx, grad_output):
-        if not ctx.has_gradient:
-            return None, None, None
         (grad_transition_costs,) = ctx.saved_tensors
-        return grad_output.to(grad_transition_costs.dtype) * grad_transition_costs, None, None
+        return grad_output.to(grad_transition_costs.dtype) * grad_transition_costs, None
