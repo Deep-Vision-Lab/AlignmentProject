@@ -11,20 +11,11 @@ This inference script uses the trained image encoder only:
     longest consecutive diagonal aligned run
     colored masks + arrow
 
-Unlike Needleman-Wunsch, Smith-Waterman is local: it does not force the whole
-line to align. It finds the best matching region. The visualization then masks
-only the longest consecutive aligned part from the SW path, not the whole
-min/max range if the path contains gaps.
+It saves only image outputs:
+    - main visualization PNG
+    - optional heatmap PNG when --heatmap is passed
 
-The Smith-Waterman substitution score is controlled by:
-
-    --threshold : pivot between match and mismatch
-    --match     : reward multiplier above the threshold
-    --mismatch  : penalty multiplier below the threshold, should be negative
-
-The default --match 1.0 --mismatch -1.0 preserves the previous behavior:
-
-    substitution = similarity - threshold
+No per-sample JSON files and no summary JSON are created.
 
 Single-pair example:
     python scripts/visualize_sw_longest_alignment.py \
@@ -35,10 +26,11 @@ Single-pair example:
         --window-size 32 \
         --stride 16 \
         --height 128 \
-        --threshold 0.60 \
+        --threshold 0.65 \
         --match 1.0 \
-        --mismatch -1.5 \
-        --gap -0.5 \
+        --mismatch -2.0 \
+        --gap -0.6 \
+        --min-run-length 5 \
         --use-flip
 
 Batch example:
@@ -50,21 +42,22 @@ Batch example:
         --output-dir Results/Evaluation/SW_Longest \
         --window-size 32 \
         --stride 16 \
-        --threshold 0.60 \
+        --height 128 \
+        --threshold 0.65 \
         --match 1.0 \
-        --mismatch -1.5 \
-        --gap -0.5 \
+        --mismatch -2.0 \
+        --gap -0.6 \
+        --min-run-length 5 \
         --use-flip
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import matplotlib
@@ -181,51 +174,36 @@ def cosine_similarity_matrix(emb1: torch.Tensor, emb2: torch.Tensor) -> np.ndarr
 def substitution_score(
     similarity: float,
     threshold: float,
-    match_score: float,
-    mismatch_score: float,
+    match_reward: float,
+    mismatch_penalty: float,
 ) -> float:
-    """Continuous Smith-Waterman substitution score.
+    """Convert cosine similarity into a Smith-Waterman substitution score.
 
-    If similarity is above the threshold, the pair receives positive reward:
+    When similarity is above the threshold, the pair is a match and receives a
+    positive score controlled by --match.
 
-        match_score * (similarity - threshold)
+    When similarity is below the threshold, the pair is a mismatch and receives
+    a negative score controlled by --mismatch.
 
-    If similarity is below the threshold, the pair receives negative penalty:
-
-        mismatch_score * (threshold - similarity)
-
-    With match_score=1.0 and mismatch_score=-1.0 this is exactly equivalent to:
-
-        similarity - threshold
+    Defaults --match 1.0 and --mismatch -1.0 reproduce the old formula:
+        score = similarity - threshold
     """
-    similarity = float(similarity)
     if similarity >= threshold:
-        return float(match_score) * (similarity - threshold)
-    return float(mismatch_score) * (threshold - similarity)
+        return match_reward * (similarity - threshold)
+    return mismatch_penalty * (threshold - similarity)
 
 
 def smith_waterman(
     sim: np.ndarray,
     threshold: float = 0.45,
     gap_penalty: float = -0.3,
-    match_score: float = 1.0,
-    mismatch_score: float = -1.0,
+    match_reward: float = 1.0,
+    mismatch_penalty: float = -1.0,
 ):
     """Return the best local Smith-Waterman path.
 
     sim[i, j] is cosine similarity between window i from line1 and window j
     from line2.
-
-    The substitution score is controlled by threshold/match/mismatch:
-
-        if sim >= threshold:
-            substitution = match * (sim - threshold)
-        else:
-            substitution = mismatch * (threshold - sim)
-
-    The default match=1.0, mismatch=-1.0 preserves the old scoring rule:
-
-        substitution = sim - threshold
 
     Returns:
         path: list of (op, i, j), where op is "diag", "up", or "left".
@@ -244,10 +222,10 @@ def smith_waterman(
     for i in range(1, n + 1):
         for j in range(1, m + 1):
             sub = substitution_score(
-                sim[i - 1, j - 1],
+                float(sim[i - 1, j - 1]),
                 threshold=threshold,
-                match_score=match_score,
-                mismatch_score=mismatch_score,
+                match_reward=match_reward,
+                mismatch_penalty=mismatch_penalty,
             )
             diag = H[i - 1, j - 1] + sub
             up = H[i - 1, j] + gap_penalty
@@ -300,15 +278,8 @@ def longest_consecutive_diagonal_run(
 ) -> Optional[ConsecutiveRun]:
     """Extract the longest consecutive diagonal aligned part from an SW path.
 
-    The SW path can contain gaps. If we mask min/max over the whole path, the
-    visualized rectangle may include unrelated gap regions. This function keeps
-    only the longest run where both indices advance together:
-
+    Keeps only the longest run where both indices advance together:
         (i, j), (i+1, j+1), (i+2, j+2), ...
-
-    Tie-breaks:
-        1. longer run
-        2. higher mean similarity
     """
     diag_pairs = [(i, j) for op, i, j in path if op == "diag" and i is not None and j is not None]
     if not diag_pairs:
@@ -532,8 +503,8 @@ def infer_one_pair(
         sim,
         threshold=args.threshold,
         gap_penalty=args.gap,
-        match_score=args.match,
-        mismatch_score=args.mismatch,
+        match_reward=args.match,
+        mismatch_penalty=args.mismatch,
     )
     run = longest_consecutive_diagonal_run(
         sw_path,
@@ -544,8 +515,8 @@ def infer_one_pair(
     if run is None:
         raise RuntimeError(
             "Smith-Waterman found no consecutive diagonal aligned run. "
-            "Try lowering --threshold, lowering --min-run-length, increasing --match, "
-            "or making --mismatch/--gap less negative."
+            "Try lowering --threshold, making --mismatch less negative, "
+            "or lowering --min-run-length."
         )
 
     title_suffix = f" sample {sample_id}" if sample_id is not None else ""
@@ -565,31 +536,24 @@ def infer_one_pair(
     if args.heatmap:
         save_debug_heatmap(sim, H, sw_path, output)
 
-    json_output = args.json if args.json and not args.batch else os.path.splitext(output)[0] + ".json"
     metadata = {
         "sample_id": sample_id,
         "line1": line1,
         "line2": line2,
-        "weights": args.weights,
         "output": output,
         "num_windows_line1": int(emb1.shape[0]),
         "num_windows_line2": int(emb2.shape[0]),
-        "threshold": float(args.threshold),
-        "match": float(args.match),
-        "mismatch": float(args.mismatch),
-        "gap": float(args.gap),
         "sw_path_length": int(len(sw_path)),
-        "selected_longest_consecutive_run": asdict(run),
+        "run_length": int(run.length),
+        "mean_similarity": float(run.mean_similarity),
+        "sw_score": float(run.sw_score),
     }
-    os.makedirs(os.path.dirname(json_output) or ".", exist_ok=True)
-    with open(json_output, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, ensure_ascii=False, indent=2)
 
     print(
         f"[{sample_id or 'single'}] "
         f"line1_windows={emb1.shape[0]} line2_windows={emb2.shape[0]} "
         f"sw_path={len(sw_path)} run_len={run.length} mean_sim={run.mean_similarity:.3f} "
-        f"score={run.sw_score:.3f} saved={output}",
+        f"saved={output}",
         flush=True,
     )
     return metadata
@@ -692,30 +656,21 @@ def run_batch(model, args):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    summary = {
-        "weights": args.weights,
-        "data_dir": args.data_dir,
-        "output_dir": args.output_dir,
-        "num_requested": len(indices),
-        "num_success": len(successes),
-        "num_failed": len(failures),
-        "threshold": float(args.threshold),
-        "match": float(args.match),
-        "mismatch": float(args.mismatch),
-        "gap": float(args.gap),
-        "min_run_length": int(args.min_run_length),
-        "successes": successes,
-        "failures": failures,
-    }
-    summary_path = os.path.join(args.output_dir, "summary.json")
-    with open(summary_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
+    print("\nBatch done")
+    print(f"  requested: {len(indices)}")
+    print(f"  success  : {len(successes)}")
+    print(f"  failed   : {len(failures)}")
+    if successes:
+        run_lengths = [item["run_length"] for item in successes]
+        mean_sims = [item["mean_similarity"] for item in successes]
+        print(f"  mean run length: {float(np.mean(run_lengths)):.2f}")
+        print(f"  mean similarity: {float(np.mean(mean_sims)):.3f}")
+    if failures:
+        print("  failed samples:")
+        for failure in failures:
+            print(f"    {failure['sample_id']}: {failure['error']}")
 
-    print(
-        f"Batch done: success={len(successes)} failed={len(failures)} summary={summary_path}",
-        flush=True,
-    )
-    return summary
+    return {"successes": successes, "failures": failures}
 
 
 # ---------------------------------------------------------------------------
@@ -733,9 +688,9 @@ def main():
     parser.add_argument("--stride", type=int, default=16)
     parser.add_argument("--height", type=int, default=128)
     parser.add_argument("--vector-size", type=int, default=128)
-    parser.add_argument("--threshold", type=float, default=0.45, help="Similarity pivot between match and mismatch")
-    parser.add_argument("--match", type=float, default=1.0, help="Reward multiplier for similarities above threshold")
-    parser.add_argument("--mismatch", type=float, default=-1.0, help="Penalty multiplier for similarities below threshold; should be negative")
+    parser.add_argument("--threshold", type=float, default=0.45)
+    parser.add_argument("--match", type=float, default=1.0, help="Reward scale for similarities above threshold")
+    parser.add_argument("--mismatch", type=float, default=-1.0, help="Penalty scale for similarities below threshold; should be negative")
     parser.add_argument("--gap", type=float, default=-0.3, help="Smith-Waterman gap penalty; should be negative")
     parser.add_argument("--min-run-length", type=int, default=2)
     parser.add_argument("--use-flip", action="store_true", help="Use when Arabic windows were encoded right-to-left")
@@ -747,7 +702,6 @@ def main():
     parser.add_argument("--line1", default=None, help="Path to first line image")
     parser.add_argument("--line2", default=None, help="Path to second line image")
     parser.add_argument("--output", default=None, help="Output visualization path for single-pair mode")
-    parser.add_argument("--json", default=None, help="Optional JSON output for single-pair metadata")
 
     # Batch options.
     parser.add_argument("--batch", action="store_true", help="Run more than one sample")
@@ -760,10 +714,10 @@ def main():
 
     if args.gap > 0:
         raise ValueError("--gap should be negative for Smith-Waterman, for example --gap -0.3")
-    if args.match < 0:
-        raise ValueError("--match should be non-negative, for example --match 1.0")
     if args.mismatch > 0:
-        raise ValueError("--mismatch should be negative or zero, for example --mismatch -1.0")
+        raise ValueError("--mismatch should be negative, for example --mismatch -2.0")
+    if args.match <= 0:
+        raise ValueError("--match should be positive, for example --match 1.0")
 
     model = load_image_model(
         args.weights,
