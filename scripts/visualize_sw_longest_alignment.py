@@ -16,41 +16,44 @@ line to align. It finds the best matching region. The visualization then masks
 only the longest consecutive aligned part from the SW path, not the whole
 min/max range if the path contains gaps.
 
+The Smith-Waterman substitution score is controlled by:
+
+    --threshold : pivot between match and mismatch
+    --match     : reward multiplier above the threshold
+    --mismatch  : penalty multiplier below the threshold, should be negative
+
+The default --match 1.0 --mismatch -1.0 preserves the previous behavior:
+
+    substitution = similarity - threshold
+
 Single-pair example:
     python scripts/visualize_sw_longest_alignment.py \
         --line1 DataSet/Synthetic_Arabic/images/img1_3.png \
         --line2 DataSet/Synthetic_Arabic/images/img2_3.png \
-        --weights Weights/span_jax_best_quality_win32/model_latest.pth \
+        --weights Weights/span_jax_best_quality_win32_offline/model_latest.pth \
         --output Results/Evaluation/sw_longest_3.png \
         --window-size 32 \
         --stride 16 \
         --height 128 \
-        --threshold 0.45 \
-        --gap -0.3 \
+        --threshold 0.60 \
+        --match 1.0 \
+        --mismatch -1.5 \
+        --gap -0.5 \
         --use-flip
 
-Batch examples:
-    # Run indices 1, 2, 3, 10
+Batch example:
     python scripts/visualize_sw_longest_alignment.py \
         --batch \
         --data-dir DataSet/Synthetic_Arabic \
-        --indices 1,2,3,10 \
-        --weights Weights/span_jax_best_quality_win32/model_latest.pth \
+        --indices 1-10 \
+        --weights Weights/span_jax_best_quality_win32_offline/model_latest.pth \
         --output-dir Results/Evaluation/SW_Longest \
         --window-size 32 \
         --stride 16 \
-        --use-flip
-
-    # Run 20 samples starting from index 1
-    python scripts/visualize_sw_longest_alignment.py \
-        --batch \
-        --data-dir DataSet/Synthetic_Arabic \
-        --start-index 1 \
-        --n-samples 20 \
-        --weights Weights/span_jax_best_quality_win32/model_latest.pth \
-        --output-dir Results/Evaluation/SW_Longest \
-        --window-size 32 \
-        --stride 16 \
+        --threshold 0.60 \
+        --match 1.0 \
+        --mismatch -1.5 \
+        --gap -0.5 \
         --use-flip
 """
 
@@ -175,16 +178,54 @@ def cosine_similarity_matrix(emb1: torch.Tensor, emb2: torch.Tensor) -> np.ndarr
 # ---------------------------------------------------------------------------
 
 
+def substitution_score(
+    similarity: float,
+    threshold: float,
+    match_score: float,
+    mismatch_score: float,
+) -> float:
+    """Continuous Smith-Waterman substitution score.
+
+    If similarity is above the threshold, the pair receives positive reward:
+
+        match_score * (similarity - threshold)
+
+    If similarity is below the threshold, the pair receives negative penalty:
+
+        mismatch_score * (threshold - similarity)
+
+    With match_score=1.0 and mismatch_score=-1.0 this is exactly equivalent to:
+
+        similarity - threshold
+    """
+    similarity = float(similarity)
+    if similarity >= threshold:
+        return float(match_score) * (similarity - threshold)
+    return float(mismatch_score) * (threshold - similarity)
+
+
 def smith_waterman(
     sim: np.ndarray,
     threshold: float = 0.45,
     gap_penalty: float = -0.3,
+    match_score: float = 1.0,
+    mismatch_score: float = -1.0,
 ):
     """Return the best local Smith-Waterman path.
 
     sim[i, j] is cosine similarity between window i from line1 and window j
-    from line2. The substitution score is sim[i, j] - threshold, so matches
-    below the threshold hurt the path and can reset it to 0.
+    from line2.
+
+    The substitution score is controlled by threshold/match/mismatch:
+
+        if sim >= threshold:
+            substitution = match * (sim - threshold)
+        else:
+            substitution = mismatch * (threshold - sim)
+
+    The default match=1.0, mismatch=-1.0 preserves the old scoring rule:
+
+        substitution = sim - threshold
 
     Returns:
         path: list of (op, i, j), where op is "diag", "up", or "left".
@@ -202,7 +243,12 @@ def smith_waterman(
 
     for i in range(1, n + 1):
         for j in range(1, m + 1):
-            sub = float(sim[i - 1, j - 1]) - threshold
+            sub = substitution_score(
+                sim[i - 1, j - 1],
+                threshold=threshold,
+                match_score=match_score,
+                mismatch_score=mismatch_score,
+            )
             diag = H[i - 1, j - 1] + sub
             up = H[i - 1, j] + gap_penalty
             left = H[i, j - 1] + gap_penalty
@@ -482,7 +528,13 @@ def infer_one_pair(
     emb2 = image_embeddings(model, tensor2, args.device)
     sim = cosine_similarity_matrix(emb1, emb2)
 
-    sw_path, sw_score, H = smith_waterman(sim, threshold=args.threshold, gap_penalty=args.gap)
+    sw_path, sw_score, H = smith_waterman(
+        sim,
+        threshold=args.threshold,
+        gap_penalty=args.gap,
+        match_score=args.match,
+        mismatch_score=args.mismatch,
+    )
     run = longest_consecutive_diagonal_run(
         sw_path,
         sim,
@@ -492,7 +544,8 @@ def infer_one_pair(
     if run is None:
         raise RuntimeError(
             "Smith-Waterman found no consecutive diagonal aligned run. "
-            "Try lowering --threshold or --min-run-length."
+            "Try lowering --threshold, lowering --min-run-length, increasing --match, "
+            "or making --mismatch/--gap less negative."
         )
 
     title_suffix = f" sample {sample_id}" if sample_id is not None else ""
@@ -522,6 +575,8 @@ def infer_one_pair(
         "num_windows_line1": int(emb1.shape[0]),
         "num_windows_line2": int(emb2.shape[0]),
         "threshold": float(args.threshold),
+        "match": float(args.match),
+        "mismatch": float(args.mismatch),
         "gap": float(args.gap),
         "sw_path_length": int(len(sw_path)),
         "selected_longest_consecutive_run": asdict(run),
@@ -534,7 +589,7 @@ def infer_one_pair(
         f"[{sample_id or 'single'}] "
         f"line1_windows={emb1.shape[0]} line2_windows={emb2.shape[0]} "
         f"sw_path={len(sw_path)} run_len={run.length} mean_sim={run.mean_similarity:.3f} "
-        f"saved={output}",
+        f"score={run.sw_score:.3f} saved={output}",
         flush=True,
     )
     return metadata
@@ -645,6 +700,8 @@ def run_batch(model, args):
         "num_success": len(successes),
         "num_failed": len(failures),
         "threshold": float(args.threshold),
+        "match": float(args.match),
+        "mismatch": float(args.mismatch),
         "gap": float(args.gap),
         "min_run_length": int(args.min_run_length),
         "successes": successes,
@@ -676,7 +733,9 @@ def main():
     parser.add_argument("--stride", type=int, default=16)
     parser.add_argument("--height", type=int, default=128)
     parser.add_argument("--vector-size", type=int, default=128)
-    parser.add_argument("--threshold", type=float, default=0.45)
+    parser.add_argument("--threshold", type=float, default=0.45, help="Similarity pivot between match and mismatch")
+    parser.add_argument("--match", type=float, default=1.0, help="Reward multiplier for similarities above threshold")
+    parser.add_argument("--mismatch", type=float, default=-1.0, help="Penalty multiplier for similarities below threshold; should be negative")
     parser.add_argument("--gap", type=float, default=-0.3, help="Smith-Waterman gap penalty; should be negative")
     parser.add_argument("--min-run-length", type=int, default=2)
     parser.add_argument("--use-flip", action="store_true", help="Use when Arabic windows were encoded right-to-left")
@@ -701,6 +760,10 @@ def main():
 
     if args.gap > 0:
         raise ValueError("--gap should be negative for Smith-Waterman, for example --gap -0.3")
+    if args.match < 0:
+        raise ValueError("--match should be non-negative, for example --match 1.0")
+    if args.mismatch > 0:
+        raise ValueError("--mismatch should be negative or zero, for example --mismatch -1.0")
 
     model = load_image_model(
         args.weights,
