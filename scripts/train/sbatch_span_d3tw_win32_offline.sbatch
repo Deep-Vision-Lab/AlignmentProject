@@ -7,7 +7,7 @@
 #   bash scripts/train/run_span_d3tw_offline.sh
 #
 # Override settings at submit time, for example:
-#   USE_WANDB=1 NUM_NEGATIVES=2 LOCAL_HARD_NEGATIVE_WEIGHT=0.1 sbatch scripts/train/sbatch_span_d3tw_win32_offline.sbatch
+#   USE_WANDB=1 NUM_NEGATIVES=4 LOCAL_HARD_NEGATIVE_TOP_K=8 sbatch scripts/train/sbatch_span_d3tw_win32_offline.sbatch
 #
 # This job runs Hugging Face in offline mode. Make sure the Arabic model is
 # cached before submitting:
@@ -90,9 +90,12 @@ export SPAN_DTW_MAX_TEXT_BUCKET="${SPAN_DTW_MAX_TEXT_BUCKET:-256}"
 export LOG_MEMORY_EVERY_N_BATCHES="${LOG_MEMORY_EVERY_N_BATCHES:-25}"
 export SPAN_DTW_MEM_DEBUG="${SPAN_DTW_MEM_DEBUG:-0}"
 
-# Quality-focused contrastive setup. Override NUM_NEGATIVES=2 if the job is too slow.
+# Speed-focused contrastive setup.
+# Runtime scales almost linearly with NUM_NEGATIVES because every negative needs
+# expensive span-DTW scoring. Start with 1, then try NUM_NEGATIVES=2 or 4 only
+# after the model is stable and you want a slower high-quality run.
 export BATCH_SIZE="${BATCH_SIZE:-32}"
-export NUM_NEGATIVES="${NUM_NEGATIVES:-4}"
+export NUM_NEGATIVES="${NUM_NEGATIVES:-1}"
 export NEGATIVE_MODE="${NEGATIVE_MODE:-mixed}"
 export SPAN_NEGATIVE_GRAD_MODE="${SPAN_NEGATIVE_GRAD_MODE:-hardest}"
 export USE_BILSTM="${USE_BILSTM:-1}"
@@ -104,7 +107,7 @@ export USE_BILSTM="${USE_BILSTM:-1}"
 export USE_LOCAL_HARD_NEGATIVES="${USE_LOCAL_HARD_NEGATIVES:-1}"
 export LOCAL_HARD_NEGATIVE_WEIGHT="${LOCAL_HARD_NEGATIVE_WEIGHT:-0.2}"
 export LOCAL_HARD_NEGATIVE_MARGIN="${LOCAL_HARD_NEGATIVE_MARGIN:-0.25}"
-export LOCAL_HARD_NEGATIVE_TOP_K="${LOCAL_HARD_NEGATIVE_TOP_K:-8}"
+export LOCAL_HARD_NEGATIVE_TOP_K="${LOCAL_HARD_NEGATIVE_TOP_K:-4}"
 export LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS="${LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS:-2}"
 export LOCAL_HARD_NEGATIVE_MIN_INK="${LOCAL_HARD_NEGATIVE_MIN_INK:-0.02}"
 
@@ -113,9 +116,10 @@ export LOCAL_HARD_NEGATIVE_MIN_INK="${LOCAL_HARD_NEGATIVE_MIN_INK:-0.02}"
 export IMAGE_VARIANCE_LOSS_WEIGHT="${IMAGE_VARIANCE_LOSS_WEIGHT:-0.01}"
 export IMAGE_VARIANCE_TARGET_STD="${IMAGE_VARIANCE_TARGET_STD:-0.05}"
 
-# Full validation every 5 epochs. Set VALID_MAX_BATCHES=10 for faster monitoring.
+# Validate on a small subset by default. Full validation every 5 epochs was
+# expensive and does not help debug the very slow first training run.
 export VALID_EVERY_N_EPOCHS="${VALID_EVERY_N_EPOCHS:-5}"
-export VALID_MAX_BATCHES="${VALID_MAX_BATCHES:-0}"
+export VALID_MAX_BATCHES="${VALID_MAX_BATCHES:-10}"
 
 # JAX is multithreaded. Forking PyTorch DataLoader workers after JAX has started
 # can deadlock or duplicate large memory state, so keep workers at 0 by default.
@@ -129,7 +133,7 @@ if [[ -z "${DATA_DIR:-}" ]]; then
     DATA_DIR="DataSet/Synthetic_${LANGUAGE}"
   fi
 fi
-JOB_ID="${JOB_ID:-improve_neg_win32_offline}"
+JOB_ID="${JOB_ID:-improve_neg_win32_fast}"
 EPOCHS="${EPOCHS:-150}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
 
@@ -147,7 +151,7 @@ if [[ ! -d "${DATA_DIR}" ]]; then
   exit 1
 fi
 
-echo "Starting improve_neg JAX span-DTW training"
+echo "Starting improve_neg FAST JAX span-DTW training"
 echo "PROJECT_DIR=${PROJECT_DIR}"
 echo "DATA_DIR=${DATA_DIR}"
 echo "JOB_ID=${JOB_ID}"
