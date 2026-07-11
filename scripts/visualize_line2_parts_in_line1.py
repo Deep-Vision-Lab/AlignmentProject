@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Search selected fixed-width parts from line2 inside the full line1 image.
+Randomly choose fixed-width parts from line2 and search where they appear in line1.
 
 The script:
   1. loads the trained image encoder,
   2. takes the whole first line image as the search target,
-  3. crops N fixed-width parts from the second line image,
+  3. randomly crops N fixed-width parts from the second line image by default,
   4. for every cropped part, searches the full line1 for the consecutive
      window block with the highest diagonal similarity to that part,
   5. accepts the block only when its similarity is above --threshold,
@@ -14,19 +14,22 @@ The script:
   8. connects each chosen part to its masked match in line1 using the same color.
 
 Important:
-  The matched mask in line1 is forced to have exactly --part-width original pixels.
-  The search uses consecutive line1 windows, not Smith-Waterman. For a cropped
-  part with K windows, it checks every K-window consecutive block in line1 and
-  chooses the block with the highest mean diagonal cosine similarity:
+  - The matched mask in line1 is forced to have exactly --part-width original pixels.
+  - The search uses consecutive line1 windows, not Smith-Waterman. For a cropped
+    part with K windows, it checks every K-window consecutive block in line1 and
+    chooses the block with the highest mean diagonal cosine similarity:
 
-      score(start) = mean_k cosine(line1[start+k], part[k])
+        score(start) = mean_k cosine(line1[start+k], part[k])
+
+  - Unless --part-starts is given, chosen line2 parts are random on every run.
+    Use --random-seed for reproducible random choices.
 
 Example:
     python scripts/visualize_line2_parts_in_line1.py \
       --data-dir DataSet/Synthetic_Arabic \
       --index 10 \
       --weights Weights/span_jax_best_quality_win32_offline/model_latest.pth \
-      --output Results/Evaluation/Part_Search/sample10_parts.png \
+      --output Results/Evaluation/Part_Search/sample10_parts_random.png \
       --part-width 124 \
       --num-parts 3 \
       --window-size 32 \
@@ -36,7 +39,7 @@ Example:
       --min-run-length 3 \
       --use-flip
 
-Manual part positions from the left side of line2:
+Manual part positions from the left side of line2 override random selection:
     --part-starts "100,350,600"
 """
 
@@ -44,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import random
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -83,6 +87,18 @@ class SourcePart:
 
 
 @dataclass
+class ConsecutiveWindowMatch:
+    line1_start: int
+    line1_end: int
+    part_start: int
+    part_end: int
+    length: int
+    mean_similarity: float
+    min_similarity: float
+    score: float
+
+
+@dataclass
 class PartSearchResult:
     part: SourcePart
     found: bool
@@ -98,18 +114,6 @@ class PartSearchResult:
     min_similarity: float = 0.0
     score: float = 0.0
     message: str = ""
-
-
-@dataclass
-class ConsecutiveWindowMatch:
-    line1_start: int
-    line1_end: int
-    part_start: int
-    part_end: int
-    length: int
-    mean_similarity: float
-    min_similarity: float
-    score: float
 
 
 # ---------------------------------------------------------------------------
@@ -128,20 +132,86 @@ def parse_part_starts(part_starts: Optional[str]) -> Optional[List[int]]:
     return starts
 
 
+def clamp_part_start(start: int, line_width: int, part_width: int) -> int:
+    if line_width <= part_width:
+        return 0
+    return max(0, min(int(start), line_width - part_width))
+
+
+def random_part_starts(
+    line2_width: int,
+    part_width: int,
+    num_parts: int,
+    rng: random.Random,
+    min_gap: int = 0,
+    max_attempts: int = 5000,
+) -> List[int]:
+    """Randomly choose part starts. Prefer non-overlapping crops when possible."""
+    if num_parts <= 0:
+        return []
+
+    max_start = max(0, line2_width - part_width)
+    if max_start == 0:
+        return [0 for _ in range(num_parts)]
+
+    # If the line can fit non-overlapping parts, try rejection sampling first.
+    can_fit_non_overlapping = num_parts * part_width + (num_parts - 1) * min_gap <= line2_width
+    if can_fit_non_overlapping:
+        best: List[int] = []
+        for _ in range(max_attempts):
+            starts: List[int] = []
+            for _part_idx in range(num_parts):
+                candidate = rng.randint(0, max_start)
+                candidate_end = candidate + part_width
+                ok = True
+                for s in starts:
+                    s_end = s + part_width
+                    if not (candidate_end + min_gap <= s or s_end + min_gap <= candidate):
+                        ok = False
+                        break
+                if ok:
+                    starts.append(candidate)
+            if len(starts) == num_parts:
+                return sorted(starts)
+            if len(starts) > len(best):
+                best = starts
+        if best:
+            # Complete with random starts if rejection sampling did not finish.
+            while len(best) < num_parts:
+                best.append(rng.randint(0, max_start))
+            return sorted(best[:num_parts])
+
+    # Fallback: allow overlap. This still makes different random choices each run.
+    return sorted(rng.randint(0, max_start) for _ in range(num_parts))
+
+
 def default_part_starts(
     line2_width: int,
     part_width: int,
     num_parts: int,
     mode: str,
+    rng: random.Random,
+    min_gap: int,
 ) -> List[int]:
     max_start = max(0, line2_width - part_width)
     if num_parts <= 1:
+        if mode == "random":
+            return [rng.randint(0, max_start)] if max_start > 0 else [0]
         return [max_start // 2]
+
+    if mode == "random":
+        return random_part_starts(
+            line2_width=line2_width,
+            part_width=part_width,
+            num_parts=num_parts,
+            rng=rng,
+            min_gap=min_gap,
+        )
 
     if mode == "even":
         return [int(round(x)) for x in np.linspace(0, max_start, num_parts)]
 
-    # Arabic-friendly default: take parts from the right side moving left.
+    # Arabic-friendly deterministic option: take parts from the right side moving left.
     starts = []
     for k in range(num_parts):
         starts.append(max(0, line2_width - (k + 1) * part_width))
@@ -168,12 +238,6 @@ def clamp_exact_width_start(center: float, image_width: int, crop_width: int) ->
         return 0
     start = int(round(center - crop_width / 2.0))
     return max(0, min(start, image_width - crop_width))
-
-
-def clamp_part_start(start: int, line_width: int, part_width: int) -> int:
-    if line_width <= part_width:
-        return 0
-    return max(0, min(int(start), line_width - part_width))
 
 
 def make_source_parts(
@@ -267,6 +331,17 @@ def best_consecutive_window_match(
     return best
 
 
+def best_possible_consecutive_score(sim: np.ndarray) -> float:
+    if sim.ndim != 2 or sim.shape[0] <= 0 or sim.shape[1] <= 0 or sim.shape[1] > sim.shape[0]:
+        return float("nan")
+    n_part = sim.shape[1]
+    possible_scores = [
+        float(np.mean([sim[start + k, k] for k in range(n_part)]))
+        for start in range(0, sim.shape[0] - n_part + 1)
+    ]
+    return max(possible_scores) if possible_scores else float("nan")
+
+
 def search_one_part(
     model,
     emb_line1: torch.Tensor,
@@ -290,21 +365,11 @@ def search_one_part(
     )
 
     if match is None:
-        best_possible = float("nan")
-        if sim.ndim == 2 and sim.shape[0] > 0 and sim.shape[1] > 0 and sim.shape[1] <= sim.shape[0]:
-            n_part = sim.shape[1]
-            possible_scores = [
-                float(np.mean([sim[start + k, k] for k in range(n_part)]))
-                for start in range(0, sim.shape[0] - n_part + 1)
-            ]
-            if possible_scores:
-                best_possible = max(possible_scores)
-
         return PartSearchResult(
             part=part,
             found=False,
             part_window_count=int(emb_part.shape[0]),
-            score=best_possible,
+            score=best_possible_consecutive_score(sim),
             message=(
                 "no consecutive line1 window block had mean similarity above --threshold; "
                 "try lowering --threshold or lowering --min-run-length"
@@ -420,7 +485,7 @@ def draw_line2_part_on_full_line1_canvas(
     ax.text(
         0,
         y_parts_top - 8,
-        "Line 2: chosen parts only",
+        "Line 2: random chosen parts only",
         fontsize=11,
         weight="bold",
         va="bottom",
@@ -469,7 +534,7 @@ def draw_line2_part_on_full_line1_canvas(
         ax.text(
             0.5 * (part_canvas_x0 + part_canvas_x1),
             y_parts_top + 0.5 * line2_h,
-            f"part {part.part_id}",
+            f"part {part.part_id}\nx=[{part.x0_original},{part.x1_original}]",
             ha="center",
             va="center",
             fontsize=8,
@@ -542,6 +607,7 @@ def draw_line2_part_on_full_line1_canvas(
 
         print(
             f"part {part.part_id}: FOUND | "
+            f"line2_x=[{part.x0_original},{part.x1_original}] | "
             f"line1_mask_x=[{result.match_x0_original},{result.match_x1_original}] "
             f"width={result.match_x1_original - result.match_x0_original} | "
             f"line1_windows=[{result.line1_window_start},{result.line1_window_end}] | "
@@ -596,7 +662,7 @@ def draw_results(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Crop fixed-width parts from line2 and find the highest-similarity consecutive window block in full line1."
+        description="Randomly crop fixed-width parts from line2 and find the highest-similarity consecutive window block in full line1."
     )
     parser.add_argument("--weights", required=True, help="Path to trained model .pth")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -628,17 +694,29 @@ def main():
 
     # Part selection options.
     parser.add_argument("--part-width", type=int, default=124, help="Width in original line2 pixels for each cropped part")
-    parser.add_argument("--num-parts", type=int, default=3, help="Number of parts to crop when --part-starts is not given")
+    parser.add_argument("--num-parts", type=int, default=3, help="Number of random parts to crop when --part-starts is not given")
     parser.add_argument(
         "--part-starts",
         default=None,
-        help='Comma-separated x-start positions in original line2 pixels, e.g. "100,350,600"',
+        help='Comma-separated x-start positions in original line2 pixels, e.g. "100,350,600". Overrides random selection.',
     )
     parser.add_argument(
         "--part-mode",
-        choices=("rtl-blocks", "even"),
-        default="rtl-blocks",
-        help="Default crop placement when --part-starts is not provided. rtl-blocks starts from the right side.",
+        choices=("random", "rtl-blocks", "even"),
+        default="random",
+        help="How to choose parts when --part-starts is not provided. Default is random every run.",
+    )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=None,
+        help="Optional seed for reproducible random part selection. Omit it to choose different random parts every run.",
+    )
+    parser.add_argument(
+        "--random-min-gap",
+        type=int,
+        default=0,
+        help="Minimum gap in pixels between random parts when non-overlapping selection is possible.",
     )
 
     parser.add_argument("--output", required=True, help="Output PNG path")
@@ -646,8 +724,12 @@ def main():
 
     if args.part_width <= 0:
         raise ValueError("--part-width must be positive")
+    if args.num_parts <= 0:
+        raise ValueError("--num-parts must be positive")
     if args.min_run_length <= 0:
         raise ValueError("--min-run-length must be positive")
+    if args.random_min_gap < 0:
+        raise ValueError("--random-min-gap must be >= 0")
 
     line1_path, line2_path = resolve_line_paths(args)
     if not os.path.exists(line1_path):
@@ -676,15 +758,22 @@ def main():
     line2_original_width, _ = line2_original.size
 
     starts = parse_part_starts(args.part_starts)
+    selection_mode = "manual"
     if starts is None:
+        rng = random.Random(args.random_seed)
         starts = default_part_starts(
             line2_original_width,
             args.part_width,
             args.num_parts,
             args.part_mode,
+            rng,
+            args.random_min_gap,
         )
+        selection_mode = args.part_mode
 
     print(f"Part width: {args.part_width}")
+    print(f"Part selection mode: {selection_mode}")
+    print(f"Random seed: {args.random_seed if args.random_seed is not None else 'none'}")
     print(f"Part starts: {starts}")
     print("Search method: highest mean similarity over consecutive line1 windows")
 
@@ -711,7 +800,7 @@ def main():
 
     sample_label = f" sample {args.index}" if args.index is not None else ""
     title = (
-        f"Line2 chosen parts searched inside full line1{sample_label} | "
+        f"Line2 {selection_mode} parts searched inside full line1{sample_label} | "
         f"part_width={args.part_width}, consecutive-window mean thr={args.threshold}"
     )
     draw_results(line1_original, line2_original, results, args.output, title, args.part_width)
