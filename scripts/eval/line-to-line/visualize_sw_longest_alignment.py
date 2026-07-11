@@ -2,53 +2,12 @@
 """
 Visualize the strongest local image-to-image alignment between manuscript line images.
 
-This inference script uses the trained image encoder only:
+This script works with the improve_neg model changes:
+  - contextual embeddings: CNN + optional BiLSTM, useful for full line alignment
+  - local embeddings: pre-BiLSTM CNN windows, useful for local/window matching
 
-    line image 1 -> window embeddings
-    line image 2 -> window embeddings
-    cosine similarity matrix
-    Smith-Waterman local alignment
-    longest consecutive diagonal aligned run
-    colored masks + arrow
-
-It saves only image outputs:
-    - main visualization PNG
-    - optional heatmap PNG when --heatmap is passed
-
-No per-sample JSON files and no summary JSON are created.
-
-Single-pair example:
-    python scripts/visualize_sw_longest_alignment.py \
-        --line1 DataSet/Synthetic_Arabic/images/img1_3.png \
-        --line2 DataSet/Synthetic_Arabic/images/img2_3.png \
-        --weights Weights/span_jax_best_quality_win32_offline/model_latest.pth \
-        --output Results/Evaluation/sw_longest_3.png \
-        --window-size 32 \
-        --stride 16 \
-        --height 128 \
-        --threshold 0.65 \
-        --match 1.0 \
-        --mismatch -2.0 \
-        --gap -0.6 \
-        --min-run-length 5 \
-        --use-flip
-
-Batch example:
-    python scripts/visualize_sw_longest_alignment.py \
-        --batch \
-        --data-dir DataSet/Synthetic_Arabic \
-        --indices 1-10 \
-        --weights Weights/span_jax_best_quality_win32_offline/model_latest.pth \
-        --output-dir Results/Evaluation/SW_Longest \
-        --window-size 32 \
-        --stride 16 \
-        --height 128 \
-        --threshold 0.65 \
-        --match 1.0 \
-        --mismatch -2.0 \
-        --gap -0.6 \
-        --min-run-length 5 \
-        --use-flip
+For full line-to-line visualization, contextual embeddings are the default. Pass
+--embedding-space local to inspect the local visual embedding space.
 """
 
 from __future__ import annotations
@@ -71,8 +30,13 @@ import torch
 import torch.nn.functional as F
 from torchvision import transforms
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from embeddingModel import EmbeddingModel
+# This file lives in scripts/eval/line-to-line/. Add the repository root so
+# imports continue to work after the scripts were moved into eval folders.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
+sys.path.insert(0, PROJECT_ROOT)
+
+from embeddingModel import EmbeddingModel  # noqa: E402
 
 
 PALETTE = [
@@ -155,15 +119,59 @@ def preprocess_line_image(path: str, target_height: int = 128):
 
 
 @torch.no_grad()
-def image_embeddings(model, image_tensor: torch.Tensor, device: str) -> torch.Tensor:
+def image_embeddings(
+    model,
+    image_tensor: torch.Tensor,
+    device: str,
+    embedding_space: str = "contextual",
+) -> torch.Tensor:
+    """Return normalized image-window embeddings.
+
+    embedding_space="contextual" uses the normal model output: CNN + optional
+    BiLSTM. This is the old behavior and is good for line-level alignment.
+
+    embedding_space="local" uses the improve_neg pre-BiLSTM CNN output. This is
+    the recommended representation for part/window matching because it avoids
+    BiLSTM smoothing that can make different local windows too similar.
+    """
     batch = image_tensor.unsqueeze(0).to(device)
-    embeddings = model(batch)
+    embedding_space = str(embedding_space).lower()
+
+    if embedding_space == "local":
+        outputs = model(batch, return_local=True)
+        if isinstance(outputs, tuple):
+            embeddings = outputs[1]
+        else:
+            # Backward-compatible fallback for old checkpoints/code.
+            embeddings = outputs
+    elif embedding_space == "contextual":
+        embeddings = model(batch)
+    else:
+        raise ValueError("embedding_space must be 'contextual' or 'local'")
+
     embeddings = F.normalize(embeddings.float(), p=2, dim=-1)
     return embeddings.squeeze(0).cpu()
 
 
 def cosine_similarity_matrix(emb1: torch.Tensor, emb2: torch.Tensor) -> np.ndarray:
     return (emb1 @ emb2.T).numpy()
+
+
+def resolve_threshold(sim: np.ndarray, args) -> float:
+    mode = str(getattr(args, "adaptive_threshold", "none")).lower()
+    base = float(args.threshold)
+    if mode == "none":
+        return base
+    if mode == "percentile":
+        adaptive = float(np.percentile(sim, float(args.threshold_percentile)))
+    elif mode == "mean_std":
+        adaptive = float(np.mean(sim) + float(args.threshold_std_scale) * np.std(sim))
+    else:
+        raise ValueError(f"Unknown adaptive threshold mode: {mode}")
+
+    if getattr(args, "adaptive_threshold_floor", True):
+        return max(base, adaptive)
+    return adaptive
 
 
 # ---------------------------------------------------------------------------
@@ -177,17 +185,6 @@ def substitution_score(
     match_reward: float,
     mismatch_penalty: float,
 ) -> float:
-    """Convert cosine similarity into a Smith-Waterman substitution score.
-
-    When similarity is above the threshold, the pair is a match and receives a
-    positive score controlled by --match.
-
-    When similarity is below the threshold, the pair is a mismatch and receives
-    a negative score controlled by --mismatch.
-
-    Defaults --match 1.0 and --mismatch -1.0 reproduce the old formula:
-        score = similarity - threshold
-    """
     if similarity >= threshold:
         return match_reward * (similarity - threshold)
     return mismatch_penalty * (threshold - similarity)
@@ -200,21 +197,9 @@ def smith_waterman(
     match_reward: float = 1.0,
     mismatch_penalty: float = -1.0,
 ):
-    """Return the best local Smith-Waterman path.
-
-    sim[i, j] is cosine similarity between window i from line1 and window j
-    from line2.
-
-    Returns:
-        path: list of (op, i, j), where op is "diag", "up", or "left".
-              Only "diag" entries are true window-window matches.
-        best_score: scalar SW score.
-        H: full SW score table.
-    """
     n, m = sim.shape
     H = np.zeros((n + 1, m + 1), dtype=np.float32)
     tb = np.zeros((n + 1, m + 1), dtype=np.int8)
-    # traceback: 0=stop, 1=diag, 2=up/gap-in-line2, 3=left/gap-in-line1
 
     best_score = 0.0
     best_pos = (0, 0)
@@ -276,11 +261,6 @@ def longest_consecutive_diagonal_run(
     sw_score: float,
     min_run_length: int = 1,
 ) -> Optional[ConsecutiveRun]:
-    """Extract the longest consecutive diagonal aligned part from an SW path.
-
-    Keeps only the longest run where both indices advance together:
-        (i, j), (i+1, j+1), (i+2, j+2), ...
-    """
     diag_pairs = [(i, j) for op, i, j in path if op == "diag" and i is not None and j is not None]
     if not diag_pairs:
         return None
@@ -377,46 +357,14 @@ def draw_longest_run(
 
     color = PALETTE[0]
     x1a, x1b = window_range_to_pixels(
-        run.line1_start,
-        run.line1_end,
-        num_windows1,
-        w1,
-        window_size,
-        stride,
-        use_flip,
+        run.line1_start, run.line1_end, num_windows1, w1, window_size, stride, use_flip
     )
     x2a, x2b = window_range_to_pixels(
-        run.line2_start,
-        run.line2_end,
-        num_windows2,
-        w2,
-        window_size,
-        stride,
-        use_flip,
+        run.line2_start, run.line2_end, num_windows2, w2, window_size, stride, use_flip
     )
 
-    ax.add_patch(
-        Rectangle(
-            (x1a, y1_top),
-            x1b - x1a,
-            h1,
-            facecolor=color,
-            edgecolor=color,
-            linewidth=2,
-            alpha=0.30,
-        )
-    )
-    ax.add_patch(
-        Rectangle(
-            (x2a, y2_top),
-            x2b - x2a,
-            h2,
-            facecolor=color,
-            edgecolor=color,
-            linewidth=2,
-            alpha=0.30,
-        )
-    )
+    ax.add_patch(Rectangle((x1a, y1_top), x1b - x1a, h1, facecolor=color, edgecolor=color, linewidth=2, alpha=0.30))
+    ax.add_patch(Rectangle((x2a, y2_top), x2b - x2a, h2, facecolor=color, edgecolor=color, linewidth=2, alpha=0.30))
 
     cx1 = 0.5 * (x1a + x1b)
     cx2 = 0.5 * (x2a + x2b)
@@ -495,13 +443,14 @@ def infer_one_pair(
     img1, tensor1 = preprocess_line_image(line1, target_height=args.height)
     img2, tensor2 = preprocess_line_image(line2, target_height=args.height)
 
-    emb1 = image_embeddings(model, tensor1, args.device)
-    emb2 = image_embeddings(model, tensor2, args.device)
+    emb1 = image_embeddings(model, tensor1, args.device, embedding_space=args.embedding_space)
+    emb2 = image_embeddings(model, tensor2, args.device, embedding_space=args.embedding_space)
     sim = cosine_similarity_matrix(emb1, emb2)
+    threshold = resolve_threshold(sim, args)
 
     sw_path, sw_score, H = smith_waterman(
         sim,
-        threshold=args.threshold,
+        threshold=threshold,
         gap_penalty=args.gap,
         match_reward=args.match,
         mismatch_penalty=args.mismatch,
@@ -530,7 +479,10 @@ def infer_one_pair(
         stride=args.stride,
         output=output,
         use_flip=args.use_flip,
-        title=f"Smith-Waterman longest consecutive local alignment{title_suffix}",
+        title=(
+            f"Smith-Waterman longest consecutive local alignment{title_suffix} | "
+            f"embedding={args.embedding_space}, thr={threshold:.3f}"
+        ),
     )
 
     if args.heatmap:
@@ -541,6 +493,8 @@ def infer_one_pair(
         "line1": line1,
         "line2": line2,
         "output": output,
+        "embedding_space": args.embedding_space,
+        "threshold_used": float(threshold),
         "num_windows_line1": int(emb1.shape[0]),
         "num_windows_line2": int(emb2.shape[0]),
         "sw_path_length": int(len(sw_path)),
@@ -551,6 +505,7 @@ def infer_one_pair(
 
     print(
         f"[{sample_id or 'single'}] "
+        f"embedding={args.embedding_space} threshold={threshold:.4f} "
         f"line1_windows={emb1.shape[0]} line2_windows={emb2.shape[0]} "
         f"sw_path={len(sw_path)} run_len={run.length} mean_sim={run.mean_similarity:.3f} "
         f"saved={output}",
@@ -616,9 +571,7 @@ def paths_for_index(data_dir: str, idx: int) -> Tuple[str, str]:
 def run_batch(model, args):
     indices = resolve_batch_indices(args)
     if not indices:
-        raise RuntimeError(
-            "No samples found for batch inference. Check --data-dir or pass --indices."
-        )
+        raise RuntimeError("No samples found for batch inference. Check --data-dir or pass --indices.")
 
     os.makedirs(args.output_dir, exist_ok=True)
     print(f"Running batch inference on {len(indices)} samples", flush=True)
@@ -637,14 +590,7 @@ def run_batch(model, args):
             continue
 
         try:
-            metadata = infer_one_pair(
-                model,
-                line1,
-                line2,
-                output,
-                args,
-                sample_id=str(idx),
-            )
+            metadata = infer_one_pair(model, line1, line2, output, args, sample_id=str(idx))
             successes.append(metadata)
         except Exception as exc:
             failure = {"sample_id": idx, "line1": line1, "line2": line2, "error": str(exc)}
@@ -688,7 +634,28 @@ def main():
     parser.add_argument("--stride", type=int, default=16)
     parser.add_argument("--height", type=int, default=128)
     parser.add_argument("--vector-size", type=int, default=128)
+    parser.add_argument(
+        "--embedding-space",
+        choices=("contextual", "local"),
+        default="contextual",
+        help="contextual=CNN+BiLSTM for line alignment; local=pre-BiLSTM CNN for window discrimination.",
+    )
     parser.add_argument("--threshold", type=float, default=0.45)
+    parser.add_argument(
+        "--adaptive-threshold",
+        choices=("none", "percentile", "mean_std"),
+        default="none",
+        help="Optionally derive a per-pair threshold from the similarity matrix.",
+    )
+    parser.add_argument("--threshold-percentile", type=float, default=90.0)
+    parser.add_argument("--threshold-std-scale", type=float, default=1.0)
+    parser.add_argument(
+        "--no-adaptive-threshold-floor",
+        dest="adaptive_threshold_floor",
+        action="store_false",
+        help="Use the adaptive threshold directly instead of max(fixed, adaptive).",
+    )
+    parser.set_defaults(adaptive_threshold_floor=True)
     parser.add_argument("--match", type=float, default=1.0, help="Reward scale for similarities above threshold")
     parser.add_argument("--mismatch", type=float, default=-1.0, help="Penalty scale for similarities below threshold; should be negative")
     parser.add_argument("--gap", type=float, default=-0.3, help="Smith-Waterman gap penalty; should be negative")
