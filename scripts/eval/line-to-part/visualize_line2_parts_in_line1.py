@@ -1,48 +1,19 @@
 #!/usr/bin/env python3
 """
-Randomly choose fixed-width parts from line2 and search where they appear in line1.
+Choose fixed-width parts from line2 and search where they appear in line1.
 
-The script:
-  1. loads the trained image encoder,
-  2. takes the whole first line image as the search target,
-  3. randomly crops N fixed-width parts from the second line image by default,
-  4. for every cropped part, runs Smith-Waterman between full line1 windows and
-     the cropped part windows,
-  5. first tries to align the whole chosen part,
-  6. if the whole part is not found, falls back to the best aligned segment of
-     that part,
-  7. masks only the discovered aligned region in line1,
-  8. shows the chosen line2 parts without masking them,
-  9. connects each chosen part/segment to its line1 mask using the same color.
+This script is updated for the improve_neg solution:
+  - Uses local pre-BiLSTM CNN embeddings by default for part/window matching.
+  - Keeps contextual embeddings available with --embedding-space contextual.
+  - Supports adaptive per-sample thresholding for high-similarity matrices.
+  - Displays chosen line2 parts without filled masks.
+  - Adds masks only on line1 for the found whole part or fallback segment.
 
-Important:
-  - The selected line2 parts are displayed without a filled mask.
-  - Masks are added only on line1.
-  - The line1 mask follows the Smith-Waterman aligned full part or segment.
-  - The line1 mask can be equal to or smaller than --part-width.
-  - Unless --part-starts is given, chosen line2 parts are random on every run.
-    Use --random-seed for reproducible random choices.
-
-Example:
-    python scripts/visualize_line2_parts_in_line1.py \
-      --data-dir DataSet/Synthetic_Arabic \
-      --index 10 \
-      --weights Weights/span_jax_best_quality_win32_offline/model_latest.pth \
-      --output Results/Evaluation/Part_Search/sample10_parts_random_sw.png \
-      --part-width 124 \
-      --num-parts 3 \
-      --window-size 32 \
-      --stride 16 \
-      --height 128 \
-      --threshold 0.86 \
-      --match 1.0 \
-      --mismatch -1.5 \
-      --gap -0.15 \
-      --min-run-length 3 \
-      --use-flip
-
-Manual part positions from the left side of line2 override random selection:
-    --part-starts "100,350,600"
+Matching logic for each chosen line2 part:
+  1. Run Smith-Waterman between full line1 windows and chosen part windows.
+  2. First try to use a match covering the whole chosen part.
+  3. If the whole part is not found, use the best consecutive diagonal segment.
+  4. Draw only the discovered match on line1.
 """
 
 from __future__ import annotations
@@ -64,11 +35,13 @@ import numpy as np
 from PIL import Image
 import torch
 
-# Make imports work when running from the project root.
+# This file lives in scripts/eval/line-to-part/. Add both repo root and the
+# sibling line-to-line directory, because this script reuses SW/model helpers.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
+LINE_TO_LINE_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "line-to-line"))
 sys.path.insert(0, PROJECT_ROOT)
-sys.path.insert(0, SCRIPT_DIR)
+sys.path.insert(0, LINE_TO_LINE_DIR)
 
 from visualize_sw_longest_alignment import (  # noqa: E402
     PALETTE,
@@ -76,6 +49,7 @@ from visualize_sw_longest_alignment import (  # noqa: E402
     image_embeddings,
     load_image_model,
     preprocess_line_image,
+    resolve_threshold,
     smith_waterman,
     window_range_to_pixels,
 )
@@ -123,6 +97,7 @@ class PartSearchResult:
     sw_score: float = 0.0
     score: float = 0.0
     match_kind: str = ""
+    threshold_used: float = 0.0
     message: str = ""
 
 
@@ -156,7 +131,6 @@ def random_part_starts(
     min_gap: int = 0,
     max_attempts: int = 5000,
 ) -> List[int]:
-    """Randomly choose part starts. Prefer non-overlapping crops when possible."""
     if num_parts <= 0:
         return []
 
@@ -207,22 +181,12 @@ def default_part_starts(
         return [max_start // 2]
 
     if mode == "random":
-        return random_part_starts(
-            line2_width=line2_width,
-            part_width=part_width,
-            num_parts=num_parts,
-            rng=rng,
-            min_gap=min_gap,
-        )
-
+        return random_part_starts(line2_width, part_width, num_parts, rng, min_gap=min_gap)
     if mode == "even":
         return [int(round(x)) for x in np.linspace(0, max_start, num_parts)]
 
-    # Arabic-friendly deterministic option: take parts from the right side moving left.
-    starts = []
-    for k in range(num_parts):
-        starts.append(max(0, line2_width - (k + 1) * part_width))
-    return starts
+    # Arabic-friendly deterministic option: take parts from right side moving left.
+    return [max(0, line2_width - (k + 1) * part_width) for k in range(num_parts)]
 
 
 def resolve_line_paths(args: argparse.Namespace) -> Tuple[str, str]:
@@ -252,13 +216,7 @@ def clamp_segment_to_image(x0: float, x1: float, image_width: int) -> Tuple[int,
     return x0_i, x1_i
 
 
-def cap_segment_width(
-    x0: float,
-    x1: float,
-    max_width: int,
-    image_width: int,
-) -> Tuple[int, int]:
-    """Keep a segment no wider than max_width, centered on the original segment."""
+def cap_segment_width(x0: float, x1: float, max_width: int, image_width: int) -> Tuple[int, int]:
     x0_i, x1_i = clamp_segment_to_image(x0, x1, image_width)
     if max_width <= 0 or image_width <= max_width or (x1_i - x0_i) <= max_width:
         return x0_i, x1_i
@@ -269,12 +227,7 @@ def cap_segment_width(
     return start, start + max_width
 
 
-def make_source_parts(
-    line2_path: str,
-    starts: Sequence[int],
-    part_width: int,
-    tmp_dir: str,
-) -> List[SourcePart]:
+def make_source_parts(line2_path: str, starts: Sequence[int], part_width: int, tmp_dir: str) -> List[SourcePart]:
     line2 = Image.open(line2_path).convert("RGB")
     width, height = line2.size
 
@@ -287,14 +240,7 @@ def make_source_parts(
         part_path = os.path.join(tmp_dir, f"line2_part_{part_id}.png")
         crop.save(part_path)
 
-        parts.append(
-            SourcePart(
-                part_id=part_id,
-                path=part_path,
-                x0_original=x0,
-                x1_original=x1,
-            )
-        )
+        parts.append(SourcePart(part_id=part_id, path=part_path, x0_original=x0, x1_original=x1))
     return parts
 
 
@@ -358,12 +304,6 @@ def full_part_sw_segment(
     min_run_length: int,
     require_all_windows_above_threshold: bool = False,
 ) -> Optional[SWAlignedSegment]:
-    """Try to use the whole chosen part before falling back to a sub-segment.
-
-    A full-part match means every part window has a diagonal match in the local
-    Smith-Waterman path. The line1 span may have gaps, but the chosen line2 part
-    is represented as a whole.
-    """
     pairs = _diag_pairs(sw_path)
     if not pairs or sim.ndim != 2:
         return None
@@ -391,7 +331,6 @@ def best_partial_sw_segment(
     min_run_length: int,
     require_all_windows_above_threshold: bool = False,
 ) -> Optional[SWAlignedSegment]:
-    """Fallback: choose the best consecutive diagonal segment inside the part."""
     pairs = _diag_pairs(sw_path)
     if not pairs:
         return None
@@ -425,7 +364,6 @@ def choose_sw_segment(
     min_run_length: int,
     require_all_windows_above_threshold: bool = False,
 ) -> Optional[SWAlignedSegment]:
-    """First search for the full part; if not found, search for a segment."""
     full = full_part_sw_segment(
         sw_path,
         sim,
@@ -445,10 +383,7 @@ def choose_sw_segment(
     )
 
 
-def best_possible_sw_segment_mean(
-    sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]],
-    sim: np.ndarray,
-) -> float:
+def best_possible_sw_segment_mean(sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]], sim: np.ndarray) -> float:
     pairs = _diag_pairs(sw_path)
     if not pairs:
         return float("nan")
@@ -489,14 +424,14 @@ def search_one_part(
     args: argparse.Namespace,
 ) -> PartSearchResult:
     part_img_display, part_tensor = preprocess_line_image(part.path, target_height=args.height)
-    emb_part = image_embeddings(model, part_tensor, args.device)
+    emb_part = image_embeddings(model, part_tensor, args.device, embedding_space=args.embedding_space)
 
-    # sim[i, j] = similarity between window i from full line1 and window j from the cropped line2 part.
     sim = cosine_similarity_matrix(emb_line1, emb_part)
+    threshold = resolve_threshold(sim, args)
 
     sw_path, sw_score, _H = smith_waterman(
         sim,
-        threshold=args.threshold,
+        threshold=threshold,
         gap_penalty=args.gap,
         match_reward=args.match,
         mismatch_penalty=args.mismatch,
@@ -505,7 +440,7 @@ def search_one_part(
     segment = choose_sw_segment(
         sw_path,
         sim,
-        threshold=args.threshold,
+        threshold=threshold,
         min_run_length=args.min_run_length,
         require_all_windows_above_threshold=args.require_all_windows_above_threshold,
     )
@@ -517,16 +452,14 @@ def search_one_part(
             part_window_count=int(emb_part.shape[0]),
             sw_score=float(sw_score),
             score=best_possible_sw_segment_mean(sw_path, sim),
+            threshold_used=float(threshold),
             message=(
-                "Smith-Waterman did not find the whole part or a fallback segment above --threshold; "
-                "try lowering --threshold, making --mismatch less negative, making --gap less negative, "
-                "or lowering --min-run-length"
+                "Smith-Waterman did not find the whole part or a fallback segment above threshold; "
+                "try lowering --threshold, disabling adaptive threshold, making --mismatch less negative, "
+                "making --gap less negative, or lowering --min-run-length"
             ),
         )
 
-    # Convert the aligned line1 SW span to original line1 pixels. The mask is not
-    # forced to --part-width, but capped to --part-width so it is equal or smaller
-    # than the selected part.
     run_x0_original, run_x1_original = window_span_to_original_pixels(
         segment.line1_start,
         segment.line1_end,
@@ -544,8 +477,6 @@ def search_one_part(
         image_width=line1_original_width,
     )
 
-    # Also locate where the full/partial match lies inside the chosen line2 part.
-    # This is used only to place the arrow start. We do not draw a filled mask on line2.
     part_original_width = max(1, part.x1_original - part.x0_original)
     part_x0_rel, part_x1_rel = window_span_to_original_pixels(
         segment.part_start,
@@ -584,6 +515,7 @@ def search_one_part(
         sw_score=float(sw_score),
         score=float(segment.score),
         match_kind=segment.match_kind,
+        threshold_used=float(threshold),
     )
 
 
@@ -592,14 +524,7 @@ def search_one_part(
 # ---------------------------------------------------------------------------
 
 
-def crop_or_blank(
-    image: Image.Image,
-    x0: int,
-    x1: int,
-    width: int,
-    fill: int = 255,
-) -> Image.Image:
-    """Crop exactly width pixels when possible; otherwise pad to width."""
+def crop_or_blank(image: Image.Image, x0: int, x1: int, width: int, fill: int = 255) -> Image.Image:
     image = image.convert("RGB")
     img_w, img_h = image.size
     x0 = max(0, min(int(x0), img_w))
@@ -643,23 +568,8 @@ def draw_line2_part_on_full_line1_canvas(
     canvas_h = y_parts_bottom + bottom_margin
 
     ax.imshow(arr1, extent=(x_offset_line1, x_offset_line1 + w1, y1_bottom, y1_top), zorder=1)
-
-    ax.text(
-        x_offset_line1,
-        y1_top - 8,
-        "Line 1: full searched line with masks",
-        fontsize=11,
-        weight="bold",
-        va="bottom",
-    )
-    ax.text(
-        0,
-        y_parts_top - 8,
-        "Line 2: chosen parts only, no masks",
-        fontsize=11,
-        weight="bold",
-        va="bottom",
-    )
+    ax.text(x_offset_line1, y1_top - 8, "Line 1: full searched line with masks", fontsize=11, weight="bold", va="bottom")
+    ax.text(0, y_parts_top - 8, "Line 2: chosen parts only, no masks", fontsize=11, weight="bold", va="bottom")
 
     part_positions: List[Tuple[int, int]] = []
     if n_parts == 1:
@@ -675,18 +585,9 @@ def draw_line2_part_on_full_line1_canvas(
         color = PALETTE[idx % len(PALETTE)]
         part = result.part
 
-        part_crop = crop_or_blank(
-            line2,
-            part.x0_original,
-            part.x1_original,
-            part_width,
-        )
+        part_crop = crop_or_blank(line2, part.x0_original, part.x1_original, part_width)
         part_arr = np.array(part_crop)
-        ax.imshow(
-            part_arr,
-            extent=(part_canvas_x0, part_canvas_x1, y_parts_bottom, y_parts_top),
-            zorder=1,
-        )
+        ax.imshow(part_arr, extent=(part_canvas_x0, part_canvas_x1, y_parts_bottom, y_parts_top), zorder=1)
 
         # Border only around the chosen source crop. Do not mask/fill line2.
         ax.add_patch(
@@ -708,7 +609,7 @@ def draw_line2_part_on_full_line1_canvas(
             ax.text(
                 part_center_x,
                 y_parts_top + 0.5 * line2_h,
-                f"part {part.part_id}\nnot found",
+                f"part {part.part_id}\nnot found\nthr={result.threshold_used:.3f}",
                 ha="center",
                 va="center",
                 fontsize=8,
@@ -717,7 +618,10 @@ def draw_line2_part_on_full_line1_canvas(
                 bbox=dict(facecolor=color, edgecolor="none", alpha=0.72, boxstyle="round,pad=0.25"),
                 zorder=5,
             )
-            print(f"part {part.part_id}: NOT FOUND | best_sw_diag_mean={result.score:.4f} | {result.message}")
+            print(
+                f"part {part.part_id}: NOT FOUND | embedding={getattr(result, 'embedding_space', '')} "
+                f"thr={result.threshold_used:.4f} best_sw_diag_mean={result.score:.4f} | {result.message}"
+            )
             continue
 
         assert result.match_x0_original is not None and result.match_x1_original is not None
@@ -740,38 +644,12 @@ def draw_line2_part_on_full_line1_canvas(
             )
         )
 
-        match_kind_label = "full" if result.match_kind == "full_part" else "segment"
-        ax.text(
-            0.5 * (match_x0 + match_x1),
-            y1_top + 0.5 * h1,
-            f"part {part.part_id}\n{match_kind_label}\nsim={result.mean_similarity:.3f}",
-            ha="center",
-            va="center",
-            fontsize=8,
-            color="white",
-            weight="bold",
-            bbox=dict(facecolor=color, edgecolor="none", alpha=0.72, boxstyle="round,pad=0.25"),
-            zorder=5,
-        )
-        ax.text(
-            part_center_x,
-            y_parts_top + 0.5 * line2_h,
-            f"part {part.part_id}\n{match_kind_label}",
-            ha="center",
-            va="center",
-            fontsize=8,
-            color="white",
-            weight="bold",
-            bbox=dict(facecolor=color, edgecolor="none", alpha=0.72, boxstyle="round,pad=0.25"),
-            zorder=5,
-        )
-
-        match_center_x = 0.5 * (match_x0 + match_x1)
-        # The arrow starts from the aligned sub-range inside the chosen part, but
-        # no visual mask is drawn there.
+        # Start the arrow from the aligned sub-region inside the part, but keep line2 unmasked.
         src_x0 = part_canvas_x0 + result.part_match_x0_relative
         src_x1 = part_canvas_x0 + result.part_match_x1_relative
         src_center_x = 0.5 * (src_x0 + src_x1)
+        match_center_x = 0.5 * (match_x0 + match_x1)
+
         ax.add_patch(
             FancyArrowPatch(
                 (src_center_x, y_parts_top - 4),
@@ -785,19 +663,43 @@ def draw_line2_part_on_full_line1_canvas(
             )
         )
 
+        ax.text(
+            0.5 * (match_x0 + match_x1),
+            y1_top + 0.5 * h1,
+            f"part {part.part_id}\n{result.match_kind}\nsim={result.mean_similarity:.3f}",
+            ha="center",
+            va="center",
+            fontsize=8,
+            color="white",
+            weight="bold",
+            bbox=dict(facecolor=color, edgecolor="none", alpha=0.72, boxstyle="round,pad=0.25"),
+            zorder=5,
+        )
+        ax.text(
+            part_center_x,
+            y_parts_top + 0.5 * line2_h,
+            f"part {part.part_id}\nx=[{part.x0_original},{part.x1_original}]",
+            ha="center",
+            va="center",
+            fontsize=8,
+            color="white",
+            weight="bold",
+            bbox=dict(facecolor=color, edgecolor="none", alpha=0.72, boxstyle="round,pad=0.25"),
+            zorder=5,
+        )
+
         print(
-            f"part {part.part_id}: FOUND | "
-            f"kind={result.match_kind} | "
+            f"part {part.part_id}: FOUND | kind={result.match_kind} | "
+            f"thr={result.threshold_used:.4f} | "
             f"line2_x=[{part.x0_original},{part.x1_original}] | "
-            f"line2_aligned_rel_x=[{result.part_match_x0_relative},{result.part_match_x1_relative}] | "
+            f"line2_sw_rel_x=[{result.part_match_x0_relative},{result.part_match_x1_relative}] | "
             f"line1_mask_x=[{result.match_x0_original},{result.match_x1_original}] "
             f"width={result.match_x1_original - result.match_x0_original} | "
             f"line1_windows=[{result.line1_window_start},{result.line1_window_end}] | "
             f"part_windows=[{result.part_window_start},{result.part_window_end}]/{result.part_window_count} | "
             f"raw_window_x=[{result.run_x0_original:.1f},{result.run_x1_original:.1f}] | "
             f"sw_path_score={result.sw_score:.4f} | "
-            f"mean_sim={result.mean_similarity:.4f} | "
-            f"min_sim={result.min_similarity:.4f}"
+            f"mean_sim={result.mean_similarity:.4f} | min_sim={result.min_similarity:.4f}"
         )
 
     ax.set_title(title, fontsize=13)
@@ -822,14 +724,7 @@ def draw_results(
         fig_h += 0.35 * (n_parts - 4)
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
-    draw_line2_part_on_full_line1_canvas(
-        ax,
-        line1_original,
-        line2_original,
-        results,
-        title,
-        part_width,
-    )
+    draw_line2_part_on_full_line1_canvas(ax, line1_original, line2_original, results, title, part_width)
 
     os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
     plt.tight_layout()
@@ -845,7 +740,7 @@ def draw_results(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Randomly crop fixed-width parts from line2 and find their Smith-Waterman aligned full/partial segment in full line1."
+        description="Randomly crop fixed-width parts from line2 and find their SW-aligned segment in full line1."
     )
     parser.add_argument("--weights", required=True, help="Path to trained model .pth")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -853,7 +748,28 @@ def main():
     parser.add_argument("--stride", type=int, default=16)
     parser.add_argument("--height", type=int, default=128)
     parser.add_argument("--vector-size", type=int, default=128)
-    parser.add_argument("--threshold", type=float, default=0.86)
+    parser.add_argument(
+        "--embedding-space",
+        choices=("local", "contextual"),
+        default="local",
+        help="local=pre-BiLSTM CNN embeddings, recommended for part/window matching; contextual=CNN+BiLSTM.",
+    )
+    parser.add_argument("--threshold", type=float, default=0.85)
+    parser.add_argument(
+        "--adaptive-threshold",
+        choices=("none", "percentile", "mean_std"),
+        default="percentile",
+        help="Per-part threshold from the similarity matrix. Default percentile helps when similarities are high everywhere.",
+    )
+    parser.add_argument("--threshold-percentile", type=float, default=90.0)
+    parser.add_argument("--threshold-std-scale", type=float, default=1.0)
+    parser.add_argument(
+        "--no-adaptive-threshold-floor",
+        dest="adaptive_threshold_floor",
+        action="store_false",
+        help="Use the adaptive threshold directly instead of max(fixed, adaptive).",
+    )
+    parser.set_defaults(adaptive_threshold_floor=True)
     parser.add_argument("--match", type=float, default=1.0, help="Reward scale for similarities above threshold")
     parser.add_argument("--mismatch", type=float, default=-1.5, help="Penalty scale for similarities below threshold; should be negative")
     parser.add_argument("--gap", type=float, default=-0.15, help="Smith-Waterman gap penalty; should be negative")
@@ -861,7 +777,7 @@ def main():
     parser.add_argument(
         "--require-all-windows-above-threshold",
         action="store_true",
-        help="Require every diagonal window similarity in the chosen SW full/partial segment to be >= --threshold, not only the mean.",
+        help="Require every diagonal window similarity in the chosen SW segment to be >= the resolved threshold.",
     )
     parser.add_argument("--use-flip", action="store_true", help="Use when Arabic windows were encoded right-to-left")
     parser.add_argument("--no-bilstm", action="store_true", help="Disable BiLSTM even if checkpoint config is missing")
@@ -886,18 +802,8 @@ def main():
         default="random",
         help="How to choose parts when --part-starts is not provided. Default is random every run.",
     )
-    parser.add_argument(
-        "--random-seed",
-        type=int,
-        default=None,
-        help="Optional seed for reproducible random part selection. Omit it to choose different random parts every run.",
-    )
-    parser.add_argument(
-        "--random-min-gap",
-        type=int,
-        default=0,
-        help="Minimum gap in pixels between random parts when non-overlapping selection is possible.",
-    )
+    parser.add_argument("--random-seed", type=int, default=None, help="Optional seed for reproducible random part selection")
+    parser.add_argument("--random-min-gap", type=int, default=0, help="Minimum gap in pixels between random parts")
 
     parser.add_argument("--output", required=True, help="Output PNG path")
     args = parser.parse_args()
@@ -937,7 +843,7 @@ def main():
     )
 
     img1_display, tensor1 = preprocess_line_image(line1_path, target_height=args.height)
-    emb_line1 = image_embeddings(model, tensor1, args.device)
+    emb_line1 = image_embeddings(model, tensor1, args.device, embedding_space=args.embedding_space)
 
     line1_original = Image.open(line1_path).convert("RGB")
     line2_original = Image.open(line2_path).convert("RGB")
@@ -947,30 +853,20 @@ def main():
     selection_mode = "manual"
     if starts is None:
         rng = random.Random(args.random_seed)
-        starts = default_part_starts(
-            line2_original_width,
-            args.part_width,
-            args.num_parts,
-            args.part_mode,
-            rng,
-            args.random_min_gap,
-        )
+        starts = default_part_starts(line2_original_width, args.part_width, args.num_parts, args.part_mode, rng, args.random_min_gap)
         selection_mode = args.part_mode
 
     print(f"Part width: {args.part_width}")
     print(f"Part selection mode: {selection_mode}")
     print(f"Random seed: {args.random_seed if args.random_seed is not None else 'none'}")
     print(f"Part starts: {starts}")
-    print("Search method: Smith-Waterman; first full selected part, then fallback segment; masks only on line1")
+    print(f"Embedding space: {args.embedding_space}")
+    print(f"Threshold mode: {args.adaptive_threshold}, base threshold={args.threshold}")
+    print("Search method: Smith-Waterman full-part first; fallback to best segment; masks only line1")
 
     results: List[PartSearchResult] = []
     with tempfile.TemporaryDirectory() as tmp_dir:
-        parts = make_source_parts(
-            line2_path,
-            starts,
-            args.part_width,
-            tmp_dir,
-        )
+        parts = make_source_parts(line2_path, starts, args.part_width, tmp_dir)
 
         for part in parts:
             result = search_one_part(
@@ -987,7 +883,7 @@ def main():
     sample_label = f" sample {args.index}" if args.index is not None else ""
     title = (
         f"Line2 {selection_mode} parts searched inside full line1{sample_label} | "
-        f"SW full-part first, fallback segment, thr={args.threshold}, gap={args.gap}"
+        f"embedding={args.embedding_space}, part_width={args.part_width}, threshold={args.adaptive_threshold}/{args.threshold}"
     )
     draw_results(line1_original, line2_original, results, args.output, title, args.part_width)
 
