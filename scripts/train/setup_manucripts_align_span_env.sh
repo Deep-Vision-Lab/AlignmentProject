@@ -2,14 +2,14 @@
 #
 # One-time setup for the offline span-D3TW sbatch job.
 # Run this on a login node with network access before submitting the offline job:
-#   bash scripts/setup_manucripts_align_span_env.sh
+#   bash scripts/train/setup_manucripts_align_span_env.sh
 
 set -euo pipefail
 
 CONDA_ENV="${CONDA_ENV:-manucripts_align}"
 export ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_NAME:-aubmindlab/bert-base-arabertv02}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="${PROJECT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+PROJECT_DIR="${PROJECT_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 export HF_HOME="${HF_HOME:-${PROJECT_DIR}/.hf_cache}"
 unset TRANSFORMERS_CACHE
 mkdir -p "${HF_HOME}"
