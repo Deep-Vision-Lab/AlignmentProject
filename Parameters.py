@@ -88,8 +88,8 @@ image_variance_target_std = float(os.environ.get("IMAGE_VARIANCE_TARGET_STD", 0.
 
 # Negatives
 negative_mode = os.environ.get("NEGATIVE_MODE", "mixed").lower()
-# The largest runtime bottleneck is one span-DTW pass per negative transcript.
-# Default to one hard negative for speed; override NUM_NEGATIVES=4 for slower,
-# stronger training after confirming the run is stable.
-num_negatives = int(os.environ.get("NUM_NEGATIVES", 1))
+# Keep four transcript negatives by default for training quality. The speed
+# optimizations should come from validation limits/local top-k/optional warmup,
+# not from weakening the contrastive task to one negative.
+num_negatives = int(os.environ.get("NUM_NEGATIVES", 4))
 span_negative_grad_mode = os.environ.get("SPAN_NEGATIVE_GRAD_MODE", "hardest").lower()
