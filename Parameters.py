@@ -74,7 +74,9 @@ use_local_hard_negatives = os.environ.get("USE_LOCAL_HARD_NEGATIVES", "1").lower
 }
 local_hard_negative_weight = float(os.environ.get("LOCAL_HARD_NEGATIVE_WEIGHT", 0.2))
 local_hard_negative_margin = float(os.environ.get("LOCAL_HARD_NEGATIVE_MARGIN", 0.25))
-local_hard_negative_top_k = int(os.environ.get("LOCAL_HARD_NEGATIVE_TOP_K", 8))
+# Keep this small: it only affects the cheap local top-k window mining, while
+# the expensive part of training is still span-DTW. Override to 8 for stronger mining.
+local_hard_negative_top_k = int(os.environ.get("LOCAL_HARD_NEGATIVE_TOP_K", 4))
 local_hard_negative_exclude_radius = int(os.environ.get("LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS", 2))
 local_hard_negative_min_ink = float(os.environ.get("LOCAL_HARD_NEGATIVE_MIN_INK", 0.02))
 
@@ -86,5 +88,8 @@ image_variance_target_std = float(os.environ.get("IMAGE_VARIANCE_TARGET_STD", 0.
 
 # Negatives
 negative_mode = os.environ.get("NEGATIVE_MODE", "mixed").lower()
-num_negatives = int(os.environ.get("NUM_NEGATIVES", 10))
+# The largest runtime bottleneck is one span-DTW pass per negative transcript.
+# Default to one hard negative for speed; override NUM_NEGATIVES=4 for slower,
+# stronger training after confirming the run is stable.
+num_negatives = int(os.environ.get("NUM_NEGATIVES", 1))
 span_negative_grad_mode = os.environ.get("SPAN_NEGATIVE_GRAD_MODE", "hardest").lower()
