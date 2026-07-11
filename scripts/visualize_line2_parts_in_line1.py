@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Randomly choose fixed-width parts from line2 and search their aligned segment in line1.
+Randomly choose fixed-width parts from line2 and search where they appear in line1.
 
 The script:
   1. loads the trained image encoder,
@@ -8,19 +8,18 @@ The script:
   3. randomly crops N fixed-width parts from the second line image by default,
   4. for every cropped part, runs Smith-Waterman between full line1 windows and
      the cropped part windows,
-  5. extracts the best consecutive diagonal SW aligned segment whose similarity
-     is above --threshold,
-  6. shows the full line1 image with masks only on the SW-aligned segment,
-  7. shows only the chosen line2 parts, not the whole line2 image,
-  8. connects each chosen/aligned part segment to its masked match in line1 using
-     the same color.
+  5. first tries to align the whole chosen part,
+  6. if the whole part is not found, falls back to the best aligned segment of
+     that part,
+  7. masks only the discovered aligned region in line1,
+  8. shows the chosen line2 parts without masking them,
+  9. connects each chosen part/segment to its line1 mask using the same color.
 
 Important:
-  - The line1 mask is NOT forced to have --part-width anymore.
-  - The line1 mask follows the Smith-Waterman aligned segment and can therefore
-    be equal to or smaller than the chosen part width.
-  - If the raw window span is slightly wider than --part-width because of window
-    overlap/rounding, it is capped to --part-width around the SW segment center.
+  - The selected line2 parts are displayed without a filled mask.
+  - Masks are added only on line1.
+  - The line1 mask follows the Smith-Waterman aligned full part or segment.
+  - The line1 mask can be equal to or smaller than --part-width.
   - Unless --part-starts is given, chosen line2 parts are random on every run.
     Use --random-seed for reproducible random choices.
 
@@ -100,6 +99,7 @@ class SWAlignedSegment:
     mean_similarity: float
     min_similarity: float
     score: float
+    match_kind: str  # "full_part" or "partial_segment"
 
 
 @dataclass
@@ -122,6 +122,7 @@ class PartSearchResult:
     min_similarity: float = 0.0
     sw_score: float = 0.0
     score: float = 0.0
+    match_kind: str = ""
     message: str = ""
 
 
@@ -239,6 +240,8 @@ def resolve_line_paths(args: argparse.Namespace) -> Tuple[str, str]:
 
 
 def clamp_segment_to_image(x0: float, x1: float, image_width: int) -> Tuple[int, int]:
+    if image_width <= 0:
+        return 0, 1
     x0_i = int(round(max(0.0, min(float(x0), float(image_width)))))
     x1_i = int(round(max(float(x0_i) + 1.0, min(float(x1), float(image_width)))))
     if x1_i > image_width:
@@ -296,35 +299,106 @@ def make_source_parts(
 
 
 # ---------------------------------------------------------------------------
-# Smith-Waterman segment search
+# Smith-Waterman full-part / segment search
 # ---------------------------------------------------------------------------
 
 
-def best_sw_consecutive_segment(
+def _diag_pairs(sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]]) -> List[Tuple[int, int]]:
+    return [(i, j) for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
+
+
+def _segment_from_pairs(
+    pairs: Sequence[Tuple[int, int]],
+    sim: np.ndarray,
+    match_kind: str,
+) -> Optional[SWAlignedSegment]:
+    if not pairs:
+        return None
+    sims = np.asarray([float(sim[i, j]) for i, j in pairs], dtype=np.float32)
+    mean_sim = float(np.mean(sims))
+    min_sim = float(np.min(sims))
+    line1_start = int(min(i for i, _j in pairs))
+    line1_end = int(max(i for i, _j in pairs))
+    part_start = int(min(j for _i, j in pairs))
+    part_end = int(max(j for _i, j in pairs))
+    length = len(pairs)
+    score = mean_sim + 1e-4 * length
+    return SWAlignedSegment(
+        line1_start=line1_start,
+        line1_end=line1_end,
+        part_start=part_start,
+        part_end=part_end,
+        length=length,
+        mean_similarity=mean_sim,
+        min_similarity=min_sim,
+        score=float(score),
+        match_kind=match_kind,
+    )
+
+
+def _passes_threshold(
+    segment: SWAlignedSegment,
+    threshold: float,
+    min_run_length: int,
+    require_all_windows_above_threshold: bool,
+) -> bool:
+    if segment.length < min_run_length:
+        return False
+    if segment.mean_similarity < threshold:
+        return False
+    if require_all_windows_above_threshold and segment.min_similarity < threshold:
+        return False
+    return True
+
+
+def full_part_sw_segment(
     sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]],
     sim: np.ndarray,
     threshold: float,
     min_run_length: int,
     require_all_windows_above_threshold: bool = False,
 ) -> Optional[SWAlignedSegment]:
-    """Extract the best consecutive diagonal segment from a Smith-Waterman path.
+    """Try to use the whole chosen part before falling back to a sub-segment.
 
-    The path may contain gaps. For a clean visual mask, this keeps only true
-    consecutive diagonal matches:
-
-        (line1_i, part_j), (line1_i+1, part_j+1), ...
-
-    The selected segment must have mean similarity >= --threshold. If
-    --require-all-windows-above-threshold is passed, every diagonal pair must
-    also be >= --threshold.
+    A full-part match means every part window has a diagonal match in the local
+    Smith-Waterman path. The line1 span may have gaps, but the chosen line2 part
+    is represented as a whole.
     """
-    diag_pairs = [(i, j) for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
-    if not diag_pairs:
+    pairs = _diag_pairs(sw_path)
+    if not pairs or sim.ndim != 2:
+        return None
+
+    _n_line1, n_part = sim.shape
+    if n_part <= 0:
+        return None
+
+    covered_part_windows = {j for _i, j in pairs}
+    if covered_part_windows != set(range(n_part)):
+        return None
+
+    segment = _segment_from_pairs(pairs, sim, match_kind="full_part")
+    if segment is None:
+        return None
+    if not _passes_threshold(segment, threshold, min_run_length, require_all_windows_above_threshold):
+        return None
+    return segment
+
+
+def best_partial_sw_segment(
+    sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]],
+    sim: np.ndarray,
+    threshold: float,
+    min_run_length: int,
+    require_all_windows_above_threshold: bool = False,
+) -> Optional[SWAlignedSegment]:
+    """Fallback: choose the best consecutive diagonal segment inside the part."""
+    pairs = _diag_pairs(sw_path)
+    if not pairs:
         return None
 
     runs: List[List[Tuple[int, int]]] = []
-    current = [diag_pairs[0]]
-    for prev, cur in zip(diag_pairs[:-1], diag_pairs[1:]):
+    current = [pairs[0]]
+    for prev, cur in zip(pairs[:-1], pairs[1:]):
         if cur[0] == prev[0] + 1 and cur[1] == prev[1] + 1:
             current.append(cur)
         else:
@@ -334,42 +408,51 @@ def best_sw_consecutive_segment(
 
     best: Optional[SWAlignedSegment] = None
     for run in runs:
-        if len(run) < min_run_length:
+        segment = _segment_from_pairs(run, sim, match_kind="partial_segment")
+        if segment is None:
             continue
-        sims = np.asarray([float(sim[i, j]) for i, j in run], dtype=np.float32)
-        mean_sim = float(np.mean(sims))
-        min_sim = float(np.min(sims))
-        if mean_sim < threshold:
+        if not _passes_threshold(segment, threshold, min_run_length, require_all_windows_above_threshold):
             continue
-        if require_all_windows_above_threshold and min_sim < threshold:
-            continue
-
-        # Prefer a stronger segment, then a longer one.
-        score = mean_sim + 1e-4 * len(run)
-        candidate = SWAlignedSegment(
-            line1_start=int(run[0][0]),
-            line1_end=int(run[-1][0]),
-            part_start=int(run[0][1]),
-            part_end=int(run[-1][1]),
-            length=len(run),
-            mean_similarity=mean_sim,
-            min_similarity=min_sim,
-            score=float(score),
-        )
-        if best is None or candidate.score > best.score:
-            best = candidate
-
+        if best is None or segment.score > best.score:
+            best = segment
     return best
+
+
+def choose_sw_segment(
+    sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]],
+    sim: np.ndarray,
+    threshold: float,
+    min_run_length: int,
+    require_all_windows_above_threshold: bool = False,
+) -> Optional[SWAlignedSegment]:
+    """First search for the full part; if not found, search for a segment."""
+    full = full_part_sw_segment(
+        sw_path,
+        sim,
+        threshold=threshold,
+        min_run_length=min_run_length,
+        require_all_windows_above_threshold=require_all_windows_above_threshold,
+    )
+    if full is not None:
+        return full
+
+    return best_partial_sw_segment(
+        sw_path,
+        sim,
+        threshold=threshold,
+        min_run_length=min_run_length,
+        require_all_windows_above_threshold=require_all_windows_above_threshold,
+    )
 
 
 def best_possible_sw_segment_mean(
     sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]],
     sim: np.ndarray,
 ) -> float:
-    diag_pairs = [(i, j) for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
-    if not diag_pairs:
+    pairs = _diag_pairs(sw_path)
+    if not pairs:
         return float("nan")
-    sims = [float(sim[i, j]) for i, j in diag_pairs]
+    sims = [float(sim[i, j]) for i, j in pairs]
     return float(np.mean(sims)) if sims else float("nan")
 
 
@@ -419,7 +502,7 @@ def search_one_part(
         mismatch_penalty=args.mismatch,
     )
 
-    segment = best_sw_consecutive_segment(
+    segment = choose_sw_segment(
         sw_path,
         sim,
         threshold=args.threshold,
@@ -435,15 +518,15 @@ def search_one_part(
             sw_score=float(sw_score),
             score=best_possible_sw_segment_mean(sw_path, sim),
             message=(
-                "Smith-Waterman did not find a consecutive aligned segment above --threshold; "
+                "Smith-Waterman did not find the whole part or a fallback segment above --threshold; "
                 "try lowering --threshold, making --mismatch less negative, making --gap less negative, "
                 "or lowering --min-run-length"
             ),
         )
 
-    # Convert the aligned line1 SW segment to original line1 pixels. The mask is
-    # no longer forced to --part-width, but capped to --part-width to avoid a
-    # wider mask caused by window overlap or rounding.
+    # Convert the aligned line1 SW span to original line1 pixels. The mask is not
+    # forced to --part-width, but capped to --part-width so it is equal or smaller
+    # than the selected part.
     run_x0_original, run_x1_original = window_span_to_original_pixels(
         segment.line1_start,
         segment.line1_end,
@@ -461,8 +544,8 @@ def search_one_part(
         image_width=line1_original_width,
     )
 
-    # Also locate the aligned sub-segment inside the selected line2 crop so the
-    # arrow starts from the actually aligned part, not necessarily the full crop.
+    # Also locate where the full/partial match lies inside the chosen line2 part.
+    # This is used only to place the arrow start. We do not draw a filled mask on line2.
     part_original_width = max(1, part.x1_original - part.x0_original)
     part_x0_rel, part_x1_rel = window_span_to_original_pixels(
         segment.part_start,
@@ -500,6 +583,7 @@ def search_one_part(
         min_similarity=float(segment.min_similarity),
         sw_score=float(sw_score),
         score=float(segment.score),
+        match_kind=segment.match_kind,
     )
 
 
@@ -563,7 +647,7 @@ def draw_line2_part_on_full_line1_canvas(
     ax.text(
         x_offset_line1,
         y1_top - 8,
-        "Line 1: full searched line",
+        "Line 1: full searched line with masks",
         fontsize=11,
         weight="bold",
         va="bottom",
@@ -571,7 +655,7 @@ def draw_line2_part_on_full_line1_canvas(
     ax.text(
         0,
         y_parts_top - 8,
-        "Line 2: chosen parts only",
+        "Line 2: chosen parts only, no masks",
         fontsize=11,
         weight="bold",
         va="bottom",
@@ -604,7 +688,7 @@ def draw_line2_part_on_full_line1_canvas(
             zorder=1,
         )
 
-        # Border around the chosen source crop.
+        # Border only around the chosen source crop. Do not mask/fill line2.
         ax.add_patch(
             Rectangle(
                 (part_canvas_x0, y_parts_top),
@@ -639,24 +723,7 @@ def draw_line2_part_on_full_line1_canvas(
         assert result.match_x0_original is not None and result.match_x1_original is not None
         assert result.part_match_x0_relative is not None and result.part_match_x1_relative is not None
 
-        # Mask the aligned sub-segment inside the chosen line2 part.
-        src_x0 = part_canvas_x0 + result.part_match_x0_relative
-        src_x1 = part_canvas_x0 + result.part_match_x1_relative
-        src_width = max(1, src_x1 - src_x0)
-        ax.add_patch(
-            Rectangle(
-                (src_x0, y_parts_top),
-                src_width,
-                line2_h,
-                facecolor=color,
-                edgecolor=color,
-                linewidth=2,
-                alpha=0.30,
-                zorder=4,
-            )
-        )
-
-        # Mask the aligned SW segment on full line1. Width can be <= --part-width.
+        # Mask only the aligned SW segment on full line1.
         match_x0 = x_offset_line1 + result.match_x0_original
         match_x1 = x_offset_line1 + result.match_x1_original
         mask_width = max(1, match_x1 - match_x0)
@@ -673,10 +740,11 @@ def draw_line2_part_on_full_line1_canvas(
             )
         )
 
+        match_kind_label = "full" if result.match_kind == "full_part" else "segment"
         ax.text(
             0.5 * (match_x0 + match_x1),
             y1_top + 0.5 * h1,
-            f"part {part.part_id}\nsim={result.mean_similarity:.3f}",
+            f"part {part.part_id}\n{match_kind_label}\nsim={result.mean_similarity:.3f}",
             ha="center",
             va="center",
             fontsize=8,
@@ -686,9 +754,9 @@ def draw_line2_part_on_full_line1_canvas(
             zorder=5,
         )
         ax.text(
-            0.5 * (part_canvas_x0 + part_canvas_x1),
+            part_center_x,
             y_parts_top + 0.5 * line2_h,
-            f"part {part.part_id}\nSW seg",
+            f"part {part.part_id}\n{match_kind_label}",
             ha="center",
             va="center",
             fontsize=8,
@@ -699,6 +767,10 @@ def draw_line2_part_on_full_line1_canvas(
         )
 
         match_center_x = 0.5 * (match_x0 + match_x1)
+        # The arrow starts from the aligned sub-range inside the chosen part, but
+        # no visual mask is drawn there.
+        src_x0 = part_canvas_x0 + result.part_match_x0_relative
+        src_x1 = part_canvas_x0 + result.part_match_x1_relative
         src_center_x = 0.5 * (src_x0 + src_x1)
         ax.add_patch(
             FancyArrowPatch(
@@ -715,8 +787,9 @@ def draw_line2_part_on_full_line1_canvas(
 
         print(
             f"part {part.part_id}: FOUND | "
+            f"kind={result.match_kind} | "
             f"line2_x=[{part.x0_original},{part.x1_original}] | "
-            f"line2_sw_rel_x=[{result.part_match_x0_relative},{result.part_match_x1_relative}] | "
+            f"line2_aligned_rel_x=[{result.part_match_x0_relative},{result.part_match_x1_relative}] | "
             f"line1_mask_x=[{result.match_x0_original},{result.match_x1_original}] "
             f"width={result.match_x1_original - result.match_x0_original} | "
             f"line1_windows=[{result.line1_window_start},{result.line1_window_end}] | "
@@ -772,7 +845,7 @@ def draw_results(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Randomly crop fixed-width parts from line2 and find their Smith-Waterman aligned segment in full line1."
+        description="Randomly crop fixed-width parts from line2 and find their Smith-Waterman aligned full/partial segment in full line1."
     )
     parser.add_argument("--weights", required=True, help="Path to trained model .pth")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -788,7 +861,7 @@ def main():
     parser.add_argument(
         "--require-all-windows-above-threshold",
         action="store_true",
-        help="Require every diagonal window similarity in the chosen SW segment to be >= --threshold, not only the mean.",
+        help="Require every diagonal window similarity in the chosen SW full/partial segment to be >= --threshold, not only the mean.",
     )
     parser.add_argument("--use-flip", action="store_true", help="Use when Arabic windows were encoded right-to-left")
     parser.add_argument("--no-bilstm", action="store_true", help="Disable BiLSTM even if checkpoint config is missing")
@@ -888,7 +961,7 @@ def main():
     print(f"Part selection mode: {selection_mode}")
     print(f"Random seed: {args.random_seed if args.random_seed is not None else 'none'}")
     print(f"Part starts: {starts}")
-    print("Search method: Smith-Waterman local alignment; mask only the aligned segment")
+    print("Search method: Smith-Waterman; first full selected part, then fallback segment; masks only on line1")
 
     results: List[PartSearchResult] = []
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -914,7 +987,7 @@ def main():
     sample_label = f" sample {args.index}" if args.index is not None else ""
     title = (
         f"Line2 {selection_mode} parts searched inside full line1{sample_label} | "
-        f"SW segment mask, part_width={args.part_width}, thr={args.threshold}, gap={args.gap}"
+        f"SW full-part first, fallback segment, thr={args.threshold}, gap={args.gap}"
     )
     draw_results(line1_original, line2_original, results, args.output, title, args.part_width)
 
