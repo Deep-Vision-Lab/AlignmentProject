@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 #
 # Run directly with:
-#   sbatch scripts/sbatch_span_d3tw_win32_offline.sbatch
+#   sbatch scripts/train/sbatch_span_d3tw_win32_offline.sbatch
 #
-# Or override settings at submit time, for example:
-#   USE_WANDB=1 NUM_NEGATIVES=2 sbatch scripts/sbatch_span_d3tw_win32_offline.sbatch
+# Or use the wrapper:
+#   bash scripts/train/run_span_d3tw_offline.sh
+#
+# Override settings at submit time, for example:
+#   USE_WANDB=1 NUM_NEGATIVES=2 LOCAL_HARD_NEGATIVE_WEIGHT=0.1 sbatch scripts/train/sbatch_span_d3tw_win32_offline.sbatch
 #
 # This job runs Hugging Face in offline mode. Make sure the Arabic model is
 # cached before submitting:
-#   bash scripts/setup_manucripts_align_span_env.sh
+#   bash scripts/train/setup_manucripts_align_span_env.sh
 #
-#SBATCH --job-name=span_jax_w32
+#SBATCH --job-name=improve_neg_w32
 #SBATCH --output=out/%x_%J.out
 #SBATCH --partition=rtx4090
 #SBATCH --gpus=rtx_4090:1
@@ -42,7 +45,7 @@ mkdir -p "${HF_HOME}"
 python -c "import torch, transformers, jax; from transformers import AutoModel; print(f'torch={torch.__version__} transformers={transformers.__version__} jax={jax.__version__}')" || {
   echo "ERROR: PyTorch/Transformers/JAX is not ready in conda env '${CONDA_ENV}'." >&2
   echo "Run once before submitting:" >&2
-  echo "  bash scripts/setup_manucripts_align_span_env.sh" >&2
+  echo "  bash scripts/train/setup_manucripts_align_span_env.sh" >&2
   exit 1
 }
 
@@ -94,6 +97,22 @@ export NEGATIVE_MODE="${NEGATIVE_MODE:-mixed}"
 export SPAN_NEGATIVE_GRAD_MODE="${SPAN_NEGATIVE_GRAD_MODE:-hardest}"
 export USE_BILSTM="${USE_BILSTM:-1}"
 
+# improve_neg local discrimination loss.
+# These settings implement the suggested solution: global Span-DTW still trains
+# contextual CNN+BiLSTM embeddings, while this extra loss trains local pre-BiLSTM
+# CNN embeddings to push away wrong windows from the same line.
+export USE_LOCAL_HARD_NEGATIVES="${USE_LOCAL_HARD_NEGATIVES:-1}"
+export LOCAL_HARD_NEGATIVE_WEIGHT="${LOCAL_HARD_NEGATIVE_WEIGHT:-0.2}"
+export LOCAL_HARD_NEGATIVE_MARGIN="${LOCAL_HARD_NEGATIVE_MARGIN:-0.25}"
+export LOCAL_HARD_NEGATIVE_TOP_K="${LOCAL_HARD_NEGATIVE_TOP_K:-8}"
+export LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS="${LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS:-2}"
+export LOCAL_HARD_NEGATIVE_MIN_INK="${LOCAL_HARD_NEGATIVE_MIN_INK:-0.02}"
+
+# Embedding variance regularization to keep image-window vectors from collapsing
+# into a narrow cone where unrelated windows all have high cosine similarity.
+export IMAGE_VARIANCE_LOSS_WEIGHT="${IMAGE_VARIANCE_LOSS_WEIGHT:-0.01}"
+export IMAGE_VARIANCE_TARGET_STD="${IMAGE_VARIANCE_TARGET_STD:-0.05}"
+
 # Full validation every 5 epochs. Set VALID_MAX_BATCHES=10 for faster monitoring.
 export VALID_EVERY_N_EPOCHS="${VALID_EVERY_N_EPOCHS:-5}"
 export VALID_MAX_BATCHES="${VALID_MAX_BATCHES:-0}"
@@ -110,7 +129,7 @@ if [[ -z "${DATA_DIR:-}" ]]; then
     DATA_DIR="DataSet/Synthetic_${LANGUAGE}"
   fi
 fi
-JOB_ID="${JOB_ID:-span_jax_best_quality_win32_offline}"
+JOB_ID="${JOB_ID:-improve_neg_win32_offline}"
 EPOCHS="${EPOCHS:-150}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
 
@@ -118,7 +137,7 @@ python -c "from transformers import AutoModel, AutoTokenizer; import os; model=o
   echo "ERROR: '${ARABIC_TEXT_MODEL_NAME}' is not cached for offline Hugging Face loading." >&2
   echo "Expected cache directory: ${HF_HOME}" >&2
   echo "Run once before submitting:" >&2
-  echo "  bash scripts/setup_manucripts_align_span_env.sh" >&2
+  echo "  bash scripts/train/setup_manucripts_align_span_env.sh" >&2
   exit 1
 }
 
@@ -128,7 +147,7 @@ if [[ ! -d "${DATA_DIR}" ]]; then
   exit 1
 fi
 
-echo "Starting JAX span-DTW training"
+echo "Starting improve_neg JAX span-DTW training"
 echo "PROJECT_DIR=${PROJECT_DIR}"
 echo "DATA_DIR=${DATA_DIR}"
 echo "JOB_ID=${JOB_ID}"
@@ -137,6 +156,8 @@ echo "BATCH_SIZE=${BATCH_SIZE} NUM_NEGATIVES=${NUM_NEGATIVES} SPAN_NEGATIVE_GRAD
 echo "MAX_TEXT_SPAN_CHARS=${MAX_TEXT_SPAN_CHARS} MAX_WINDOWS_PER_SPAN=${MAX_WINDOWS_PER_SPAN}"
 echo "SPAN_FEATURE_CACHE_SIZE=${SPAN_FEATURE_CACHE_SIZE} SPAN_FEATURE_CACHE_DTYPE=${SPAN_FEATURE_CACHE_DTYPE} CLEAR_SPAN_CACHE_EACH_EPOCH=${CLEAR_SPAN_CACHE_EACH_EPOCH}"
 echo "SPAN_DTW_BUCKET_TEXT_LENGTHS=${SPAN_DTW_BUCKET_TEXT_LENGTHS} SPAN_DTW_TEXT_BUCKET_SIZE=${SPAN_DTW_TEXT_BUCKET_SIZE} SPAN_DTW_MAX_TEXT_BUCKET=${SPAN_DTW_MAX_TEXT_BUCKET}"
+echo "USE_LOCAL_HARD_NEGATIVES=${USE_LOCAL_HARD_NEGATIVES} LOCAL_HARD_NEGATIVE_WEIGHT=${LOCAL_HARD_NEGATIVE_WEIGHT} LOCAL_HARD_NEGATIVE_MARGIN=${LOCAL_HARD_NEGATIVE_MARGIN} LOCAL_HARD_NEGATIVE_TOP_K=${LOCAL_HARD_NEGATIVE_TOP_K} LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS=${LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS} LOCAL_HARD_NEGATIVE_MIN_INK=${LOCAL_HARD_NEGATIVE_MIN_INK}"
+echo "IMAGE_VARIANCE_LOSS_WEIGHT=${IMAGE_VARIANCE_LOSS_WEIGHT} IMAGE_VARIANCE_TARGET_STD=${IMAGE_VARIANCE_TARGET_STD}"
 echo "LOG_MEMORY_EVERY_N_BATCHES=${LOG_MEMORY_EVERY_N_BATCHES}"
 echo "DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS} ALLOW_JAX_DATALOADER_WORKERS=${ALLOW_JAX_DATALOADER_WORKERS}"
 echo "VALID_EVERY_N_EPOCHS=${VALID_EVERY_N_EPOCHS} VALID_MAX_BATCHES=${VALID_MAX_BATCHES}"
