@@ -90,12 +90,12 @@ export SPAN_DTW_MAX_TEXT_BUCKET="${SPAN_DTW_MAX_TEXT_BUCKET:-256}"
 export LOG_MEMORY_EVERY_N_BATCHES="${LOG_MEMORY_EVERY_N_BATCHES:-25}"
 export SPAN_DTW_MEM_DEBUG="${SPAN_DTW_MEM_DEBUG:-0}"
 
-# Speed-focused contrastive setup.
-# Runtime scales almost linearly with NUM_NEGATIVES because every negative needs
-# expensive span-DTW scoring. Start with 1, then try NUM_NEGATIVES=2 or 4 only
-# after the model is stable and you want a slower high-quality run.
+# Quality-focused contrastive setup.
+# Keep four transcript negatives by default. Runtime is slower than one negative,
+# but this preserves the hard contrastive task. Use NUM_NEGATIVES=2 only for a
+# temporary debugging/warmup run, not for the final training.
 export BATCH_SIZE="${BATCH_SIZE:-32}"
-export NUM_NEGATIVES="${NUM_NEGATIVES:-1}"
+export NUM_NEGATIVES="${NUM_NEGATIVES:-4}"
 export NEGATIVE_MODE="${NEGATIVE_MODE:-mixed}"
 export SPAN_NEGATIVE_GRAD_MODE="${SPAN_NEGATIVE_GRAD_MODE:-hardest}"
 export USE_BILSTM="${USE_BILSTM:-1}"
@@ -133,7 +133,7 @@ if [[ -z "${DATA_DIR:-}" ]]; then
     DATA_DIR="DataSet/Synthetic_${LANGUAGE}"
   fi
 fi
-JOB_ID="${JOB_ID:-improve_neg_win32_fast}"
+JOB_ID="${JOB_ID:-improve_neg_win32_offline}"
 EPOCHS="${EPOCHS:-150}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
 
@@ -151,7 +151,7 @@ if [[ ! -d "${DATA_DIR}" ]]; then
   exit 1
 fi
 
-echo "Starting improve_neg FAST JAX span-DTW training"
+echo "Starting improve_neg JAX span-DTW training"
 echo "PROJECT_DIR=${PROJECT_DIR}"
 echo "DATA_DIR=${DATA_DIR}"
 echo "JOB_ID=${JOB_ID}"
