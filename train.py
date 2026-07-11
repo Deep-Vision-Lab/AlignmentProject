@@ -14,7 +14,7 @@ from arabic_token_text_encoder import ArabicTokenTextEncoder
 from LossFunctionWithHelpers import ContrastiveSoftDTW
 from embeddingModel import EmbeddingModel
 from DataLoader import build_dataloaders
-from span_alignment_loss import SpanContrastiveSoftDTW
+from span_alignment_loss import SpanContrastiveSoftDTW, hard_span_dtw_path
 from textEmbedding import TextEmbedding
 
 try:
@@ -81,6 +81,14 @@ def model_config(stride):
         "span_dtw_bucket_text_lengths": P.span_dtw_bucket_text_lengths,
         "span_dtw_text_bucket_size": P.span_dtw_text_bucket_size,
         "span_dtw_max_text_bucket": P.span_dtw_max_text_bucket,
+        "use_local_hard_negatives": P.use_local_hard_negatives,
+        "local_hard_negative_weight": P.local_hard_negative_weight,
+        "local_hard_negative_margin": P.local_hard_negative_margin,
+        "local_hard_negative_top_k": P.local_hard_negative_top_k,
+        "local_hard_negative_exclude_radius": P.local_hard_negative_exclude_radius,
+        "local_hard_negative_min_ink": P.local_hard_negative_min_ink,
+        "image_variance_loss_weight": P.image_variance_loss_weight,
+        "image_variance_target_std": P.image_variance_target_std,
         "valid_every_n_epochs": P.valid_every_n_epochs,
         "valid_max_batches": P.valid_max_batches,
         "log_memory_every_n_batches": P.log_memory_every_n_batches,
@@ -210,26 +218,227 @@ def compute_similarity_lists(text_encoder, norm_img, pos_texts, neg_texts):
     return sim_pos_list, sim_neg_list
 
 
+def image_embedding_variance_loss(img_emb, target_std=0.05):
+    """Prevent image-window embeddings from collapsing into a narrow cosine cone."""
+    if target_std <= 0:
+        return img_emb.new_tensor(0.0)
+    z = img_emb.reshape(-1, img_emb.shape[-1]).float()
+    if z.shape[0] <= 1:
+        return z.new_tensor(0.0)
+    z = z - z.mean(dim=0, keepdim=True)
+    std = torch.sqrt(z.var(dim=0, unbiased=False) + 1e-6)
+    return torch.relu(float(target_std) - std).mean()
+
+
+def _local_hard_negative_loss_for_one_sample(
+    span_encoding,
+    local_image_embeddings,
+    path,
+    ink_ratio=None,
+    margin=0.25,
+    top_k=8,
+    exclude_radius=2,
+    min_ink=0.02,
+):
+    """Push each aligned span away from wrong windows inside the same line.
+
+    The path is computed from the contextual/BiLSTM embedding, but this loss is
+    applied to the local pre-BiLSTM CNN embedding. This makes local windows more
+    visually discriminative while keeping the global span-DTW alignment signal.
+    """
+    losses = []
+    pos_values = []
+    neg_values = []
+
+    span_embeddings = F.normalize(span_encoding.embeddings.float(), p=2, dim=-1)
+    local_image_embeddings = F.normalize(local_image_embeddings.float(), p=2, dim=-1)
+    num_windows = int(local_image_embeddings.shape[0])
+
+    if ink_ratio is not None:
+        ink_ratio = ink_ratio.to(local_image_embeddings.device).float()
+        valid_ink = ink_ratio >= float(min_ink)
+    else:
+        valid_ink = None
+
+    for step in path:
+        span_idx = int(step["span_idx"])
+        w0 = int(step["window_start"])
+        w1 = int(step["window_end"])
+        if w1 <= w0 or w0 < 0 or w1 > num_windows:
+            continue
+
+        if valid_ink is not None and not valid_ink[w0:w1].any().item():
+            # Do not make nearly empty/background-only positive windows drive the loss.
+            continue
+
+        span_vec = span_embeddings[span_idx]
+        pos_img = local_image_embeddings[w0:w1].mean(dim=0)
+        pos_img = F.normalize(pos_img, p=2, dim=-1)
+        sim_pos = torch.matmul(pos_img, span_vec)
+
+        neg_mask = torch.ones(num_windows, dtype=torch.bool, device=local_image_embeddings.device)
+        left = max(0, w0 - int(exclude_radius))
+        right = min(num_windows, w1 + int(exclude_radius))
+        neg_mask[left:right] = False
+        if valid_ink is not None:
+            neg_mask &= valid_ink
+
+        if neg_mask.sum().item() == 0:
+            continue
+
+        sim_negs = torch.matmul(local_image_embeddings[neg_mask], span_vec)
+        k = min(max(1, int(top_k)), int(sim_negs.numel()))
+        hard_negs = torch.topk(sim_negs, k=k).values
+
+        losses.append(torch.relu(float(margin) - sim_pos + hard_negs).mean())
+        pos_values.append(sim_pos.detach())
+        neg_values.append(hard_negs.mean().detach())
+
+    if not losses:
+        zero = local_image_embeddings.new_tensor(0.0)
+        return zero, {
+            "local_hard_neg": 0.0,
+            "local_pos_sim": 0.0,
+            "local_neg_sim": 0.0,
+            "local_terms": 0.0,
+        }
+
+    loss = torch.stack(losses).mean()
+    return loss, {
+        "local_hard_neg": float(loss.detach().item()),
+        "local_pos_sim": float(torch.stack(pos_values).mean().item()),
+        "local_neg_sim": float(torch.stack(neg_values).mean().item()),
+        "local_terms": float(len(losses)),
+    }
+
+
+def local_hard_negative_loss_for_batch(
+    text_encoder,
+    criterion,
+    norm_context_img,
+    norm_local_img,
+    pos_texts,
+    ink_ratios=None,
+):
+    if (
+        not P.use_local_hard_negatives
+        or P.local_hard_negative_weight <= 0
+        or not torch.is_grad_enabled()
+    ):
+        zero = norm_local_img.new_tensor(0.0)
+        return zero, {
+            "local_hard_neg": 0.0,
+            "local_pos_sim": 0.0,
+            "local_neg_sim": 0.0,
+            "local_terms": 0.0,
+        }
+
+    losses = []
+    stats_list = []
+    for sample_idx, pos_text in enumerate(pos_texts):
+        pos_encoding = text_encoder(pos_text, use_cache=False if text_encoder.training else None)
+        try:
+            with torch.no_grad():
+                path = hard_span_dtw_path(
+                    pos_encoding,
+                    norm_context_img[sample_idx],
+                    temperature=criterion.temperature,
+                    max_windows=criterion.max_windows_per_span,
+                    window_count_penalty=criterion.window_count_penalty,
+                )
+        except ValueError:
+            continue
+
+        ink_ratio = ink_ratios[sample_idx] if ink_ratios is not None else None
+        sample_loss, sample_stats = _local_hard_negative_loss_for_one_sample(
+            pos_encoding,
+            norm_local_img[sample_idx],
+            path,
+            ink_ratio=ink_ratio,
+            margin=P.local_hard_negative_margin,
+            top_k=P.local_hard_negative_top_k,
+            exclude_radius=P.local_hard_negative_exclude_radius,
+            min_ink=P.local_hard_negative_min_ink,
+        )
+        losses.append(sample_loss)
+        stats_list.append(sample_stats)
+
+    if not losses:
+        zero = norm_local_img.new_tensor(0.0)
+        return zero, {
+            "local_hard_neg": 0.0,
+            "local_pos_sim": 0.0,
+            "local_neg_sim": 0.0,
+            "local_terms": 0.0,
+        }
+
+    loss = torch.stack(losses).mean()
+    return loss, {
+        "local_hard_neg": float(loss.detach().item()),
+        "local_pos_sim": sum(s["local_pos_sim"] for s in stats_list) / len(stats_list),
+        "local_neg_sim": sum(s["local_neg_sim"] for s in stats_list) / len(stats_list),
+        "local_terms": sum(s["local_terms"] for s in stats_list) / len(stats_list),
+    }
+
+
 def compute_batch_loss(image_embedder, text_encoder, criterion, images, pos_texts, neg_texts):
+    if P.text_encoder_type == "arabic_span":
+        with autocast(dtype=AMP_DTYPE, enabled=USE_AMP):
+            img_emb, local_img_emb, ink_ratio = image_embedder(
+                images,
+                return_local=True,
+                return_ink=True,
+            )
+        norm_img = F.normalize(img_emb.float(), p=2, dim=-1)
+        norm_local_img = F.normalize(local_img_emb.float(), p=2, dim=-1)
+
+        loss, stats = criterion.forward_varlen(text_encoder, norm_img, pos_texts, neg_texts)
+
+        local_loss, local_stats = local_hard_negative_loss_for_batch(
+            text_encoder,
+            criterion,
+            norm_img,
+            norm_local_img,
+            pos_texts,
+            ink_ratios=ink_ratio,
+        )
+        if P.use_local_hard_negatives and P.local_hard_negative_weight > 0 and torch.is_grad_enabled():
+            loss = loss + P.local_hard_negative_weight * local_loss
+        stats.update(local_stats)
+
+        var_loss = image_embedding_variance_loss(local_img_emb, P.image_variance_target_std)
+        if P.image_variance_loss_weight > 0 and torch.is_grad_enabled():
+            loss = loss + P.image_variance_loss_weight * var_loss
+        stats["img_var_loss"] = float(var_loss.detach().item())
+        stats["total"] = float(loss.detach().item())
+        return loss, stats
+
     with autocast(dtype=AMP_DTYPE, enabled=USE_AMP):
         img_emb = image_embedder(images)
     norm_img = F.normalize(img_emb.float(), p=2, dim=-1)
 
-    if P.text_encoder_type == "arabic_span":
-        return criterion.forward_varlen(text_encoder, norm_img, pos_texts, neg_texts)
-
     sim_pos_list, sim_neg_list = compute_similarity_lists(
         text_encoder, norm_img, pos_texts, neg_texts
     )
-    return criterion.forward_varlen(sim_pos_list, sim_neg_list)
+    loss, stats = criterion.forward_varlen(sim_pos_list, sim_neg_list)
+
+    var_loss = image_embedding_variance_loss(img_emb, P.image_variance_target_std)
+    if P.image_variance_loss_weight > 0 and torch.is_grad_enabled():
+        loss = loss + P.image_variance_loss_weight * var_loss
+    stats["img_var_loss"] = float(var_loss.detach().item())
+    stats["total"] = float(loss.detach().item())
+    return loss, stats
 
 
 def average_stats(stats_list):
     if not stats_list:
         return {}
+    keys = set()
+    for stats in stats_list:
+        keys.update(stats.keys())
     return {
-        key: sum(stats[key] for stats in stats_list) / len(stats_list)
-        for key in stats_list[0]
+        key: sum(stats.get(key, 0.0) for stats in stats_list) / len(stats_list)
+        for key in keys
     }
 
 
@@ -296,6 +505,10 @@ def train_one_epoch(model, text_encoder, criterion, optimizer, scaler, loader):
             f"norm_neg={stats.get('norm_neg', float('nan')):.4f} "
             f"gap={stats.get('gap', float('nan')):.4f} "
             f"pos_prob={stats.get('pos_prob', float('nan')):.4f} "
+            f"local_hard={stats.get('local_hard_neg', 0.0):.4f} "
+            f"local_pos={stats.get('local_pos_sim', 0.0):.4f} "
+            f"local_neg={stats.get('local_neg_sim', 0.0):.4f} "
+            f"img_var={stats.get('img_var_loss', 0.0):.4f} "
             f"cost_pos={stats.get('cost_pos', float('nan')):.2f} "
             f"cost_neg={stats.get('cost_neg', float('nan')):.2f} "
             f"forward={forward_elapsed:.1f}s backward={backward_elapsed:.1f}s time={elapsed:.1f}s"
@@ -349,6 +562,10 @@ def wandb_log_epoch_metrics(run, epoch, train_loss, val_loss, train_stats):
                 "raw_negative_cost": float(train_stats.get("cost_neg", float("nan"))),
                 "gap": float(train_stats.get("gap", float("nan"))),
                 "pos_prob": float(train_stats.get("pos_prob", float("nan"))),
+                "local_hard_neg": float(train_stats.get("local_hard_neg", 0.0)),
+                "local_pos_sim": float(train_stats.get("local_pos_sim", 0.0)),
+                "local_neg_sim": float(train_stats.get("local_neg_sim", 0.0)),
+                "img_var_loss": float(train_stats.get("img_var_loss", 0.0)),
             },
             step=int(epoch),
             commit=True,
@@ -460,6 +677,9 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, default=None)
     parser.add_argument("--num_negatives", type=int, default=None)
     parser.add_argument("--use_bilstm", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--use_local_hard_negatives", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--local_hard_negative_weight", type=float, default=None)
+    parser.add_argument("--image_variance_loss_weight", type=float, default=None)
     return parser.parse_args()
 
 
@@ -479,6 +699,12 @@ def apply_overrides(args):
         DataLoader.num_negatives = args.num_negatives
     if args.use_bilstm is not None:
         P.use_bilstm = args.use_bilstm
+    if args.use_local_hard_negatives is not None:
+        P.use_local_hard_negatives = args.use_local_hard_negatives
+    if args.local_hard_negative_weight is not None:
+        P.local_hard_negative_weight = args.local_hard_negative_weight
+    if args.image_variance_loss_weight is not None:
+        P.image_variance_loss_weight = args.image_variance_loss_weight
 
     if args.finetune:
         args.learning_rate = P.finetune_learning_rate if args.learning_rate is None else args.learning_rate
@@ -550,6 +776,11 @@ def main():
             f"span_dtw_bucket_text_lengths={P.span_dtw_bucket_text_lengths} "
             f"span_dtw_text_bucket_size={P.span_dtw_text_bucket_size} "
             f"span_dtw_max_text_bucket={P.span_dtw_max_text_bucket} "
+            f"local_hard_negatives={P.use_local_hard_negatives} "
+            f"local_weight={P.local_hard_negative_weight} "
+            f"local_margin={P.local_hard_negative_margin} "
+            f"local_top_k={P.local_hard_negative_top_k} "
+            f"min_ink={P.local_hard_negative_min_ink} "
             "freeze_backbone=True",
             flush=True,
         )
@@ -562,7 +793,8 @@ def main():
     else:
         print("text_encoder=TextEmbedding", flush=True)
     print(
-        f"use_bilstm={P.use_bilstm} soft_dtw_gamma={P.contrastive_soft_dtw_gamma}",
+        f"use_bilstm={P.use_bilstm} soft_dtw_gamma={P.contrastive_soft_dtw_gamma} "
+        f"img_var_weight={P.image_variance_loss_weight} img_var_target={P.image_variance_target_std}",
         flush=True,
     )
 
