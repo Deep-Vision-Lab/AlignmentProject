@@ -6,15 +6,20 @@ The script:
   1. loads the trained image encoder,
   2. takes the whole first line image as the search target,
   3. crops N fixed-width parts from the second line image,
-  4. aligns each cropped part against the whole first line using Smith-Waterman,
-  5. shows the full line1 image with fixed-width masks where each part was found,
-  6. shows only the chosen line2 parts, not the whole line2 image,
-  7. connects each chosen part to its masked match in line1 using the same color.
+  4. for every cropped part, searches the full line1 for the consecutive
+     window block with the highest diagonal similarity to that part,
+  5. accepts the block only when its similarity is above --threshold,
+  6. shows the full line1 image with fixed-width masks where each part was found,
+  7. shows only the chosen line2 parts, not the whole line2 image,
+  8. connects each chosen part to its masked match in line1 using the same color.
 
 Important:
   The matched mask in line1 is forced to have exactly --part-width original pixels.
-  It is centered around the Smith-Waterman matched run, but its width is not taken
-  from the run length. This keeps the source part and line1 mask equal width.
+  The search uses consecutive line1 windows, not Smith-Waterman. For a cropped
+  part with K windows, it checks every K-window consecutive block in line1 and
+  chooses the block with the highest mean diagonal cosine similarity:
+
+      score(start) = mean_k cosine(line1[start+k], part[k])
 
 Example:
     python scripts/visualize_line2_parts_in_line1.py \
@@ -28,9 +33,6 @@ Example:
       --stride 16 \
       --height 128 \
       --threshold 0.86 \
-      --match 1.0 \
-      --mismatch -1.5 \
-      --gap -0.15 \
       --min-run-length 3 \
       --use-flip
 
@@ -67,9 +69,7 @@ from visualize_sw_longest_alignment import (  # noqa: E402
     cosine_similarity_matrix,
     image_embeddings,
     load_image_model,
-    longest_consecutive_diagonal_run,
     preprocess_line_image,
-    smith_waterman,
     window_range_to_pixels,
 )
 
@@ -90,10 +90,26 @@ class PartSearchResult:
     match_x1_original: Optional[int] = None
     run_x0_original: Optional[float] = None
     run_x1_original: Optional[float] = None
+    line1_window_start: Optional[int] = None
+    line1_window_end: Optional[int] = None
+    part_window_count: int = 0
     run_length: int = 0
     mean_similarity: float = 0.0
-    sw_score: float = 0.0
+    min_similarity: float = 0.0
+    score: float = 0.0
     message: str = ""
+
+
+@dataclass
+class ConsecutiveWindowMatch:
+    line1_start: int
+    line1_end: int
+    part_start: int
+    part_end: int
+    length: int
+    mean_similarity: float
+    min_similarity: float
+    score: float
 
 
 # ---------------------------------------------------------------------------
@@ -190,8 +206,65 @@ def make_source_parts(
 
 
 # ---------------------------------------------------------------------------
-# Search
+# Consecutive-window search
 # ---------------------------------------------------------------------------
+
+
+def best_consecutive_window_match(
+    sim: np.ndarray,
+    threshold: float,
+    min_run_length: int,
+    require_all_windows_above_threshold: bool = False,
+) -> Optional[ConsecutiveWindowMatch]:
+    """Find the consecutive line1 window block most similar to the part.
+
+    sim has shape [line1_windows, part_windows]. For a part with K windows, we
+    scan every K-window block in line1 and score it by the diagonal similarity:
+
+        line1[start + k]  <->  part[k]
+
+    A candidate is accepted when its mean similarity is >= threshold. When
+    --require-all-windows-above-threshold is used, every diagonal element must
+    also be >= threshold.
+    """
+    if sim.ndim != 2:
+        raise ValueError(f"Expected 2D similarity matrix, got shape {sim.shape}")
+
+    n_line1, n_part = sim.shape
+    run_len = int(n_part)
+    if run_len <= 0 or n_line1 <= 0:
+        return None
+    if run_len < min_run_length:
+        return None
+    if run_len > n_line1:
+        return None
+
+    best: Optional[ConsecutiveWindowMatch] = None
+
+    for start in range(0, n_line1 - run_len + 1):
+        diag = np.asarray([float(sim[start + k, k]) for k in range(run_len)], dtype=np.float32)
+        mean_sim = float(np.mean(diag))
+        min_sim = float(np.min(diag))
+
+        if mean_sim < threshold:
+            continue
+        if require_all_windows_above_threshold and min_sim < threshold:
+            continue
+
+        candidate = ConsecutiveWindowMatch(
+            line1_start=start,
+            line1_end=start + run_len - 1,
+            part_start=0,
+            part_end=run_len - 1,
+            length=run_len,
+            mean_similarity=mean_sim,
+            min_similarity=min_sim,
+            score=mean_sim,
+        )
+        if best is None or candidate.score > best.score:
+            best = candidate
+
+    return best
 
 
 def search_one_part(
@@ -209,37 +282,40 @@ def search_one_part(
     # sim[i, j] = similarity between window i from full line1 and window j from the cropped line2 part.
     sim = cosine_similarity_matrix(emb_line1, emb_part)
 
-    sw_path, sw_score, _H = smith_waterman(
+    match = best_consecutive_window_match(
         sim,
         threshold=args.threshold,
-        gap_penalty=args.gap,
-        match_reward=args.match,
-        mismatch_penalty=args.mismatch,
-    )
-
-    run = longest_consecutive_diagonal_run(
-        sw_path,
-        sim,
-        sw_score,
         min_run_length=args.min_run_length,
+        require_all_windows_above_threshold=args.require_all_windows_above_threshold,
     )
 
-    if run is None:
+    if match is None:
+        best_possible = float("nan")
+        if sim.ndim == 2 and sim.shape[0] > 0 and sim.shape[1] > 0 and sim.shape[1] <= sim.shape[0]:
+            n_part = sim.shape[1]
+            possible_scores = [
+                float(np.mean([sim[start + k, k] for k in range(n_part)]))
+                for start in range(0, sim.shape[0] - n_part + 1)
+            ]
+            if possible_scores:
+                best_possible = max(possible_scores)
+
         return PartSearchResult(
             part=part,
             found=False,
-            sw_score=float(sw_score),
+            part_window_count=int(emb_part.shape[0]),
+            score=best_possible,
             message=(
-                "no consecutive diagonal run found; try lowering --threshold, "
-                "making --mismatch less negative, or lowering --min-run-length"
+                "no consecutive line1 window block had mean similarity above --threshold; "
+                "try lowering --threshold or lowering --min-run-length"
             ),
         )
 
     # This is only used to find the center of the match. The final line1 mask
     # is forced to exactly --part-width original pixels.
     run_x0_display, run_x1_display = window_range_to_pixels(
-        run.line1_start,
-        run.line1_end,
+        match.line1_start,
+        match.line1_end,
         line1_num_windows,
         line1_display_width,
         args.window_size,
@@ -266,9 +342,13 @@ def search_one_part(
         match_x1_original=int(fixed_x1),
         run_x0_original=float(run_x0_original),
         run_x1_original=float(run_x1_original),
-        run_length=int(run.length),
-        mean_similarity=float(run.mean_similarity),
-        sw_score=float(run.sw_score),
+        line1_window_start=int(match.line1_start),
+        line1_window_end=int(match.line1_end),
+        part_window_count=int(emb_part.shape[0]),
+        run_length=int(match.length),
+        mean_similarity=float(match.mean_similarity),
+        min_similarity=float(match.min_similarity),
+        score=float(match.score),
     )
 
 
@@ -412,7 +492,7 @@ def draw_line2_part_on_full_line1_canvas(
                 color=color,
                 weight="bold",
             )
-            print(f"part {part.part_id}: NOT FOUND | score={result.sw_score:.4f} | {result.message}")
+            print(f"part {part.part_id}: NOT FOUND | best_mean={result.score:.4f} | {result.message}")
             continue
 
         assert result.match_x0_original is not None and result.match_x1_original is not None
@@ -464,10 +544,11 @@ def draw_line2_part_on_full_line1_canvas(
             f"part {part.part_id}: FOUND | "
             f"line1_mask_x=[{result.match_x0_original},{result.match_x1_original}] "
             f"width={result.match_x1_original - result.match_x0_original} | "
-            f"raw_run_x=[{result.run_x0_original:.1f},{result.run_x1_original:.1f}] | "
-            f"run_len={result.run_length} | "
+            f"line1_windows=[{result.line1_window_start},{result.line1_window_end}] | "
+            f"part_windows={result.part_window_count} | "
+            f"raw_window_x=[{result.run_x0_original:.1f},{result.run_x1_original:.1f}] | "
             f"mean_sim={result.mean_similarity:.4f} | "
-            f"score={result.sw_score:.4f}"
+            f"min_sim={result.min_similarity:.4f}"
         )
 
     ax.set_title(title, fontsize=13)
@@ -515,7 +596,7 @@ def draw_results(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Crop fixed-width parts from line2 and find where they appear in full line1."
+        description="Crop fixed-width parts from line2 and find the highest-similarity consecutive window block in full line1."
     )
     parser.add_argument("--weights", required=True, help="Path to trained model .pth")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -524,12 +605,20 @@ def main():
     parser.add_argument("--height", type=int, default=128)
     parser.add_argument("--vector-size", type=int, default=128)
     parser.add_argument("--threshold", type=float, default=0.86)
-    parser.add_argument("--match", type=float, default=1.0)
-    parser.add_argument("--mismatch", type=float, default=-1.5)
-    parser.add_argument("--gap", type=float, default=-0.15)
     parser.add_argument("--min-run-length", type=int, default=3)
+    parser.add_argument(
+        "--require-all-windows-above-threshold",
+        action="store_true",
+        help="Require every diagonal window similarity in the chosen block to be >= --threshold, not only the mean.",
+    )
     parser.add_argument("--use-flip", action="store_true", help="Use when Arabic windows were encoded right-to-left")
     parser.add_argument("--no-bilstm", action="store_true", help="Disable BiLSTM even if checkpoint config is missing")
+
+    # Kept for backward compatibility with older commands. They are not used by
+    # the consecutive-window search.
+    parser.add_argument("--match", type=float, default=1.0, help=argparse.SUPPRESS)
+    parser.add_argument("--mismatch", type=float, default=-1.5, help=argparse.SUPPRESS)
+    parser.add_argument("--gap", type=float, default=-0.15, help=argparse.SUPPRESS)
 
     # Input line options.
     parser.add_argument("--line1", default=None, help="Path to the full first line image")
@@ -557,12 +646,8 @@ def main():
 
     if args.part_width <= 0:
         raise ValueError("--part-width must be positive")
-    if args.gap > 0:
-        raise ValueError("--gap should be negative, for example --gap -0.15")
-    if args.mismatch > 0:
-        raise ValueError("--mismatch should be negative, for example --mismatch -1.5")
-    if args.match <= 0:
-        raise ValueError("--match should be positive, for example --match 1.0")
+    if args.min_run_length <= 0:
+        raise ValueError("--min-run-length must be positive")
 
     line1_path, line2_path = resolve_line_paths(args)
     if not os.path.exists(line1_path):
@@ -601,6 +686,7 @@ def main():
 
     print(f"Part width: {args.part_width}")
     print(f"Part starts: {starts}")
+    print("Search method: highest mean similarity over consecutive line1 windows")
 
     results: List[PartSearchResult] = []
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -626,7 +712,7 @@ def main():
     sample_label = f" sample {args.index}" if args.index is not None else ""
     title = (
         f"Line2 chosen parts searched inside full line1{sample_label} | "
-        f"part_width={args.part_width}, thr={args.threshold}, gap={args.gap}"
+        f"part_width={args.part_width}, consecutive-window mean thr={args.threshold}"
     )
     draw_results(line1_original, line2_original, results, args.output, title, args.part_width)
 
