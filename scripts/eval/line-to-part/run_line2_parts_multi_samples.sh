@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-SCRIPT="scripts/visualize_line2_parts_in_line1.py"
+SCRIPT="scripts/eval/line-to-part/visualize_line2_parts_in_line1.py"
 
 WEIGHTS="Weights/span_jax_best_quality_win32_offline/model_latest.pth"
 DATA_DIR="DataSet/Synthetic_Arabic"
