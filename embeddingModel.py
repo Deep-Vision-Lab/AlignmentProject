@@ -8,6 +8,17 @@ def sliding_window(image, window_size, stride):
     return patches.permute(0, 3, 1, 2, 4).contiguous()
 
 
+def window_ink_ratio_from_patches(patches):
+    """Estimate how much dark ink exists in each sliding-window patch.
+
+    patches: [B, S, C, H, W], usually in [0, 1] with white background near 1.
+    Returns: [B, S], where higher values mean more ink/strokes.
+    """
+    gray = patches.float().mean(dim=2)
+    ink = (1.0 - gray).clamp(min=0.0, max=1.0)
+    return ink.mean(dim=(2, 3))
+
+
 class BiLSTMEncoder(nn.Module):
     def __init__(self, embed_dim, hidden_dim=None, lstm_layers=1):
         super().__init__()
@@ -113,14 +124,32 @@ class EmbeddingModel(nn.Module):
         encoded = torch.cat(chunks, dim=0)
         return encoded.view(batch_size, windows_num, self.vector_size)
 
-    def forward(self, image, show_dims=False):
+    def forward(self, image, show_dims=False, return_local=False, return_ink=False):
         patches = sliding_window(image, self.window_size, self.stride)
         if self.use_flip:
             patches = torch.flip(patches, dims=[1])
-        features = self._process_patches(patches)
+
+        ink_ratio = window_ink_ratio_from_patches(patches) if return_ink else None
+
+        # Raw CNN window features are kept as the local visual representation.
+        # They are returned before the BiLSTM so local contrastive losses can
+        # learn stroke/window discrimination without sequence-context smoothing.
+        local_features_raw = self._process_patches(patches)
+
+        contextual_features = local_features_raw
         if self.sequence_encoder is not None:
-            features = self.sequence_encoder(features)
-        features = self.vision_norm(features)
+            contextual_features = self.sequence_encoder(contextual_features)
+        contextual_features = self.vision_norm(contextual_features)
+
         if show_dims:
-            print(f"image embeddings: {features.shape}", flush=True)
-        return features
+            print(f"image embeddings: {contextual_features.shape}", flush=True)
+
+        outputs = [contextual_features]
+        if return_local:
+            outputs.append(self.vision_norm(local_features_raw))
+        if return_ink:
+            outputs.append(ink_ratio)
+
+        if len(outputs) == 1:
+            return outputs[0]
+        return tuple(outputs)
