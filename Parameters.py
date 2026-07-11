@@ -65,6 +65,25 @@ span_dtw_bucket_text_lengths = os.environ.get("SPAN_DTW_BUCKET_TEXT_LENGTHS", "1
 span_dtw_text_bucket_size = int(os.environ.get("SPAN_DTW_TEXT_BUCKET_SIZE", 16))
 span_dtw_max_text_bucket = int(os.environ.get("SPAN_DTW_MAX_TEXT_BUCKET", 256))
 
+# Local hard negatives.
+# This is the main anti-collapse fix: the global span-DTW loss still trains the
+# contextual BiLSTM embeddings, while this extra term trains the local pre-BiLSTM
+# CNN windows to separate the correct span from wrong windows inside the same line.
+use_local_hard_negatives = os.environ.get("USE_LOCAL_HARD_NEGATIVES", "1").lower() in {
+    "1", "true", "yes", "on"
+}
+local_hard_negative_weight = float(os.environ.get("LOCAL_HARD_NEGATIVE_WEIGHT", 0.2))
+local_hard_negative_margin = float(os.environ.get("LOCAL_HARD_NEGATIVE_MARGIN", 0.25))
+local_hard_negative_top_k = int(os.environ.get("LOCAL_HARD_NEGATIVE_TOP_K", 8))
+local_hard_negative_exclude_radius = int(os.environ.get("LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS", 2))
+local_hard_negative_min_ink = float(os.environ.get("LOCAL_HARD_NEGATIVE_MIN_INK", 0.02))
+
+# Embedding variance regularization.
+# Keeps image embeddings from collapsing into a narrow cone where unrelated
+# windows all have high cosine similarity.
+image_variance_loss_weight = float(os.environ.get("IMAGE_VARIANCE_LOSS_WEIGHT", 0.01))
+image_variance_target_std = float(os.environ.get("IMAGE_VARIANCE_TARGET_STD", 0.05))
+
 # Negatives
 negative_mode = os.environ.get("NEGATIVE_MODE", "mixed").lower()
 num_negatives = int(os.environ.get("NUM_NEGATIVES", 10))
