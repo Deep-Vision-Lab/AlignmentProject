@@ -16,7 +16,7 @@ NUM_PARTS=3
 WINDOW_SIZE=32
 STRIDE=16
 HEIGHT=128
-THRESHOLD=0.86
+THRESHOLD=0.85
 MIN_RUN_LENGTH=3
 
 mkdir -p "$OUT_DIR"
@@ -38,8 +38,7 @@ for IDX in $(seq "$START_INDEX" "$END_INDEX"); do
     --stride "$STRIDE" \
     --height "$HEIGHT" \
     --threshold "$THRESHOLD" \
-    --min-run-length "$MIN_RUN_LENGTH" \
-    --use-flip
+    --min-run-length "$MIN_RUN_LENGTH"
 
 done
 
