@@ -7,16 +7,14 @@ The script:
   2. takes the whole first line image as the search target,
   3. crops N fixed-width parts from the second line image,
   4. aligns each cropped part against the whole first line using Smith-Waterman,
-  5. displays only:
-       - the selected line2 crop,
-       - the fixed-width line1 crop where it was found,
-     not the whole line images,
-  6. masks both displayed crops with the same color and connects them with an arrow.
+  5. shows the full line1 image with fixed-width masks where each part was found,
+  6. shows only the chosen line2 parts, not the whole line2 image,
+  7. connects each chosen part to its masked match in line1 using the same color.
 
 Important:
-  The matched crop in line1 is forced to have exactly --part-width original pixels.
+  The matched mask in line1 is forced to have exactly --part-width original pixels.
   It is centered around the Smith-Waterman matched run, but its width is not taken
-  from the run length. This keeps the source part and the matched part equal width.
+  from the run length. This keeps the source part and line1 mask equal width.
 
 Example:
     python scripts/visualize_line2_parts_in_line1.py \
@@ -237,8 +235,8 @@ def search_one_part(
             ),
         )
 
-    # This is only used to find the center of the match. The final displayed
-    # line1 crop is forced to exactly --part-width original pixels.
+    # This is only used to find the center of the match. The final line1 mask
+    # is forced to exactly --part-width original pixels.
     run_x0_display, run_x1_display = window_range_to_pixels(
         run.line1_start,
         run.line1_end,
@@ -301,55 +299,181 @@ def crop_or_blank(
     return canvas
 
 
-def draw_masked_crop(ax, crop: Image.Image, color: str, label: str):
-    arr = np.array(crop)
-    h, w = arr.shape[:2]
+def draw_line2_part_on_full_line1_canvas(
+    ax,
+    line1: Image.Image,
+    line2: Image.Image,
+    results: Sequence[PartSearchResult],
+    title: str,
+    part_width: int,
+):
+    arr1 = np.array(line1.convert("RGB"))
+    h1, w1 = arr1.shape[:2]
+    line2_h = line2.size[1]
 
-    ax.imshow(arr, aspect="auto")
-    ax.add_patch(
-        Rectangle(
-            (0, 0),
-            w,
-            h,
-            facecolor=color,
-            edgecolor=color,
-            linewidth=2,
-            alpha=0.30,
-        )
+    part_gap = max(18, int(round(part_width * 0.25)))
+    n_parts = max(1, len(results))
+    total_parts_w = n_parts * part_width + (n_parts - 1) * part_gap
+
+    canvas_w = max(w1, total_parts_w)
+    x_offset_line1 = 0 if canvas_w == w1 else int(round((canvas_w - w1) / 2.0))
+
+    top_margin = 34
+    arrow_gap = 95
+    bottom_margin = 28
+    y1_top = top_margin
+    y1_bottom = y1_top + h1
+    y_parts_top = y1_bottom + arrow_gap
+    y_parts_bottom = y_parts_top + line2_h
+    canvas_h = y_parts_bottom + bottom_margin
+
+    ax.imshow(arr1, extent=(x_offset_line1, x_offset_line1 + w1, y1_bottom, y1_top), zorder=1)
+
+    ax.text(
+        x_offset_line1,
+        y1_top - 8,
+        "Line 1: full searched line",
+        fontsize=11,
+        weight="bold",
+        va="bottom",
     )
     ax.text(
-        w * 0.5,
-        h * 0.5,
-        label,
-        ha="center",
-        va="center",
-        fontsize=8,
-        color="white",
+        0,
+        y_parts_top - 8,
+        "Line 2: chosen parts only",
+        fontsize=11,
         weight="bold",
-        bbox=dict(facecolor=color, edgecolor="none", alpha=0.72, boxstyle="round,pad=0.25"),
+        va="bottom",
     )
-    ax.set_xlim(0, w)
-    ax.set_ylim(h, 0)
-    ax.axis("off")
 
+    part_positions: List[Tuple[int, int]] = []
+    if n_parts == 1:
+        start = int(round((canvas_w - part_width) / 2.0))
+        part_positions.append((start, start + part_width))
+    else:
+        start0 = int(round((canvas_w - total_parts_w) / 2.0))
+        for idx in range(n_parts):
+            px0 = start0 + idx * (part_width + part_gap)
+            part_positions.append((px0, px0 + part_width))
 
-def draw_arrow(ax, color: str, found: bool):
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-    if found:
+    for idx, (result, (part_canvas_x0, part_canvas_x1)) in enumerate(zip(results, part_positions)):
+        color = PALETTE[idx % len(PALETTE)]
+        part = result.part
+
+        part_crop = crop_or_blank(
+            line2,
+            part.x0_original,
+            part.x1_original,
+            part_width,
+        )
+        part_arr = np.array(part_crop)
+        ax.imshow(
+            part_arr,
+            extent=(part_canvas_x0, part_canvas_x1, y_parts_bottom, y_parts_top),
+            zorder=1,
+        )
+
+        # Colored mask/border on the selected line2 part crop.
+        ax.add_patch(
+            Rectangle(
+                (part_canvas_x0, y_parts_top),
+                part_width,
+                line2_h,
+                facecolor=color,
+                edgecolor=color,
+                linewidth=2,
+                alpha=0.28,
+                zorder=3,
+            )
+        )
+        ax.text(
+            0.5 * (part_canvas_x0 + part_canvas_x1),
+            y_parts_top + 0.5 * line2_h,
+            f"part {part.part_id}",
+            ha="center",
+            va="center",
+            fontsize=8,
+            color="white",
+            weight="bold",
+            bbox=dict(facecolor=color, edgecolor="none", alpha=0.72, boxstyle="round,pad=0.25"),
+            zorder=5,
+        )
+
+        part_center_x = 0.5 * (part_canvas_x0 + part_canvas_x1)
+
+        if not result.found:
+            ax.text(
+                part_center_x,
+                y_parts_bottom + 12,
+                "not found",
+                ha="center",
+                va="top",
+                fontsize=8,
+                color=color,
+                weight="bold",
+            )
+            print(f"part {part.part_id}: NOT FOUND | score={result.sw_score:.4f} | {result.message}")
+            continue
+
+        assert result.match_x0_original is not None and result.match_x1_original is not None
+        match_x0 = x_offset_line1 + result.match_x0_original
+        match_x1 = x_offset_line1 + result.match_x1_original
+        mask_width = match_x1 - match_x0
+
+        # Fixed-width mask on full line1. Width equals --part-width.
+        ax.add_patch(
+            Rectangle(
+                (match_x0, y1_top),
+                mask_width,
+                h1,
+                facecolor=color,
+                edgecolor=color,
+                linewidth=2,
+                alpha=0.30,
+                zorder=3,
+            )
+        )
+        ax.text(
+            0.5 * (match_x0 + match_x1),
+            y1_top + 0.5 * h1,
+            f"part {part.part_id}\nsim={result.mean_similarity:.3f}",
+            ha="center",
+            va="center",
+            fontsize=8,
+            color="white",
+            weight="bold",
+            bbox=dict(facecolor=color, edgecolor="none", alpha=0.72, boxstyle="round,pad=0.25"),
+            zorder=5,
+        )
+
+        match_center_x = 0.5 * (match_x0 + match_x1)
         ax.add_patch(
             FancyArrowPatch(
-                (0.05, 0.5),
-                (0.95, 0.5),
-                transform=ax.transAxes,
+                (part_center_x, y_parts_top - 4),
+                (match_center_x, y1_bottom + 4),
                 arrowstyle="->",
                 mutation_scale=18,
                 linewidth=2.4,
                 color=color,
                 alpha=0.95,
+                zorder=4,
             )
         )
+
+        print(
+            f"part {part.part_id}: FOUND | "
+            f"line1_mask_x=[{result.match_x0_original},{result.match_x1_original}] "
+            f"width={result.match_x1_original - result.match_x0_original} | "
+            f"raw_run_x=[{result.run_x0_original:.1f},{result.run_x1_original:.1f}] | "
+            f"run_len={result.run_length} | "
+            f"mean_sim={result.mean_similarity:.4f} | "
+            f"score={result.sw_score:.4f}"
+        )
+
+    ax.set_title(title, fontsize=13)
+    ax.set_xlim(0, canvas_w)
+    ax.set_ylim(canvas_h, 0)
+    ax.axis("off")
 
 
 def draw_results(
@@ -360,69 +484,25 @@ def draw_results(
     title: str,
     part_width: int,
 ):
-    n_rows = max(1, len(results))
-    fig, axes = plt.subplots(
-        n_rows,
-        3,
-        figsize=(9.0, max(2.4, 2.25 * n_rows)),
-        gridspec_kw={"width_ratios": [1.0, 0.22, 1.0], "wspace": 0.05, "hspace": 0.28},
+    line1_w, line1_h = line1_original.size
+    n_parts = max(1, len(results))
+    fig_w = max(12.0, line1_w / 100.0)
+    fig_h = max(5.0, (line1_h + line2_original.size[1] + 160) / 100.0)
+    if n_parts > 4:
+        fig_h += 0.35 * (n_parts - 4)
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    draw_line2_part_on_full_line1_canvas(
+        ax,
+        line1_original,
+        line2_original,
+        results,
+        title,
+        part_width,
     )
 
-    if n_rows == 1:
-        axes = np.asarray([axes])
-
-    fig.suptitle(title, fontsize=12, weight="bold", y=0.995)
-    axes[0, 0].set_title(f"Line2 chosen part\nwidth={part_width}px", fontsize=10)
-    axes[0, 2].set_title(f"Line1 matched crop\nforced width={part_width}px", fontsize=10)
-
-    line1_height = line1_original.size[1]
-
-    for idx, result in enumerate(results):
-        color = PALETTE[idx % len(PALETTE)]
-        part = result.part
-
-        part_crop = crop_or_blank(
-            line2_original,
-            part.x0_original,
-            part.x1_original,
-            part_width,
-        )
-        source_label = f"part {part.part_id}\nx=[{part.x0_original},{part.x1_original}]"
-        draw_masked_crop(axes[idx, 0], part_crop, color, source_label)
-
-        draw_arrow(axes[idx, 1], color, result.found)
-
-        if result.found:
-            assert result.match_x0_original is not None and result.match_x1_original is not None
-            match_crop = crop_or_blank(
-                line1_original,
-                result.match_x0_original,
-                result.match_x1_original,
-                part_width,
-            )
-            match_label = (
-                f"match {part.part_id}\n"
-                f"x=[{result.match_x0_original},{result.match_x1_original}]\n"
-                f"sim={result.mean_similarity:.3f}"
-            )
-            draw_masked_crop(axes[idx, 2], match_crop, color, match_label)
-
-            print(
-                f"part {part.part_id}: FOUND | "
-                f"line1_fixed_x=[{result.match_x0_original},{result.match_x1_original}] "
-                f"width={result.match_x1_original - result.match_x0_original} | "
-                f"raw_run_x=[{result.run_x0_original:.1f},{result.run_x1_original:.1f}] | "
-                f"run_len={result.run_length} | "
-                f"mean_sim={result.mean_similarity:.4f} | "
-                f"score={result.sw_score:.4f}"
-            )
-        else:
-            blank = Image.new("RGB", (part_width, line1_height), (255, 255, 255))
-            draw_masked_crop(axes[idx, 2], blank, color, f"part {part.part_id}\nnot found")
-            print(f"part {part.part_id}: NOT FOUND | score={result.sw_score:.4f} | {result.message}")
-
     os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
-    plt.tight_layout(rect=(0, 0, 1, 0.94))
+    plt.tight_layout()
     plt.savefig(output, dpi=200, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"Saved: {output}")
@@ -545,7 +625,7 @@ def main():
 
     sample_label = f" sample {args.index}" if args.index is not None else ""
     title = (
-        f"Line2 fixed-width parts searched inside line1{sample_label} | "
+        f"Line2 chosen parts searched inside full line1{sample_label} | "
         f"part_width={args.part_width}, thr={args.threshold}, gap={args.gap}"
     )
     draw_results(line1_original, line2_original, results, args.output, title, args.part_width)
