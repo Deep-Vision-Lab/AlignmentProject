@@ -20,7 +20,6 @@
 #SBATCH --time=03-00:00:00
 #SBATCH --tasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
 
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ahmedmas@post.bgu.ac.il

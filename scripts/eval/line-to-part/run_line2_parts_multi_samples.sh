@@ -3,14 +3,14 @@ set -euo pipefail
 
 SCRIPT="scripts/eval/line-to-part/visualize_line2_parts_in_line1.py"
 
-WEIGHTS="${WEIGHTS:-Weights/span_jax_best_quality_win32_offline/model_latest.pth}"
+WEIGHTS="${WEIGHTS:-Weights/improve_neg_win32_offline/model_latest.pth}"
 DATA_DIR="${DATA_DIR:-DataSet/Synthetic_Arabic}"
 OUT_DIR="${OUT_DIR:-Results/Evaluation/Part_Search_Multi_Local}"
 
 START_INDEX="${START_INDEX:-1}"
 END_INDEX="${END_INDEX:-10}"
 
-PART_WIDTH="${PART_WIDTH:-124}"
+PART_WIDTH="${PART_WIDTH:-128}"
 NUM_PARTS="${NUM_PARTS:-3}"
 
 WINDOW_SIZE="${WINDOW_SIZE:-32}"
@@ -23,13 +23,13 @@ EMBEDDING_SPACE="${EMBEDDING_SPACE:-local}"
 
 # Keep a fixed floor, but by default use per-part percentile thresholding because
 # older checkpoints often have high similarity almost everywhere.
-THRESHOLD="${THRESHOLD:-0.85}"
+THRESHOLD="${THRESHOLD:-0.8}"
 ADAPTIVE_THRESHOLD="${ADAPTIVE_THRESHOLD:-percentile}"
-THRESHOLD_PERCENTILE="${THRESHOLD_PERCENTILE:-90}"
+THRESHOLD_PERCENTILE="${THRESHOLD_PERCENTILE:-70}"
 
 MATCH="${MATCH:-1.0}"
 MISMATCH="${MISMATCH:--1.5}"
-GAP="${GAP:--0.15}"
+GAP="${GAP:--0.5}"
 MIN_RUN_LENGTH="${MIN_RUN_LENGTH:-3}"
 
 mkdir -p "$OUT_DIR"
@@ -74,7 +74,6 @@ for IDX in $(seq "$START_INDEX" "$END_INDEX"); do
     --mismatch "$MISMATCH" \
     --gap "$GAP" \
     --min-run-length "$MIN_RUN_LENGTH" \
-    --use-flip
 
 done
 
