@@ -14,6 +14,9 @@ Matching logic for each chosen line2 part:
   2. First try to use a match covering the whole chosen part.
   3. If the whole part is not found, use the best consecutive diagonal segment.
   4. Draw only the discovered match on line1.
+
+For NOT FOUND parts, the figure now writes the highest cosine similarity reached
+during the search, instead of writing the resolved threshold.
 """
 
 from __future__ import annotations
@@ -98,6 +101,9 @@ class PartSearchResult:
     score: float = 0.0
     match_kind: str = ""
     threshold_used: float = 0.0
+    best_similarity: float = float("nan")
+    best_sw_diag_mean: float = float("nan")
+    embedding_space: str = ""
     message: str = ""
 
 
@@ -147,9 +153,9 @@ def random_part_starts(
                 candidate = rng.randint(0, max_start)
                 candidate_end = candidate + part_width
                 ok = True
-                for s in starts:
-                    s_end = s + part_width
-                    if not (candidate_end + min_gap <= s or s_end + min_gap <= candidate):
+                for start in starts:
+                    start_end = start + part_width
+                    if not (candidate_end + min_gap <= start or start_end + min_gap <= candidate):
                         ok = False
                         break
                 if ok:
@@ -391,6 +397,12 @@ def best_possible_sw_segment_mean(sw_path: Sequence[Tuple[str, Optional[int], Op
     return float(np.mean(sims)) if sims else float("nan")
 
 
+def highest_similarity(sim: np.ndarray) -> float:
+    if sim.size == 0:
+        return float("nan")
+    return float(np.max(sim))
+
+
 def window_span_to_original_pixels(
     start: int,
     end: int,
@@ -428,6 +440,7 @@ def search_one_part(
 
     sim = cosine_similarity_matrix(emb_line1, emb_part)
     threshold = resolve_threshold(sim, args)
+    best_sim = highest_similarity(sim)
 
     sw_path, sw_score, _H = smith_waterman(
         sim,
@@ -436,6 +449,7 @@ def search_one_part(
         match_reward=args.match,
         mismatch_penalty=args.mismatch,
     )
+    best_diag_mean = best_possible_sw_segment_mean(sw_path, sim)
 
     segment = choose_sw_segment(
         sw_path,
@@ -451,11 +465,15 @@ def search_one_part(
             found=False,
             part_window_count=int(emb_part.shape[0]),
             sw_score=float(sw_score),
-            score=best_possible_sw_segment_mean(sw_path, sim),
+            score=best_sim,
             threshold_used=float(threshold),
+            best_similarity=best_sim,
+            best_sw_diag_mean=best_diag_mean,
+            embedding_space=args.embedding_space,
             message=(
                 "Smith-Waterman did not find the whole part or a fallback segment above threshold; "
-                "try lowering --threshold, disabling adaptive threshold, making --mismatch less negative, "
+                "the displayed value is the highest cosine similarity in the searched matrix. "
+                "Try lowering --threshold, disabling adaptive threshold, making --mismatch less negative, "
                 "making --gap less negative, or lowering --min-run-length"
             ),
         )
@@ -516,6 +534,9 @@ def search_one_part(
         score=float(segment.score),
         match_kind=segment.match_kind,
         threshold_used=float(threshold),
+        best_similarity=best_sim,
+        best_sw_diag_mean=best_diag_mean,
+        embedding_space=args.embedding_space,
     )
 
 
@@ -606,10 +627,12 @@ def draw_line2_part_on_full_line1_canvas(
         part_center_x = 0.5 * (part_canvas_x0 + part_canvas_x1)
 
         if not result.found:
+            best_text = "nan" if np.isnan(result.best_similarity) else f"{result.best_similarity:.3f}"
+            diag_text = "nan" if np.isnan(result.best_sw_diag_mean) else f"{result.best_sw_diag_mean:.3f}"
             ax.text(
                 part_center_x,
                 y_parts_top + 0.5 * line2_h,
-                f"part {part.part_id}\nnot found\nthr={result.threshold_used:.3f}",
+                f"part {part.part_id}\nnot found\nbest={best_text}",
                 ha="center",
                 va="center",
                 fontsize=8,
@@ -619,8 +642,9 @@ def draw_line2_part_on_full_line1_canvas(
                 zorder=5,
             )
             print(
-                f"part {part.part_id}: NOT FOUND | embedding={getattr(result, 'embedding_space', '')} "
-                f"thr={result.threshold_used:.4f} best_sw_diag_mean={result.score:.4f} | {result.message}"
+                f"part {part.part_id}: NOT FOUND | embedding={result.embedding_space} "
+                f"best_sim={best_text} best_sw_diag_mean={diag_text} "
+                f"thr={result.threshold_used:.4f} sw_path_score={result.sw_score:.4f} | {result.message}"
             )
             continue
 
@@ -699,7 +723,8 @@ def draw_line2_part_on_full_line1_canvas(
             f"part_windows=[{result.part_window_start},{result.part_window_end}]/{result.part_window_count} | "
             f"raw_window_x=[{result.run_x0_original:.1f},{result.run_x1_original:.1f}] | "
             f"sw_path_score={result.sw_score:.4f} | "
-            f"mean_sim={result.mean_similarity:.4f} | min_sim={result.min_similarity:.4f}"
+            f"mean_sim={result.mean_similarity:.4f} | min_sim={result.min_similarity:.4f} | "
+            f"best_sim={result.best_similarity:.4f}"
         )
 
     ax.set_title(title, fontsize=13)
@@ -863,6 +888,7 @@ def main():
     print(f"Embedding space: {args.embedding_space}")
     print(f"Threshold mode: {args.adaptive_threshold}, base threshold={args.threshold}")
     print("Search method: Smith-Waterman full-part first; fallback to best segment; masks only line1")
+    print("For NOT FOUND parts, displayed best=highest cosine similarity reached during search")
 
     results: List[PartSearchResult] = []
     with tempfile.TemporaryDirectory() as tmp_dir:
