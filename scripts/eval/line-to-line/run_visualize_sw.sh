@@ -12,31 +12,32 @@ INDICES="${INDICES:-1-10}"
 WINDOW_SIZE="${WINDOW_SIZE:-32}"
 STRIDE="${STRIDE:-16}"
 HEIGHT="${HEIGHT:-128}"
-MATCH="${MATCH:-1.0}"
 
-# For full line-to-line alignment, contextual CNN+BiLSTM embeddings are still the
-# best default. Use EMBEDDING_SPACE=local only when debugging local windows.
+# Full line-to-line alignment usually works better with contextual CNN+BiLSTM
+# embeddings. Use EMBEDDING_SPACE=local only when debugging local windows.
 EMBEDDING_SPACE="${EMBEDDING_SPACE:-contextual}"
 
-# Recommended search parameters after observing high similarities everywhere.
-# Percentile thresholding is safer than a fixed threshold because every sample can
-# have a different similarity distribution.
-ADAPTIVE_THRESHOLDS=(${ADAPTIVE_THRESHOLDS:-percentile})
-THRESHOLDS=(${THRESHOLDS:-0.8})
-THRESHOLD_PERCENTILES=(${THRESHOLD_PERCENTILES:-85 90 95})
-MISMATCHES=(${MISMATCHES:--2.5 -3.0 -4.0})
-GAPS=(${GAPS:--0.5 -0.8 -1.0})
-MIN_RUN_LENGTHS=(${MIN_RUN_LENGTHS:-4 6})
+# Current recommended default after observing high similarities everywhere.
+# Use percentile thresholding so each sample gets its own threshold.
+THRESHOLD="${THRESHOLD:-0.8}"
+ADAPTIVE_THRESHOLD="${ADAPTIVE_THRESHOLD:-percentile}"
+THRESHOLD_PERCENTILE="${THRESHOLD_PERCENTILE:-85}"
+THRESHOLD_STD_SCALE="${THRESHOLD_STD_SCALE:-1.0}"
+
+MATCH="${MATCH:-1.0}"
+MISMATCH="${MISMATCH:--2.5}"
+GAP="${GAP:--0.5}"
+MIN_RUN_LENGTH="${MIN_RUN_LENGTH:-3}"
 
 # Arabic/right-to-left setup used by this project.
 USE_FLIP="${USE_FLIP:-1}"
 
-# Heatmaps help diagnose why a high single-cell similarity did not become a good
-# consecutive SW segment. Set HEATMAP=0 to disable.
+# Heatmaps help diagnose cases where a high single-cell similarity does not
+# become a good consecutive SW segment. Set HEATMAP=0 to disable.
 HEATMAP="${HEATMAP:-1}"
 STRICT="${STRICT:-0}"
 
-BASE_OUTPUT_DIR="${BASE_OUTPUT_DIR:-Results/Evaluation/SW_Longest_Recommended_${EMBEDDING_SPACE}}"
+BASE_OUTPUT_DIR="${BASE_OUTPUT_DIR:-Results/Evaluation/SW_Longest_${EMBEDDING_SPACE}_pct${THRESHOLD_PERCENTILE}_thr${THRESHOLD}_mis${MISMATCH}_gap${GAP}_min${MIN_RUN_LENGTH}}"
 mkdir -p "$BASE_OUTPUT_DIR"
 
 if [[ ! -f "$SCRIPT" ]]; then
@@ -52,71 +53,57 @@ if [[ ! -f "$WEIGHTS" ]]; then
   exit 1
 fi
 
-for ADAPTIVE_THRESHOLD in "${ADAPTIVE_THRESHOLDS[@]}"; do
-  for THR in "${THRESHOLDS[@]}"; do
-    for PCT in "${THRESHOLD_PERCENTILES[@]}"; do
-      for MISMATCH in "${MISMATCHES[@]}"; do
-        for GAP in "${GAPS[@]}"; do
-          for MIN_RUN in "${MIN_RUN_LENGTHS[@]}"; do
+EXTRA_ARGS=()
+if [[ "$USE_FLIP" == "1" || "$USE_FLIP" == "true" ]]; then
+  EXTRA_ARGS+=(--use-flip)
+fi
+if [[ "$HEATMAP" == "1" || "$HEATMAP" == "true" ]]; then
+  EXTRA_ARGS+=(--heatmap)
+fi
+if [[ "$STRICT" == "1" || "$STRICT" == "true" ]]; then
+  EXTRA_ARGS+=(--strict)
+fi
 
-            THR_NAME=$(echo "$THR" | sed 's/\.//')
-            PCT_NAME=$(echo "$PCT" | sed 's/\.//')
-            MIS_NAME=$(echo "$MISMATCH" | sed 's/-/neg/; s/\.//')
-            GAP_NAME=$(echo "$GAP" | sed 's/-/neg/; s/\.//')
+# Only pass the std-scale argument when mean_std thresholding is used. This keeps
+# the command compatible with the percentile/default mode while preserving the
+# option for debugging.
+if [[ "$ADAPTIVE_THRESHOLD" == "mean_std" ]]; then
+  EXTRA_ARGS+=(--threshold-std-scale "$THRESHOLD_STD_SCALE")
+fi
 
-            OUT_DIR="${BASE_OUTPUT_DIR}/emb${EMBEDDING_SPACE}_${ADAPTIVE_THRESHOLD}_pct${PCT_NAME}_thr${THR_NAME}_mis${MIS_NAME}_gap${GAP_NAME}_min${MIN_RUN}"
-            mkdir -p "$OUT_DIR"
+echo "===================================================="
+echo "Running line-to-line SW visualization"
+echo "  embedding-space       = $EMBEDDING_SPACE"
+echo "  threshold floor       = $THRESHOLD"
+echo "  adaptive-threshold    = $ADAPTIVE_THRESHOLD"
+echo "  threshold-percentile  = $THRESHOLD_PERCENTILE"
+echo "  match                 = $MATCH"
+echo "  mismatch              = $MISMATCH"
+echo "  gap                   = $GAP"
+echo "  min-run-length        = $MIN_RUN_LENGTH"
+echo "  use-flip              = $USE_FLIP"
+echo "  heatmap               = $HEATMAP"
+echo "  output                = $BASE_OUTPUT_DIR"
+echo "===================================================="
 
-            EXTRA_ARGS=()
-            if [[ "$USE_FLIP" == "1" || "$USE_FLIP" == "true" ]]; then
-              EXTRA_ARGS+=(--use-flip)
-            fi
-            if [[ "$HEATMAP" == "1" || "$HEATMAP" == "true" ]]; then
-              EXTRA_ARGS+=(--heatmap)
-            fi
-            if [[ "$STRICT" == "1" || "$STRICT" == "true" ]]; then
-              EXTRA_ARGS+=(--strict)
-            fi
+python "$SCRIPT" \
+  --batch \
+  --data-dir "$DATA_DIR" \
+  --indices "$INDICES" \
+  --weights "$WEIGHTS" \
+  --output-dir "$BASE_OUTPUT_DIR" \
+  --window-size "$WINDOW_SIZE" \
+  --stride "$STRIDE" \
+  --height "$HEIGHT" \
+  --embedding-space "$EMBEDDING_SPACE" \
+  --threshold "$THRESHOLD" \
+  --adaptive-threshold "$ADAPTIVE_THRESHOLD" \
+  --threshold-percentile "$THRESHOLD_PERCENTILE" \
+  --match "$MATCH" \
+  --mismatch "$MISMATCH" \
+  --gap "$GAP" \
+  --min-run-length "$MIN_RUN_LENGTH" \
+  "${EXTRA_ARGS[@]}"
 
-            echo "===================================================="
-            echo "Running line-to-line SW visualization"
-            echo "  embedding-space       = $EMBEDDING_SPACE"
-            echo "  adaptive-threshold    = $ADAPTIVE_THRESHOLD"
-            echo "  threshold floor       = $THR"
-            echo "  threshold-percentile  = $PCT"
-            echo "  match                 = $MATCH"
-            echo "  mismatch              = $MISMATCH"
-            echo "  gap                   = $GAP"
-            echo "  min-run-length        = $MIN_RUN"
-            echo "  use-flip              = $USE_FLIP"
-            echo "  output                = $OUT_DIR"
-            echo "===================================================="
-
-            python "$SCRIPT" \
-              --batch \
-              --data-dir "$DATA_DIR" \
-              --indices "$INDICES" \
-              --weights "$WEIGHTS" \
-              --output-dir "$OUT_DIR" \
-              --window-size "$WINDOW_SIZE" \
-              --stride "$STRIDE" \
-              --height "$HEIGHT" \
-              --embedding-space "$EMBEDDING_SPACE" \
-              --threshold "$THR" \
-              --adaptive-threshold "$ADAPTIVE_THRESHOLD" \
-              --threshold-percentile "$PCT" \
-              --match "$MATCH" \
-              --mismatch "$MISMATCH" \
-              --gap "$GAP" \
-              --min-run-length "$MIN_RUN" \
-              "${EXTRA_ARGS[@]}"
-
-          done
-        done
-      done
-    done
-  done
-done
-
-echo "All runs finished."
+echo "Done."
 echo "Results saved under: $BASE_OUTPUT_DIR"
