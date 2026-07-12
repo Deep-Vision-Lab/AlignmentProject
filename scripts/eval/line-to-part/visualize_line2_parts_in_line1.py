@@ -13,10 +13,15 @@ Matching logic for each chosen line2 part:
   1. Run Smith-Waterman between full line1 windows and chosen part windows.
   2. First try to use a match covering the whole chosen part.
   3. If the whole part is not found, use the best consecutive diagonal segment.
-  4. Draw only the discovered match on line1.
+  4. Draw the complete matched window span on line1.
 
-For NOT FOUND parts, the figure now writes the highest cosine similarity reached
-during the search, instead of writing the resolved threshold.
+Important visualization detail:
+  The line1 mask is no longer capped to --part-width. It uses the full pixel span
+  of the aligned SW windows, so the mask should not become smaller than the
+  aligned window run or shift because of width-capping.
+
+For NOT FOUND parts, the figure writes the highest cosine similarity reached
+in the search matrix instead of writing the resolved threshold.
 """
 
 from __future__ import annotations
@@ -38,8 +43,6 @@ import numpy as np
 from PIL import Image
 import torch
 
-# This file lives in scripts/eval/line-to-part/. Add both repo root and the
-# sibling line-to-line directory, because this script reuses SW/model helpers.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
 LINE_TO_LINE_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "line-to-line"))
@@ -69,14 +72,14 @@ class SourcePart:
 @dataclass
 class SWAlignedSegment:
     line1_start: int
-    line1_end: int
+    line1_end: int  # inclusive window index
     part_start: int
-    part_end: int
+    part_end: int  # inclusive window index
     length: int
     mean_similarity: float
     min_similarity: float
     score: float
-    match_kind: str  # "full_part" or "partial_segment"
+    match_kind: str  # "whole_part" or "partial_segment"
 
 
 @dataclass
@@ -191,7 +194,7 @@ def default_part_starts(
     if mode == "even":
         return [int(round(x)) for x in np.linspace(0, max_start, num_parts)]
 
-    # Arabic-friendly deterministic option: take parts from right side moving left.
+    # Arabic-friendly deterministic option: take parts from the right side moving left.
     return [max(0, line2_width - (k + 1) * part_width) for k in range(num_parts)]
 
 
@@ -322,12 +325,27 @@ def full_part_sw_segment(
     if covered_part_windows != set(range(n_part)):
         return None
 
-    segment = _segment_from_pairs(pairs, sim, match_kind="full_part")
+    segment = _segment_from_pairs(pairs, sim, match_kind="whole_part")
     if segment is None:
         return None
     if not _passes_threshold(segment, threshold, min_run_length, require_all_windows_above_threshold):
         return None
     return segment
+
+
+def _split_consecutive_runs(pairs: Sequence[Tuple[int, int]]) -> List[List[Tuple[int, int]]]:
+    if not pairs:
+        return []
+    runs: List[List[Tuple[int, int]]] = []
+    current = [pairs[0]]
+    for prev, cur in zip(pairs[:-1], pairs[1:]):
+        if cur[0] == prev[0] + 1 and cur[1] == prev[1] + 1:
+            current.append(cur)
+        else:
+            runs.append(current)
+            current = [cur]
+    runs.append(current)
+    return runs
 
 
 def best_partial_sw_segment(
@@ -338,21 +356,8 @@ def best_partial_sw_segment(
     require_all_windows_above_threshold: bool = False,
 ) -> Optional[SWAlignedSegment]:
     pairs = _diag_pairs(sw_path)
-    if not pairs:
-        return None
-
-    runs: List[List[Tuple[int, int]]] = []
-    current = [pairs[0]]
-    for prev, cur in zip(pairs[:-1], pairs[1:]):
-        if cur[0] == prev[0] + 1 and cur[1] == prev[1] + 1:
-            current.append(cur)
-        else:
-            runs.append(current)
-            current = [cur]
-    runs.append(current)
-
     best: Optional[SWAlignedSegment] = None
-    for run in runs:
+    for run in _split_consecutive_runs(pairs):
         segment = _segment_from_pairs(run, sim, match_kind="partial_segment")
         if segment is None:
             continue
@@ -412,7 +417,11 @@ def window_span_to_original_pixels(
     window_size: int,
     stride: int,
     use_flip: bool,
+    padding_windows: int = 0,
 ) -> Tuple[float, float]:
+    """Map an inclusive window span to original-image pixel coordinates."""
+    start = max(0, int(start) - int(padding_windows))
+    end = min(num_windows - 1, int(end) + int(padding_windows))
     x0_display, x1_display = window_range_to_pixels(
         start,
         end,
@@ -487,13 +496,13 @@ def search_one_part(
         args.window_size,
         args.stride,
         args.use_flip,
+        padding_windows=args.mask_padding_windows,
     )
-    match_x0, match_x1 = cap_segment_width(
-        run_x0_original,
-        run_x1_original,
-        max_width=args.part_width,
-        image_width=line1_original_width,
-    )
+
+    # Do NOT cap line1 to --part-width. The mask must cover the full matched SW
+    # window span. Capping made masks smaller than the aligned windows and could
+    # visually shift the mask left/right.
+    match_x0, match_x1 = clamp_segment_to_image(run_x0_original, run_x1_original, line1_original_width)
 
     part_original_width = max(1, part.x1_original - part.x0_original)
     part_x0_rel, part_x1_rel = window_span_to_original_pixels(
@@ -505,6 +514,7 @@ def search_one_part(
         args.window_size,
         args.stride,
         args.use_flip,
+        padding_windows=0,
     )
     part_x0_rel_i, part_x1_rel_i = cap_segment_width(
         part_x0_rel,
@@ -651,7 +661,7 @@ def draw_line2_part_on_full_line1_canvas(
         assert result.match_x0_original is not None and result.match_x1_original is not None
         assert result.part_match_x0_relative is not None and result.part_match_x1_relative is not None
 
-        # Mask only the aligned SW segment on full line1.
+        # Mask the complete aligned SW window span on full line1.
         match_x0 = x_offset_line1 + result.match_x0_original
         match_x1 = x_offset_line1 + result.match_x1_original
         mask_width = max(1, match_x1 - match_x0)
@@ -690,7 +700,7 @@ def draw_line2_part_on_full_line1_canvas(
         ax.text(
             0.5 * (match_x0 + match_x1),
             y1_top + 0.5 * h1,
-            f"part {part.part_id}\n{result.match_kind}\nsim={result.mean_similarity:.3f}",
+            f"part {part.part_id}\n{result.match_kind}\nsim={result.mean_similarity:.3f}\nwin={result.run_length}",
             ha="center",
             va="center",
             fontsize=8,
@@ -804,6 +814,12 @@ def main():
         action="store_true",
         help="Require every diagonal window similarity in the chosen SW segment to be >= the resolved threshold.",
     )
+    parser.add_argument(
+        "--mask-padding-windows",
+        type=int,
+        default=0,
+        help="Optional number of extra line1 windows to include on each side of a found mask. Default 0 means exact SW window span.",
+    )
     parser.add_argument("--use-flip", action="store_true", help="Use when Arabic windows were encoded right-to-left")
     parser.add_argument("--no-bilstm", action="store_true", help="Disable BiLSTM even if checkpoint config is missing")
 
@@ -841,6 +857,8 @@ def main():
         raise ValueError("--min-run-length must be positive")
     if args.random_min_gap < 0:
         raise ValueError("--random-min-gap must be >= 0")
+    if args.mask_padding_windows < 0:
+        raise ValueError("--mask-padding-windows must be >= 0")
     if args.gap > 0:
         raise ValueError("--gap should be negative, for example --gap -0.15")
     if args.mismatch > 0:
@@ -887,7 +905,8 @@ def main():
     print(f"Part starts: {starts}")
     print(f"Embedding space: {args.embedding_space}")
     print(f"Threshold mode: {args.adaptive_threshold}, base threshold={args.threshold}")
-    print("Search method: Smith-Waterman full-part first; fallback to best segment; masks only line1")
+    print("Search method: Smith-Waterman whole-part first; fallback to best segment; masks only line1")
+    print("Line1 mask width: full matched SW window span, not capped to --part-width")
     print("For NOT FOUND parts, displayed best=highest cosine similarity reached during search")
 
     results: List[PartSearchResult] = []
@@ -909,7 +928,8 @@ def main():
     sample_label = f" sample {args.index}" if args.index is not None else ""
     title = (
         f"Line2 {selection_mode} parts searched inside full line1{sample_label} | "
-        f"embedding={args.embedding_space}, part_width={args.part_width}, threshold={args.adaptive_threshold}/{args.threshold}"
+        f"whole-part-first, embedding={args.embedding_space}, part_width={args.part_width}, "
+        f"threshold={args.adaptive_threshold}/{args.threshold}"
     )
     draw_results(line1_original, line2_original, results, args.output, title, args.part_width)
 
