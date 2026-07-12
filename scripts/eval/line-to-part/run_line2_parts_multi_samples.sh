@@ -32,6 +32,11 @@ MISMATCH="${MISMATCH:--1.5}"
 GAP="${GAP:--0.5}"
 MIN_RUN_LENGTH="${MIN_RUN_LENGTH:-3}"
 
+# Visual mask padding in window units.
+# 0 = exact Smith-Waterman window span.
+# 1 = expand by one window on both sides, useful when the mask looks shifted/tight.
+MASK_PADDING_WINDOWS="${MASK_PADDING_WINDOWS:-1}"
+
 mkdir -p "$OUT_DIR"
 
 if [[ ! -f "$SCRIPT" ]]; then
@@ -49,10 +54,11 @@ fi
 for IDX in $(seq "$START_INDEX" "$END_INDEX"); do
   echo "===================================================="
   echo "Running sample $IDX"
-  echo "  embedding-space     = $EMBEDDING_SPACE"
-  echo "  threshold floor     = $THRESHOLD"
-  echo "  adaptive-threshold  = $ADAPTIVE_THRESHOLD"
-  echo "  threshold-percentile= $THRESHOLD_PERCENTILE"
+  echo "  embedding-space      = $EMBEDDING_SPACE"
+  echo "  threshold floor      = $THRESHOLD"
+  echo "  adaptive-threshold   = $ADAPTIVE_THRESHOLD"
+  echo "  threshold-percentile = $THRESHOLD_PERCENTILE"
+  echo "  mask-padding-windows = $MASK_PADDING_WINDOWS"
   echo "===================================================="
 
   python "$SCRIPT" \
@@ -74,6 +80,7 @@ for IDX in $(seq "$START_INDEX" "$END_INDEX"); do
     --mismatch "$MISMATCH" \
     --gap "$GAP" \
     --min-run-length "$MIN_RUN_LENGTH" \
+    --mask-padding-windows "$MASK_PADDING_WINDOWS"
 
 done
 
