@@ -305,9 +305,12 @@ def make_y_strip(image: Image.Image, n: int, args) -> np.ndarray:
     cells = []
     for idx in range(n):
         crop = crop_visual_slice(im, idx, n, args.window_size, args.stride, args.heatmap_axis_slice_mode)
+        crop = crop.transpose(_ROTATE_90)
         if args.heatmap_flip_part_axis_windows:
+            # Flip the already-rotated side image. This affects exactly what is displayed
+            # on the y-axis, instead of mirroring before rotation.
             crop = ImageOps.mirror(crop)
-        crop = crop.transpose(_ROTATE_90).resize((args.heatmap_part_strip_width, args.heatmap_axis_cell_pixels), _RESAMPLE)
+        crop = crop.resize((args.heatmap_part_strip_width, args.heatmap_axis_cell_pixels), _RESAMPLE)
         cell = Image.new("RGB", (args.heatmap_part_strip_width, args.heatmap_axis_cell_pixels + args.heatmap_window_gap_pixels), (255, 255, 255))
         cell.paste(crop, (0, 0))
         cells.append(cell)
@@ -345,46 +348,13 @@ def annotate_heatmap_cells(ax, sim: np.ndarray, threshold: float, sw_path, seg: 
         for i in range(n_line1):
             value = float(sim[i, j])
             if args.heatmap_mark_above_threshold and value >= threshold:
-                ax.add_patch(
-                    Rectangle(
-                        (i - 0.5, j - 0.5),
-                        1,
-                        1,
-                        fill=False,
-                        edgecolor="orange",
-                        linewidth=0.85,
-                        alpha=0.95,
-                        zorder=12,
-                    )
-                )
-
+                ax.add_patch(Rectangle((i - 0.5, j - 0.5), 1, 1, fill=False, edgecolor="orange", linewidth=0.85, alpha=0.95, zorder=12))
             if args.heatmap_cell_values:
                 text_color = "black" if value >= 0.62 else "white"
-                ax.text(
-                    i,
-                    j,
-                    f"{value:.2f}",
-                    ha="center",
-                    va="center",
-                    fontsize=args.heatmap_cell_value_fontsize,
-                    color=text_color,
-                    weight="bold" if (i, j) in selected else "normal",
-                    zorder=14,
-                )
+                ax.text(i, j, f"{value:.2f}", ha="center", va="center", fontsize=args.heatmap_cell_value_fontsize, color=text_color, weight="bold" if (i, j) in selected else "normal", zorder=14)
 
     for i, j in selected:
-        ax.add_patch(
-            Rectangle(
-                (i - 0.5, j - 0.5),
-                1,
-                1,
-                fill=False,
-                edgecolor="red",
-                linewidth=2.2,
-                alpha=1.0,
-                zorder=15,
-            )
-        )
+        ax.add_patch(Rectangle((i - 0.5, j - 0.5), 1, 1, fill=False, edgecolor="red", linewidth=2.2, alpha=1.0, zorder=15))
 
 
 def draw_path(ax, sw_path, seg: Optional[Segment]):
@@ -419,7 +389,8 @@ def save_heatmap(sim, sw_path, seg, part: SourcePart, threshold: float, args, li
         ax_x.tick_params(axis="x", labeltop=True, labelbottom=False, pad=1)
         ax_x.set_title("line1 separated window slices (same order as heatmap columns)", fontsize=9)
         ax_y.set_yticks(list(range(0, n_part, ys))); ax_y.set_yticklabels([str(i) for i in range(0, n_part, ys)], fontsize=7)
-        ax_y.set_ylabel("part separated windows\nrotated 90° + flipped", fontsize=8)
+        side_mode = "rotated 90° + side-flipped" if args.heatmap_flip_part_axis_windows else "rotated 90°"
+        ax_y.set_ylabel(f"part separated windows\n{side_mode}", fontsize=8)
         grid_cells(ax_x, n_line1, None, alpha=0.60, lw=0.55)
         for y in np.arange(-0.5, n_part + 0.5, 1.0):
             ax_y.axhline(y, color="white", lw=0.55, alpha=0.65, zorder=10)
@@ -587,7 +558,7 @@ def main():
         print(
             f"Cosine heatmaps: enabled, dir={args.heatmap_dir or os.path.dirname(args.output) or '.'}, "
             f"separated windows gap={args.heatmap_window_gap_pixels}, slice_mode={args.heatmap_axis_slice_mode}, "
-            f"flip_part_axis={args.heatmap_flip_part_axis_windows}, cell_values={args.heatmap_cell_values}, "
+            f"side_part_axis_flip={args.heatmap_flip_part_axis_windows}, cell_values={args.heatmap_cell_values}, "
             f"mark_above_threshold={args.heatmap_mark_above_threshold}"
         )
 
