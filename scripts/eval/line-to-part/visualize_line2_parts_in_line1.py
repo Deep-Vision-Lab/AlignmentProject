@@ -1,27 +1,4 @@
 #!/usr/bin/env python3
-"""
-Choose fixed-width parts from line2 and search where they appear in line1.
-
-This script is updated for the improve_neg solution:
-  - Uses local pre-BiLSTM CNN embeddings by default for part/window matching.
-  - Keeps contextual embeddings available with --embedding-space contextual.
-  - Supports adaptive per-part thresholding for high-similarity matrices.
-  - Displays chosen line2 parts without filled masks.
-  - Adds masks only on line1 for the found whole part or fallback segment.
-  - Can save a cosine-similarity heatmap for each chosen part against line1.
-  - Heatmaps show sliced window images on the x-axis and y-axis so every
-    heatmap cell is visually connected to the exact windows it compares.
-
-Matching logic for each chosen line2 part:
-  1. Run Smith-Waterman between full line1 windows and chosen part windows.
-  2. First try to use a match covering the whole chosen part.
-  3. If the whole part is not found, use the best consecutive diagonal segment.
-  4. Draw the complete matched window span on line1.
-
-For NOT FOUND parts, the figure writes the highest cosine similarity reached in
-search matrix instead of writing the resolved threshold.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -33,7 +10,6 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 import matplotlib
-
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
@@ -47,22 +23,17 @@ PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
 LINE_TO_LINE_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "line-to-line"))
 sys.path.insert(0, PROJECT_ROOT)
 sys.path.insert(0, LINE_TO_LINE_DIR)
-
 from visualize_sw_longest_alignment import (  # noqa: E402
-    PALETTE,
-    cosine_similarity_matrix,
-    image_embeddings,
-    load_image_model,
-    preprocess_line_image,
-    resolve_threshold,
-    smith_waterman,
-    window_range_to_pixels,
+    PALETTE, cosine_similarity_matrix, image_embeddings, load_image_model,
+    preprocess_line_image, resolve_threshold, smith_waterman, window_range_to_pixels,
 )
 
 try:
     _RESAMPLE = Image.Resampling.BILINEAR
-except AttributeError:  # Pillow<9
+    _ROTATE_90 = Image.Transpose.ROTATE_90
+except AttributeError:
     _RESAMPLE = Image.BILINEAR
+    _ROTATE_90 = Image.ROTATE_90
 
 
 @dataclass
@@ -74,20 +45,20 @@ class SourcePart:
 
 
 @dataclass
-class SWAlignedSegment:
+class Segment:
     line1_start: int
-    line1_end: int  # inclusive window index
+    line1_end: int
     part_start: int
-    part_end: int  # inclusive window index
+    part_end: int
     length: int
     mean_similarity: float
     min_similarity: float
     score: float
-    match_kind: str  # "whole_part" or "partial_segment"
+    match_kind: str
 
 
 @dataclass
-class PartSearchResult:
+class Result:
     part: SourcePart
     found: bool
     match_x0_original: Optional[int] = None
@@ -115,1189 +86,436 @@ class PartSearchResult:
     message: str = ""
 
 
-# ---------------------------------------------------------------------------
-# Input helpers
-# ---------------------------------------------------------------------------
-
-
-def parse_part_starts(part_starts: Optional[str]) -> Optional[List[int]]:
-    if part_starts is None or not part_starts.strip():
+def parse_part_starts(text: Optional[str]) -> Optional[List[int]]:
+    if not text or not text.strip():
         return None
-    starts: List[int] = []
-    for item in part_starts.split(","):
-        item = item.strip()
-        if item:
-            starts.append(int(item))
-    return starts
+    return [int(x.strip()) for x in text.split(",") if x.strip()]
 
 
-def clamp_part_start(start: int, line_width: int, part_width: int) -> int:
-    if line_width <= part_width:
-        return 0
-    return max(0, min(int(start), line_width - part_width))
+def clamp_part_start(start: int, width: int, part_width: int) -> int:
+    return 0 if width <= part_width else max(0, min(int(start), width - part_width))
 
 
-def random_part_starts(
-    line2_width: int,
-    part_width: int,
-    num_parts: int,
-    rng: random.Random,
-    min_gap: int = 0,
-    max_attempts: int = 5000,
-) -> List[int]:
-    if num_parts <= 0:
-        return []
-
-    max_start = max(0, line2_width - part_width)
+def random_part_starts(width: int, part_width: int, n: int, rng: random.Random, min_gap: int = 0) -> List[int]:
+    max_start = max(0, width - part_width)
     if max_start == 0:
-        return [0 for _ in range(num_parts)]
-
-    can_fit_non_overlapping = num_parts * part_width + (num_parts - 1) * min_gap <= line2_width
-    if can_fit_non_overlapping:
+        return [0 for _ in range(n)]
+    if n * part_width + (n - 1) * min_gap <= width:
         best: List[int] = []
-        for _ in range(max_attempts):
+        for _ in range(5000):
             starts: List[int] = []
-            for _part_idx in range(num_parts):
-                candidate = rng.randint(0, max_start)
-                candidate_end = candidate + part_width
-                ok = True
-                for start in starts:
-                    start_end = start + part_width
-                    if not (candidate_end + min_gap <= start or start_end + min_gap <= candidate):
-                        ok = False
-                        break
-                if ok:
-                    starts.append(candidate)
-            if len(starts) == num_parts:
+            for _i in range(n):
+                cand = rng.randint(0, max_start)
+                cend = cand + part_width
+                if all(cend + min_gap <= s or s + part_width + min_gap <= cand for s in starts):
+                    starts.append(cand)
+            if len(starts) == n:
                 return sorted(starts)
             if len(starts) > len(best):
                 best = starts
-        if best:
-            while len(best) < num_parts:
-                best.append(rng.randint(0, max_start))
-            return sorted(best[:num_parts])
-
-    return sorted(rng.randint(0, max_start) for _ in range(num_parts))
+        while len(best) < n:
+            best.append(rng.randint(0, max_start))
+        return sorted(best[:n])
+    return sorted(rng.randint(0, max_start) for _ in range(n))
 
 
-def default_part_starts(
-    line2_width: int,
-    part_width: int,
-    num_parts: int,
-    mode: str,
-    rng: random.Random,
-    min_gap: int,
-) -> List[int]:
-    max_start = max(0, line2_width - part_width)
-    if num_parts <= 1:
-        if mode == "random":
-            return [rng.randint(0, max_start)] if max_start > 0 else [0]
-        return [max_start // 2]
-
+def default_part_starts(width: int, part_width: int, n: int, mode: str, rng: random.Random, min_gap: int) -> List[int]:
+    max_start = max(0, width - part_width)
+    if n <= 1:
+        return [rng.randint(0, max_start)] if mode == "random" and max_start > 0 else [max_start // 2]
     if mode == "random":
-        return random_part_starts(line2_width, part_width, num_parts, rng, min_gap=min_gap)
+        return random_part_starts(width, part_width, n, rng, min_gap)
     if mode == "even":
-        return [int(round(x)) for x in np.linspace(0, max_start, num_parts)]
-
-    # Arabic-friendly deterministic option: take parts from the right side moving left.
-    return [max(0, line2_width - (k + 1) * part_width) for k in range(num_parts)]
+        return [int(round(x)) for x in np.linspace(0, max_start, n)]
+    return [max(0, width - (k + 1) * part_width) for k in range(n)]
 
 
-def resolve_line_paths(args: argparse.Namespace) -> Tuple[str, str]:
+def resolve_line_paths(args) -> Tuple[str, str]:
     if args.line1 and args.line2:
         return args.line1, args.line2
-
     if args.data_dir and args.index is not None:
-        images_dir = os.path.join(args.data_dir, "images")
-        return (
-            os.path.join(images_dir, f"img1_{args.index}.png"),
-            os.path.join(images_dir, f"img2_{args.index}.png"),
-        )
-
+        root = os.path.join(args.data_dir, "images")
+        return os.path.join(root, f"img1_{args.index}.png"), os.path.join(root, f"img2_{args.index}.png")
     raise ValueError("Use either --line1/--line2 or --data-dir/--index")
-
-
-def clamp_segment_to_image(x0: float, x1: float, image_width: int) -> Tuple[int, int]:
-    if image_width <= 0:
-        return 0, 1
-    x0_i = int(round(max(0.0, min(float(x0), float(image_width)))))
-    x1_i = int(round(max(float(x0_i) + 1.0, min(float(x1), float(image_width)))))
-    if x1_i > image_width:
-        x1_i = image_width
-    if x0_i >= x1_i:
-        x0_i = max(0, min(x0_i, image_width - 1))
-        x1_i = min(image_width, x0_i + 1)
-    return x0_i, x1_i
-
-
-def cap_segment_width(x0: float, x1: float, max_width: int, image_width: int) -> Tuple[int, int]:
-    x0_i, x1_i = clamp_segment_to_image(x0, x1, image_width)
-    if max_width <= 0 or image_width <= max_width or (x1_i - x0_i) <= max_width:
-        return x0_i, x1_i
-
-    center = 0.5 * (x0_i + x1_i)
-    start = int(round(center - max_width / 2.0))
-    start = max(0, min(start, image_width - max_width))
-    return start, start + max_width
 
 
 def make_source_parts(line2_path: str, starts: Sequence[int], part_width: int, tmp_dir: str) -> List[SourcePart]:
     line2 = Image.open(line2_path).convert("RGB")
-    width, height = line2.size
-
+    w, h = line2.size
     parts: List[SourcePart] = []
-    for part_id, raw_start in enumerate(starts, start=1):
-        x0 = clamp_part_start(raw_start, width, part_width)
-        x1 = min(width, x0 + part_width)
-        crop = line2.crop((x0, 0, x1, height))
-
-        part_path = os.path.join(tmp_dir, f"line2_part_{part_id}.png")
-        crop.save(part_path)
-
-        parts.append(SourcePart(part_id=part_id, path=part_path, x0_original=x0, x1_original=x1))
+    for pid, raw in enumerate(starts, start=1):
+        x0 = clamp_part_start(raw, w, part_width)
+        x1 = min(w, x0 + part_width)
+        path = os.path.join(tmp_dir, f"line2_part_{pid}.png")
+        line2.crop((x0, 0, x1, h)).save(path)
+        parts.append(SourcePart(pid, path, x0, x1))
     return parts
 
 
-# ---------------------------------------------------------------------------
-# Smith-Waterman full-part / segment search
-# ---------------------------------------------------------------------------
+def clamp_segment_to_image(x0: float, x1: float, w: int) -> Tuple[int, int]:
+    x0i = int(round(max(0.0, min(float(x0), float(w)))))
+    x1i = int(round(max(float(x0i) + 1.0, min(float(x1), float(w)))))
+    if x1i > w:
+        x1i = w
+    if x0i >= x1i:
+        x0i = max(0, min(x0i, max(0, w - 1)))
+        x1i = min(w, x0i + 1)
+    return x0i, x1i
 
 
-def _diag_pairs(sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]]) -> List[Tuple[int, int]]:
-    return [(i, j) for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
+def cap_segment_width(x0: float, x1: float, max_width: int, image_width: int) -> Tuple[int, int]:
+    x0i, x1i = clamp_segment_to_image(x0, x1, image_width)
+    if max_width <= 0 or image_width <= max_width or (x1i - x0i) <= max_width:
+        return x0i, x1i
+    start = int(round(0.5 * (x0i + x1i) - max_width / 2.0))
+    start = max(0, min(start, image_width - max_width))
+    return start, start + max_width
 
 
-def _segment_from_pairs(
-    pairs: Sequence[Tuple[int, int]],
-    sim: np.ndarray,
-    match_kind: str,
-) -> Optional[SWAlignedSegment]:
+def diag_pairs(path):
+    return [(i, j) for op, i, j in path if op == "diag" and i is not None and j is not None]
+
+
+def make_segment(pairs, sim, kind: str) -> Optional[Segment]:
     if not pairs:
         return None
-    sims = np.asarray([float(sim[i, j]) for i, j in pairs], dtype=np.float32)
-    mean_sim = float(np.mean(sims))
-    min_sim = float(np.min(sims))
-    line1_start = int(min(i for i, _j in pairs))
-    line1_end = int(max(i for i, _j in pairs))
-    part_start = int(min(j for _i, j in pairs))
-    part_end = int(max(j for _i, j in pairs))
-    length = len(pairs)
-    score = mean_sim + 1e-4 * length
-    return SWAlignedSegment(
-        line1_start=line1_start,
-        line1_end=line1_end,
-        part_start=part_start,
-        part_end=part_end,
-        length=length,
-        mean_similarity=mean_sim,
-        min_similarity=min_sim,
-        score=float(score),
-        match_kind=match_kind,
-    )
+    vals = np.asarray([float(sim[i, j]) for i, j in pairs], dtype=np.float32)
+    line1_start, line1_end = min(i for i, _j in pairs), max(i for i, _j in pairs)
+    part_start, part_end = min(j for _i, j in pairs), max(j for _i, j in pairs)
+    mean, minv = float(vals.mean()), float(vals.min())
+    return Segment(line1_start, line1_end, part_start, part_end, len(pairs), mean, minv, mean + 1e-4 * len(pairs), kind)
 
 
-def _passes_threshold(
-    segment: SWAlignedSegment,
-    threshold: float,
-    min_run_length: int,
-    require_all_windows_above_threshold: bool,
-) -> bool:
-    if segment.length < min_run_length:
-        return False
-    if segment.mean_similarity < threshold:
-        return False
-    if require_all_windows_above_threshold and segment.min_similarity < threshold:
-        return False
-    return True
+def passes(seg: Segment, threshold: float, min_len: int, require_all: bool) -> bool:
+    return seg.length >= min_len and seg.mean_similarity >= threshold and (not require_all or seg.min_similarity >= threshold)
 
 
-def full_part_sw_segment(
-    sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]],
-    sim: np.ndarray,
-    threshold: float,
-    min_run_length: int,
-    require_all_windows_above_threshold: bool = False,
-) -> Optional[SWAlignedSegment]:
-    pairs = _diag_pairs(sw_path)
-    if not pairs or sim.ndim != 2:
-        return None
-
-    _n_line1, n_part = sim.shape
-    if n_part <= 0:
-        return None
-
-    covered_part_windows = {j for _i, j in pairs}
-    if covered_part_windows != set(range(n_part)):
-        return None
-
-    segment = _segment_from_pairs(pairs, sim, match_kind="whole_part")
-    if segment is None:
-        return None
-    if not _passes_threshold(segment, threshold, min_run_length, require_all_windows_above_threshold):
-        return None
-    return segment
-
-
-def _split_consecutive_runs(pairs: Sequence[Tuple[int, int]]) -> List[List[Tuple[int, int]]]:
+def split_runs(pairs):
     if not pairs:
         return []
-    runs: List[List[Tuple[int, int]]] = []
-    current = [pairs[0]]
-    for prev, cur in zip(pairs[:-1], pairs[1:]):
-        if cur[0] == prev[0] + 1 and cur[1] == prev[1] + 1:
-            current.append(cur)
+    runs, cur = [], [pairs[0]]
+    for prev, now in zip(pairs[:-1], pairs[1:]):
+        if now[0] == prev[0] + 1 and now[1] == prev[1] + 1:
+            cur.append(now)
         else:
-            runs.append(current)
-            current = [cur]
-    runs.append(current)
+            runs.append(cur)
+            cur = [now]
+    runs.append(cur)
     return runs
 
 
-def best_partial_sw_segment(
-    sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]],
-    sim: np.ndarray,
-    threshold: float,
-    min_run_length: int,
-    require_all_windows_above_threshold: bool = False,
-) -> Optional[SWAlignedSegment]:
-    pairs = _diag_pairs(sw_path)
-    best: Optional[SWAlignedSegment] = None
-    for run in _split_consecutive_runs(pairs):
-        segment = _segment_from_pairs(run, sim, match_kind="partial_segment")
-        if segment is None:
-            continue
-        if not _passes_threshold(segment, threshold, min_run_length, require_all_windows_above_threshold):
-            continue
-        if best is None or segment.score > best.score:
-            best = segment
+def choose_segment(path, sim, threshold: float, min_len: int, require_all: bool) -> Optional[Segment]:
+    pairs = diag_pairs(path)
+    if pairs and sim.ndim == 2:
+        covered = {j for _i, j in pairs}
+        if covered == set(range(sim.shape[1])):
+            full = make_segment(pairs, sim, "whole_part")
+            if full and passes(full, threshold, min_len, require_all):
+                return full
+    best = None
+    for run in split_runs(pairs):
+        seg = make_segment(run, sim, "partial_segment")
+        if seg and passes(seg, threshold, min_len, require_all) and (best is None or seg.score > best.score):
+            best = seg
     return best
 
 
-def choose_sw_segment(
-    sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]],
-    sim: np.ndarray,
-    threshold: float,
-    min_run_length: int,
-    require_all_windows_above_threshold: bool = False,
-) -> Optional[SWAlignedSegment]:
-    full = full_part_sw_segment(
-        sw_path,
-        sim,
-        threshold=threshold,
-        min_run_length=min_run_length,
-        require_all_windows_above_threshold=require_all_windows_above_threshold,
-    )
-    if full is not None:
-        return full
-
-    return best_partial_sw_segment(
-        sw_path,
-        sim,
-        threshold=threshold,
-        min_run_length=min_run_length,
-        require_all_windows_above_threshold=require_all_windows_above_threshold,
-    )
+def highest_similarity(sim: np.ndarray) -> float:
+    return float(np.max(sim)) if sim.size else float("nan")
 
 
-def best_possible_sw_segment_mean(sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]], sim: np.ndarray) -> float:
-    pairs = _diag_pairs(sw_path)
+def best_diag_mean(path, sim: np.ndarray) -> float:
+    pairs = diag_pairs(path)
     if not pairs:
         return float("nan")
-    sims = [float(sim[i, j]) for i, j in pairs]
-    return float(np.mean(sims)) if sims else float("nan")
+    return float(np.mean([float(sim[i, j]) for i, j in pairs]))
 
 
-def highest_similarity(sim: np.ndarray) -> float:
-    if sim.size == 0:
-        return float("nan")
-    return float(np.max(sim))
-
-
-def window_span_to_original_pixels(
-    start: int,
-    end: int,
-    num_windows: int,
-    display_width: int,
-    original_width: int,
-    window_size: int,
-    stride: int,
-    use_flip: bool,
-    padding_windows: int = 0,
-) -> Tuple[float, float]:
-    """Map an inclusive window span to original-image pixel coordinates."""
-    start = max(0, int(start) - int(padding_windows))
-    end = min(num_windows - 1, int(end) + int(padding_windows))
-    x0_display, x1_display = window_range_to_pixels(
-        start,
-        end,
-        num_windows,
-        display_width,
-        window_size,
-        stride,
-        use_flip,
-    )
-    display_to_original = original_width / float(display_width)
-    return x0_display * display_to_original, x1_display * display_to_original
-
-
-# ---------------------------------------------------------------------------
-# Heatmaps
-# ---------------------------------------------------------------------------
+def span_to_original_pixels(start, end, n_windows, display_w, original_w, window_size, stride, use_flip, padding=0):
+    start = max(0, int(start) - int(padding))
+    end = min(n_windows - 1, int(end) + int(padding))
+    x0, x1 = window_range_to_pixels(start, end, n_windows, display_w, window_size, stride, use_flip)
+    scale = original_w / float(display_w)
+    return x0 * scale, x1 * scale
 
 
 def heatmap_output_path(main_output: str, heatmap_dir: Optional[str], part_id: int) -> str:
-    base_dir = heatmap_dir or os.path.dirname(main_output) or "."
+    base = heatmap_dir or os.path.dirname(main_output) or "."
     stem = os.path.splitext(os.path.basename(main_output))[0]
-    return os.path.join(base_dir, f"{stem}_part{part_id}_cosine_heatmap.png")
+    return os.path.join(base, f"{stem}_part{part_id}_cosine_heatmap.png")
 
 
-def _flip_for_window_order(image: Image.Image, use_flip: bool) -> Image.Image:
-    """Return an image strip ordered like the embedding window indices."""
+def ordered_image(image: Image.Image, use_flip: bool) -> Image.Image:
     image = image.convert("RGB")
-    if not use_flip:
-        return image
-    return ImageOps.mirror(image)
+    return ImageOps.mirror(image) if use_flip else image
 
 
-def _safe_crop_window(image: Image.Image, window_idx: int, window_size: int, stride: int) -> Image.Image:
-    width, height = image.size
-    x0 = max(0, min(int(window_idx * stride), max(0, width - 1)))
-    x1 = max(x0 + 1, min(int(window_idx * stride + window_size), width))
-    return image.crop((x0, 0, x1, height))
-
-
-def make_line1_window_strip(
-    line1_display: Image.Image,
-    num_windows: int,
-    window_size: int,
-    stride: int,
-    use_flip: bool,
-    cell_pixels: int,
-    strip_height: int,
-) -> np.ndarray:
-    """Create a horizontal mosaic: one visible slice per line1 window/heatmap column."""
-    ordered = _flip_for_window_order(line1_display, use_flip)
-    cells = []
-    for window_idx in range(num_windows):
-        crop = _safe_crop_window(ordered, window_idx, window_size, stride)
-        crop = crop.resize((cell_pixels, strip_height), _RESAMPLE)
-        cells.append(crop)
-    if not cells:
-        return np.ones((strip_height, cell_pixels, 3), dtype=np.uint8) * 255
-    return np.array(Image.new("RGB", (cell_pixels * len(cells), strip_height), (255, 255, 255))) if False else np.array(_hstack_images(cells))
-
-
-def make_part_window_strip(
-    part_display: Image.Image,
-    num_windows: int,
-    window_size: int,
-    stride: int,
-    use_flip: bool,
-    cell_pixels: int,
-    strip_width: int,
-) -> np.ndarray:
-    """Create a vertical mosaic: one rotated slice per part window/heatmap row."""
-    ordered = _flip_for_window_order(part_display, use_flip)
-    cells = []
-    for window_idx in range(num_windows):
-        crop = _safe_crop_window(ordered, window_idx, window_size, stride)
-        crop = crop.transpose(Image.Transpose.ROTATE_90)
-        crop = crop.resize((strip_width, cell_pixels), _RESAMPLE)
-        cells.append(crop)
-    if not cells:
-        return np.ones((cell_pixels, strip_width, 3), dtype=np.uint8) * 255
-    return np.array(_vstack_images(cells))
-
-
-def _hstack_images(images: Sequence[Image.Image]) -> Image.Image:
-    widths = [img.size[0] for img in images]
-    heights = [img.size[1] for img in images]
-    canvas = Image.new("RGB", (sum(widths), max(heights)), (255, 255, 255))
-    x = 0
-    for img in images:
-        canvas.paste(img, (x, 0))
-        x += img.size[0]
-    return canvas
-
-
-def _vstack_images(images: Sequence[Image.Image]) -> Image.Image:
-    widths = [img.size[0] for img in images]
-    heights = [img.size[1] for img in images]
-    canvas = Image.new("RGB", (max(widths), sum(heights)), (255, 255, 255))
-    y = 0
-    for img in images:
-        canvas.paste(img, (0, y))
-        y += img.size[1]
-    return canvas
-
-
-def _grid_every_cell(ax, num_x: int, num_y: Optional[int] = None, alpha: float = 0.28, linewidth: float = 0.45):
-    for x in np.arange(-0.5, num_x + 0.5, 1.0):
-        ax.axvline(x, color="white", linewidth=linewidth, alpha=alpha, zorder=10)
-    if num_y is not None:
-        for y in np.arange(-0.5, num_y + 0.5, 1.0):
-            ax.axhline(y, color="white", linewidth=linewidth, alpha=alpha, zorder=10)
-
-
-def _label_step(n: int, target_labels: int = 14) -> int:
-    return max(1, int(np.ceil(max(1, n) / float(target_labels))))
-
-
-def _draw_plain_similarity_heatmap(
-    fig,
-    ax,
-    sim: np.ndarray,
-    sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]],
-    segment: Optional[SWAlignedSegment],
-    args: argparse.Namespace,
-):
-    im = ax.imshow(
-        sim.T,
-        origin="upper",
-        aspect="auto",
-        vmin=args.heatmap_vmin,
-        vmax=args.heatmap_vmax,
-    )
-    cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
-    cbar.set_label("cosine similarity")
-
-    diag_x = [i for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
-    diag_y = [j for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
-    if diag_x:
-        ax.plot(diag_x, diag_y, color="white", linewidth=1.4, alpha=0.95, label="SW diag path")
-
-    if segment is not None:
-        ax.plot(
-            [segment.line1_start, segment.line1_end],
-            [segment.part_start, segment.part_end],
-            color="red",
-            linewidth=2.4,
-            alpha=0.95,
-            label=f"selected {segment.match_kind}",
-        )
-        ax.scatter(
-            [segment.line1_start, segment.line1_end],
-            [segment.part_start, segment.part_end],
-            color="red",
-            s=18,
-            zorder=5,
-        )
-
-    ax.set_xlim(-0.5, sim.shape[0] - 0.5)
-    ax.set_ylim(sim.shape[1] - 0.5, -0.5)
-    ax.set_xlabel("line1 window index")
-    ax.set_ylabel("part window index")
-    if diag_x or segment is not None:
-        ax.legend(loc="upper right", fontsize=8)
-    return im
-
-
-def _draw_path_and_segment(ax, sw_path, segment):
-    diag_x = [i for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
-    diag_y = [j for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
-    if diag_x:
-        ax.plot(diag_x, diag_y, color="white", linewidth=1.5, alpha=0.95, label="SW diag path")
-
-    if segment is not None:
-        ax.plot(
-            [segment.line1_start, segment.line1_end],
-            [segment.part_start, segment.part_end],
-            color="red",
-            linewidth=2.6,
-            alpha=0.95,
-            label=f"selected {segment.match_kind}",
-        )
-        ax.scatter(
-            [segment.line1_start, segment.line1_end],
-            [segment.part_start, segment.part_end],
-            color="red",
-            s=22,
-            zorder=6,
-        )
-    return diag_x, diag_y
-
-
-def save_part_similarity_heatmap(
-    sim: np.ndarray,
-    sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]],
-    segment: Optional[SWAlignedSegment],
-    part: SourcePart,
-    threshold: float,
-    args: argparse.Namespace,
-    line1_display: Optional[Image.Image] = None,
-    part_display: Optional[Image.Image] = None,
-) -> str:
-    output = heatmap_output_path(args.output, args.heatmap_dir, part.part_id)
-    os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
-
-    with_axis_images = bool(getattr(args, "heatmap_axis_images", True)) and line1_display is not None and part_display is not None
-
-    if with_axis_images:
-        n_line1 = int(sim.shape[0])
-        n_part = int(sim.shape[1])
-        cell_pixels = int(args.heatmap_axis_cell_pixels)
-        top_h = int(args.heatmap_line1_strip_height)
-        left_w = int(args.heatmap_part_strip_width)
-
-        line1_strip = make_line1_window_strip(
-            line1_display,
-            n_line1,
-            args.window_size,
-            args.stride,
-            args.use_flip,
-            cell_pixels=cell_pixels,
-            strip_height=top_h,
-        )
-        part_strip = make_part_window_strip(
-            part_display,
-            n_part,
-            args.window_size,
-            args.stride,
-            args.use_flip,
-            cell_pixels=cell_pixels,
-            strip_width=left_w,
-        )
-
-        fig_w = max(11.0, min(28.0, n_line1 * 0.24 + 4.5))
-        fig_h = max(6.5, min(16.0, n_part * 0.62 + 4.8))
-        fig = plt.figure(figsize=(fig_w, fig_h))
-        gs = GridSpec(
-            2,
-            3,
-            figure=fig,
-            width_ratios=[2.0, 8.6, 0.34],
-            height_ratios=[1.45, 6.0],
-            wspace=0.055,
-            hspace=0.055,
-        )
-        ax_corner = fig.add_subplot(gs[0, 0])
-        ax_x_img = fig.add_subplot(gs[0, 1])
-        ax_y_img = fig.add_subplot(gs[1, 0])
-        ax_heat = fig.add_subplot(gs[1, 1])
-        cax = fig.add_subplot(gs[1, 2])
-        ax_corner.axis("off")
-        ax_corner.text(0.5, 0.5, "window\nslices", ha="center", va="center", fontsize=9, weight="bold")
-
-        ax_x_img.imshow(line1_strip, extent=(-0.5, n_line1 - 0.5, 1, 0), aspect="auto")
-        ax_x_img.set_xlim(-0.5, n_line1 - 0.5)
-        ax_x_img.set_ylim(1, 0)
-        ax_x_img.set_yticks([])
-        x_step = _label_step(n_line1)
-        ax_x_img.set_xticks(list(range(0, n_line1, x_step)))
-        ax_x_img.set_xticklabels([str(i) for i in range(0, n_line1, x_step)], fontsize=7)
-        ax_x_img.tick_params(axis="x", labeltop=True, labelbottom=False, pad=1)
-        ax_x_img.set_title("line1 sliced windows (same order as heatmap columns)", fontsize=9)
-        _grid_every_cell(ax_x_img, n_line1, None, alpha=0.42, linewidth=0.40)
-
-        ax_y_img.imshow(part_strip, extent=(0, 1, n_part - 0.5, -0.5), aspect="auto")
-        ax_y_img.set_xlim(0, 1)
-        ax_y_img.set_ylim(n_part - 0.5, -0.5)
-        ax_y_img.set_xticks([])
-        y_step = 1 if n_part <= 16 else _label_step(n_part)
-        ax_y_img.set_yticks(list(range(0, n_part, y_step)))
-        ax_y_img.set_yticklabels([str(i) for i in range(0, n_part, y_step)], fontsize=7)
-        ax_y_img.set_ylabel("part sliced windows\nrotated 90°", fontsize=8)
-        for y in np.arange(-0.5, n_part + 0.5, 1.0):
-            ax_y_img.axhline(y, color="white", linewidth=0.45, alpha=0.48, zorder=10)
-
-        im = ax_heat.imshow(
-            sim.T,
-            origin="upper",
-            aspect="auto",
-            vmin=args.heatmap_vmin,
-            vmax=args.heatmap_vmax,
-        )
-        cbar = fig.colorbar(im, cax=cax)
-        cbar.set_label("cosine similarity")
-        _grid_every_cell(ax_heat, n_line1, n_part, alpha=0.20, linewidth=0.35)
-        diag_x, diag_y = _draw_path_and_segment(ax_heat, sw_path, segment)
-
-        ax_heat.set_xlim(-0.5, n_line1 - 0.5)
-        ax_heat.set_ylim(n_part - 0.5, -0.5)
-        ax_heat.set_xlabel("line1 window index / x-axis slices")
-        ax_heat.set_ylabel("part window index / y-axis slices")
-        ax_heat.set_xticks(list(range(0, n_line1, x_step)))
-        ax_heat.set_xticklabels([str(i) for i in range(0, n_line1, x_step)], fontsize=8)
-        ax_heat.set_yticks(list(range(0, n_part, y_step)))
-        ax_heat.set_yticklabels([str(i) for i in range(0, n_part, y_step)], fontsize=8)
-        if diag_x or diag_y or segment is not None:
-            ax_heat.legend(loc="upper right", fontsize=8)
-
+def crop_visual_slice(image: Image.Image, idx: int, n: int, window_size: int, stride: int, mode: str) -> Image.Image:
+    w, h = image.size
+    if mode == "window":
+        x0, x1 = idx * stride, idx * stride + window_size
     else:
-        fig_w = max(8.0, min(18.0, sim.shape[0] / 5.0))
-        fig_h = max(3.5, min(10.0, sim.shape[1] / 2.0 + 2.0))
-        fig, ax_heat = plt.subplots(figsize=(fig_w, fig_h))
-        _draw_plain_similarity_heatmap(fig, ax_heat, sim, sw_path, segment, args)
+        center = idx * stride + window_size / 2.0
+        x0, x1 = int(round(center - stride / 2.0)), int(round(center + stride / 2.0))
+        if idx == 0:
+            x0 = max(0, x0)
+        if idx == n - 1:
+            x1 = min(w, x1)
+    x0 = max(0, min(int(x0), max(0, w - 1)))
+    x1 = max(x0 + 1, min(int(x1), w))
+    return image.crop((x0, 0, x1, h))
 
-    fig.suptitle(
-        f"Part {part.part_id} vs line1 cosine similarity | "
-        f"line2_x=[{part.x0_original},{part.x1_original}] | thr={threshold:.3f}",
-        fontsize=11,
-    )
-    plt.savefig(output, dpi=180, bbox_inches="tight", facecolor="white")
+
+def hstack(images: Sequence[Image.Image]) -> Image.Image:
+    if not images:
+        return Image.new("RGB", (1, 1), (255, 255, 255))
+    out = Image.new("RGB", (sum(im.size[0] for im in images), max(im.size[1] for im in images)), (255, 255, 255))
+    x = 0
+    for im in images:
+        out.paste(im, (x, 0))
+        x += im.size[0]
+    return out
+
+
+def vstack(images: Sequence[Image.Image]) -> Image.Image:
+    if not images:
+        return Image.new("RGB", (1, 1), (255, 255, 255))
+    out = Image.new("RGB", (max(im.size[0] for im in images), sum(im.size[1] for im in images)), (255, 255, 255))
+    y = 0
+    for im in images:
+        out.paste(im, (0, y))
+        y += im.size[1]
+    return out
+
+
+def make_x_strip(image: Image.Image, n: int, args) -> np.ndarray:
+    im = ordered_image(image, args.use_flip)
+    cells = []
+    for idx in range(n):
+        crop = crop_visual_slice(im, idx, n, args.window_size, args.stride, args.heatmap_axis_slice_mode)
+        crop = crop.resize((args.heatmap_axis_cell_pixels, args.heatmap_line1_strip_height), _RESAMPLE)
+        cell = Image.new("RGB", (args.heatmap_axis_cell_pixels + args.heatmap_window_gap_pixels, args.heatmap_line1_strip_height), (255, 255, 255))
+        cell.paste(crop, (0, 0))
+        cells.append(cell)
+    return np.array(hstack(cells))
+
+
+def make_y_strip(image: Image.Image, n: int, args) -> np.ndarray:
+    im = ordered_image(image, args.use_flip)
+    cells = []
+    for idx in range(n):
+        crop = crop_visual_slice(im, idx, n, args.window_size, args.stride, args.heatmap_axis_slice_mode)
+        if args.heatmap_flip_part_axis_windows:
+            crop = ImageOps.mirror(crop)
+        crop = crop.transpose(_ROTATE_90).resize((args.heatmap_part_strip_width, args.heatmap_axis_cell_pixels), _RESAMPLE)
+        cell = Image.new("RGB", (args.heatmap_part_strip_width, args.heatmap_axis_cell_pixels + args.heatmap_window_gap_pixels), (255, 255, 255))
+        cell.paste(crop, (0, 0))
+        cells.append(cell)
+    return np.array(vstack(cells))
+
+
+def grid_cells(ax, nx: int, ny: Optional[int] = None, alpha=0.25, lw=0.4):
+    for x in np.arange(-0.5, nx + 0.5, 1.0):
+        ax.axvline(x, color="white", lw=lw, alpha=alpha, zorder=10)
+    if ny is not None:
+        for y in np.arange(-0.5, ny + 0.5, 1.0):
+            ax.axhline(y, color="white", lw=lw, alpha=alpha, zorder=10)
+
+
+def label_step(n: int, target=14) -> int:
+    return max(1, int(np.ceil(max(1, n) / float(target))))
+
+
+def draw_path(ax, sw_path, seg: Optional[Segment]):
+    dx = [i for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
+    dy = [j for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
+    if dx:
+        ax.plot(dx, dy, color="white", lw=1.5, alpha=0.95, label="SW diag path")
+    if seg is not None:
+        ax.plot([seg.line1_start, seg.line1_end], [seg.part_start, seg.part_end], color="red", lw=2.6, alpha=0.95, label=f"selected {seg.match_kind}")
+        ax.scatter([seg.line1_start, seg.line1_end], [seg.part_start, seg.part_end], color="red", s=22, zorder=6)
+    return dx, dy
+
+
+def save_heatmap(sim, sw_path, seg, part: SourcePart, threshold: float, args, line1_display=None, part_display=None) -> str:
+    out = heatmap_output_path(args.output, args.heatmap_dir, part.part_id)
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    axis_images = args.heatmap_axis_images and line1_display is not None and part_display is not None
+    n_line1, n_part = int(sim.shape[0]), int(sim.shape[1])
+
+    if axis_images:
+        fig = plt.figure(figsize=(max(12, min(34, n_line1 * 0.34 + 5)), max(7, min(18, n_part * 0.78 + 5.2))))
+        gs = GridSpec(2, 3, figure=fig, width_ratios=[2.2, 8.8, 0.34], height_ratios=[1.55, 6.0], wspace=0.08, hspace=0.08)
+        ax_corner, ax_x, ax_y, ax_h, cax = fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[1, 0]), fig.add_subplot(gs[1, 1]), fig.add_subplot(gs[1, 2])
+        ax_corner.axis("off")
+        ax_corner.text(0.5, 0.5, f"separated\nwindow slices\nmode={args.heatmap_axis_slice_mode}", ha="center", va="center", fontsize=8, weight="bold")
+        ax_x.imshow(make_x_strip(line1_display, n_line1, args), extent=(-0.5, n_line1 - 0.5, 1, 0), aspect="auto")
+        ax_y.imshow(make_y_strip(part_display, n_part, args), extent=(0, 1, n_part - 0.5, -0.5), aspect="auto")
+        ax_x.set_xlim(-0.5, n_line1 - 0.5); ax_x.set_ylim(1, 0); ax_x.set_yticks([])
+        ax_y.set_xlim(0, 1); ax_y.set_ylim(n_part - 0.5, -0.5); ax_y.set_xticks([])
+        xs, ys = label_step(n_line1), 1 if n_part <= 16 else label_step(n_part)
+        ax_x.set_xticks(list(range(0, n_line1, xs))); ax_x.set_xticklabels([str(i) for i in range(0, n_line1, xs)], fontsize=7)
+        ax_x.tick_params(axis="x", labeltop=True, labelbottom=False, pad=1)
+        ax_x.set_title("line1 separated window slices (same order as heatmap columns)", fontsize=9)
+        ax_y.set_yticks(list(range(0, n_part, ys))); ax_y.set_yticklabels([str(i) for i in range(0, n_part, ys)], fontsize=7)
+        ax_y.set_ylabel("part separated windows\nrotated 90° + flipped", fontsize=8)
+        grid_cells(ax_x, n_line1, None, alpha=0.60, lw=0.55)
+        for y in np.arange(-0.5, n_part + 0.5, 1.0):
+            ax_y.axhline(y, color="white", lw=0.55, alpha=0.65, zorder=10)
+        im = ax_h.imshow(sim.T, origin="upper", aspect="auto", vmin=args.heatmap_vmin, vmax=args.heatmap_vmax)
+        plt.colorbar(im, cax=cax).set_label("cosine similarity")
+        grid_cells(ax_h, n_line1, n_part, alpha=0.24, lw=0.40)
+        dx, dy = draw_path(ax_h, sw_path, seg)
+        ax_h.set_xlim(-0.5, n_line1 - 0.5); ax_h.set_ylim(n_part - 0.5, -0.5)
+        ax_h.set_xlabel("line1 window index / x-axis slices"); ax_h.set_ylabel("part window index / y-axis slices")
+        ax_h.set_xticks(list(range(0, n_line1, xs))); ax_h.set_xticklabels([str(i) for i in range(0, n_line1, xs)], fontsize=8)
+        ax_h.set_yticks(list(range(0, n_part, ys))); ax_h.set_yticklabels([str(i) for i in range(0, n_part, ys)], fontsize=8)
+        if dx or dy or seg is not None:
+            ax_h.legend(loc="upper right", fontsize=8)
+    else:
+        fig, ax_h = plt.subplots(figsize=(max(8, min(18, n_line1 / 5.0)), max(3.5, min(10, n_part / 2.0 + 2))))
+        im = ax_h.imshow(sim.T, origin="upper", aspect="auto", vmin=args.heatmap_vmin, vmax=args.heatmap_vmax)
+        plt.colorbar(im, ax=ax_h, fraction=0.025, pad=0.02).set_label("cosine similarity")
+        dx, dy = draw_path(ax_h, sw_path, seg)
+        ax_h.set_xlim(-0.5, n_line1 - 0.5); ax_h.set_ylim(n_part - 0.5, -0.5)
+        ax_h.set_xlabel("line1 window index"); ax_h.set_ylabel("part window index")
+        if dx or dy or seg is not None:
+            ax_h.legend(loc="upper right", fontsize=8)
+
+    fig.suptitle(f"Part {part.part_id} vs line1 cosine similarity | line2_x=[{part.x0_original},{part.x1_original}] | thr={threshold:.3f}", fontsize=11)
+    plt.savefig(out, dpi=180, bbox_inches="tight", facecolor="white")
     plt.close(fig)
-    print(f"Saved cosine heatmap for part {part.part_id}: {output}")
-    return output
+    print(f"Saved cosine heatmap for part {part.part_id}: {out}")
+    return out
 
 
-# ---------------------------------------------------------------------------
-# Search
-# ---------------------------------------------------------------------------
-
-
-def search_one_part(
-    model,
-    emb_line1: torch.Tensor,
-    part: SourcePart,
-    line1_num_windows: int,
-    line1_display_width: int,
-    line1_original_width: int,
-    args: argparse.Namespace,
-    line1_display: Optional[Image.Image] = None,
-) -> PartSearchResult:
-    part_img_display, part_tensor = preprocess_line_image(part.path, target_height=args.height)
+def search_one_part(model, emb_line1, part: SourcePart, line1_num_windows: int, line1_display_width: int, line1_original_width: int, args, line1_display=None) -> Result:
+    part_display, part_tensor = preprocess_line_image(part.path, target_height=args.height)
     emb_part = image_embeddings(model, part_tensor, args.device, embedding_space=args.embedding_space)
-
     sim = cosine_similarity_matrix(emb_line1, emb_part)
-    threshold = resolve_threshold(sim, args)
-    best_sim = highest_similarity(sim)
+    threshold, best_sim = resolve_threshold(sim, args), highest_similarity(sim)
+    sw_path, sw_score, _H = smith_waterman(sim, threshold=threshold, gap_penalty=args.gap, match_reward=args.match, mismatch_penalty=args.mismatch)
+    diag_mean = best_diag_mean(sw_path, sim)
+    seg = choose_segment(sw_path, sim, threshold, args.min_run_length, args.require_all_windows_above_threshold)
+    heatmap_path = save_heatmap(sim, sw_path, seg, part, threshold, args, line1_display, part_display) if args.heatmap else None
 
-    sw_path, sw_score, _H = smith_waterman(
-        sim,
-        threshold=threshold,
-        gap_penalty=args.gap,
-        match_reward=args.match,
-        mismatch_penalty=args.mismatch,
-    )
-    best_diag_mean = best_possible_sw_segment_mean(sw_path, sim)
+    if seg is None:
+        return Result(part=part, found=False, part_window_count=int(emb_part.shape[0]), sw_score=float(sw_score), score=best_sim, threshold_used=float(threshold), best_similarity=best_sim, best_sw_diag_mean=diag_mean, embedding_space=args.embedding_space, heatmap_output=heatmap_path, message="Smith-Waterman did not find the whole part or a fallback segment above threshold; displayed best is the highest cosine similarity in the matrix.")
 
-    segment = choose_sw_segment(
-        sw_path,
-        sim,
-        threshold=threshold,
-        min_run_length=args.min_run_length,
-        require_all_windows_above_threshold=args.require_all_windows_above_threshold,
-    )
-
-    heatmap_output = None
-    if args.heatmap:
-        heatmap_output = save_part_similarity_heatmap(
-            sim,
-            sw_path,
-            segment,
-            part,
-            threshold,
-            args,
-            line1_display=line1_display,
-            part_display=part_img_display,
-        )
-
-    if segment is None:
-        return PartSearchResult(
-            part=part,
-            found=False,
-            part_window_count=int(emb_part.shape[0]),
-            sw_score=float(sw_score),
-            score=best_sim,
-            threshold_used=float(threshold),
-            best_similarity=best_sim,
-            best_sw_diag_mean=best_diag_mean,
-            embedding_space=args.embedding_space,
-            heatmap_output=heatmap_output,
-            message=(
-                "Smith-Waterman did not find the whole part or a fallback segment above threshold; "
-                "the displayed value is the highest cosine similarity in the searched matrix. "
-                "Try lowering --threshold, disabling adaptive threshold, making --mismatch less negative, "
-                "making --gap less negative, or lowering --min-run-length"
-            ),
-        )
-
-    run_x0_original, run_x1_original = window_span_to_original_pixels(
-        segment.line1_start,
-        segment.line1_end,
-        line1_num_windows,
-        line1_display_width,
-        line1_original_width,
-        args.window_size,
-        args.stride,
-        args.use_flip,
-        padding_windows=args.mask_padding_windows,
-    )
-
-    match_x0, match_x1 = clamp_segment_to_image(run_x0_original, run_x1_original, line1_original_width)
-
-    part_original_width = max(1, part.x1_original - part.x0_original)
-    part_x0_rel, part_x1_rel = window_span_to_original_pixels(
-        segment.part_start,
-        segment.part_end,
-        int(emb_part.shape[0]),
-        int(part_img_display.size[0]),
-        part_original_width,
-        args.window_size,
-        args.stride,
-        args.use_flip,
-        padding_windows=0,
-    )
-    part_x0_rel_i, part_x1_rel_i = cap_segment_width(
-        part_x0_rel,
-        part_x1_rel,
-        max_width=part_original_width,
-        image_width=part_original_width,
-    )
-
-    return PartSearchResult(
-        part=part,
-        found=True,
-        match_x0_original=int(match_x0),
-        match_x1_original=int(match_x1),
-        part_match_x0_relative=int(part_x0_rel_i),
-        part_match_x1_relative=int(part_x1_rel_i),
-        run_x0_original=float(run_x0_original),
-        run_x1_original=float(run_x1_original),
-        line1_window_start=int(segment.line1_start),
-        line1_window_end=int(segment.line1_end),
-        part_window_start=int(segment.part_start),
-        part_window_end=int(segment.part_end),
-        part_window_count=int(emb_part.shape[0]),
-        run_length=int(segment.length),
-        mean_similarity=float(segment.mean_similarity),
-        min_similarity=float(segment.min_similarity),
-        sw_score=float(sw_score),
-        score=float(segment.score),
-        match_kind=segment.match_kind,
-        threshold_used=float(threshold),
-        best_similarity=best_sim,
-        best_sw_diag_mean=best_diag_mean,
-        embedding_space=args.embedding_space,
-        heatmap_output=heatmap_output,
-    )
+    rx0, rx1 = span_to_original_pixels(seg.line1_start, seg.line1_end, line1_num_windows, line1_display_width, line1_original_width, args.window_size, args.stride, args.use_flip, args.mask_padding_windows)
+    mx0, mx1 = clamp_segment_to_image(rx0, rx1, line1_original_width)
+    part_w = max(1, part.x1_original - part.x0_original)
+    px0, px1 = span_to_original_pixels(seg.part_start, seg.part_end, int(emb_part.shape[0]), int(part_display.size[0]), part_w, args.window_size, args.stride, args.use_flip, 0)
+    pr0, pr1 = cap_segment_width(px0, px1, part_w, part_w)
+    return Result(part=part, found=True, match_x0_original=mx0, match_x1_original=mx1, part_match_x0_relative=pr0, part_match_x1_relative=pr1, run_x0_original=rx0, run_x1_original=rx1, line1_window_start=seg.line1_start, line1_window_end=seg.line1_end, part_window_start=seg.part_start, part_window_end=seg.part_end, part_window_count=int(emb_part.shape[0]), run_length=seg.length, mean_similarity=seg.mean_similarity, min_similarity=seg.min_similarity, sw_score=float(sw_score), score=seg.score, match_kind=seg.match_kind, threshold_used=float(threshold), best_similarity=best_sim, best_sw_diag_mean=diag_mean, embedding_space=args.embedding_space, heatmap_output=heatmap_path)
 
 
-# ---------------------------------------------------------------------------
-# Drawing
-# ---------------------------------------------------------------------------
-
-
-def crop_or_blank(image: Image.Image, x0: int, x1: int, width: int, fill: int = 255) -> Image.Image:
+def crop_or_blank(image: Image.Image, x0: int, x1: int, width: int) -> Image.Image:
     image = image.convert("RGB")
-    img_w, img_h = image.size
-    x0 = max(0, min(int(x0), img_w))
-    x1 = max(x0, min(int(x1), img_w))
-    crop = image.crop((x0, 0, x1, img_h))
-
+    x0 = max(0, min(int(x0), image.size[0])); x1 = max(x0, min(int(x1), image.size[0]))
+    crop = image.crop((x0, 0, x1, image.size[1]))
     if crop.size[0] == width:
         return crop
-
-    canvas = Image.new("RGB", (width, img_h), (fill, fill, fill))
-    canvas.paste(crop, (0, 0))
-    return canvas
+    out = Image.new("RGB", (width, image.size[1]), (255, 255, 255)); out.paste(crop, (0, 0)); return out
 
 
-def draw_line2_part_on_full_line1_canvas(
-    ax,
-    line1: Image.Image,
-    line2: Image.Image,
-    results: Sequence[PartSearchResult],
-    title: str,
-    part_width: int,
-):
-    arr1 = np.array(line1.convert("RGB"))
-    h1, w1 = arr1.shape[:2]
-    line2_h = line2.size[1]
+def draw_results(line1: Image.Image, line2: Image.Image, results: Sequence[Result], output: str, title: str, part_width: int):
+    arr1 = np.array(line1.convert("RGB")); h1, w1 = arr1.shape[:2]; line2_h = line2.size[1]
+    part_gap = max(18, int(round(part_width * 0.25))); n = max(1, len(results))
+    total_parts_w = n * part_width + (n - 1) * part_gap; canvas_w = max(w1, total_parts_w)
+    xoff = 0 if canvas_w == w1 else int(round((canvas_w - w1) / 2.0))
+    top, arrow_gap, bottom = 34, 95, 28
+    y1_top, y1_bottom = top, top + h1; yp_top, yp_bottom = y1_bottom + arrow_gap, y1_bottom + arrow_gap + line2_h
+    fig, ax = plt.subplots(figsize=(max(12.0, line1.size[0] / 100.0), max(5.0, (line1.size[1] + line2.size[1] + 160) / 100.0)))
+    ax.imshow(arr1, extent=(xoff, xoff + w1, y1_bottom, y1_top), zorder=1)
+    ax.text(xoff, y1_top - 8, "Line 1: full searched line with masks", fontsize=11, weight="bold", va="bottom")
+    ax.text(0, yp_top - 8, "Line 2: chosen parts only, no masks", fontsize=11, weight="bold", va="bottom")
+    starts = [int(round((canvas_w - part_width) / 2.0))] if n == 1 else [int(round((canvas_w - total_parts_w) / 2.0)) + i * (part_width + part_gap) for i in range(n)]
 
-    part_gap = max(18, int(round(part_width * 0.25)))
-    n_parts = max(1, len(results))
-    total_parts_w = n_parts * part_width + (n_parts - 1) * part_gap
-
-    canvas_w = max(w1, total_parts_w)
-    x_offset_line1 = 0 if canvas_w == w1 else int(round((canvas_w - w1) / 2.0))
-
-    top_margin = 34
-    arrow_gap = 95
-    bottom_margin = 28
-    y1_top = top_margin
-    y1_bottom = y1_top + h1
-    y_parts_top = y1_bottom + arrow_gap
-    y_parts_bottom = y_parts_top + line2_h
-    canvas_h = y_parts_bottom + bottom_margin
-
-    ax.imshow(arr1, extent=(x_offset_line1, x_offset_line1 + w1, y1_bottom, y1_top), zorder=1)
-    ax.text(x_offset_line1, y1_top - 8, "Line 1: full searched line with masks", fontsize=11, weight="bold", va="bottom")
-    ax.text(0, y_parts_top - 8, "Line 2: chosen parts only, no masks", fontsize=11, weight="bold", va="bottom")
-
-    part_positions: List[Tuple[int, int]] = []
-    if n_parts == 1:
-        start = int(round((canvas_w - part_width) / 2.0))
-        part_positions.append((start, start + part_width))
-    else:
-        start0 = int(round((canvas_w - total_parts_w) / 2.0))
-        for idx in range(n_parts):
-            px0 = start0 + idx * (part_width + part_gap)
-            part_positions.append((px0, px0 + part_width))
-
-    for idx, (result, (part_canvas_x0, part_canvas_x1)) in enumerate(zip(results, part_positions)):
-        color = PALETTE[idx % len(PALETTE)]
-        part = result.part
-
-        part_crop = crop_or_blank(line2, part.x0_original, part.x1_original, part_width)
-        part_arr = np.array(part_crop)
-        ax.imshow(part_arr, extent=(part_canvas_x0, part_canvas_x1, y_parts_bottom, y_parts_top), zorder=1)
-
-        ax.add_patch(
-            Rectangle(
-                (part_canvas_x0, y_parts_top),
-                part_width,
-                line2_h,
-                facecolor="none",
-                edgecolor=color,
-                linewidth=2,
-                alpha=0.95,
-                zorder=3,
-            )
-        )
-
-        part_center_x = 0.5 * (part_canvas_x0 + part_canvas_x1)
-
-        if not result.found:
-            best_text = "nan" if np.isnan(result.best_similarity) else f"{result.best_similarity:.3f}"
-            diag_text = "nan" if np.isnan(result.best_sw_diag_mean) else f"{result.best_sw_diag_mean:.3f}"
-            ax.text(
-                part_center_x,
-                y_parts_top + 0.5 * line2_h,
-                f"part {part.part_id}\nnot found\nbest={best_text}",
-                ha="center",
-                va="center",
-                fontsize=8,
-                color="white",
-                weight="bold",
-                bbox=dict(facecolor=color, edgecolor="none", alpha=0.72, boxstyle="round,pad=0.25"),
-                zorder=5,
-            )
-            heatmap_text = f" heatmap={result.heatmap_output}" if result.heatmap_output else ""
-            print(
-                f"part {part.part_id}: NOT FOUND | embedding={result.embedding_space} "
-                f"best_sim={best_text} best_sw_diag_mean={diag_text} "
-                f"thr={result.threshold_used:.4f} sw_path_score={result.sw_score:.4f}"
-                f"{heatmap_text} | {result.message}"
-            )
+    for idx, (res, px0) in enumerate(zip(results, starts)):
+        color = PALETTE[idx % len(PALETTE)]; part = res.part; px1 = px0 + part_width
+        ax.imshow(np.array(crop_or_blank(line2, part.x0_original, part.x1_original, part_width)), extent=(px0, px1, yp_bottom, yp_top), zorder=1)
+        ax.add_patch(Rectangle((px0, yp_top), part_width, line2_h, facecolor="none", edgecolor=color, linewidth=2, alpha=0.95, zorder=3))
+        pc = 0.5 * (px0 + px1)
+        if not res.found:
+            best = "nan" if np.isnan(res.best_similarity) else f"{res.best_similarity:.3f}"
+            diag = "nan" if np.isnan(res.best_sw_diag_mean) else f"{res.best_sw_diag_mean:.3f}"
+            ax.text(pc, yp_top + 0.5 * line2_h, f"part {part.part_id}\nnot found\nbest={best}", ha="center", va="center", fontsize=8, color="white", weight="bold", bbox=dict(facecolor=color, edgecolor="none", alpha=0.72, boxstyle="round,pad=0.25"), zorder=5)
+            heat = f" heatmap={res.heatmap_output}" if res.heatmap_output else ""
+            print(f"part {part.part_id}: NOT FOUND | embedding={res.embedding_space} best_sim={best} best_sw_diag_mean={diag} thr={res.threshold_used:.4f} sw_path_score={res.sw_score:.4f}{heat} | {res.message}")
             continue
+        assert res.match_x0_original is not None and res.match_x1_original is not None
+        mx0, mx1 = xoff + res.match_x0_original, xoff + res.match_x1_original
+        ax.add_patch(Rectangle((mx0, y1_top), max(1, mx1 - mx0), h1, facecolor=color, edgecolor=color, linewidth=2, alpha=0.30, zorder=3))
+        sc = 0.5 * (px0 + (res.part_match_x0_relative or 0) + px0 + (res.part_match_x1_relative or part_width))
+        mc = 0.5 * (mx0 + mx1)
+        ax.add_patch(FancyArrowPatch((sc, yp_top - 4), (mc, y1_bottom + 4), arrowstyle="->", mutation_scale=18, linewidth=2.4, color=color, alpha=0.95, zorder=4))
+        ax.text(mc, y1_top + 0.5 * h1, f"part {part.part_id}\n{res.match_kind}\nsim={res.mean_similarity:.3f}\nwin={res.run_length}", ha="center", va="center", fontsize=8, color="white", weight="bold", bbox=dict(facecolor=color, edgecolor="none", alpha=0.72, boxstyle="round,pad=0.25"), zorder=5)
+        ax.text(pc, yp_top + 0.5 * line2_h, f"part {part.part_id}\nx=[{part.x0_original},{part.x1_original}]", ha="center", va="center", fontsize=8, color="white", weight="bold", bbox=dict(facecolor=color, edgecolor="none", alpha=0.72, boxstyle="round,pad=0.25"), zorder=5)
+        heat = f" | heatmap={res.heatmap_output}" if res.heatmap_output else ""
+        print(f"part {part.part_id}: FOUND | kind={res.match_kind} | thr={res.threshold_used:.4f} | line2_x=[{part.x0_original},{part.x1_original}] | line1_mask_x=[{res.match_x0_original},{res.match_x1_original}] width={res.match_x1_original - res.match_x0_original} | line1_windows=[{res.line1_window_start},{res.line1_window_end}] | part_windows=[{res.part_window_start},{res.part_window_end}]/{res.part_window_count} | mean_sim={res.mean_similarity:.4f} | min_sim={res.min_similarity:.4f} | best_sim={res.best_similarity:.4f}{heat}")
 
-        assert result.match_x0_original is not None and result.match_x1_original is not None
-        assert result.part_match_x0_relative is not None and result.part_match_x1_relative is not None
-
-        match_x0 = x_offset_line1 + result.match_x0_original
-        match_x1 = x_offset_line1 + result.match_x1_original
-        mask_width = max(1, match_x1 - match_x0)
-        ax.add_patch(
-            Rectangle(
-                (match_x0, y1_top),
-                mask_width,
-                h1,
-                facecolor=color,
-                edgecolor=color,
-                linewidth=2,
-                alpha=0.30,
-                zorder=3,
-            )
-        )
-
-        src_x0 = part_canvas_x0 + result.part_match_x0_relative
-        src_x1 = part_canvas_x0 + result.part_match_x1_relative
-        src_center_x = 0.5 * (src_x0 + src_x1)
-        match_center_x = 0.5 * (match_x0 + match_x1)
-
-        ax.add_patch(
-            FancyArrowPatch(
-                (src_center_x, y_parts_top - 4),
-                (match_center_x, y1_bottom + 4),
-                arrowstyle="->",
-                mutation_scale=18,
-                linewidth=2.4,
-                color=color,
-                alpha=0.95,
-                zorder=4,
-            )
-        )
-
-        ax.text(
-            0.5 * (match_x0 + match_x1),
-            y1_top + 0.5 * h1,
-            f"part {part.part_id}\n{result.match_kind}\nsim={result.mean_similarity:.3f}\nwin={result.run_length}",
-            ha="center",
-            va="center",
-            fontsize=8,
-            color="white",
-            weight="bold",
-            bbox=dict(facecolor=color, edgecolor="none", alpha=0.72, boxstyle="round,pad=0.25"),
-            zorder=5,
-        )
-        ax.text(
-            part_center_x,
-            y_parts_top + 0.5 * line2_h,
-            f"part {part.part_id}\nx=[{part.x0_original},{part.x1_original}]",
-            ha="center",
-            va="center",
-            fontsize=8,
-            color="white",
-            weight="bold",
-            bbox=dict(facecolor=color, edgecolor="none", alpha=0.72, boxstyle="round,pad=0.25"),
-            zorder=5,
-        )
-
-        heatmap_text = f" | heatmap={result.heatmap_output}" if result.heatmap_output else ""
-        print(
-            f"part {part.part_id}: FOUND | kind={result.match_kind} | "
-            f"thr={result.threshold_used:.4f} | "
-            f"line2_x=[{part.x0_original},{part.x1_original}] | "
-            f"line2_sw_rel_x=[{result.part_match_x0_relative},{result.part_match_x1_relative}] | "
-            f"line1_mask_x=[{result.match_x0_original},{result.match_x1_original}] "
-            f"width={result.match_x1_original - result.match_x0_original} | "
-            f"line1_windows=[{result.line1_window_start},{result.line1_window_end}] | "
-            f"part_windows=[{result.part_window_start},{result.part_window_end}]/{result.part_window_count} | "
-            f"raw_window_x=[{result.run_x0_original:.1f},{result.run_x1_original:.1f}] | "
-            f"sw_path_score={result.sw_score:.4f} | "
-            f"mean_sim={result.mean_similarity:.4f} | min_sim={result.min_similarity:.4f} | "
-            f"best_sim={result.best_similarity:.4f}{heatmap_text}"
-        )
-
-    ax.set_title(title, fontsize=13)
-    ax.set_xlim(0, canvas_w)
-    ax.set_ylim(canvas_h, 0)
-    ax.axis("off")
-
-
-def draw_results(
-    line1_original: Image.Image,
-    line2_original: Image.Image,
-    results: Sequence[PartSearchResult],
-    output: str,
-    title: str,
-    part_width: int,
-):
-    line1_w, line1_h = line1_original.size
-    n_parts = max(1, len(results))
-    fig_w = max(12.0, line1_w / 100.0)
-    fig_h = max(5.0, (line1_h + line2_original.size[1] + 160) / 100.0)
-    if n_parts > 4:
-        fig_h += 0.35 * (n_parts - 4)
-
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
-    draw_line2_part_on_full_line1_canvas(ax, line1_original, line2_original, results, title, part_width)
-
+    ax.set_title(title, fontsize=13); ax.set_xlim(0, canvas_w); ax.set_ylim(yp_bottom + bottom, 0); ax.axis("off")
     os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
-    plt.tight_layout()
-    plt.savefig(output, dpi=200, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
+    plt.tight_layout(); plt.savefig(output, dpi=200, bbox_inches="tight", facecolor="white"); plt.close(fig)
     print(f"Saved: {output}")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-
 def main():
-    parser = argparse.ArgumentParser(
-        description="Randomly crop fixed-width parts from line2 and find their SW-aligned segment in full line1."
-    )
-    parser.add_argument("--weights", required=True, help="Path to trained model .pth")
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--window-size", type=int, default=32)
-    parser.add_argument("--stride", type=int, default=16)
-    parser.add_argument("--height", type=int, default=128)
-    parser.add_argument("--vector-size", type=int, default=128)
-    parser.add_argument(
-        "--embedding-space",
-        choices=("local", "contextual"),
-        default="local",
-        help="local=pre-BiLSTM CNN embeddings, recommended for part/window matching; contextual=CNN+BiLSTM.",
-    )
-    parser.add_argument("--threshold", type=float, default=0.85)
-    parser.add_argument(
-        "--adaptive-threshold",
-        choices=("none", "percentile", "mean_std"),
-        default="percentile",
-        help="Per-part threshold from the similarity matrix. Default percentile helps when similarities are high everywhere.",
-    )
-    parser.add_argument("--threshold-percentile", type=float, default=90.0)
-    parser.add_argument("--threshold-std-scale", type=float, default=1.0)
-    parser.add_argument(
-        "--no-adaptive-threshold-floor",
-        dest="adaptive_threshold_floor",
-        action="store_false",
-        help="Use the adaptive threshold directly instead of max(fixed, adaptive).",
-    )
-    parser.set_defaults(adaptive_threshold_floor=True)
-    parser.add_argument("--match", type=float, default=1.0, help="Reward scale for similarities above threshold")
-    parser.add_argument("--mismatch", type=float, default=-1.5, help="Penalty scale for similarities below threshold; should be negative")
-    parser.add_argument("--gap", type=float, default=-0.15, help="Smith-Waterman gap penalty; should be negative")
-    parser.add_argument("--min-run-length", type=int, default=3)
-    parser.add_argument(
-        "--require-all-windows-above-threshold",
-        action="store_true",
-        help="Require every diagonal window similarity in the chosen SW segment to be >= the resolved threshold.",
-    )
-    parser.add_argument(
-        "--mask-padding-windows",
-        type=int,
-        default=0,
-        help="Optional number of extra line1 windows to include on each side of a found mask. Default 0 means exact SW window span.",
-    )
-    parser.add_argument("--use-flip", action="store_true", help="Use when Arabic windows were encoded right-to-left")
-    parser.add_argument("--no-bilstm", action="store_true", help="Disable BiLSTM even if checkpoint config is missing")
+    p = argparse.ArgumentParser(description="Crop parts from line2 and find their SW-aligned segment in full line1.")
+    p.add_argument("--weights", required=True); p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--window-size", type=int, default=32); p.add_argument("--stride", type=int, default=16); p.add_argument("--height", type=int, default=128); p.add_argument("--vector-size", type=int, default=128)
+    p.add_argument("--embedding-space", choices=("local", "contextual"), default="local")
+    p.add_argument("--threshold", type=float, default=0.85); p.add_argument("--adaptive-threshold", choices=("none", "percentile", "mean_std"), default="percentile"); p.add_argument("--threshold-percentile", type=float, default=90.0); p.add_argument("--threshold-std-scale", type=float, default=1.0)
+    p.add_argument("--no-adaptive-threshold-floor", dest="adaptive_threshold_floor", action="store_false"); p.set_defaults(adaptive_threshold_floor=True)
+    p.add_argument("--match", type=float, default=1.0); p.add_argument("--mismatch", type=float, default=-1.5); p.add_argument("--gap", type=float, default=-0.15); p.add_argument("--min-run-length", type=int, default=3)
+    p.add_argument("--require-all-windows-above-threshold", action="store_true"); p.add_argument("--mask-padding-windows", type=int, default=0)
+    p.add_argument("--use-flip", action="store_true"); p.add_argument("--no-bilstm", action="store_true")
+    p.add_argument("--heatmap", action="store_true"); p.add_argument("--heatmap-dir", default=None); p.add_argument("--heatmap-vmin", type=float, default=0.0); p.add_argument("--heatmap-vmax", type=float, default=1.0)
+    p.add_argument("--no-heatmap-axis-images", dest="heatmap_axis_images", action="store_false"); p.set_defaults(heatmap_axis_images=True)
+    p.add_argument("--heatmap-axis-cell-pixels", type=int, default=52); p.add_argument("--heatmap-window-gap-pixels", type=int, default=10)
+    p.add_argument("--heatmap-axis-slice-mode", choices=("nonoverlap", "window"), default="nonoverlap")
+    p.add_argument("--heatmap-line1-strip-height", type=int, default=88); p.add_argument("--heatmap-part-strip-width", type=int, default=112)
+    p.add_argument("--no-heatmap-flip-part-axis-windows", dest="heatmap_flip_part_axis_windows", action="store_false"); p.set_defaults(heatmap_flip_part_axis_windows=True)
+    p.add_argument("--line1", default=None); p.add_argument("--line2", default=None); p.add_argument("--data-dir", default=None); p.add_argument("--index", type=int, default=None)
+    p.add_argument("--part-width", type=int, default=124); p.add_argument("--num-parts", type=int, default=3); p.add_argument("--part-starts", default=None); p.add_argument("--part-mode", choices=("random", "rtl-blocks", "even"), default="random"); p.add_argument("--random-seed", type=int, default=None); p.add_argument("--random-min-gap", type=int, default=0)
+    p.add_argument("--output", required=True)
+    args = p.parse_args()
 
-    # Heatmap options.
-    parser.add_argument("--heatmap", action="store_true", help="Save a cosine-similarity heatmap for every chosen part against line1")
-    parser.add_argument("--heatmap-dir", default=None, help="Optional directory for per-part heatmaps. Default: same directory as --output")
-    parser.add_argument("--heatmap-vmin", type=float, default=0.0, help="Minimum color scale value for heatmaps")
-    parser.add_argument("--heatmap-vmax", type=float, default=1.0, help="Maximum color scale value for heatmaps")
-    parser.add_argument(
-        "--no-heatmap-axis-images",
-        dest="heatmap_axis_images",
-        action="store_false",
-        help="Disable sliced line1/part images around heatmaps and save the old matrix-only heatmap.",
-    )
-    parser.set_defaults(heatmap_axis_images=True)
-    parser.add_argument(
-        "--heatmap-axis-cell-pixels",
-        type=int,
-        default=42,
-        help="Pixel width/height used for each displayed window slice in the heatmap axis images.",
-    )
-    parser.add_argument(
-        "--heatmap-line1-strip-height",
-        type=int,
-        default=84,
-        help="Height in pixels of the top sliced line1 window strip.",
-    )
-    parser.add_argument(
-        "--heatmap-part-strip-width",
-        type=int,
-        default=96,
-        help="Width in pixels of the left sliced/rotated part window strip.",
-    )
-
-    # Input line options.
-    parser.add_argument("--line1", default=None, help="Path to the full first line image")
-    parser.add_argument("--line2", default=None, help="Path to the second line image to crop parts from")
-    parser.add_argument("--data-dir", default=None, help="Dataset root containing images/img1_<idx>.png and images/img2_<idx>.png")
-    parser.add_argument("--index", type=int, default=None, help="Dataset sample index")
-
-    # Part selection options.
-    parser.add_argument("--part-width", type=int, default=124, help="Width in original line2 pixels for each cropped part")
-    parser.add_argument("--num-parts", type=int, default=3, help="Number of random parts to crop when --part-starts is not given")
-    parser.add_argument(
-        "--part-starts",
-        default=None,
-        help='Comma-separated x-start positions in original line2 pixels, e.g. "100,350,600". Overrides random selection.',
-    )
-    parser.add_argument(
-        "--part-mode",
-        choices=("random", "rtl-blocks", "even"),
-        default="random",
-        help="How to choose parts when --part-starts is not provided. Default is random every run.",
-    )
-    parser.add_argument("--random-seed", type=int, default=None, help="Optional seed for reproducible random part selection")
-    parser.add_argument("--random-min-gap", type=int, default=0, help="Minimum gap in pixels between random parts")
-
-    parser.add_argument("--output", required=True, help="Output PNG path")
-    args = parser.parse_args()
-
-    if args.part_width <= 0:
-        raise ValueError("--part-width must be positive")
-    if args.num_parts <= 0:
-        raise ValueError("--num-parts must be positive")
-    if args.min_run_length <= 0:
-        raise ValueError("--min-run-length must be positive")
-    if args.random_min_gap < 0:
-        raise ValueError("--random-min-gap must be >= 0")
-    if args.mask_padding_windows < 0:
-        raise ValueError("--mask-padding-windows must be >= 0")
+    if args.part_width <= 0 or args.num_parts <= 0 or args.min_run_length <= 0:
+        raise ValueError("part-width, num-parts, and min-run-length must be positive")
+    if args.random_min_gap < 0 or args.mask_padding_windows < 0 or args.heatmap_window_gap_pixels < 0:
+        raise ValueError("gap-like arguments must be >= 0")
     if args.heatmap_vmax <= args.heatmap_vmin:
         raise ValueError("--heatmap-vmax must be larger than --heatmap-vmin")
-    if args.heatmap_axis_cell_pixels <= 0:
-        raise ValueError("--heatmap-axis-cell-pixels must be positive")
-    if args.heatmap_line1_strip_height <= 0:
-        raise ValueError("--heatmap-line1-strip-height must be positive")
-    if args.heatmap_part_strip_width <= 0:
-        raise ValueError("--heatmap-part-strip-width must be positive")
-    if args.gap > 0:
-        raise ValueError("--gap should be negative, for example --gap -0.15")
-    if args.mismatch > 0:
-        raise ValueError("--mismatch should be negative, for example --mismatch -1.5")
-    if args.match <= 0:
-        raise ValueError("--match should be positive, for example --match 1.0")
+    if min(args.heatmap_axis_cell_pixels, args.heatmap_line1_strip_height, args.heatmap_part_strip_width) <= 0:
+        raise ValueError("heatmap axis image sizes must be positive")
+    if args.gap > 0 or args.mismatch > 0 or args.match <= 0:
+        raise ValueError("use negative --gap/--mismatch and positive --match")
 
     line1_path, line2_path = resolve_line_paths(args)
-    if not os.path.exists(line1_path):
-        raise FileNotFoundError(line1_path)
-    if not os.path.exists(line2_path):
-        raise FileNotFoundError(line2_path)
+    if not os.path.exists(line1_path): raise FileNotFoundError(line1_path)
+    if not os.path.exists(line2_path): raise FileNotFoundError(line2_path)
+    print(f"Line1: {line1_path}\nLine2: {line2_path}")
 
-    print(f"Line1: {line1_path}")
-    print(f"Line2: {line2_path}")
-
-    model = load_image_model(
-        args.weights,
-        args.device,
-        window_size=args.window_size,
-        stride=args.stride,
-        vector_size=args.vector_size,
-        use_bilstm=False if args.no_bilstm else None,
-        use_flip=args.use_flip,
-    )
-
+    model = load_image_model(args.weights, args.device, window_size=args.window_size, stride=args.stride, vector_size=args.vector_size, use_bilstm=False if args.no_bilstm else None, use_flip=args.use_flip)
     img1_display, tensor1 = preprocess_line_image(line1_path, target_height=args.height)
     emb_line1 = image_embeddings(model, tensor1, args.device, embedding_space=args.embedding_space)
-
-    line1_original = Image.open(line1_path).convert("RGB")
-    line2_original = Image.open(line2_path).convert("RGB")
-    line2_original_width, _ = line2_original.size
-
-    starts = parse_part_starts(args.part_starts)
-    selection_mode = "manual"
+    line1_original, line2_original = Image.open(line1_path).convert("RGB"), Image.open(line2_path).convert("RGB")
+    starts = parse_part_starts(args.part_starts); mode = "manual"
     if starts is None:
-        rng = random.Random(args.random_seed)
-        starts = default_part_starts(line2_original_width, args.part_width, args.num_parts, args.part_mode, rng, args.random_min_gap)
-        selection_mode = args.part_mode
-
-    print(f"Part width: {args.part_width}")
-    print(f"Part selection mode: {selection_mode}")
-    print(f"Random seed: {args.random_seed if args.random_seed is not None else 'none'}")
-    print(f"Part starts: {starts}")
-    print(f"Embedding space: {args.embedding_space}")
+        starts = default_part_starts(line2_original.size[0], args.part_width, args.num_parts, args.part_mode, random.Random(args.random_seed), args.random_min_gap); mode = args.part_mode
+    print(f"Part width: {args.part_width}\nPart selection mode: {mode}\nRandom seed: {args.random_seed if args.random_seed is not None else 'none'}\nPart starts: {starts}\nEmbedding space: {args.embedding_space}")
     print(f"Threshold mode: {args.adaptive_threshold}, base threshold={args.threshold}")
-    print("Search method: Smith-Waterman whole-part first; fallback to best segment; masks only line1")
-    print("Line1 mask width: full matched SW window span, not capped to --part-width")
     if args.heatmap:
-        heatmap_dir = args.heatmap_dir or os.path.dirname(args.output) or "."
-        axis_mode = "sliced line1/rotated part window images" if args.heatmap_axis_images else "matrix only"
-        print(f"Cosine heatmaps: enabled, directory={heatmap_dir}, mode={axis_mode}")
-    print("For NOT FOUND parts, displayed best=highest cosine similarity reached during search")
+        print(f"Cosine heatmaps: enabled, dir={args.heatmap_dir or os.path.dirname(args.output) or '.'}, separated windows gap={args.heatmap_window_gap_pixels}, slice_mode={args.heatmap_axis_slice_mode}, flip_part_axis={args.heatmap_flip_part_axis_windows}")
 
-    results: List[PartSearchResult] = []
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        parts = make_source_parts(line2_path, starts, args.part_width, tmp_dir)
-
-        for part in parts:
-            result = search_one_part(
-                model,
-                emb_line1,
-                part,
-                line1_num_windows=int(emb_line1.shape[0]),
-                line1_display_width=int(img1_display.size[0]),
-                line1_original_width=int(line1_original.size[0]),
-                args=args,
-                line1_display=img1_display,
-            )
-            results.append(result)
-
-    sample_label = f" sample {args.index}" if args.index is not None else ""
-    title = (
-        f"Line2 {selection_mode} parts searched inside full line1{sample_label} | "
-        f"whole-part-first, embedding={args.embedding_space}, part_width={args.part_width}, "
-        f"threshold={args.adaptive_threshold}/{args.threshold}"
-    )
+    results: List[Result] = []
+    with tempfile.TemporaryDirectory() as td:
+        for part in make_source_parts(line2_path, starts, args.part_width, td):
+            results.append(search_one_part(model, emb_line1, part, int(emb_line1.shape[0]), int(img1_display.size[0]), int(line1_original.size[0]), args, line1_display=img1_display))
+    sample = f" sample {args.index}" if args.index is not None else ""
+    title = f"Line2 {mode} parts searched inside full line1{sample} | whole-part-first, embedding={args.embedding_space}, part_width={args.part_width}, threshold={args.adaptive_threshold}/{args.threshold}"
     draw_results(line1_original, line2_original, results, args.output, title, args.part_width)
 
 
