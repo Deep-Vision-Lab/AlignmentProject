@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 #
-# Submit the recommended improve_neg offline span-D3TW job without passing flags.
+# Submit the recommended improve_neg offline span-D3TW job.
+#
+# The sbatch enables the new image-image span contrastive loss by default:
+#   USE_IMAGE_PAIR_CONTRASTIVE=1
+#   IMAGE_PAIR_LOSS_WEIGHT=0.2
+#   LOCAL_HARD_NEGATIVE_WEIGHT=0.4
+#
+# Override with environment variables, for example:
+#   IMAGE_PAIR_LOSS_WEIGHT=0.3 LOCAL_HARD_NEGATIVE_TOP_K=16 bash scripts/train/run_span_d3tw_offline.sh
 
 set -euo pipefail
 
