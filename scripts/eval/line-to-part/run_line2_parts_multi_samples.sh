@@ -17,7 +17,7 @@ WINDOW_SIZE="${WINDOW_SIZE:-32}"
 STRIDE="${STRIDE:-16}"
 HEIGHT="${HEIGHT:-128}"
 
-# improve_neg recommendation:
+# improve_model recommendation:
 # Use local pre-BiLSTM CNN embeddings for part/window matching.
 EMBEDDING_SPACE="${EMBEDDING_SPACE:-local}"
 

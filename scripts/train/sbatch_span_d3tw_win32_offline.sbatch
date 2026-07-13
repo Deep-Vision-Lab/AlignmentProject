@@ -13,7 +13,7 @@
 # cached before submitting:
 #   bash scripts/train/setup_manucripts_align_span_env.sh
 #
-#SBATCH --job-name=improve_neg_pair_w32
+#SBATCH --job-name=improve_model_w32
 #SBATCH --output=out/%x_%J.out
 #SBATCH --partition=rtx4090
 #SBATCH --gpus=rtx_4090:1
@@ -131,7 +131,7 @@ if [[ -z "${DATA_DIR:-}" ]]; then
     DATA_DIR="DataSet/Synthetic_${LANGUAGE}"
   fi
 fi
-JOB_ID="${JOB_ID:-improve_neg_pair_win32_offline}"
+JOB_ID="${JOB_ID:-improve_model_win32}"
 EPOCHS="${EPOCHS:-150}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
 
