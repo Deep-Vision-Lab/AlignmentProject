@@ -9,6 +9,7 @@ This script is updated for the improve_neg solution:
   - Displays chosen line2 parts without filled masks.
   - Adds masks only on line1 for the found whole part or fallback segment.
   - Can save a cosine-similarity heatmap for each chosen part against line1.
+  - Heatmaps can show the line1 image strip on the x-axis and the part image strip on the y-axis.
 
 Matching logic for each chosen line2 part:
   1. Run Smith-Waterman between full line1 windows and chosen part windows.
@@ -16,13 +17,8 @@ Matching logic for each chosen line2 part:
   3. If the whole part is not found, use the best consecutive diagonal segment.
   4. Draw the complete matched window span on line1.
 
-Important visualization detail:
-  The line1 mask is not capped to --part-width. It uses the full pixel span
-  of the aligned SW windows, so the mask should not become smaller than the
-  aligned window run or shift because of width-capping.
-
-For NOT FOUND parts, the figure writes the highest cosine similarity reached
-in the search matrix instead of writing the resolved threshold.
+For NOT FOUND parts, the figure writes the highest cosine similarity reached in
+search matrix instead of writing the resolved threshold.
 """
 
 from __future__ import annotations
@@ -39,6 +35,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
 from matplotlib.patches import FancyArrowPatch, Rectangle
 import numpy as np
 from PIL import Image
@@ -448,21 +445,25 @@ def heatmap_output_path(main_output: str, heatmap_dir: Optional[str], part_id: i
     return os.path.join(base_dir, f"{stem}_part{part_id}_cosine_heatmap.png")
 
 
-def save_part_similarity_heatmap(
+def _flip_for_window_order(image: Image.Image, use_flip: bool) -> Image.Image:
+    """Return an image strip ordered like the embedding window indices."""
+    image = image.convert("RGB")
+    if not use_flip:
+        return image
+    try:
+        return image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    except AttributeError:
+        return image.transpose(Image.FLIP_LEFT_RIGHT)
+
+
+def _draw_plain_similarity_heatmap(
+    fig,
+    ax,
     sim: np.ndarray,
     sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]],
     segment: Optional[SWAlignedSegment],
-    part: SourcePart,
-    threshold: float,
     args: argparse.Namespace,
-) -> str:
-    output = heatmap_output_path(args.output, args.heatmap_dir, part.part_id)
-    os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
-
-    fig_w = max(8.0, min(18.0, sim.shape[0] / 5.0))
-    fig_h = max(3.5, min(10.0, sim.shape[1] / 2.0 + 2.0))
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
-
+):
     im = ax.imshow(
         sim.T,
         origin="upper",
@@ -495,16 +496,117 @@ def save_part_similarity_heatmap(
             zorder=5,
         )
 
+    ax.set_xlim(-0.5, sim.shape[0] - 0.5)
+    ax.set_ylim(sim.shape[1] - 0.5, -0.5)
     ax.set_xlabel("line1 window index")
     ax.set_ylabel("part window index")
-    ax.set_title(
-        f"Part {part.part_id} vs line1 cosine similarity | "
-        f"line2_x=[{part.x0_original},{part.x1_original}] | thr={threshold:.3f}"
-    )
     if diag_x or segment is not None:
         ax.legend(loc="upper right", fontsize=8)
+    return im
 
-    plt.tight_layout()
+
+def save_part_similarity_heatmap(
+    sim: np.ndarray,
+    sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]],
+    segment: Optional[SWAlignedSegment],
+    part: SourcePart,
+    threshold: float,
+    args: argparse.Namespace,
+    line1_display: Optional[Image.Image] = None,
+    part_display: Optional[Image.Image] = None,
+) -> str:
+    output = heatmap_output_path(args.output, args.heatmap_dir, part.part_id)
+    os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
+
+    with_axis_images = bool(getattr(args, "heatmap_axis_images", True)) and line1_display is not None and part_display is not None
+
+    if with_axis_images:
+        fig_w = max(10.0, min(22.0, sim.shape[0] / 4.2))
+        fig_h = max(5.5, min(13.0, sim.shape[1] / 1.7 + 3.0))
+        fig = plt.figure(figsize=(fig_w, fig_h))
+        gs = GridSpec(
+            2,
+            3,
+            figure=fig,
+            width_ratios=[1.25, 8.0, 0.28],
+            height_ratios=[1.15, 6.0],
+            wspace=0.08,
+            hspace=0.08,
+        )
+        ax_corner = fig.add_subplot(gs[0, 0])
+        ax_x_img = fig.add_subplot(gs[0, 1])
+        ax_y_img = fig.add_subplot(gs[1, 0])
+        ax_heat = fig.add_subplot(gs[1, 1])
+        cax = fig.add_subplot(gs[1, 2])
+        ax_corner.axis("off")
+
+        line1_axis_img = np.array(_flip_for_window_order(line1_display, args.use_flip))
+        part_axis_img = np.array(_flip_for_window_order(part_display, args.use_flip))
+        part_axis_img = np.rot90(part_axis_img, k=1)
+
+        ax_x_img.imshow(line1_axis_img, extent=(-0.5, sim.shape[0] - 0.5, 0, 1), aspect="auto")
+        ax_x_img.set_xlim(-0.5, sim.shape[0] - 0.5)
+        ax_x_img.set_xticks([])
+        ax_x_img.set_yticks([])
+        ax_x_img.set_ylabel("line1 image", fontsize=8)
+        ax_x_img.set_title("line1 windows/image strip", fontsize=9)
+
+        ax_y_img.imshow(part_axis_img, extent=(0, 1, sim.shape[1] - 0.5, -0.5), aspect="auto")
+        ax_y_img.set_ylim(sim.shape[1] - 0.5, -0.5)
+        ax_y_img.set_xticks([])
+        ax_y_img.set_yticks([])
+        ax_y_img.set_xlabel("part image", fontsize=8)
+
+        im = ax_heat.imshow(
+            sim.T,
+            origin="upper",
+            aspect="auto",
+            vmin=args.heatmap_vmin,
+            vmax=args.heatmap_vmax,
+        )
+        cbar = fig.colorbar(im, cax=cax)
+        cbar.set_label("cosine similarity")
+
+        diag_x = [i for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
+        diag_y = [j for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
+        if diag_x:
+            ax_heat.plot(diag_x, diag_y, color="white", linewidth=1.4, alpha=0.95, label="SW diag path")
+
+        if segment is not None:
+            ax_heat.plot(
+                [segment.line1_start, segment.line1_end],
+                [segment.part_start, segment.part_end],
+                color="red",
+                linewidth=2.4,
+                alpha=0.95,
+                label=f"selected {segment.match_kind}",
+            )
+            ax_heat.scatter(
+                [segment.line1_start, segment.line1_end],
+                [segment.part_start, segment.part_end],
+                color="red",
+                s=18,
+                zorder=5,
+            )
+
+        ax_heat.set_xlim(-0.5, sim.shape[0] - 0.5)
+        ax_heat.set_ylim(sim.shape[1] - 0.5, -0.5)
+        ax_heat.set_xlabel("line1 window index")
+        ax_heat.set_ylabel("part window index")
+        if diag_x or segment is not None:
+            ax_heat.legend(loc="upper right", fontsize=8)
+
+    else:
+        fig_w = max(8.0, min(18.0, sim.shape[0] / 5.0))
+        fig_h = max(3.5, min(10.0, sim.shape[1] / 2.0 + 2.0))
+        fig, ax_heat = plt.subplots(figsize=(fig_w, fig_h))
+        _draw_plain_similarity_heatmap(fig, ax_heat, sim, sw_path, segment, args)
+
+    fig.suptitle(
+        f"Part {part.part_id} vs line1 cosine similarity | "
+        f"line2_x=[{part.x0_original},{part.x1_original}] | thr={threshold:.3f}",
+        fontsize=11,
+    )
     plt.savefig(output, dpi=180, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"Saved cosine heatmap for part {part.part_id}: {output}")
@@ -524,6 +626,7 @@ def search_one_part(
     line1_display_width: int,
     line1_original_width: int,
     args: argparse.Namespace,
+    line1_display: Optional[Image.Image] = None,
 ) -> PartSearchResult:
     part_img_display, part_tensor = preprocess_line_image(part.path, target_height=args.height)
     emb_part = image_embeddings(model, part_tensor, args.device, embedding_space=args.embedding_space)
@@ -551,7 +654,16 @@ def search_one_part(
 
     heatmap_output = None
     if args.heatmap:
-        heatmap_output = save_part_similarity_heatmap(sim, sw_path, segment, part, threshold, args)
+        heatmap_output = save_part_similarity_heatmap(
+            sim,
+            sw_path,
+            segment,
+            part,
+            threshold,
+            args,
+            line1_display=line1_display,
+            part_display=part_img_display,
+        )
 
     if segment is None:
         return PartSearchResult(
@@ -912,6 +1024,13 @@ def main():
     parser.add_argument("--heatmap-dir", default=None, help="Optional directory for per-part heatmaps. Default: same directory as --output")
     parser.add_argument("--heatmap-vmin", type=float, default=0.0, help="Minimum color scale value for heatmaps")
     parser.add_argument("--heatmap-vmax", type=float, default=1.0, help="Maximum color scale value for heatmaps")
+    parser.add_argument(
+        "--no-heatmap-axis-images",
+        dest="heatmap_axis_images",
+        action="store_false",
+        help="Disable the line1/part image strips around heatmaps and save the old matrix-only heatmap.",
+    )
+    parser.set_defaults(heatmap_axis_images=True)
 
     # Input line options.
     parser.add_argument("--line1", default=None, help="Path to the full first line image")
@@ -1001,7 +1120,8 @@ def main():
     print("Line1 mask width: full matched SW window span, not capped to --part-width")
     if args.heatmap:
         heatmap_dir = args.heatmap_dir or os.path.dirname(args.output) or "."
-        print(f"Cosine heatmaps: enabled, directory={heatmap_dir}")
+        axis_mode = "with line1/part image strips" if args.heatmap_axis_images else "matrix only"
+        print(f"Cosine heatmaps: enabled, directory={heatmap_dir}, mode={axis_mode}")
     print("For NOT FOUND parts, displayed best=highest cosine similarity reached during search")
 
     results: List[PartSearchResult] = []
@@ -1017,6 +1137,7 @@ def main():
                 line1_display_width=int(img1_display.size[0]),
                 line1_original_width=int(line1_original.size[0]),
                 args=args,
+                line1_display=img1_display,
             )
             results.append(result)
 
