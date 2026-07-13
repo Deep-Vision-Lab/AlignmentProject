@@ -2,14 +2,16 @@
 """Fast training entry point for improve_neg image-pair experiments.
 
 This wrapper keeps the original train.py code intact, but monkey-patches the
-batch-loss function to avoid the biggest new bottlenecks introduced by paired
+batch-loss function to avoid the biggest bottlenecks introduced by paired
 image-image training:
 
 1. Do not run full Span-DTW image-text loss on line2 by default. Line2 still
    participates in the image-image pair loss, so it receives local image-space
    gradients for the retrieval task.
 2. Limit image-pair pseudo-alignment mining to a subset of samples per batch.
-3. Optionally run local hard-negative mining every N batches.
+3. Run local hard-negative mining every N batches and only on a subset of the
+   batch when it runs. This is the main speed fix after the 2026-07-14 logs:
+   local hard-negative batches were ~50s while non-local batches were ~23s.
 
 The defaults are controlled through Parameters.py / environment variables and
 can be overridden from the sbatch script.
@@ -39,12 +41,138 @@ def _slice_embeddings(embeddings, max_samples: int):
     """Slice the batch dimension of an embeddings tuple returned by train.compute_embeddings."""
     if embeddings is None or max_samples <= 0:
         return embeddings
-    return tuple(x[:max_samples] if torch.is_tensor(x) and x.shape[0] >= max_samples else x for x in embeddings)
+    return tuple(
+        x[:max_samples] if torch.is_tensor(x) and x.shape[0] >= max_samples else x
+        for x in embeddings
+    )
+
+
+def _select_cyclic_indices(batch_size: int, max_samples: int, device):
+    """Choose a small deterministic subset that rotates across batches."""
+    if max_samples <= 0 or max_samples >= batch_size:
+        return None
+    start = ((_BATCH_COUNTER - 1) * max_samples) % batch_size
+    idx = [(start + offset) % batch_size for offset in range(max_samples)]
+    return torch.as_tensor(idx, dtype=torch.long, device=device)
+
+
+def _select_local_subset(pos_texts, norm_context_img, norm_local_img, ink_ratios, max_samples: int):
+    batch_size = int(norm_context_img.shape[0])
+    indices = _select_cyclic_indices(batch_size, max_samples, norm_context_img.device)
+    if indices is None:
+        return pos_texts, norm_context_img, norm_local_img, ink_ratios
+
+    cpu_indices = [int(i) for i in indices.detach().cpu().tolist()]
+    selected_texts = [pos_texts[i] for i in cpu_indices]
+    selected_context = norm_context_img.index_select(0, indices)
+    selected_local = norm_local_img.index_select(0, indices)
+    selected_ink = ink_ratios.index_select(0, indices) if torch.is_tensor(ink_ratios) else ink_ratios
+    return selected_texts, selected_context, selected_local, selected_ink
 
 
 def _zero_pair_stats(tensor):
     zero = tensor.new_tensor(0.0)
     return zero, zero, {"image_pair_loss": 0.0, "order_loss": 0.0, "pair_terms": 0.0}
+
+
+def _zero_local_stats(tensor):
+    zero = tensor.new_tensor(0.0)
+    return zero, {
+        "local_hard_neg": 0.0,
+        "local_pos_sim": 0.0,
+        "local_neg_sim": 0.0,
+        "local_terms": 0.0,
+    }
+
+
+def compute_local_hard_negative_loss_fast(
+    text_encoder,
+    criterion,
+    norm_context_img,
+    norm_local_img,
+    pos_texts,
+    ink_ratios=None,
+):
+    """Run local hard-negative mining on only a subset of the batch.
+
+    The expensive part is hard_span_dtw_path for every sample. The logs showed
+    batches with local mining were roughly 2x slower, so this keeps the loss but
+    limits the number of samples that run the Python hard-path miner.
+    """
+    if (
+        not P.use_local_hard_negatives
+        or P.local_hard_negative_weight <= 0
+        or not torch.is_grad_enabled()
+    ):
+        return _zero_local_stats(norm_local_img)
+
+    max_samples = _get_int_env(
+        "LOCAL_HARD_NEGATIVE_MAX_SAMPLES_PER_BATCH",
+        getattr(P, "local_hard_negative_max_samples_per_batch", 8),
+    )
+    selected_texts, selected_context, selected_local, selected_ink = _select_local_subset(
+        pos_texts,
+        norm_context_img,
+        norm_local_img,
+        ink_ratios,
+        max_samples,
+    )
+    return base.local_hard_negative_loss_for_batch(
+        text_encoder,
+        criterion,
+        selected_context,
+        selected_local,
+        selected_texts,
+        ink_ratios=selected_ink,
+    )
+
+
+def compute_single_image_text_loss_fast(
+    image_embedder,
+    text_encoder,
+    criterion,
+    images,
+    pos_texts,
+    neg_texts,
+    embeddings=None,
+):
+    """Like train.compute_single_image_text_loss, but local mining is subset-limited."""
+    if P.text_encoder_type != "arabic_span":
+        return base.compute_single_image_text_loss(
+            image_embedder,
+            text_encoder,
+            criterion,
+            images,
+            pos_texts,
+            neg_texts,
+            embeddings,
+        )
+
+    if embeddings is None:
+        norm_img, norm_local_img, ink_ratio, local_img_emb = base.compute_embeddings(image_embedder, images)
+    else:
+        norm_img, norm_local_img, ink_ratio, local_img_emb = embeddings
+
+    loss, stats = criterion.forward_varlen(text_encoder, norm_img, pos_texts, neg_texts)
+
+    local_loss, local_stats = compute_local_hard_negative_loss_fast(
+        text_encoder,
+        criterion,
+        norm_img,
+        norm_local_img,
+        pos_texts,
+        ink_ratios=ink_ratio,
+    )
+    if P.use_local_hard_negatives and P.local_hard_negative_weight > 0 and torch.is_grad_enabled():
+        loss = loss + P.local_hard_negative_weight * local_loss
+    stats.update(local_stats)
+
+    var_loss = base.image_embedding_variance_loss(local_img_emb, P.image_variance_target_std)
+    if P.image_variance_loss_weight > 0 and torch.is_grad_enabled():
+        loss = loss + P.image_variance_loss_weight * var_loss
+    stats["img_var_loss"] = float(var_loss.detach().item())
+    stats["total"] = float(loss.detach().item())
+    return loss, stats, (norm_img, norm_local_img, ink_ratio, local_img_emb)
 
 
 def compute_image_pair_loss_fast(text_encoder, criterion, texts1, texts2, emb1, emb2):
@@ -136,15 +264,25 @@ def compute_batch_loss_fast(image_embedder, text_encoder, criterion, batch):
     global _BATCH_COUNTER
     _BATCH_COUNTER += 1
 
-    # Keep old non-paired behavior unchanged, except for optional local-loss frequency.
+    local_every = max(1, _get_int_env(
+        "LOCAL_HARD_NEGATIVE_EVERY_N_BATCHES",
+        getattr(P, "local_hard_negative_every_n_batches", 1),
+    ))
+    local_enabled = (_BATCH_COUNTER % local_every) == 0
+
+    # Keep old non-paired behavior, but use the subset-limited local loss.
     if not isinstance(batch, dict):
-        local_every = max(1, _get_int_env(
-            "LOCAL_HARD_NEGATIVE_EVERY_N_BATCHES",
-            getattr(P, "local_hard_negative_every_n_batches", 1),
-        ))
-        local_enabled = (_BATCH_COUNTER % local_every) == 0
+        images, pos_texts, neg_texts = batch
+        images = images.to(P.device, non_blocking=True)
         return _with_local_hard_negative_frequency(
-            lambda: _original_compute_batch_loss(image_embedder, text_encoder, criterion, batch),
+            lambda: compute_single_image_text_loss_fast(
+                image_embedder,
+                text_encoder,
+                criterion,
+                images,
+                pos_texts,
+                neg_texts,
+            )[:2],
             local_enabled,
         )
 
@@ -155,12 +293,6 @@ def compute_batch_loss_fast(image_embedder, text_encoder, criterion, batch):
     neg_texts1 = batch["neg_texts1"]
     neg_texts2 = batch["neg_texts2"]
 
-    local_every = max(1, _get_int_env(
-        "LOCAL_HARD_NEGATIVE_EVERY_N_BATCHES",
-        getattr(P, "local_hard_negative_every_n_batches", 1),
-    ))
-    local_enabled = (_BATCH_COUNTER % local_every) == 0
-
     if P.text_encoder_type == "arabic_span":
         emb1 = base.compute_embeddings(image_embedder, images1)
         emb2 = base.compute_embeddings(image_embedder, images2)
@@ -169,7 +301,7 @@ def compute_batch_loss_fast(image_embedder, text_encoder, criterion, batch):
         emb2 = None
 
     loss1, stats1, emb1 = _with_local_hard_negative_frequency(
-        lambda: base.compute_single_image_text_loss(
+        lambda: compute_single_image_text_loss_fast(
             image_embedder,
             text_encoder,
             criterion,
@@ -186,7 +318,7 @@ def compute_batch_loss_fast(image_embedder, text_encoder, criterion, batch):
     train_line2_text = bool(getattr(P, "image_text_loss_on_both_lines", False))
     if train_line2_text:
         loss2, stats2, emb2 = _with_local_hard_negative_frequency(
-            lambda: base.compute_single_image_text_loss(
+            lambda: compute_single_image_text_loss_fast(
                 image_embedder,
                 text_encoder,
                 criterion,
@@ -237,6 +369,7 @@ def model_config_fast(stride):
             "image_pair_every_n_batches": getattr(P, "image_pair_every_n_batches", 1),
             "image_pair_max_samples_per_batch": getattr(P, "image_pair_max_samples_per_batch", 8),
             "local_hard_negative_every_n_batches": getattr(P, "local_hard_negative_every_n_batches", 1),
+            "local_hard_negative_max_samples_per_batch": getattr(P, "local_hard_negative_max_samples_per_batch", 8),
         }
     )
     return cfg
