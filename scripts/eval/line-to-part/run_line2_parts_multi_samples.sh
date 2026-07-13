@@ -37,6 +37,11 @@ MIN_RUN_LENGTH="${MIN_RUN_LENGTH:-3}"
 # 1 = expand by one window on both sides, useful when the mask looks shifted/tight.
 MASK_PADDING_WINDOWS="${MASK_PADDING_WINDOWS:-1}"
 
+# Save one cosine-similarity heatmap per chosen part.
+# Enable with: HEATMAP=1 bash scripts/eval/line-to-part/run_line2_parts_multi_samples.sh
+HEATMAP="${HEATMAP:-0}"
+HEATMAP_DIR="${HEATMAP_DIR:-$OUT_DIR/heatmaps}"
+
 mkdir -p "$OUT_DIR"
 
 if [[ ! -f "$SCRIPT" ]]; then
@@ -52,6 +57,11 @@ if [[ ! -f "$WEIGHTS" ]]; then
 fi
 
 for IDX in $(seq "$START_INDEX" "$END_INDEX"); do
+  EXTRA_ARGS=()
+  if [[ "$HEATMAP" == "1" || "$HEATMAP" == "true" ]]; then
+    EXTRA_ARGS+=(--heatmap --heatmap-dir "$HEATMAP_DIR")
+  fi
+
   echo "===================================================="
   echo "Running sample $IDX"
   echo "  embedding-space      = $EMBEDDING_SPACE"
@@ -59,6 +69,10 @@ for IDX in $(seq "$START_INDEX" "$END_INDEX"); do
   echo "  adaptive-threshold   = $ADAPTIVE_THRESHOLD"
   echo "  threshold-percentile = $THRESHOLD_PERCENTILE"
   echo "  mask-padding-windows = $MASK_PADDING_WINDOWS"
+  echo "  heatmap              = $HEATMAP"
+  if [[ "$HEATMAP" == "1" || "$HEATMAP" == "true" ]]; then
+    echo "  heatmap-dir          = $HEATMAP_DIR"
+  fi
   echo "===================================================="
 
   python "$SCRIPT" \
@@ -80,9 +94,13 @@ for IDX in $(seq "$START_INDEX" "$END_INDEX"); do
     --mismatch "$MISMATCH" \
     --gap "$GAP" \
     --min-run-length "$MIN_RUN_LENGTH" \
-    --mask-padding-windows "$MASK_PADDING_WINDOWS"
+    --mask-padding-windows "$MASK_PADDING_WINDOWS" \
+    "${EXTRA_ARGS[@]}"
 
 done
 
 echo "Done."
 echo "Results saved in: $OUT_DIR"
+if [[ "$HEATMAP" == "1" || "$HEATMAP" == "true" ]]; then
+  echo "Heatmaps saved in: $HEATMAP_DIR"
+fi
