@@ -326,14 +326,75 @@ def label_step(n: int, target=14) -> int:
     return max(1, int(np.ceil(max(1, n) / float(target))))
 
 
+def selected_cell_set(sw_path, seg: Optional[Segment]) -> set:
+    if seg is None:
+        return set()
+    selected = set()
+    for i, j in diag_pairs(sw_path):
+        if seg.line1_start <= i <= seg.line1_end and seg.part_start <= j <= seg.part_end:
+            selected.add((int(i), int(j)))
+    return selected
+
+
+def annotate_heatmap_cells(ax, sim: np.ndarray, threshold: float, sw_path, seg: Optional[Segment], args):
+    """Write every cosine value and mark above-threshold/selected cells."""
+    n_line1, n_part = int(sim.shape[0]), int(sim.shape[1])
+    selected = selected_cell_set(sw_path, seg)
+
+    for j in range(n_part):
+        for i in range(n_line1):
+            value = float(sim[i, j])
+            if args.heatmap_mark_above_threshold and value >= threshold:
+                ax.add_patch(
+                    Rectangle(
+                        (i - 0.5, j - 0.5),
+                        1,
+                        1,
+                        fill=False,
+                        edgecolor="orange",
+                        linewidth=0.85,
+                        alpha=0.95,
+                        zorder=12,
+                    )
+                )
+
+            if args.heatmap_cell_values:
+                text_color = "black" if value >= 0.62 else "white"
+                ax.text(
+                    i,
+                    j,
+                    f"{value:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=args.heatmap_cell_value_fontsize,
+                    color=text_color,
+                    weight="bold" if (i, j) in selected else "normal",
+                    zorder=14,
+                )
+
+    for i, j in selected:
+        ax.add_patch(
+            Rectangle(
+                (i - 0.5, j - 0.5),
+                1,
+                1,
+                fill=False,
+                edgecolor="red",
+                linewidth=2.2,
+                alpha=1.0,
+                zorder=15,
+            )
+        )
+
+
 def draw_path(ax, sw_path, seg: Optional[Segment]):
     dx = [i for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
     dy = [j for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
     if dx:
-        ax.plot(dx, dy, color="white", lw=1.5, alpha=0.95, label="SW diag path")
+        ax.plot(dx, dy, color="white", lw=1.5, alpha=0.95, label="SW diag path", zorder=16)
     if seg is not None:
-        ax.plot([seg.line1_start, seg.line1_end], [seg.part_start, seg.part_end], color="red", lw=2.6, alpha=0.95, label=f"selected {seg.match_kind}")
-        ax.scatter([seg.line1_start, seg.line1_end], [seg.part_start, seg.part_end], color="red", s=22, zorder=6)
+        ax.plot([seg.line1_start, seg.line1_end], [seg.part_start, seg.part_end], color="red", lw=2.6, alpha=0.95, label=f"selected {seg.match_kind}", zorder=17)
+        ax.scatter([seg.line1_start, seg.line1_end], [seg.part_start, seg.part_end], color="red", s=22, zorder=18)
     return dx, dy
 
 
@@ -344,7 +405,7 @@ def save_heatmap(sim, sw_path, seg, part: SourcePart, threshold: float, args, li
     n_line1, n_part = int(sim.shape[0]), int(sim.shape[1])
 
     if axis_images:
-        fig = plt.figure(figsize=(max(12, min(34, n_line1 * 0.34 + 5)), max(7, min(18, n_part * 0.78 + 5.2))))
+        fig = plt.figure(figsize=(max(13, min(38, n_line1 * 0.38 + 5)), max(7.5, min(20, n_part * 0.88 + 5.5))))
         gs = GridSpec(2, 3, figure=fig, width_ratios=[2.2, 8.8, 0.34], height_ratios=[1.55, 6.0], wspace=0.08, hspace=0.08)
         ax_corner, ax_x, ax_y, ax_h, cax = fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[1, 0]), fig.add_subplot(gs[1, 1]), fig.add_subplot(gs[1, 2])
         ax_corner.axis("off")
@@ -365,24 +426,34 @@ def save_heatmap(sim, sw_path, seg, part: SourcePart, threshold: float, args, li
         im = ax_h.imshow(sim.T, origin="upper", aspect="auto", vmin=args.heatmap_vmin, vmax=args.heatmap_vmax)
         plt.colorbar(im, cax=cax).set_label("cosine similarity")
         grid_cells(ax_h, n_line1, n_part, alpha=0.24, lw=0.40)
+        annotate_heatmap_cells(ax_h, sim, threshold, sw_path, seg, args)
         dx, dy = draw_path(ax_h, sw_path, seg)
         ax_h.set_xlim(-0.5, n_line1 - 0.5); ax_h.set_ylim(n_part - 0.5, -0.5)
-        ax_h.set_xlabel("line1 window index / x-axis slices"); ax_h.set_ylabel("part window index / y-axis slices")
+        ax_h.set_xlabel("line1 window index / x-axis slices")
+        ax_h.set_ylabel("part window index / y-axis slices")
         ax_h.set_xticks(list(range(0, n_line1, xs))); ax_h.set_xticklabels([str(i) for i in range(0, n_line1, xs)], fontsize=8)
         ax_h.set_yticks(list(range(0, n_part, ys))); ax_h.set_yticklabels([str(i) for i in range(0, n_part, ys)], fontsize=8)
         if dx or dy or seg is not None:
             ax_h.legend(loc="upper right", fontsize=8)
     else:
-        fig, ax_h = plt.subplots(figsize=(max(8, min(18, n_line1 / 5.0)), max(3.5, min(10, n_part / 2.0 + 2))))
+        fig, ax_h = plt.subplots(figsize=(max(9, min(26, n_line1 / 3.6)), max(4.2, min(13, n_part / 1.8 + 2))))
         im = ax_h.imshow(sim.T, origin="upper", aspect="auto", vmin=args.heatmap_vmin, vmax=args.heatmap_vmax)
         plt.colorbar(im, ax=ax_h, fraction=0.025, pad=0.02).set_label("cosine similarity")
+        grid_cells(ax_h, n_line1, n_part, alpha=0.24, lw=0.40)
+        annotate_heatmap_cells(ax_h, sim, threshold, sw_path, seg, args)
         dx, dy = draw_path(ax_h, sw_path, seg)
         ax_h.set_xlim(-0.5, n_line1 - 0.5); ax_h.set_ylim(n_part - 0.5, -0.5)
-        ax_h.set_xlabel("line1 window index"); ax_h.set_ylabel("part window index")
+        ax_h.set_xlabel("line1 window index")
+        ax_h.set_ylabel("part window index")
         if dx or dy or seg is not None:
             ax_h.legend(loc="upper right", fontsize=8)
 
-    fig.suptitle(f"Part {part.part_id} vs line1 cosine similarity | line2_x=[{part.x0_original},{part.x1_original}] | thr={threshold:.3f}", fontsize=11)
+    fig.suptitle(
+        f"Part {part.part_id} vs line1 cosine similarity | "
+        f"line2_x=[{part.x0_original},{part.x1_original}] | thr={threshold:.3f} | "
+        f"orange=sim≥thr, red=chosen SW cells",
+        fontsize=11,
+    )
     plt.savefig(out, dpi=180, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"Saved cosine heatmap for part {part.part_id}: {out}")
@@ -477,6 +548,9 @@ def main():
     p.add_argument("--heatmap-axis-slice-mode", choices=("nonoverlap", "window"), default="nonoverlap")
     p.add_argument("--heatmap-line1-strip-height", type=int, default=88); p.add_argument("--heatmap-part-strip-width", type=int, default=112)
     p.add_argument("--no-heatmap-flip-part-axis-windows", dest="heatmap_flip_part_axis_windows", action="store_false"); p.set_defaults(heatmap_flip_part_axis_windows=True)
+    p.add_argument("--no-heatmap-cell-values", dest="heatmap_cell_values", action="store_false"); p.set_defaults(heatmap_cell_values=True)
+    p.add_argument("--heatmap-cell-value-fontsize", type=float, default=4.2)
+    p.add_argument("--no-heatmap-mark-above-threshold", dest="heatmap_mark_above_threshold", action="store_false"); p.set_defaults(heatmap_mark_above_threshold=True)
     p.add_argument("--line1", default=None); p.add_argument("--line2", default=None); p.add_argument("--data-dir", default=None); p.add_argument("--index", type=int, default=None)
     p.add_argument("--part-width", type=int, default=124); p.add_argument("--num-parts", type=int, default=3); p.add_argument("--part-starts", default=None); p.add_argument("--part-mode", choices=("random", "rtl-blocks", "even"), default="random"); p.add_argument("--random-seed", type=int, default=None); p.add_argument("--random-min-gap", type=int, default=0)
     p.add_argument("--output", required=True)
@@ -490,6 +564,8 @@ def main():
         raise ValueError("--heatmap-vmax must be larger than --heatmap-vmin")
     if min(args.heatmap_axis_cell_pixels, args.heatmap_line1_strip_height, args.heatmap_part_strip_width) <= 0:
         raise ValueError("heatmap axis image sizes must be positive")
+    if args.heatmap_cell_value_fontsize <= 0:
+        raise ValueError("--heatmap-cell-value-fontsize must be positive")
     if args.gap > 0 or args.mismatch > 0 or args.match <= 0:
         raise ValueError("use negative --gap/--mismatch and positive --match")
 
@@ -508,7 +584,12 @@ def main():
     print(f"Part width: {args.part_width}\nPart selection mode: {mode}\nRandom seed: {args.random_seed if args.random_seed is not None else 'none'}\nPart starts: {starts}\nEmbedding space: {args.embedding_space}")
     print(f"Threshold mode: {args.adaptive_threshold}, base threshold={args.threshold}")
     if args.heatmap:
-        print(f"Cosine heatmaps: enabled, dir={args.heatmap_dir or os.path.dirname(args.output) or '.'}, separated windows gap={args.heatmap_window_gap_pixels}, slice_mode={args.heatmap_axis_slice_mode}, flip_part_axis={args.heatmap_flip_part_axis_windows}")
+        print(
+            f"Cosine heatmaps: enabled, dir={args.heatmap_dir or os.path.dirname(args.output) or '.'}, "
+            f"separated windows gap={args.heatmap_window_gap_pixels}, slice_mode={args.heatmap_axis_slice_mode}, "
+            f"flip_part_axis={args.heatmap_flip_part_axis_windows}, cell_values={args.heatmap_cell_values}, "
+            f"mark_above_threshold={args.heatmap_mark_above_threshold}"
+        )
 
     results: List[Result] = []
     with tempfile.TemporaryDirectory() as td:
