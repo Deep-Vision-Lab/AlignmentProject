@@ -1,15 +1,16 @@
-import torch
-import random
 import os
-import torch.nn.functional as F  # Added for interpolate and conv2d
+import random
+
+import torch
+import torch.nn.functional as F  # kept for pad_matrices helper
 from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
-from DataSet import TextLineModern, window_size
 
+from DataSet import TextLineModern
 from Parameters import *
 
 
-_default_data_dir = f'DataSet/Synthetic_{lang}'
+_default_data_dir = f"DataSet/Synthetic_{lang}"
 
 
 # Plain ToTensor + Resize. Inputs are NEVER differentiated wrt; setting
@@ -25,11 +26,11 @@ transform = transforms.Compose([
 
 
 # ---------- Tunables for the DataLoader (override via env vars) ----------
-_requested_num_workers = int(os.environ.get('DATALOADER_NUM_WORKERS', 4))
-_allow_jax_workers = os.environ.get('ALLOW_JAX_DATALOADER_WORKERS', '0').lower() in {
-    '1', 'true', 'yes', 'on'
+_requested_num_workers = int(os.environ.get("DATALOADER_NUM_WORKERS", 4))
+_allow_jax_workers = os.environ.get("ALLOW_JAX_DATALOADER_WORKERS", "0").lower() in {
+    "1", "true", "yes", "on"
 }
-if span_dtw_backend == 'jax' and not _allow_jax_workers:
+if span_dtw_backend == "jax" and not _allow_jax_workers:
     # JAX is multithreaded; forking DataLoader workers after JAX starts can
     # deadlock or duplicate large process state. Keep JAX span-DTW jobs single
     # process unless explicitly overridden.
@@ -38,7 +39,7 @@ else:
     _num_workers = _requested_num_workers
 _pin_memory = torch.cuda.is_available()
 _persistent_workers = _num_workers > 0
-_prefetch_factor = int(os.environ.get('DATALOADER_PREFETCH', 4)) if _num_workers > 0 else None
+_prefetch_factor = int(os.environ.get("DATALOADER_PREFETCH", 4)) if _num_workers > 0 else None
 
 
 def _make_loader(ds, shuffle):
@@ -52,20 +53,12 @@ def _make_loader(ds, shuffle):
         drop_last=False,
     )
     if _prefetch_factor is not None:
-        kwargs['prefetch_factor'] = _prefetch_factor
+        kwargs["prefetch_factor"] = _prefetch_factor
     return DataLoader(ds, **kwargs)
 
 
 def build_dataloaders(data_dir=None):
-    """Build train/valid/test DataLoaders for the given dataset directory.
-
-    Args:
-        data_dir: Path to the dataset root (must contain images/ and texts/ subdirs).
-                  Defaults to DataSet/Synthetic_{lang}_{num_samples} from Parameters.py.
-
-    Returns:
-        (train_dataloader, valid_dataloader, test_dataloader)
-    """
+    """Build train/valid/test DataLoaders for the given dataset directory."""
     if data_dir is None:
         data_dir = _default_data_dir
 
@@ -95,7 +88,6 @@ test_dataloader = None
 
 # ---- Hard Negative Generators (applied to the POSITIVE text) ----
 
-# Dot-confusion table for Arabic letters (same base glyph, different dots)
 _DOT_CONFUSIONS = {
     "ب": ["ت", "ث", "ن", "ي"], "ت": ["ب", "ث", "ن", "ي"],
     "ث": ["ب", "ت", "ن", "ي"], "ن": ["ب", "ت", "ث", "ي"],
@@ -113,7 +105,7 @@ def _hard_neg_crop(text):
     if len(words) < 2:
         return text
     cutoff = max(1, len(words) // 2)
-    return ' '.join(words[:cutoff])
+    return " ".join(words[:cutoff])
 
 
 def _hard_neg_drop(text):
@@ -121,7 +113,7 @@ def _hard_neg_drop(text):
     if len(words) < 2:
         return text
     idx = random.randint(0, len(words) - 1)
-    return ' '.join(words[:idx] + words[idx + 1:])
+    return " ".join(words[:idx] + words[idx + 1:])
 
 
 def _hard_neg_shuffle(text):
@@ -130,11 +122,10 @@ def _hard_neg_shuffle(text):
         return text
     i, j = random.sample(range(len(words)), 2)
     words[i], words[j] = words[j], words[i]
-    return ' '.join(words)
+    return " ".join(words)
 
 
 def _hard_neg_dot_confusion(text, p=0.25):
-    """Replace confusable Arabic letters at probability p; ensure ≥1 change."""
     chars = list(text)
     changed = False
     for i, ch in enumerate(chars):
@@ -146,7 +137,7 @@ def _hard_neg_dot_confusion(text, p=0.25):
         if confusable:
             idx, ch = random.choice(confusable)
             chars[idx] = random.choice(_DOT_CONFUSIONS[ch])
-    return ''.join(chars)
+    return "".join(chars)
 
 
 def _hard_neg_word_shuffle(text):
@@ -154,35 +145,32 @@ def _hard_neg_word_shuffle(text):
     if len(words) < 2:
         return text
     random.shuffle(words)
-    return ' '.join(words)
+    return " ".join(words)
 
 
 def _hard_neg_same_length_random(text):
-    return ''.join(random.choice(_ARABIC_LETTERS) if ch != ' ' else ' ' for ch in text)
+    return "".join(random.choice(_ARABIC_LETTERS) if ch != " " else " " for ch in text)
 
 
-_hard_neg_fns  = [_hard_neg_crop, _hard_neg_drop, _hard_neg_shuffle]
-_lc_neg_fns    = [_hard_neg_word_shuffle, _hard_neg_same_length_random]
+_hard_neg_fns = [_hard_neg_crop, _hard_neg_drop, _hard_neg_shuffle]
+_lc_neg_fns = [_hard_neg_word_shuffle, _hard_neg_same_length_random]
 
 
 def _ensure_different(neg, pos):
-    """Guarantee the negative text differs from the positive (at least one char)."""
     if neg.strip() != pos.strip():
         return neg
     chars = list(pos.strip())
     if len(chars) > 1:
-        import random as _rnd
-        _rnd.shuffle(chars)
-        candidate = ''.join(chars)
+        random.shuffle(chars)
+        candidate = "".join(chars)
         if candidate.strip() != pos.strip():
             return candidate
     if len(pos.strip()) > 1:
         return pos.strip()[:-1]
-    return pos + "‌"  # zero-width non-joiner as last resort
+    return pos + "‌"
 
 
 def _maybe_crop(text):
-    """Randomly crop negative text to 50-100% of its length."""
     if random.random() < 0.3 and len(text) > 3:
         crop_ratio = random.uniform(0.5, 0.9)
         crop_len = max(2, int(len(text) * crop_ratio))
@@ -192,7 +180,6 @@ def _maybe_crop(text):
 
 
 def _build_negatives_for_sample(pos_text, all_pos_texts, sample_idx, mode):
-    """Build num_negatives negative strings for one positive using selected mode."""
     mode = mode.lower()
     sample_negs = []
 
@@ -200,76 +187,73 @@ def _build_negatives_for_sample(pos_text, all_pos_texts, sample_idx, mode):
         num_hard = min(2, num_negatives)
         num_random = num_negatives - num_hard
         for _ in range(num_hard):
-            fn  = random.choice(_hard_neg_fns)
-            neg = _ensure_different(fn(pos_text), pos_text)
-            sample_negs.append(neg)
-        available = [j for j, t in enumerate(all_pos_texts) if j != sample_idx]
-        if not available:
-            available = [sample_idx]
-        sampled = (random.sample(available, num_random)
-                   if len(available) >= num_random
-                   else [random.choice(available) for _ in range(num_random)])
+            fn = random.choice(_hard_neg_fns)
+            sample_negs.append(_ensure_different(fn(pos_text), pos_text))
+        available = [j for j, _t in enumerate(all_pos_texts) if j != sample_idx] or [sample_idx]
+        sampled = random.sample(available, num_random) if len(available) >= num_random else [random.choice(available) for _ in range(num_random)]
         for j in sampled:
-            neg = _ensure_different(_maybe_crop(all_pos_texts[j]), pos_text)
-            sample_negs.append(neg)
-
+            sample_negs.append(_ensure_different(_maybe_crop(all_pos_texts[j]), pos_text))
     elif mode == "length_controlled":
-        fns   = _lc_neg_fns + [_hard_neg_word_shuffle]
-        names = ["word_shuffled", "same_length_random", "word_shuffled2"]
-        num_lc = min(len(fns), num_negatives)
-        for fn in fns[:num_lc]:
-            neg = _ensure_different(fn(pos_text), pos_text)
-            sample_negs.append(neg)
-        remaining = num_negatives - len(sample_negs)
-        for _ in range(remaining):
-            neg = _ensure_different(_hard_neg_word_shuffle(pos_text), pos_text)
-            sample_negs.append(neg)
-
+        fns = _lc_neg_fns + [_hard_neg_word_shuffle]
+        for fn in fns[:min(len(fns), num_negatives)]:
+            sample_negs.append(_ensure_different(fn(pos_text), pos_text))
+        while len(sample_negs) < num_negatives:
+            sample_negs.append(_ensure_different(_hard_neg_word_shuffle(pos_text), pos_text))
     elif mode == "dot_confusion":
         for _ in range(num_negatives):
-            neg = _ensure_different(_hard_neg_dot_confusion(pos_text), pos_text)
-            sample_negs.append(neg)
-
+            sample_negs.append(_ensure_different(_hard_neg_dot_confusion(pos_text), pos_text))
     elif mode == "same_length_random":
         for _ in range(num_negatives):
-            neg = _ensure_different(_hard_neg_same_length_random(pos_text), pos_text)
-            sample_negs.append(neg)
-
+            sample_negs.append(_ensure_different(_hard_neg_same_length_random(pos_text), pos_text))
     elif mode == "shuffle_only":
         for _ in range(num_negatives):
-            neg = _ensure_different(_hard_neg_word_shuffle(pos_text), pos_text)
-            sample_negs.append(neg)
-
+            sample_negs.append(_ensure_different(_hard_neg_word_shuffle(pos_text), pos_text))
     else:
-        # Unknown mode — fall back to mixed
         return _build_negatives_for_sample(pos_text, all_pos_texts, sample_idx, "mixed")
 
     return sample_negs
 
 
 def custom_collate_fn(batch):
+    """Collate function for contrastive learning.
+
+    Supports old samples `(text1, image1)` and new paired samples containing
+    image1/text1 + image2/text2 for image-image span contrastive training.
     """
-    Collate function for contrastive learning with in-batch negatives.
-
-    Runs entirely on CPU inside dataloader workers; the training loop is
-    responsible for the H2D copy (with non_blocking / pinned memory).
-    Negative mode is read from Parameters.negative_mode at collation time.
-    """
-    texts1, images1 = zip(*batch)
-
-    images    = torch.stack(images1, dim=0)
-    pos_texts = list(texts1)
-
     try:
         from Parameters import negative_mode as _neg_mode
     except ImportError:
         _neg_mode = "mixed"
 
+    if isinstance(batch[0], dict):
+        texts1 = [b["text1"] for b in batch]
+        texts2 = [b["text2"] for b in batch]
+        images1 = torch.stack([b["image1"] for b in batch], dim=0)
+        images2 = torch.stack([b["image2"] for b in batch], dim=0)
+        neg_texts1 = [
+            _build_negatives_for_sample(texts1[i], texts1, i, _neg_mode)
+            for i in range(len(texts1))
+        ]
+        neg_texts2 = [
+            _build_negatives_for_sample(texts2[i], texts2, i, _neg_mode)
+            for i in range(len(texts2))
+        ]
+        return {
+            "images1": images1,
+            "texts1": texts1,
+            "neg_texts1": neg_texts1,
+            "images2": images2,
+            "texts2": texts2,
+            "neg_texts2": neg_texts2,
+        }
+
+    texts1, images1 = zip(*batch)
+    images = torch.stack(images1, dim=0)
+    pos_texts = list(texts1)
     neg_texts = [
         _build_negatives_for_sample(pos_texts[i], pos_texts, i, _neg_mode)
         for i in range(len(pos_texts))
     ]
-
     return images, pos_texts, neg_texts
 
 
@@ -292,7 +276,7 @@ def pad_matrices(matrices, smooth=False, kernel_size=5, sigma=1.0):
     for mat in matrices:
         mat = mat.to(device)
         mat_unsqueezed = mat.unsqueeze(0).unsqueeze(0)
-        processed_mat = F.interpolate(mat_unsqueezed, size=(max_dim, max_dim), mode='nearest')
+        processed_mat = F.interpolate(mat_unsqueezed, size=(max_dim, max_dim), mode="nearest")
         if smooth and gaussian_kernel_2d is not None:
             current_kernel = gaussian_kernel_2d.to(processed_mat.device)
             padding = kernel_size // 2
@@ -305,8 +289,14 @@ def pad_matrices(matrices, smooth=False, kernel_size=5, sigma=1.0):
 if __name__ == "__main__":
     train_dataloader, valid_dataloader, test_dataloader = build_dataloaders()
     for batch in train_dataloader:
-        images, pos_texts, neg_texts = batch
-        print(f'Batch images shape: {images.shape}')
-        print(f'Pos texts: {len(pos_texts)}')
-        print(f'Neg texts per sample: {len(neg_texts[0])} (num_negatives={num_negatives})')
+        if isinstance(batch, dict):
+            print(f"Batch paired images1 shape: {batch['images1'].shape}")
+            print(f"Batch paired images2 shape: {batch['images2'].shape}")
+            print(f"Texts1: {len(batch['texts1'])}, Texts2: {len(batch['texts2'])}")
+            print(f"Neg texts per sample: {len(batch['neg_texts1'][0])} (num_negatives={num_negatives})")
+        else:
+            images, pos_texts, neg_texts = batch
+            print(f"Batch images shape: {images.shape}")
+            print(f"Pos texts: {len(pos_texts)}")
+            print(f"Neg texts per sample: {len(neg_texts[0])} (num_negatives={num_negatives})")
         break
