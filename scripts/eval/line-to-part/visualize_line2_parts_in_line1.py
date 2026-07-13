@@ -8,6 +8,7 @@ This script is updated for the improve_neg solution:
   - Supports adaptive per-sample thresholding for high-similarity matrices.
   - Displays chosen line2 parts without filled masks.
   - Adds masks only on line1 for the found whole part or fallback segment.
+  - Can save a cosine-similarity heatmap for each chosen part against line1.
 
 Matching logic for each chosen line2 part:
   1. Run Smith-Waterman between full line1 windows and chosen part windows.
@@ -16,7 +17,7 @@ Matching logic for each chosen line2 part:
   4. Draw the complete matched window span on line1.
 
 Important visualization detail:
-  The line1 mask is no longer capped to --part-width. It uses the full pixel span
+  The line1 mask is not capped to --part-width. It uses the full pixel span
   of the aligned SW windows, so the mask should not become smaller than the
   aligned window run or shift because of width-capping.
 
@@ -107,6 +108,7 @@ class PartSearchResult:
     best_similarity: float = float("nan")
     best_sw_diag_mean: float = float("nan")
     embedding_space: str = ""
+    heatmap_output: Optional[str] = None
     message: str = ""
 
 
@@ -435,6 +437,85 @@ def window_span_to_original_pixels(
     return x0_display * display_to_original, x1_display * display_to_original
 
 
+# ---------------------------------------------------------------------------
+# Heatmaps
+# ---------------------------------------------------------------------------
+
+
+def heatmap_output_path(main_output: str, heatmap_dir: Optional[str], part_id: int) -> str:
+    base_dir = heatmap_dir or os.path.dirname(main_output) or "."
+    stem = os.path.splitext(os.path.basename(main_output))[0]
+    return os.path.join(base_dir, f"{stem}_part{part_id}_cosine_heatmap.png")
+
+
+def save_part_similarity_heatmap(
+    sim: np.ndarray,
+    sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]],
+    segment: Optional[SWAlignedSegment],
+    part: SourcePart,
+    threshold: float,
+    args: argparse.Namespace,
+) -> str:
+    output = heatmap_output_path(args.output, args.heatmap_dir, part.part_id)
+    os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
+
+    fig_w = max(8.0, min(18.0, sim.shape[0] / 5.0))
+    fig_h = max(3.5, min(10.0, sim.shape[1] / 2.0 + 2.0))
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+    im = ax.imshow(
+        sim.T,
+        origin="upper",
+        aspect="auto",
+        vmin=args.heatmap_vmin,
+        vmax=args.heatmap_vmax,
+    )
+    cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
+    cbar.set_label("cosine similarity")
+
+    diag_x = [i for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
+    diag_y = [j for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
+    if diag_x:
+        ax.plot(diag_x, diag_y, color="white", linewidth=1.4, alpha=0.95, label="SW diag path")
+
+    if segment is not None:
+        ax.plot(
+            [segment.line1_start, segment.line1_end],
+            [segment.part_start, segment.part_end],
+            color="red",
+            linewidth=2.4,
+            alpha=0.95,
+            label=f"selected {segment.match_kind}",
+        )
+        ax.scatter(
+            [segment.line1_start, segment.line1_end],
+            [segment.part_start, segment.part_end],
+            color="red",
+            s=18,
+            zorder=5,
+        )
+
+    ax.set_xlabel("line1 window index")
+    ax.set_ylabel("part window index")
+    ax.set_title(
+        f"Part {part.part_id} vs line1 cosine similarity | "
+        f"line2_x=[{part.x0_original},{part.x1_original}] | thr={threshold:.3f}"
+    )
+    if diag_x or segment is not None:
+        ax.legend(loc="upper right", fontsize=8)
+
+    plt.tight_layout()
+    plt.savefig(output, dpi=180, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    print(f"Saved cosine heatmap for part {part.part_id}: {output}")
+    return output
+
+
+# ---------------------------------------------------------------------------
+# Search
+# ---------------------------------------------------------------------------
+
+
 def search_one_part(
     model,
     emb_line1: torch.Tensor,
@@ -468,6 +549,10 @@ def search_one_part(
         require_all_windows_above_threshold=args.require_all_windows_above_threshold,
     )
 
+    heatmap_output = None
+    if args.heatmap:
+        heatmap_output = save_part_similarity_heatmap(sim, sw_path, segment, part, threshold, args)
+
     if segment is None:
         return PartSearchResult(
             part=part,
@@ -479,6 +564,7 @@ def search_one_part(
             best_similarity=best_sim,
             best_sw_diag_mean=best_diag_mean,
             embedding_space=args.embedding_space,
+            heatmap_output=heatmap_output,
             message=(
                 "Smith-Waterman did not find the whole part or a fallback segment above threshold; "
                 "the displayed value is the highest cosine similarity in the searched matrix. "
@@ -499,9 +585,6 @@ def search_one_part(
         padding_windows=args.mask_padding_windows,
     )
 
-    # Do NOT cap line1 to --part-width. The mask must cover the full matched SW
-    # window span. Capping made masks smaller than the aligned windows and could
-    # visually shift the mask left/right.
     match_x0, match_x1 = clamp_segment_to_image(run_x0_original, run_x1_original, line1_original_width)
 
     part_original_width = max(1, part.x1_original - part.x0_original)
@@ -547,6 +630,7 @@ def search_one_part(
         best_similarity=best_sim,
         best_sw_diag_mean=best_diag_mean,
         embedding_space=args.embedding_space,
+        heatmap_output=heatmap_output,
     )
 
 
@@ -620,7 +704,6 @@ def draw_line2_part_on_full_line1_canvas(
         part_arr = np.array(part_crop)
         ax.imshow(part_arr, extent=(part_canvas_x0, part_canvas_x1, y_parts_bottom, y_parts_top), zorder=1)
 
-        # Border only around the chosen source crop. Do not mask/fill line2.
         ax.add_patch(
             Rectangle(
                 (part_canvas_x0, y_parts_top),
@@ -651,17 +734,18 @@ def draw_line2_part_on_full_line1_canvas(
                 bbox=dict(facecolor=color, edgecolor="none", alpha=0.72, boxstyle="round,pad=0.25"),
                 zorder=5,
             )
+            heatmap_text = f" heatmap={result.heatmap_output}" if result.heatmap_output else ""
             print(
                 f"part {part.part_id}: NOT FOUND | embedding={result.embedding_space} "
                 f"best_sim={best_text} best_sw_diag_mean={diag_text} "
-                f"thr={result.threshold_used:.4f} sw_path_score={result.sw_score:.4f} | {result.message}"
+                f"thr={result.threshold_used:.4f} sw_path_score={result.sw_score:.4f}"
+                f"{heatmap_text} | {result.message}"
             )
             continue
 
         assert result.match_x0_original is not None and result.match_x1_original is not None
         assert result.part_match_x0_relative is not None and result.part_match_x1_relative is not None
 
-        # Mask the complete aligned SW window span on full line1.
         match_x0 = x_offset_line1 + result.match_x0_original
         match_x1 = x_offset_line1 + result.match_x1_original
         mask_width = max(1, match_x1 - match_x0)
@@ -678,7 +762,6 @@ def draw_line2_part_on_full_line1_canvas(
             )
         )
 
-        # Start the arrow from the aligned sub-region inside the part, but keep line2 unmasked.
         src_x0 = part_canvas_x0 + result.part_match_x0_relative
         src_x1 = part_canvas_x0 + result.part_match_x1_relative
         src_center_x = 0.5 * (src_x0 + src_x1)
@@ -722,6 +805,7 @@ def draw_line2_part_on_full_line1_canvas(
             zorder=5,
         )
 
+        heatmap_text = f" | heatmap={result.heatmap_output}" if result.heatmap_output else ""
         print(
             f"part {part.part_id}: FOUND | kind={result.match_kind} | "
             f"thr={result.threshold_used:.4f} | "
@@ -734,7 +818,7 @@ def draw_line2_part_on_full_line1_canvas(
             f"raw_window_x=[{result.run_x0_original:.1f},{result.run_x1_original:.1f}] | "
             f"sw_path_score={result.sw_score:.4f} | "
             f"mean_sim={result.mean_similarity:.4f} | min_sim={result.min_similarity:.4f} | "
-            f"best_sim={result.best_similarity:.4f}"
+            f"best_sim={result.best_similarity:.4f}{heatmap_text}"
         )
 
     ax.set_title(title, fontsize=13)
@@ -823,6 +907,12 @@ def main():
     parser.add_argument("--use-flip", action="store_true", help="Use when Arabic windows were encoded right-to-left")
     parser.add_argument("--no-bilstm", action="store_true", help="Disable BiLSTM even if checkpoint config is missing")
 
+    # Heatmap options.
+    parser.add_argument("--heatmap", action="store_true", help="Save a cosine-similarity heatmap for every chosen part against line1")
+    parser.add_argument("--heatmap-dir", default=None, help="Optional directory for per-part heatmaps. Default: same directory as --output")
+    parser.add_argument("--heatmap-vmin", type=float, default=0.0, help="Minimum color scale value for heatmaps")
+    parser.add_argument("--heatmap-vmax", type=float, default=1.0, help="Maximum color scale value for heatmaps")
+
     # Input line options.
     parser.add_argument("--line1", default=None, help="Path to the full first line image")
     parser.add_argument("--line2", default=None, help="Path to the second line image to crop parts from")
@@ -859,6 +949,8 @@ def main():
         raise ValueError("--random-min-gap must be >= 0")
     if args.mask_padding_windows < 0:
         raise ValueError("--mask-padding-windows must be >= 0")
+    if args.heatmap_vmax <= args.heatmap_vmin:
+        raise ValueError("--heatmap-vmax must be larger than --heatmap-vmin")
     if args.gap > 0:
         raise ValueError("--gap should be negative, for example --gap -0.15")
     if args.mismatch > 0:
@@ -907,6 +999,9 @@ def main():
     print(f"Threshold mode: {args.adaptive_threshold}, base threshold={args.threshold}")
     print("Search method: Smith-Waterman whole-part first; fallback to best segment; masks only line1")
     print("Line1 mask width: full matched SW window span, not capped to --part-width")
+    if args.heatmap:
+        heatmap_dir = args.heatmap_dir or os.path.dirname(args.output) or "."
+        print(f"Cosine heatmaps: enabled, directory={heatmap_dir}")
     print("For NOT FOUND parts, displayed best=highest cosine similarity reached during search")
 
     results: List[PartSearchResult] = []
