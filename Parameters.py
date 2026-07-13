@@ -77,6 +77,9 @@ local_hard_negative_margin = float(os.environ.get("LOCAL_HARD_NEGATIVE_MARGIN", 
 local_hard_negative_top_k = int(os.environ.get("LOCAL_HARD_NEGATIVE_TOP_K", 12))
 local_hard_negative_exclude_radius = int(os.environ.get("LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS", 3))
 local_hard_negative_min_ink = float(os.environ.get("LOCAL_HARD_NEGATIVE_MIN_INK", 0.05))
+# Run local hard-negative path mining every N batches. 2 is a good speed/quality
+# tradeoff because it halves Python hard-path mining while keeping the signal.
+local_hard_negative_every_n_batches = int(os.environ.get("LOCAL_HARD_NEGATIVE_EVERY_N_BATCHES", 2))
 
 # Image-image pair contrastive loss.
 # Uses img1/text1 and img2/text2 from the same sample. DTW gives pseudo span-window
@@ -88,7 +91,15 @@ use_image_pair_contrastive = os.environ.get("USE_IMAGE_PAIR_CONTRASTIVE", "1").l
 image_pair_loss_weight = float(os.environ.get("IMAGE_PAIR_LOSS_WEIGHT", 0.2))
 image_pair_margin = float(os.environ.get("IMAGE_PAIR_MARGIN", 0.35))
 image_pair_top_k = int(os.environ.get("IMAGE_PAIR_TOP_K", 8))
-sequence_consistency_loss_weight = float(os.environ.get("SEQUENCE_CONSISTENCY_LOSS_WEIGHT", 0.05))
+# Fast image-pair controls used by train_fast_image_pair.py.
+image_text_loss_on_both_lines = os.environ.get("IMAGE_TEXT_LOSS_ON_BOTH_LINES", "0").lower() in {
+    "1", "true", "yes", "on"
+}
+image_pair_every_n_batches = int(os.environ.get("IMAGE_PAIR_EVERY_N_BATCHES", 1))
+image_pair_max_samples_per_batch = int(os.environ.get("IMAGE_PAIR_MAX_SAMPLES_PER_BATCH", 8))
+# Keep sequence consistency optional. It can be large and is less important than
+# image-image contrastive for speeding up the current part-search issue.
+sequence_consistency_loss_weight = float(os.environ.get("SEQUENCE_CONSISTENCY_LOSS_WEIGHT", 0.0))
 
 # Embedding variance regularization.
 # Keeps image embeddings from collapsing into a narrow cone where unrelated
