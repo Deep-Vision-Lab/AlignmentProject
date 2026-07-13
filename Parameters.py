@@ -80,6 +80,10 @@ local_hard_negative_min_ink = float(os.environ.get("LOCAL_HARD_NEGATIVE_MIN_INK"
 # Run local hard-negative path mining every N batches. 2 is a good speed/quality
 # tradeoff because it halves Python hard-path mining while keeping the signal.
 local_hard_negative_every_n_batches = int(os.environ.get("LOCAL_HARD_NEGATIVE_EVERY_N_BATCHES", 2))
+# When the local hard-negative loss runs, only mine hard DTW paths for a rotating
+# subset of the batch. The 2026-07-14 logs showed this path miner is the main
+# remaining bottleneck: local batches were ~50s vs ~23s without local mining.
+local_hard_negative_max_samples_per_batch = int(os.environ.get("LOCAL_HARD_NEGATIVE_MAX_SAMPLES_PER_BATCH", 8))
 
 # Image-image pair contrastive loss.
 # Uses img1/text1 and img2/text2 from the same sample. DTW gives pseudo span-window
