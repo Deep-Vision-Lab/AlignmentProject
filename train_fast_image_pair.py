@@ -17,7 +17,6 @@ can be overridden from the sbatch script.
 from __future__ import annotations
 
 import os
-from typing import Sequence, Tuple
 
 import torch
 
@@ -25,12 +24,8 @@ import Parameters as P
 import train as base
 
 _BATCH_COUNTER = 0
-
-
-def _as_bool(value, default=False):
-    if value is None:
-        return default
-    return str(value).lower() in {"1", "true", "yes", "on"}
+_original_compute_batch_loss = base.compute_batch_loss
+_original_model_config = base.model_config
 
 
 def _get_int_env(name: str, default: int) -> int:
@@ -149,7 +144,7 @@ def compute_batch_loss_fast(image_embedder, text_encoder, criterion, batch):
         ))
         local_enabled = (_BATCH_COUNTER % local_every) == 0
         return _with_local_hard_negative_frequency(
-            lambda: base.compute_batch_loss(image_embedder, text_encoder, criterion, batch),
+            lambda: _original_compute_batch_loss(image_embedder, text_encoder, criterion, batch),
             local_enabled,
         )
 
@@ -232,9 +227,6 @@ def compute_batch_loss_fast(image_embedder, text_encoder, criterion, batch):
 
     stats["total"] = float(loss.detach().item())
     return loss, stats
-
-
-_original_model_config = base.model_config
 
 
 def model_config_fast(stride):
