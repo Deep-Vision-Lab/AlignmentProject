@@ -87,6 +87,11 @@ def model_config(stride):
         "local_hard_negative_top_k": P.local_hard_negative_top_k,
         "local_hard_negative_exclude_radius": P.local_hard_negative_exclude_radius,
         "local_hard_negative_min_ink": P.local_hard_negative_min_ink,
+        "use_image_pair_contrastive": P.use_image_pair_contrastive,
+        "image_pair_loss_weight": P.image_pair_loss_weight,
+        "image_pair_margin": P.image_pair_margin,
+        "image_pair_top_k": P.image_pair_top_k,
+        "sequence_consistency_loss_weight": P.sequence_consistency_loss_weight,
         "image_variance_loss_weight": P.image_variance_loss_weight,
         "image_variance_target_std": P.image_variance_target_std,
         "valid_every_n_epochs": P.valid_every_n_epochs,
@@ -167,9 +172,7 @@ def build_text_encoder():
             parameter.requires_grad_(False)
     else:
         raise ValueError(f"Unknown text_encoder_type: {P.text_encoder_type}")
-
-    text_encoder = text_encoder.to(P.device)
-    return text_encoder
+    return text_encoder.to(P.device)
 
 
 def build_image_embedding(stride):
@@ -201,25 +204,19 @@ def embed_single_text(text_encoder, text):
 def compute_similarity_lists(text_encoder, norm_img, pos_texts, neg_texts):
     sim_pos_list = []
     sim_neg_list = []
-
     for sample_idx, pos_text in enumerate(pos_texts):
         norm_pos_text = embed_single_text(text_encoder, pos_text)
         sim_pos = torch.einsum("sv,tv->st", norm_pos_text, norm_img[sample_idx])
         sim_pos_list.append(sim_pos)
-
         sample_neg_sims = []
         for neg_text in neg_texts[sample_idx]:
             norm_neg_text = embed_single_text(text_encoder, neg_text)
-            sample_neg_sims.append(
-                torch.einsum("tv,sv->ts", norm_neg_text, norm_img[sample_idx])
-            )
+            sample_neg_sims.append(torch.einsum("tv,sv->ts", norm_neg_text, norm_img[sample_idx]))
         sim_neg_list.append(sample_neg_sims)
-
     return sim_pos_list, sim_neg_list
 
 
 def image_embedding_variance_loss(img_emb, target_std=0.05):
-    """Prevent image-window embeddings from collapsing into a narrow cosine cone."""
     if target_std <= 0:
         return img_emb.new_tensor(0.0)
     z = img_emb.reshape(-1, img_emb.shape[-1]).float()
@@ -228,6 +225,25 @@ def image_embedding_variance_loss(img_emb, target_std=0.05):
     z = z - z.mean(dim=0, keepdim=True)
     std = torch.sqrt(z.var(dim=0, unbiased=False) + 1e-6)
     return torch.relu(float(target_std) - std).mean()
+
+
+def ink_weighted_mean(local_windows, ink=None, eps=1e-6):
+    if ink is None:
+        return local_windows.mean(dim=0)
+    weights = ink.to(local_windows.device).float().clamp_min(0.0)
+    if weights.numel() != local_windows.shape[0] or weights.sum().item() <= eps:
+        return local_windows.mean(dim=0)
+    weights = weights / weights.sum().clamp_min(eps)
+    return (local_windows * weights.unsqueeze(-1)).sum(dim=0)
+
+
+def _zero_local_stats(tensor):
+    return tensor.new_tensor(0.0), {
+        "local_hard_neg": 0.0,
+        "local_pos_sim": 0.0,
+        "local_neg_sim": 0.0,
+        "local_terms": 0.0,
+    }
 
 
 def _local_hard_negative_loss_for_one_sample(
@@ -240,25 +256,14 @@ def _local_hard_negative_loss_for_one_sample(
     exclude_radius=2,
     min_ink=0.02,
 ):
-    """Push each aligned span away from wrong windows inside the same line.
-
-    The path is computed from the contextual/BiLSTM embedding, but this loss is
-    applied to the local pre-BiLSTM CNN embedding. This makes local windows more
-    visually discriminative while keeping the global span-DTW alignment signal.
-    """
     losses = []
     pos_values = []
     neg_values = []
-
     span_embeddings = F.normalize(span_encoding.embeddings.float(), p=2, dim=-1)
     local_image_embeddings = F.normalize(local_image_embeddings.float(), p=2, dim=-1)
     num_windows = int(local_image_embeddings.shape[0])
-
-    if ink_ratio is not None:
-        ink_ratio = ink_ratio.to(local_image_embeddings.device).float()
-        valid_ink = ink_ratio >= float(min_ink)
-    else:
-        valid_ink = None
+    ink_ratio = ink_ratio.to(local_image_embeddings.device).float() if ink_ratio is not None else None
+    valid_ink = ink_ratio >= float(min_ink) if ink_ratio is not None else None
 
     for step in path:
         span_idx = int(step["span_idx"])
@@ -266,14 +271,11 @@ def _local_hard_negative_loss_for_one_sample(
         w1 = int(step["window_end"])
         if w1 <= w0 or w0 < 0 or w1 > num_windows:
             continue
-
         if valid_ink is not None and not valid_ink[w0:w1].any().item():
-            # Do not make nearly empty/background-only positive windows drive the loss.
             continue
-
         span_vec = span_embeddings[span_idx]
-        pos_img = local_image_embeddings[w0:w1].mean(dim=0)
-        pos_img = F.normalize(pos_img, p=2, dim=-1)
+        region_ink = ink_ratio[w0:w1] if ink_ratio is not None else None
+        pos_img = F.normalize(ink_weighted_mean(local_image_embeddings[w0:w1], region_ink), p=2, dim=-1)
         sim_pos = torch.matmul(pos_img, span_vec)
 
         neg_mask = torch.ones(num_windows, dtype=torch.bool, device=local_image_embeddings.device)
@@ -282,27 +284,18 @@ def _local_hard_negative_loss_for_one_sample(
         neg_mask[left:right] = False
         if valid_ink is not None:
             neg_mask &= valid_ink
-
         if neg_mask.sum().item() == 0:
             continue
 
         sim_negs = torch.matmul(local_image_embeddings[neg_mask], span_vec)
         k = min(max(1, int(top_k)), int(sim_negs.numel()))
         hard_negs = torch.topk(sim_negs, k=k).values
-
         losses.append(torch.relu(float(margin) - sim_pos + hard_negs).mean())
         pos_values.append(sim_pos.detach())
         neg_values.append(hard_negs.mean().detach())
 
     if not losses:
-        zero = local_image_embeddings.new_tensor(0.0)
-        return zero, {
-            "local_hard_neg": 0.0,
-            "local_pos_sim": 0.0,
-            "local_neg_sim": 0.0,
-            "local_terms": 0.0,
-        }
-
+        return _zero_local_stats(local_image_embeddings)
     loss = torch.stack(losses).mean()
     return loss, {
         "local_hard_neg": float(loss.detach().item()),
@@ -312,27 +305,9 @@ def _local_hard_negative_loss_for_one_sample(
     }
 
 
-def local_hard_negative_loss_for_batch(
-    text_encoder,
-    criterion,
-    norm_context_img,
-    norm_local_img,
-    pos_texts,
-    ink_ratios=None,
-):
-    if (
-        not P.use_local_hard_negatives
-        or P.local_hard_negative_weight <= 0
-        or not torch.is_grad_enabled()
-    ):
-        zero = norm_local_img.new_tensor(0.0)
-        return zero, {
-            "local_hard_neg": 0.0,
-            "local_pos_sim": 0.0,
-            "local_neg_sim": 0.0,
-            "local_terms": 0.0,
-        }
-
+def local_hard_negative_loss_for_batch(text_encoder, criterion, norm_context_img, norm_local_img, pos_texts, ink_ratios=None):
+    if not P.use_local_hard_negatives or P.local_hard_negative_weight <= 0 or not torch.is_grad_enabled():
+        return _zero_local_stats(norm_local_img)
     losses = []
     stats_list = []
     for sample_idx, pos_text in enumerate(pos_texts):
@@ -348,7 +323,6 @@ def local_hard_negative_loss_for_batch(
                 )
         except ValueError:
             continue
-
         ink_ratio = ink_ratios[sample_idx] if ink_ratios is not None else None
         sample_loss, sample_stats = _local_hard_negative_loss_for_one_sample(
             pos_encoding,
@@ -362,16 +336,8 @@ def local_hard_negative_loss_for_batch(
         )
         losses.append(sample_loss)
         stats_list.append(sample_stats)
-
     if not losses:
-        zero = norm_local_img.new_tensor(0.0)
-        return zero, {
-            "local_hard_neg": 0.0,
-            "local_pos_sim": 0.0,
-            "local_neg_sim": 0.0,
-            "local_terms": 0.0,
-        }
-
+        return _zero_local_stats(norm_local_img)
     loss = torch.stack(losses).mean()
     return loss, {
         "local_hard_neg": float(loss.detach().item()),
@@ -381,52 +347,187 @@ def local_hard_negative_loss_for_batch(
     }
 
 
-def compute_batch_loss(image_embedder, text_encoder, criterion, images, pos_texts, neg_texts):
+def extract_aligned_span_regions(text_encoder, criterion, text, norm_context_img, norm_local_img, ink_ratio=None):
+    encoding = text_encoder(text, use_cache=False if text_encoder.training else None)
+    with torch.no_grad():
+        path = hard_span_dtw_path(
+            encoding,
+            norm_context_img,
+            temperature=criterion.temperature,
+            max_windows=criterion.max_windows_per_span,
+            window_count_penalty=criterion.window_count_penalty,
+        )
+    regions = []
+    ink_ratio = ink_ratio.to(norm_local_img.device).float() if ink_ratio is not None else None
+    for step in path:
+        span_idx = int(step["span_idx"])
+        w0 = int(step["window_start"])
+        w1 = int(step["window_end"])
+        if w1 <= w0 or w0 < 0 or w1 > norm_local_img.shape[0]:
+            continue
+        span_text = encoding.texts[span_idx]
+        if not span_text.strip():
+            continue
+        region_ink = ink_ratio[w0:w1] if ink_ratio is not None else None
+        if region_ink is not None and region_ink.max().item() < P.local_hard_negative_min_ink:
+            continue
+        region_vec = F.normalize(ink_weighted_mean(norm_local_img[w0:w1], region_ink), p=2, dim=-1)
+        regions.append({
+            "span_text": span_text,
+            "span_idx": span_idx,
+            "window_start": w0,
+            "window_end": w1,
+            "center": norm_local_img.new_tensor(0.5 * (w0 + w1 - 1)),
+            "vec": region_vec,
+        })
+    return regions
+
+
+def image_image_span_contrastive_loss(regions1, regions2, margin=0.35, top_k=8):
+    if not regions1 or not regions2:
+        return None, []
+    vecs1 = torch.stack([r["vec"] for r in regions1], dim=0)
+    vecs2 = torch.stack([r["vec"] for r in regions2], dim=0)
+    sim = torch.matmul(vecs1, vecs2.T)
+    losses = []
+    matched_pairs = []
+    for i, r1 in enumerate(regions1):
+        candidates = [j for j, r2 in enumerate(regions2) if r2["span_text"] == r1["span_text"]]
+        if not candidates:
+            continue
+        pos_j = max(candidates, key=lambda j: float(sim[i, j].detach()))
+        sim_pos = sim[i, pos_j]
+        neg_mask = torch.ones(sim.shape[1], dtype=torch.bool, device=sim.device)
+        neg_mask[pos_j] = False
+        if neg_mask.sum().item() == 0:
+            continue
+        sim_negs = sim[i, neg_mask]
+        k = min(max(1, int(top_k)), int(sim_negs.numel()))
+        hard_negs = torch.topk(sim_negs, k=k).values
+        losses.append(torch.relu(float(margin) - sim_pos + hard_negs).mean())
+        matched_pairs.append((i, pos_j))
+    if not losses:
+        return vecs1.new_tensor(0.0), matched_pairs
+    return torch.stack(losses).mean(), matched_pairs
+
+
+def image_image_order_consistency_loss(regions1, regions2, matched_pairs):
+    if len(matched_pairs) < 2 or not regions1:
+        device = regions1[0]["vec"].device if regions1 else (regions2[0]["vec"].device if regions2 else P.device)
+        return torch.tensor(0.0, device=device)
+    penalties = []
+    for (i1, j1), (i2, j2) in zip(matched_pairs[:-1], matched_pairs[1:]):
+        d1 = regions1[i2]["center"] - regions1[i1]["center"]
+        d2 = regions2[j2]["center"] - regions2[j1]["center"]
+        penalties.append(torch.relu(-(d1 * d2)))
+    return torch.stack(penalties).mean() if penalties else regions1[0]["vec"].new_tensor(0.0)
+
+
+def compute_embeddings(image_embedder, images):
+    with autocast(dtype=AMP_DTYPE, enabled=USE_AMP):
+        img_emb, local_img_emb, ink_ratio = image_embedder(images, return_local=True, return_ink=True)
+    return (
+        F.normalize(img_emb.float(), p=2, dim=-1),
+        F.normalize(local_img_emb.float(), p=2, dim=-1),
+        ink_ratio,
+        local_img_emb,
+    )
+
+
+def compute_single_image_text_loss(image_embedder, text_encoder, criterion, images, pos_texts, neg_texts, embeddings=None):
     if P.text_encoder_type == "arabic_span":
-        with autocast(dtype=AMP_DTYPE, enabled=USE_AMP):
-            img_emb, local_img_emb, ink_ratio = image_embedder(
-                images,
-                return_local=True,
-                return_ink=True,
-            )
-        norm_img = F.normalize(img_emb.float(), p=2, dim=-1)
-        norm_local_img = F.normalize(local_img_emb.float(), p=2, dim=-1)
-
+        if embeddings is None:
+            norm_img, norm_local_img, ink_ratio, local_img_emb = compute_embeddings(image_embedder, images)
+        else:
+            norm_img, norm_local_img, ink_ratio, local_img_emb = embeddings
         loss, stats = criterion.forward_varlen(text_encoder, norm_img, pos_texts, neg_texts)
-
         local_loss, local_stats = local_hard_negative_loss_for_batch(
-            text_encoder,
-            criterion,
-            norm_img,
-            norm_local_img,
-            pos_texts,
-            ink_ratios=ink_ratio,
+            text_encoder, criterion, norm_img, norm_local_img, pos_texts, ink_ratios=ink_ratio
         )
         if P.use_local_hard_negatives and P.local_hard_negative_weight > 0 and torch.is_grad_enabled():
             loss = loss + P.local_hard_negative_weight * local_loss
         stats.update(local_stats)
-
         var_loss = image_embedding_variance_loss(local_img_emb, P.image_variance_target_std)
         if P.image_variance_loss_weight > 0 and torch.is_grad_enabled():
             loss = loss + P.image_variance_loss_weight * var_loss
         stats["img_var_loss"] = float(var_loss.detach().item())
         stats["total"] = float(loss.detach().item())
-        return loss, stats
+        return loss, stats, (norm_img, norm_local_img, ink_ratio, local_img_emb)
 
     with autocast(dtype=AMP_DTYPE, enabled=USE_AMP):
         img_emb = image_embedder(images)
     norm_img = F.normalize(img_emb.float(), p=2, dim=-1)
-
-    sim_pos_list, sim_neg_list = compute_similarity_lists(
-        text_encoder, norm_img, pos_texts, neg_texts
-    )
+    sim_pos_list, sim_neg_list = compute_similarity_lists(text_encoder, norm_img, pos_texts, neg_texts)
     loss, stats = criterion.forward_varlen(sim_pos_list, sim_neg_list)
-
     var_loss = image_embedding_variance_loss(img_emb, P.image_variance_target_std)
     if P.image_variance_loss_weight > 0 and torch.is_grad_enabled():
         loss = loss + P.image_variance_loss_weight * var_loss
     stats["img_var_loss"] = float(var_loss.detach().item())
     stats["total"] = float(loss.detach().item())
+    return loss, stats, None
+
+
+def compute_image_pair_loss(text_encoder, criterion, texts1, texts2, emb1, emb2):
+    if not P.use_image_pair_contrastive or P.image_pair_loss_weight <= 0 or P.text_encoder_type != "arabic_span" or not torch.is_grad_enabled():
+        base = emb1[0].new_tensor(0.0)
+        return base, base, {"image_pair_loss": 0.0, "order_loss": 0.0, "pair_terms": 0.0}
+    norm_ctx1, norm_loc1, ink1, _raw1 = emb1
+    norm_ctx2, norm_loc2, ink2, _raw2 = emb2
+    pair_losses = []
+    order_losses = []
+    terms = 0
+    for b in range(norm_ctx1.shape[0]):
+        try:
+            regions1 = extract_aligned_span_regions(text_encoder, criterion, texts1[b], norm_ctx1[b], norm_loc1[b], ink1[b])
+            regions2 = extract_aligned_span_regions(text_encoder, criterion, texts2[b], norm_ctx2[b], norm_loc2[b], ink2[b])
+        except ValueError:
+            continue
+        pair_loss, matched_pairs = image_image_span_contrastive_loss(
+            regions1, regions2, margin=P.image_pair_margin, top_k=P.image_pair_top_k
+        )
+        if pair_loss is None:
+            continue
+        pair_losses.append(pair_loss)
+        order_losses.append(image_image_order_consistency_loss(regions1, regions2, matched_pairs))
+        terms += len(matched_pairs)
+    if not pair_losses:
+        base = norm_ctx1.new_tensor(0.0)
+        return base, base, {"image_pair_loss": 0.0, "order_loss": 0.0, "pair_terms": 0.0}
+    pair_loss = torch.stack(pair_losses).mean()
+    order_loss = torch.stack(order_losses).mean() if order_losses else pair_loss.new_tensor(0.0)
+    return pair_loss, order_loss, {
+        "image_pair_loss": float(pair_loss.detach().item()),
+        "order_loss": float(order_loss.detach().item()),
+        "pair_terms": float(terms) / max(1, len(pair_losses)),
+    }
+
+
+def compute_batch_loss(image_embedder, text_encoder, criterion, batch):
+    if isinstance(batch, dict):
+        images1 = batch["images1"].to(P.device, non_blocking=True)
+        images2 = batch["images2"].to(P.device, non_blocking=True)
+        texts1 = batch["texts1"]
+        texts2 = batch["texts2"]
+        neg_texts1 = batch["neg_texts1"]
+        neg_texts2 = batch["neg_texts2"]
+        emb1 = compute_embeddings(image_embedder, images1) if P.text_encoder_type == "arabic_span" else None
+        emb2 = compute_embeddings(image_embedder, images2) if P.text_encoder_type == "arabic_span" else None
+        loss1, stats1, emb1 = compute_single_image_text_loss(image_embedder, text_encoder, criterion, images1, texts1, neg_texts1, emb1)
+        loss2, stats2, emb2 = compute_single_image_text_loss(image_embedder, text_encoder, criterion, images2, texts2, neg_texts2, emb2)
+        loss = 0.5 * (loss1 + loss2)
+        stats = average_stats([stats1, stats2])
+        if emb1 is not None and emb2 is not None:
+            pair_loss, order_loss, pair_stats = compute_image_pair_loss(text_encoder, criterion, texts1, texts2, emb1, emb2)
+            loss = loss + P.image_pair_loss_weight * pair_loss
+            if P.sequence_consistency_loss_weight > 0 and torch.is_grad_enabled():
+                loss = loss + P.sequence_consistency_loss_weight * order_loss
+            stats.update(pair_stats)
+        stats["total"] = float(loss.detach().item())
+        return loss, stats
+
+    images, pos_texts, neg_texts = batch
+    images = images.to(P.device, non_blocking=True)
+    loss, stats, _emb = compute_single_image_text_loss(image_embedder, text_encoder, criterion, images, pos_texts, neg_texts)
     return loss, stats
 
 
@@ -436,10 +537,7 @@ def average_stats(stats_list):
     keys = set()
     for stats in stats_list:
         keys.update(stats.keys())
-    return {
-        key: sum(stats.get(key, 0.0) for stats in stats_list) / len(stats_list)
-        for key in keys
-    }
+    return {key: sum(stats.get(key, 0.0) for stats in stats_list) / len(stats_list) for key in keys}
 
 
 def _format_memory(text_encoder):
@@ -463,40 +561,26 @@ def clear_text_encoder_cache(text_encoder):
 
 def train_one_epoch(model, text_encoder, criterion, optimizer, scaler, loader):
     model.train()
-    if has_trainable_parameters(text_encoder):
-        text_encoder.train()
-    else:
-        text_encoder.eval()
+    text_encoder.train() if has_trainable_parameters(text_encoder) else text_encoder.eval()
     total = 0.0
     stats_list = []
-
-    for batch_idx, (images, pos_texts, neg_texts) in enumerate(loader):
+    for batch_idx, batch in enumerate(loader):
         batch_started = time.time()
-        images = images.to(P.device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
-
-        loss, stats = compute_batch_loss(
-            model, text_encoder, criterion, images, pos_texts, neg_texts
-        )
+        loss, stats = compute_batch_loss(model, text_encoder, criterion, batch)
         forward_elapsed = time.time() - batch_started
         backward_started = time.time()
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(
-            [parameter for group in optimizer.param_groups for parameter in group["params"]],
-            max_norm=1.0,
-        )
+        torch.nn.utils.clip_grad_norm_([p for g in optimizer.param_groups for p in g["params"]], max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
         backward_elapsed = time.time() - backward_started
         elapsed = time.time() - batch_started
-
         total += loss.item()
         stats_list.append(stats)
         mem_suffix = ""
-        if P.log_memory_every_n_batches > 0 and (
-            batch_idx == 0 or (batch_idx + 1) % P.log_memory_every_n_batches == 0
-        ):
+        if P.log_memory_every_n_batches > 0 and (batch_idx == 0 or (batch_idx + 1) % P.log_memory_every_n_batches == 0):
             mem_suffix = " " + _format_memory(text_encoder)
         print(
             f"batch={batch_idx + 1}/{len(loader)} "
@@ -508,6 +592,9 @@ def train_one_epoch(model, text_encoder, criterion, optimizer, scaler, loader):
             f"local_hard={stats.get('local_hard_neg', 0.0):.4f} "
             f"local_pos={stats.get('local_pos_sim', 0.0):.4f} "
             f"local_neg={stats.get('local_neg_sim', 0.0):.4f} "
+            f"pair={stats.get('image_pair_loss', 0.0):.4f} "
+            f"order={stats.get('order_loss', 0.0):.4f} "
+            f"pair_terms={stats.get('pair_terms', 0.0):.1f} "
             f"img_var={stats.get('img_var_loss', 0.0):.4f} "
             f"cost_pos={stats.get('cost_pos', float('nan')):.2f} "
             f"cost_neg={stats.get('cost_neg', float('nan')):.2f} "
@@ -515,7 +602,6 @@ def train_one_epoch(model, text_encoder, criterion, optimizer, scaler, loader):
             f"{mem_suffix}",
             flush=True,
         )
-
     return total / max(len(loader), 1), average_stats(stats_list)
 
 
@@ -525,15 +611,12 @@ def validate(model, text_encoder, criterion, loader, max_batches=0):
     text_encoder.eval()
     total = 0.0
     stats_list = []
-
-    for batch_idx, (images, pos_texts, neg_texts) in enumerate(loader):
+    for batch_idx, batch in enumerate(loader):
         if max_batches and batch_idx >= max_batches:
             break
-        images = images.to(P.device, non_blocking=True)
-        loss, stats = compute_batch_loss(model, text_encoder, criterion, images, pos_texts, neg_texts)
+        loss, stats = compute_batch_loss(model, text_encoder, criterion, batch)
         total += loss.item()
         stats_list.append(stats)
-
     return total / max(len(stats_list), 1), average_stats(stats_list)
 
 
@@ -543,11 +626,7 @@ def init_wandb(args, config):
     if wandb is None:
         print("wandb is not installed; continuing without W&B.", flush=True)
         return None
-    return wandb.init(
-        project=os.environ.get("WANDB_PROJECT", "alignment-project"),
-        name=args.job_id,
-        config=config,
-    )
+    return wandb.init(project=os.environ.get("WANDB_PROJECT", "alignment-project"), name=args.job_id, config=config)
 
 
 def wandb_log_epoch_metrics(run, epoch, train_loss, val_loss, train_stats):
@@ -565,6 +644,9 @@ def wandb_log_epoch_metrics(run, epoch, train_loss, val_loss, train_stats):
                 "local_hard_neg": float(train_stats.get("local_hard_neg", 0.0)),
                 "local_pos_sim": float(train_stats.get("local_pos_sim", 0.0)),
                 "local_neg_sim": float(train_stats.get("local_neg_sim", 0.0)),
+                "image_pair_loss": float(train_stats.get("image_pair_loss", 0.0)),
+                "order_loss": float(train_stats.get("order_loss", 0.0)),
+                "pair_terms": float(train_stats.get("pair_terms", 0.0)),
                 "img_var_loss": float(train_stats.get("img_var_loss", 0.0)),
             },
             step=int(epoch),
@@ -573,13 +655,9 @@ def wandb_log_epoch_metrics(run, epoch, train_loss, val_loss, train_stats):
 
 
 def train(model, text_encoder, criterion, train_loader, valid_loader, args, config):
-    trainable_params = list(model.parameters()) + [
-        parameter for parameter in text_encoder.parameters() if parameter.requires_grad
-    ]
+    trainable_params = list(model.parameters()) + [p for p in text_encoder.parameters() if p.requires_grad]
     optimizer = optim.Adam(trainable_params, lr=args.learning_rate)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs, eta_min=args.learning_rate * 0.01
-    )
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.learning_rate * 0.01)
     scaler = GradScaler(enabled=USE_AMP)
     run = init_wandb(args, config)
     start_epoch = 0
@@ -601,57 +679,28 @@ def train(model, text_encoder, criterion, train_loader, valid_loader, args, conf
     for epoch in range(start_epoch, args.epochs):
         started = time.time()
         print(f"epoch={epoch + 1}/{args.epochs}", flush=True)
-
-        train_loss, train_stats = train_one_epoch(
-            model, text_encoder, criterion, optimizer, scaler, train_loader
-        )
-        should_validate = (
-            ((epoch + 1) % P.valid_every_n_epochs == 0)
-            or ((epoch + 1) == args.epochs)
-        )
+        train_loss, train_stats = train_one_epoch(model, text_encoder, criterion, optimizer, scaler, train_loader)
+        should_validate = ((epoch + 1) % P.valid_every_n_epochs == 0) or ((epoch + 1) == args.epochs)
         if should_validate:
             clear_text_encoder_cache(text_encoder)
-            val_loss, val_stats = validate(
-                model,
-                text_encoder,
-                criterion,
-                valid_loader,
-                max_batches=P.valid_max_batches,
-            )
+            val_loss, _val_stats = validate(model, text_encoder, criterion, valid_loader, max_batches=P.valid_max_batches)
             clear_text_encoder_cache(text_encoder)
         else:
             val_loss = float("nan")
-            val_stats = {}
         scheduler.step()
-
         wandb_log_epoch_metrics(run, epoch + 1, train_loss, val_loss, train_stats)
-
         save_checkpoint(model, text_encoder, optimizer, scheduler, scaler, epoch, args.job_id, config)
         save_model_weights(model, text_encoder, args.job_id, config)
 
-        should_visualize = ((epoch + 1) % 10 == 0) or ((epoch + 1) == args.epochs)
+        should_visualize = (((epoch + 1) % 10 == 0) or ((epoch + 1) == args.epochs)) and not P.use_image_pair_contrastive
         if should_visualize:
-            save_d3tw_visualization(
-                model,
-                text_encoder,
-                valid_loader,
-                criterion,
-                epoch + 1,
-                args.job_id,
-                P.device,
-            )
+            save_d3tw_visualization(model, text_encoder, valid_loader, criterion, epoch + 1, args.job_id, P.device)
             clear_text_encoder_cache(text_encoder)
-
         if P.clear_span_cache_each_epoch:
             clear_text_encoder_cache(text_encoder)
-
         history.append(train_loss)
         elapsed = time.time() - started
-        print(
-            f"epoch={epoch + 1} train_loss={train_loss:.4f} "
-            f"val_loss={val_loss:.4f} elapsed={elapsed:.1f}s",
-            flush=True,
-        )
+        print(f"epoch={epoch + 1} train_loss={train_loss:.4f} val_loss={val_loss:.4f} elapsed={elapsed:.1f}s", flush=True)
 
     if run is not None:
         run.finish()
@@ -667,11 +716,7 @@ def parse_args():
     parser.add_argument("--finetune", action="store_true")
     parser.add_argument("--window_size", type=int, default=None)
     parser.add_argument("--stride_ratio", type=float, default=None)
-    parser.add_argument(
-        "--window_overlap_mode",
-        choices=["no_overlap", "light_overlap", "dense_overlap", "custom"],
-        default=None,
-    )
+    parser.add_argument("--window_overlap_mode", choices=["no_overlap", "light_overlap", "dense_overlap", "custom"], default=None)
     parser.add_argument("--negative_mode", default=None)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--learning_rate", type=float, default=None)
@@ -680,6 +725,8 @@ def parse_args():
     parser.add_argument("--use_local_hard_negatives", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--local_hard_negative_weight", type=float, default=None)
     parser.add_argument("--image_variance_loss_weight", type=float, default=None)
+    parser.add_argument("--use_image_pair_contrastive", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--image_pair_loss_weight", type=float, default=None)
     return parser.parse_args()
 
 
@@ -695,7 +742,6 @@ def apply_overrides(args):
     if args.num_negatives is not None:
         P.num_negatives = args.num_negatives
         import DataLoader
-
         DataLoader.num_negatives = args.num_negatives
     if args.use_bilstm is not None:
         P.use_bilstm = args.use_bilstm
@@ -705,6 +751,10 @@ def apply_overrides(args):
         P.local_hard_negative_weight = args.local_hard_negative_weight
     if args.image_variance_loss_weight is not None:
         P.image_variance_loss_weight = args.image_variance_loss_weight
+    if args.use_image_pair_contrastive is not None:
+        P.use_image_pair_contrastive = args.use_image_pair_contrastive
+    if args.image_pair_loss_weight is not None:
+        P.image_pair_loss_weight = args.image_pair_loss_weight
 
     if args.finetune:
         args.learning_rate = P.finetune_learning_rate if args.learning_rate is None else args.learning_rate
@@ -724,13 +774,10 @@ def select_dataloaders(args):
 def main():
     args = parse_args()
     apply_overrides(args)
-
     if args.resume and args.pretrained_weights:
         raise SystemExit("Use either --resume or --pretrained_weights, not both.")
-
     stride = compute_stride(P.window_size, P.stride_ratio, P.window_overlap_mode)
     train_loader, valid_loader, _test_loader = select_dataloaders(args)
-
     text_encoder = build_text_encoder()
     model = build_image_embedding(stride).to(P.device)
 
@@ -759,7 +806,6 @@ def main():
             temperature=P.contrastive_temperature,
         )
     config = model_config(stride)
-
     print(
         f"job_id={args.job_id} device={P.device} epochs={args.epochs} lr={args.learning_rate} "
         f"window_size={P.window_size} stride={stride} negatives={P.num_negatives}",
@@ -769,29 +815,17 @@ def main():
         print(
             f"text_encoder=ArabicSpanTextEncoder model={P.arabic_text_model_name} "
             f"max_span_chars={P.max_text_span_chars} max_windows_per_span={P.max_windows_per_span} "
-            f"strip_text_edges={P.strip_span_text_edges} "
-            f"span_cache_size={P.span_feature_cache_size} span_cache_dtype={P.span_feature_cache_dtype} "
-            f"clear_span_cache_each_epoch={P.clear_span_cache_each_epoch} "
             f"negative_grad_mode={P.span_negative_grad_mode} span_dtw_backend={P.span_dtw_backend} "
-            f"span_dtw_bucket_text_lengths={P.span_dtw_bucket_text_lengths} "
-            f"span_dtw_text_bucket_size={P.span_dtw_text_bucket_size} "
-            f"span_dtw_max_text_bucket={P.span_dtw_max_text_bucket} "
-            f"local_hard_negatives={P.use_local_hard_negatives} "
-            f"local_weight={P.local_hard_negative_weight} "
-            f"local_margin={P.local_hard_negative_margin} "
-            f"local_top_k={P.local_hard_negative_top_k} "
+            f"local_hard_negatives={P.use_local_hard_negatives} local_weight={P.local_hard_negative_weight} "
+            f"local_margin={P.local_hard_negative_margin} local_top_k={P.local_hard_negative_top_k} "
             f"min_ink={P.local_hard_negative_min_ink} "
-            "freeze_backbone=True",
-            flush=True,
-        )
-    elif P.text_encoder_type == "arabic_token":
-        print(
-            f"text_encoder=ArabicTokenTextEncoder model={P.arabic_text_model_name} "
-            f"max_token_chars={P.max_text_token_chars} freeze_backbone=True",
+            f"image_pair={P.use_image_pair_contrastive} pair_weight={P.image_pair_loss_weight} "
+            f"pair_margin={P.image_pair_margin} pair_top_k={P.image_pair_top_k} "
+            f"order_weight={P.sequence_consistency_loss_weight} freeze_backbone=True",
             flush=True,
         )
     else:
-        print("text_encoder=TextEmbedding", flush=True)
+        print(f"text_encoder={P.text_encoder_type}", flush=True)
     print(
         f"use_bilstm={P.use_bilstm} soft_dtw_gamma={P.contrastive_soft_dtw_gamma} "
         f"img_var_weight={P.image_variance_loss_weight} img_var_target={P.image_variance_target_std}",
@@ -799,7 +833,8 @@ def main():
     )
 
     if os.environ.get("DEBUG_IMAGE_SHAPE", "0") == "1":
-        images, _pos_texts, _neg_texts = next(iter(train_loader))
+        batch = next(iter(train_loader))
+        images = batch["images1"] if isinstance(batch, dict) else batch[0]
         images = images.to(P.device, non_blocking=True)
         with torch.no_grad():
             img_emb = model(images[:1], show_dims=True)
