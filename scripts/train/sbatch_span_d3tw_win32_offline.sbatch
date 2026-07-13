@@ -7,13 +7,13 @@
 #   bash scripts/train/run_span_d3tw_offline.sh
 #
 # Override settings at submit time, for example:
-#   USE_WANDB=1 NUM_NEGATIVES=4 LOCAL_HARD_NEGATIVE_TOP_K=8 sbatch scripts/train/sbatch_span_d3tw_win32_offline.sbatch
+#   USE_WANDB=1 IMAGE_PAIR_LOSS_WEIGHT=0.3 LOCAL_HARD_NEGATIVE_TOP_K=16 sbatch scripts/train/sbatch_span_d3tw_win32_offline.sbatch
 #
 # This job runs Hugging Face in offline mode. Make sure the Arabic model is
 # cached before submitting:
 #   bash scripts/train/setup_manucripts_align_span_env.sh
 #
-#SBATCH --job-name=improve_neg_w32
+#SBATCH --job-name=improve_neg_pair_w32
 #SBATCH --output=out/%x_%J.out
 #SBATCH --partition=rtx4090
 #SBATCH --gpus=rtx_4090:1
@@ -78,8 +78,7 @@ export MAX_TEXT_SPAN_CHARS="${MAX_TEXT_SPAN_CHARS:-3}"
 export MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-4}"
 export STRIP_SPAN_TEXT_EDGES="${STRIP_SPAN_TEXT_EDGES:-1}"
 
-# Bounded frozen AraBERT span-feature cache. This prevents host RAM OOM when
-# many unique hard negatives are generated in one epoch.
+# Bounded frozen AraBERT span-feature cache.
 export SPAN_FEATURE_CACHE_SIZE="${SPAN_FEATURE_CACHE_SIZE:-2048}"
 export SPAN_FEATURE_CACHE_DTYPE="${SPAN_FEATURE_CACHE_DTYPE:-float16}"
 export CLEAR_SPAN_CACHE_EACH_EPOCH="${CLEAR_SPAN_CACHE_EACH_EPOCH:-1}"
@@ -90,33 +89,33 @@ export LOG_MEMORY_EVERY_N_BATCHES="${LOG_MEMORY_EVERY_N_BATCHES:-25}"
 export SPAN_DTW_MEM_DEBUG="${SPAN_DTW_MEM_DEBUG:-0}"
 
 # Quality-focused contrastive setup.
-# Keep four transcript negatives by default. Runtime is slower than one negative,
-# but this preserves the hard contrastive task. Use NUM_NEGATIVES=2 only for a
-# temporary debugging/warmup run, not for the final training.
 export BATCH_SIZE="${BATCH_SIZE:-32}"
 export NUM_NEGATIVES="${NUM_NEGATIVES:-4}"
 export NEGATIVE_MODE="${NEGATIVE_MODE:-mixed}"
 export SPAN_NEGATIVE_GRAD_MODE="${SPAN_NEGATIVE_GRAD_MODE:-hardest}"
 export USE_BILSTM="${USE_BILSTM:-1}"
 
-# improve_neg local discrimination loss.
-# These settings implement the suggested solution: global Span-DTW still trains
-# contextual CNN+BiLSTM embeddings, while this extra loss trains local pre-BiLSTM
-# CNN embeddings to push away wrong windows from the same line.
+# Stronger local discrimination loss.
 export USE_LOCAL_HARD_NEGATIVES="${USE_LOCAL_HARD_NEGATIVES:-1}"
-export LOCAL_HARD_NEGATIVE_WEIGHT="${LOCAL_HARD_NEGATIVE_WEIGHT:-0.2}"
-export LOCAL_HARD_NEGATIVE_MARGIN="${LOCAL_HARD_NEGATIVE_MARGIN:-0.25}"
-export LOCAL_HARD_NEGATIVE_TOP_K="${LOCAL_HARD_NEGATIVE_TOP_K:-4}"
-export LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS="${LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS:-2}"
-export LOCAL_HARD_NEGATIVE_MIN_INK="${LOCAL_HARD_NEGATIVE_MIN_INK:-0.02}"
+export LOCAL_HARD_NEGATIVE_WEIGHT="${LOCAL_HARD_NEGATIVE_WEIGHT:-0.4}"
+export LOCAL_HARD_NEGATIVE_MARGIN="${LOCAL_HARD_NEGATIVE_MARGIN:-0.35}"
+export LOCAL_HARD_NEGATIVE_TOP_K="${LOCAL_HARD_NEGATIVE_TOP_K:-12}"
+export LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS="${LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS:-3}"
+export LOCAL_HARD_NEGATIVE_MIN_INK="${LOCAL_HARD_NEGATIVE_MIN_INK:-0.05}"
 
-# Embedding variance regularization to keep image-window vectors from collapsing
-# into a narrow cone where unrelated windows all have high cosine similarity.
+# New image-image span contrastive loss. This uses img1/text1 and img2/text2
+# from the same sample and pushes same-span image regions together.
+export USE_IMAGE_PAIR_CONTRASTIVE="${USE_IMAGE_PAIR_CONTRASTIVE:-1}"
+export IMAGE_PAIR_LOSS_WEIGHT="${IMAGE_PAIR_LOSS_WEIGHT:-0.2}"
+export IMAGE_PAIR_MARGIN="${IMAGE_PAIR_MARGIN:-0.35}"
+export IMAGE_PAIR_TOP_K="${IMAGE_PAIR_TOP_K:-8}"
+export SEQUENCE_CONSISTENCY_LOSS_WEIGHT="${SEQUENCE_CONSISTENCY_LOSS_WEIGHT:-0.05}"
+
+# Embedding variance regularization.
 export IMAGE_VARIANCE_LOSS_WEIGHT="${IMAGE_VARIANCE_LOSS_WEIGHT:-0.01}"
 export IMAGE_VARIANCE_TARGET_STD="${IMAGE_VARIANCE_TARGET_STD:-0.05}"
 
-# Validate on a small subset by default. Full validation every 5 epochs was
-# expensive and does not help debug the very slow first training run.
+# Validation/debugging.
 export VALID_EVERY_N_EPOCHS="${VALID_EVERY_N_EPOCHS:-5}"
 export VALID_MAX_BATCHES="${VALID_MAX_BATCHES:-10}"
 
@@ -132,7 +131,7 @@ if [[ -z "${DATA_DIR:-}" ]]; then
     DATA_DIR="DataSet/Synthetic_${LANGUAGE}"
   fi
 fi
-JOB_ID="${JOB_ID:-improve_neg_win32_offline}"
+JOB_ID="${JOB_ID:-improve_neg_pair_win32_offline}"
 EPOCHS="${EPOCHS:-150}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
 
@@ -150,7 +149,7 @@ if [[ ! -d "${DATA_DIR}" ]]; then
   exit 1
 fi
 
-echo "Starting improve_neg JAX span-DTW training"
+echo "Starting improve_neg image-pair JAX span-DTW training"
 echo "PROJECT_DIR=${PROJECT_DIR}"
 echo "DATA_DIR=${DATA_DIR}"
 echo "JOB_ID=${JOB_ID}"
@@ -160,6 +159,7 @@ echo "MAX_TEXT_SPAN_CHARS=${MAX_TEXT_SPAN_CHARS} MAX_WINDOWS_PER_SPAN=${MAX_WIND
 echo "SPAN_FEATURE_CACHE_SIZE=${SPAN_FEATURE_CACHE_SIZE} SPAN_FEATURE_CACHE_DTYPE=${SPAN_FEATURE_CACHE_DTYPE} CLEAR_SPAN_CACHE_EACH_EPOCH=${CLEAR_SPAN_CACHE_EACH_EPOCH}"
 echo "SPAN_DTW_BUCKET_TEXT_LENGTHS=${SPAN_DTW_BUCKET_TEXT_LENGTHS} SPAN_DTW_TEXT_BUCKET_SIZE=${SPAN_DTW_TEXT_BUCKET_SIZE} SPAN_DTW_MAX_TEXT_BUCKET=${SPAN_DTW_MAX_TEXT_BUCKET}"
 echo "USE_LOCAL_HARD_NEGATIVES=${USE_LOCAL_HARD_NEGATIVES} LOCAL_HARD_NEGATIVE_WEIGHT=${LOCAL_HARD_NEGATIVE_WEIGHT} LOCAL_HARD_NEGATIVE_MARGIN=${LOCAL_HARD_NEGATIVE_MARGIN} LOCAL_HARD_NEGATIVE_TOP_K=${LOCAL_HARD_NEGATIVE_TOP_K} LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS=${LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS} LOCAL_HARD_NEGATIVE_MIN_INK=${LOCAL_HARD_NEGATIVE_MIN_INK}"
+echo "USE_IMAGE_PAIR_CONTRASTIVE=${USE_IMAGE_PAIR_CONTRASTIVE} IMAGE_PAIR_LOSS_WEIGHT=${IMAGE_PAIR_LOSS_WEIGHT} IMAGE_PAIR_MARGIN=${IMAGE_PAIR_MARGIN} IMAGE_PAIR_TOP_K=${IMAGE_PAIR_TOP_K} SEQUENCE_CONSISTENCY_LOSS_WEIGHT=${SEQUENCE_CONSISTENCY_LOSS_WEIGHT}"
 echo "IMAGE_VARIANCE_LOSS_WEIGHT=${IMAGE_VARIANCE_LOSS_WEIGHT} IMAGE_VARIANCE_TARGET_STD=${IMAGE_VARIANCE_TARGET_STD}"
 echo "LOG_MEMORY_EVERY_N_BATCHES=${LOG_MEMORY_EVERY_N_BATCHES}"
 echo "DATALOADER_NUM_WORKERS=${DATALOADER_NUM_WORKERS} ALLOW_JAX_DATALOADER_WORKERS=${ALLOW_JAX_DATALOADER_WORKERS}"
