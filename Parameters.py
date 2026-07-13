@@ -66,19 +66,29 @@ span_dtw_text_bucket_size = int(os.environ.get("SPAN_DTW_TEXT_BUCKET_SIZE", 16))
 span_dtw_max_text_bucket = int(os.environ.get("SPAN_DTW_MAX_TEXT_BUCKET", 256))
 
 # Local hard negatives.
-# This is the main anti-collapse fix: the global span-DTW loss still trains the
-# contextual BiLSTM embeddings, while this extra term trains the local pre-BiLSTM
-# CNN windows to separate the correct span from wrong windows inside the same line.
+# Stronger defaults because the heatmaps showed many scattered false-positive
+# windows above 0.8 cosine. This trains the local pre-BiLSTM CNN windows to be
+# more discriminative.
 use_local_hard_negatives = os.environ.get("USE_LOCAL_HARD_NEGATIVES", "1").lower() in {
     "1", "true", "yes", "on"
 }
-local_hard_negative_weight = float(os.environ.get("LOCAL_HARD_NEGATIVE_WEIGHT", 0.2))
-local_hard_negative_margin = float(os.environ.get("LOCAL_HARD_NEGATIVE_MARGIN", 0.25))
-# Keep this small: it only affects the cheap local top-k window mining, while
-# the expensive part of training is still span-DTW. Override to 8 for stronger mining.
-local_hard_negative_top_k = int(os.environ.get("LOCAL_HARD_NEGATIVE_TOP_K", 4))
-local_hard_negative_exclude_radius = int(os.environ.get("LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS", 2))
-local_hard_negative_min_ink = float(os.environ.get("LOCAL_HARD_NEGATIVE_MIN_INK", 0.02))
+local_hard_negative_weight = float(os.environ.get("LOCAL_HARD_NEGATIVE_WEIGHT", 0.4))
+local_hard_negative_margin = float(os.environ.get("LOCAL_HARD_NEGATIVE_MARGIN", 0.35))
+local_hard_negative_top_k = int(os.environ.get("LOCAL_HARD_NEGATIVE_TOP_K", 12))
+local_hard_negative_exclude_radius = int(os.environ.get("LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS", 3))
+local_hard_negative_min_ink = float(os.environ.get("LOCAL_HARD_NEGATIVE_MIN_INK", 0.05))
+
+# Image-image pair contrastive loss.
+# Uses img1/text1 and img2/text2 from the same sample. DTW gives pseudo span-window
+# regions in both images. Regions with matching span text are positives; other
+# regions are hard negatives. This directly targets line2-part-in-line1 retrieval.
+use_image_pair_contrastive = os.environ.get("USE_IMAGE_PAIR_CONTRASTIVE", "1").lower() in {
+    "1", "true", "yes", "on"
+}
+image_pair_loss_weight = float(os.environ.get("IMAGE_PAIR_LOSS_WEIGHT", 0.2))
+image_pair_margin = float(os.environ.get("IMAGE_PAIR_MARGIN", 0.35))
+image_pair_top_k = int(os.environ.get("IMAGE_PAIR_TOP_K", 8))
+sequence_consistency_loss_weight = float(os.environ.get("SEQUENCE_CONSISTENCY_LOSS_WEIGHT", 0.05))
 
 # Embedding variance regularization.
 # Keeps image embeddings from collapsing into a narrow cone where unrelated
