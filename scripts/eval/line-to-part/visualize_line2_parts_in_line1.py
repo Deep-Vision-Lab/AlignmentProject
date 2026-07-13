@@ -5,11 +5,12 @@ Choose fixed-width parts from line2 and search where they appear in line1.
 This script is updated for the improve_neg solution:
   - Uses local pre-BiLSTM CNN embeddings by default for part/window matching.
   - Keeps contextual embeddings available with --embedding-space contextual.
-  - Supports adaptive per-sample thresholding for high-similarity matrices.
+  - Supports adaptive per-part thresholding for high-similarity matrices.
   - Displays chosen line2 parts without filled masks.
   - Adds masks only on line1 for the found whole part or fallback segment.
   - Can save a cosine-similarity heatmap for each chosen part against line1.
-  - Heatmaps can show the line1 image strip on the x-axis and the part image strip on the y-axis.
+  - Heatmaps show sliced window images on the x-axis and y-axis so every
+    heatmap cell is visually connected to the exact windows it compares.
 
 Matching logic for each chosen line2 part:
   1. Run Smith-Waterman between full line1 windows and chosen part windows.
@@ -38,7 +39,7 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib.patches import FancyArrowPatch, Rectangle
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 import torch
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -57,6 +58,11 @@ from visualize_sw_longest_alignment import (  # noqa: E402
     smith_waterman,
     window_range_to_pixels,
 )
+
+try:
+    _RESAMPLE = Image.Resampling.BILINEAR
+except AttributeError:  # Pillow<9
+    _RESAMPLE = Image.BILINEAR
 
 
 @dataclass
@@ -450,10 +456,91 @@ def _flip_for_window_order(image: Image.Image, use_flip: bool) -> Image.Image:
     image = image.convert("RGB")
     if not use_flip:
         return image
-    try:
-        return image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-    except AttributeError:
-        return image.transpose(Image.FLIP_LEFT_RIGHT)
+    return ImageOps.mirror(image)
+
+
+def _safe_crop_window(image: Image.Image, window_idx: int, window_size: int, stride: int) -> Image.Image:
+    width, height = image.size
+    x0 = max(0, min(int(window_idx * stride), max(0, width - 1)))
+    x1 = max(x0 + 1, min(int(window_idx * stride + window_size), width))
+    return image.crop((x0, 0, x1, height))
+
+
+def make_line1_window_strip(
+    line1_display: Image.Image,
+    num_windows: int,
+    window_size: int,
+    stride: int,
+    use_flip: bool,
+    cell_pixels: int,
+    strip_height: int,
+) -> np.ndarray:
+    """Create a horizontal mosaic: one visible slice per line1 window/heatmap column."""
+    ordered = _flip_for_window_order(line1_display, use_flip)
+    cells = []
+    for window_idx in range(num_windows):
+        crop = _safe_crop_window(ordered, window_idx, window_size, stride)
+        crop = crop.resize((cell_pixels, strip_height), _RESAMPLE)
+        cells.append(crop)
+    if not cells:
+        return np.ones((strip_height, cell_pixels, 3), dtype=np.uint8) * 255
+    return np.array(Image.new("RGB", (cell_pixels * len(cells), strip_height), (255, 255, 255))) if False else np.array(_hstack_images(cells))
+
+
+def make_part_window_strip(
+    part_display: Image.Image,
+    num_windows: int,
+    window_size: int,
+    stride: int,
+    use_flip: bool,
+    cell_pixels: int,
+    strip_width: int,
+) -> np.ndarray:
+    """Create a vertical mosaic: one rotated slice per part window/heatmap row."""
+    ordered = _flip_for_window_order(part_display, use_flip)
+    cells = []
+    for window_idx in range(num_windows):
+        crop = _safe_crop_window(ordered, window_idx, window_size, stride)
+        crop = crop.transpose(Image.Transpose.ROTATE_90)
+        crop = crop.resize((strip_width, cell_pixels), _RESAMPLE)
+        cells.append(crop)
+    if not cells:
+        return np.ones((cell_pixels, strip_width, 3), dtype=np.uint8) * 255
+    return np.array(_vstack_images(cells))
+
+
+def _hstack_images(images: Sequence[Image.Image]) -> Image.Image:
+    widths = [img.size[0] for img in images]
+    heights = [img.size[1] for img in images]
+    canvas = Image.new("RGB", (sum(widths), max(heights)), (255, 255, 255))
+    x = 0
+    for img in images:
+        canvas.paste(img, (x, 0))
+        x += img.size[0]
+    return canvas
+
+
+def _vstack_images(images: Sequence[Image.Image]) -> Image.Image:
+    widths = [img.size[0] for img in images]
+    heights = [img.size[1] for img in images]
+    canvas = Image.new("RGB", (max(widths), sum(heights)), (255, 255, 255))
+    y = 0
+    for img in images:
+        canvas.paste(img, (0, y))
+        y += img.size[1]
+    return canvas
+
+
+def _grid_every_cell(ax, num_x: int, num_y: Optional[int] = None, alpha: float = 0.28, linewidth: float = 0.45):
+    for x in np.arange(-0.5, num_x + 0.5, 1.0):
+        ax.axvline(x, color="white", linewidth=linewidth, alpha=alpha, zorder=10)
+    if num_y is not None:
+        for y in np.arange(-0.5, num_y + 0.5, 1.0):
+            ax.axhline(y, color="white", linewidth=linewidth, alpha=alpha, zorder=10)
+
+
+def _label_step(n: int, target_labels: int = 14) -> int:
+    return max(1, int(np.ceil(max(1, n) / float(target_labels))))
 
 
 def _draw_plain_similarity_heatmap(
@@ -505,6 +592,31 @@ def _draw_plain_similarity_heatmap(
     return im
 
 
+def _draw_path_and_segment(ax, sw_path, segment):
+    diag_x = [i for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
+    diag_y = [j for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
+    if diag_x:
+        ax.plot(diag_x, diag_y, color="white", linewidth=1.5, alpha=0.95, label="SW diag path")
+
+    if segment is not None:
+        ax.plot(
+            [segment.line1_start, segment.line1_end],
+            [segment.part_start, segment.part_end],
+            color="red",
+            linewidth=2.6,
+            alpha=0.95,
+            label=f"selected {segment.match_kind}",
+        )
+        ax.scatter(
+            [segment.line1_start, segment.line1_end],
+            [segment.part_start, segment.part_end],
+            color="red",
+            s=22,
+            zorder=6,
+        )
+    return diag_x, diag_y
+
+
 def save_part_similarity_heatmap(
     sim: np.ndarray,
     sw_path: Sequence[Tuple[str, Optional[int], Optional[int]]],
@@ -521,17 +633,42 @@ def save_part_similarity_heatmap(
     with_axis_images = bool(getattr(args, "heatmap_axis_images", True)) and line1_display is not None and part_display is not None
 
     if with_axis_images:
-        fig_w = max(10.0, min(22.0, sim.shape[0] / 4.2))
-        fig_h = max(5.5, min(13.0, sim.shape[1] / 1.7 + 3.0))
+        n_line1 = int(sim.shape[0])
+        n_part = int(sim.shape[1])
+        cell_pixels = int(args.heatmap_axis_cell_pixels)
+        top_h = int(args.heatmap_line1_strip_height)
+        left_w = int(args.heatmap_part_strip_width)
+
+        line1_strip = make_line1_window_strip(
+            line1_display,
+            n_line1,
+            args.window_size,
+            args.stride,
+            args.use_flip,
+            cell_pixels=cell_pixels,
+            strip_height=top_h,
+        )
+        part_strip = make_part_window_strip(
+            part_display,
+            n_part,
+            args.window_size,
+            args.stride,
+            args.use_flip,
+            cell_pixels=cell_pixels,
+            strip_width=left_w,
+        )
+
+        fig_w = max(11.0, min(28.0, n_line1 * 0.24 + 4.5))
+        fig_h = max(6.5, min(16.0, n_part * 0.62 + 4.8))
         fig = plt.figure(figsize=(fig_w, fig_h))
         gs = GridSpec(
             2,
             3,
             figure=fig,
-            width_ratios=[1.25, 8.0, 0.28],
-            height_ratios=[1.15, 6.0],
-            wspace=0.08,
-            hspace=0.08,
+            width_ratios=[2.0, 8.6, 0.34],
+            height_ratios=[1.45, 6.0],
+            wspace=0.055,
+            hspace=0.055,
         )
         ax_corner = fig.add_subplot(gs[0, 0])
         ax_x_img = fig.add_subplot(gs[0, 1])
@@ -539,23 +676,29 @@ def save_part_similarity_heatmap(
         ax_heat = fig.add_subplot(gs[1, 1])
         cax = fig.add_subplot(gs[1, 2])
         ax_corner.axis("off")
+        ax_corner.text(0.5, 0.5, "window\nslices", ha="center", va="center", fontsize=9, weight="bold")
 
-        line1_axis_img = np.array(_flip_for_window_order(line1_display, args.use_flip))
-        part_axis_img = np.array(_flip_for_window_order(part_display, args.use_flip))
-        part_axis_img = np.rot90(part_axis_img, k=1)
-
-        ax_x_img.imshow(line1_axis_img, extent=(-0.5, sim.shape[0] - 0.5, 0, 1), aspect="auto")
-        ax_x_img.set_xlim(-0.5, sim.shape[0] - 0.5)
-        ax_x_img.set_xticks([])
+        ax_x_img.imshow(line1_strip, extent=(-0.5, n_line1 - 0.5, 1, 0), aspect="auto")
+        ax_x_img.set_xlim(-0.5, n_line1 - 0.5)
+        ax_x_img.set_ylim(1, 0)
         ax_x_img.set_yticks([])
-        ax_x_img.set_ylabel("line1 image", fontsize=8)
-        ax_x_img.set_title("line1 windows/image strip", fontsize=9)
+        x_step = _label_step(n_line1)
+        ax_x_img.set_xticks(list(range(0, n_line1, x_step)))
+        ax_x_img.set_xticklabels([str(i) for i in range(0, n_line1, x_step)], fontsize=7)
+        ax_x_img.tick_params(axis="x", labeltop=True, labelbottom=False, pad=1)
+        ax_x_img.set_title("line1 sliced windows (same order as heatmap columns)", fontsize=9)
+        _grid_every_cell(ax_x_img, n_line1, None, alpha=0.42, linewidth=0.40)
 
-        ax_y_img.imshow(part_axis_img, extent=(0, 1, sim.shape[1] - 0.5, -0.5), aspect="auto")
-        ax_y_img.set_ylim(sim.shape[1] - 0.5, -0.5)
+        ax_y_img.imshow(part_strip, extent=(0, 1, n_part - 0.5, -0.5), aspect="auto")
+        ax_y_img.set_xlim(0, 1)
+        ax_y_img.set_ylim(n_part - 0.5, -0.5)
         ax_y_img.set_xticks([])
-        ax_y_img.set_yticks([])
-        ax_y_img.set_xlabel("part image", fontsize=8)
+        y_step = 1 if n_part <= 16 else _label_step(n_part)
+        ax_y_img.set_yticks(list(range(0, n_part, y_step)))
+        ax_y_img.set_yticklabels([str(i) for i in range(0, n_part, y_step)], fontsize=7)
+        ax_y_img.set_ylabel("part sliced windows\nrotated 90°", fontsize=8)
+        for y in np.arange(-0.5, n_part + 0.5, 1.0):
+            ax_y_img.axhline(y, color="white", linewidth=0.45, alpha=0.48, zorder=10)
 
         im = ax_heat.imshow(
             sim.T,
@@ -566,34 +709,18 @@ def save_part_similarity_heatmap(
         )
         cbar = fig.colorbar(im, cax=cax)
         cbar.set_label("cosine similarity")
+        _grid_every_cell(ax_heat, n_line1, n_part, alpha=0.20, linewidth=0.35)
+        diag_x, diag_y = _draw_path_and_segment(ax_heat, sw_path, segment)
 
-        diag_x = [i for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
-        diag_y = [j for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
-        if diag_x:
-            ax_heat.plot(diag_x, diag_y, color="white", linewidth=1.4, alpha=0.95, label="SW diag path")
-
-        if segment is not None:
-            ax_heat.plot(
-                [segment.line1_start, segment.line1_end],
-                [segment.part_start, segment.part_end],
-                color="red",
-                linewidth=2.4,
-                alpha=0.95,
-                label=f"selected {segment.match_kind}",
-            )
-            ax_heat.scatter(
-                [segment.line1_start, segment.line1_end],
-                [segment.part_start, segment.part_end],
-                color="red",
-                s=18,
-                zorder=5,
-            )
-
-        ax_heat.set_xlim(-0.5, sim.shape[0] - 0.5)
-        ax_heat.set_ylim(sim.shape[1] - 0.5, -0.5)
-        ax_heat.set_xlabel("line1 window index")
-        ax_heat.set_ylabel("part window index")
-        if diag_x or segment is not None:
+        ax_heat.set_xlim(-0.5, n_line1 - 0.5)
+        ax_heat.set_ylim(n_part - 0.5, -0.5)
+        ax_heat.set_xlabel("line1 window index / x-axis slices")
+        ax_heat.set_ylabel("part window index / y-axis slices")
+        ax_heat.set_xticks(list(range(0, n_line1, x_step)))
+        ax_heat.set_xticklabels([str(i) for i in range(0, n_line1, x_step)], fontsize=8)
+        ax_heat.set_yticks(list(range(0, n_part, y_step)))
+        ax_heat.set_yticklabels([str(i) for i in range(0, n_part, y_step)], fontsize=8)
+        if diag_x or diag_y or segment is not None:
             ax_heat.legend(loc="upper right", fontsize=8)
 
     else:
@@ -1028,9 +1155,27 @@ def main():
         "--no-heatmap-axis-images",
         dest="heatmap_axis_images",
         action="store_false",
-        help="Disable the line1/part image strips around heatmaps and save the old matrix-only heatmap.",
+        help="Disable sliced line1/part images around heatmaps and save the old matrix-only heatmap.",
     )
     parser.set_defaults(heatmap_axis_images=True)
+    parser.add_argument(
+        "--heatmap-axis-cell-pixels",
+        type=int,
+        default=42,
+        help="Pixel width/height used for each displayed window slice in the heatmap axis images.",
+    )
+    parser.add_argument(
+        "--heatmap-line1-strip-height",
+        type=int,
+        default=84,
+        help="Height in pixels of the top sliced line1 window strip.",
+    )
+    parser.add_argument(
+        "--heatmap-part-strip-width",
+        type=int,
+        default=96,
+        help="Width in pixels of the left sliced/rotated part window strip.",
+    )
 
     # Input line options.
     parser.add_argument("--line1", default=None, help="Path to the full first line image")
@@ -1070,6 +1215,12 @@ def main():
         raise ValueError("--mask-padding-windows must be >= 0")
     if args.heatmap_vmax <= args.heatmap_vmin:
         raise ValueError("--heatmap-vmax must be larger than --heatmap-vmin")
+    if args.heatmap_axis_cell_pixels <= 0:
+        raise ValueError("--heatmap-axis-cell-pixels must be positive")
+    if args.heatmap_line1_strip_height <= 0:
+        raise ValueError("--heatmap-line1-strip-height must be positive")
+    if args.heatmap_part_strip_width <= 0:
+        raise ValueError("--heatmap-part-strip-width must be positive")
     if args.gap > 0:
         raise ValueError("--gap should be negative, for example --gap -0.15")
     if args.mismatch > 0:
@@ -1120,7 +1271,7 @@ def main():
     print("Line1 mask width: full matched SW window span, not capped to --part-width")
     if args.heatmap:
         heatmap_dir = args.heatmap_dir or os.path.dirname(args.output) or "."
-        axis_mode = "with line1/part image strips" if args.heatmap_axis_images else "matrix only"
+        axis_mode = "sliced line1/rotated part window images" if args.heatmap_axis_images else "matrix only"
         print(f"Cosine heatmaps: enabled, directory={heatmap_dir}, mode={axis_mode}")
     print("For NOT FOUND parts, displayed best=highest cosine similarity reached during search")
 
