@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
-"""Visualize cosine similarity between every window in line1 and every window in line2.
+"""Visualize cosine similarity between line1 and line2 at window or span-group level.
 
-This creates a line-pair window similarity heatmap:
+Two modes are supported:
 
-    x-axis = windows from line1
-    y-axis = windows from line2
-    cell(row, col) = cosine(line2_window_row_embedding, line1_window_col_embedding)
+1) --comparison-mode window
+   x-axis = individual line1 windows
+   y-axis = individual line2 windows
+   cell(row, col) = cosine(line2_window, line1_window)
 
-The top and left axes show separated window thumbnails.  By default, the script
-also shows the Span-DTW assigned token/span for every displayed window:
+2) --comparison-mode span_group
+   x-axis = Span-DTW groups from line1, each group can contain 1+ windows
+   y-axis = Span-DTW groups from line2, each group can contain 1+ windows
+   cell(row, col) = cosine(pooled_line2_group, pooled_line1_group)
 
-    line1 tokens are written above the x-axis window thumbnails
-    line2 tokens are written to the left of the y-axis window thumbnails
+The span_group mode is the recommended visualization for cases where a two-character
+visual unit falls in one window on one line, but the same characters fall in two
+windows on the other line.  It compares composed window groups instead of forcing a
+single-window-to-single-window comparison.
 """
 from __future__ import annotations
 
 import argparse
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
@@ -57,6 +63,18 @@ except AttributeError:  # Pillow<9 compatibility
     _ROTATE_90 = Image.ROTATE_90
 
 
+@dataclass
+class AxisItem:
+    label: str
+    start: int
+    end: int
+    embedding: torch.Tensor
+
+    @property
+    def center(self) -> float:
+        return 0.5 * (float(self.start) + float(self.end - 1))
+
+
 def display_text(text: str) -> str:
     """Shape Arabic labels when optional bidi packages are installed."""
     if text is None:
@@ -85,8 +103,6 @@ def infer_image_paths(args) -> Tuple[str, str]:
 
 
 def infer_text_paths(args) -> Tuple[Optional[str], Optional[str]]:
-    if args.text1 is not None or args.text2 is not None:
-        return args.text1_path, args.text2_path
     if args.text1_path is not None or args.text2_path is not None:
         return args.text1_path, args.text2_path
     if args.data_dir is None or args.index is None:
@@ -164,7 +180,7 @@ def build_text_encoder(args, cfg: dict, loaded, device: str):
         encoder = ArabicSpanTextEncoder(
             model_name=args.arabic_text_model_name or cfg.get("arabic_text_model_name", "aubmindlab/bert-base-arabertv02"),
             output_dim=vector_size,
-            max_span_chars=int(args.max_span_chars or cfg.get("max_text_span_chars", 3)),
+            max_span_chars=int(args.max_span_chars or cfg.get("max_text_span_chars", 2)),
             freeze_backbone=True,
             device=device,
             strip_text_edges=bool(cfg.get("strip_span_text_edges", True)),
@@ -175,7 +191,7 @@ def build_text_encoder(args, cfg: dict, loaded, device: str):
         encoder = ArabicTokenTextEncoder(
             model_name=args.arabic_text_model_name or cfg.get("arabic_text_model_name", "aubmindlab/bert-base-arabertv02"),
             output_dim=vector_size,
-            max_token_chars=int(args.max_token_chars or cfg.get("max_text_token_chars", 3)),
+            max_token_chars=int(args.max_token_chars or cfg.get("max_text_token_chars", 2)),
             freeze_backbone=True,
             device=device,
         )
@@ -197,7 +213,7 @@ def build_text_encoder(args, cfg: dict, loaded, device: str):
                     flush=True,
                 )
         else:
-            print("[warn] checkpoint has no text encoder state; axis token assignments may be unreliable.", flush=True)
+            print("[warn] checkpoint has no text encoder state; axis token/group assignments may be unreliable.", flush=True)
     encoder.eval()
     return encoder
 
@@ -216,7 +232,7 @@ def get_window_embeddings_pair(
 
 
 def cosine_matrix(line1_features: torch.Tensor, line2_features: torch.Tensor) -> np.ndarray:
-    """Return [line2_windows, line1_windows] cosine matrix."""
+    """Return [line2_items, line1_items] cosine matrix."""
     z1 = F.normalize(line1_features.float(), p=2, dim=-1)
     z2 = F.normalize(line2_features.float(), p=2, dim=-1)
     sim = torch.matmul(z2, z1.T)
@@ -230,48 +246,137 @@ def encode_text(text_encoder, text: str):
         return text_encoder(text)
 
 
+def _step_text(encoding, step) -> str:
+    span_idx = int(step.get("span_idx", -1))
+    fallback = "?"
+    if hasattr(encoding, "texts") and 0 <= span_idx < len(encoding.texts):
+        fallback = str(encoding.texts[span_idx])
+    return str(step.get("text", fallback))
+
+
+def span_dtw_path_for_line(text_encoder, text: Optional[str], image_embeddings_for_alignment: torch.Tensor, args):
+    if not text:
+        return None, None
+    encoding = encode_text(text_encoder, text)
+    norm_img = F.normalize(image_embeddings_for_alignment.float(), p=2, dim=-1)
+    path = hard_span_dtw_path(
+        encoding,
+        norm_img,
+        temperature=float(args.temperature),
+        max_windows=int(args.max_windows_per_span),
+        window_count_penalty=float(args.window_count_penalty),
+    )
+    return encoding, path
+
+
+def pool_window_group(features: torch.Tensor, start: int, end: int, pooling: str) -> torch.Tensor:
+    start = max(0, int(start))
+    end = min(int(features.shape[0]), int(end))
+    if end <= start:
+        end = min(int(features.shape[0]), start + 1)
+    group = features[start:end].float()
+    if group.numel() == 0:
+        return torch.zeros(features.shape[-1], device=features.device, dtype=torch.float32)
+    if pooling == "max":
+        pooled = group.max(dim=0).values
+    else:
+        pooled = group.mean(dim=0)
+    return F.normalize(pooled, p=2, dim=-1)
+
+
 def aligned_tokens_for_windows(text_encoder, text: Optional[str], image_embeddings_for_alignment: torch.Tensor, args) -> List[str]:
     num_windows = int(image_embeddings_for_alignment.shape[0])
     if not text:
         return ["?"] * num_windows
     try:
-        encoding = encode_text(text_encoder, text)
-        norm_img = F.normalize(image_embeddings_for_alignment.float(), p=2, dim=-1)
-        path = hard_span_dtw_path(
-            encoding,
-            norm_img,
-            temperature=float(args.temperature),
-            max_windows=int(args.max_windows_per_span),
-            window_count_penalty=float(args.window_count_penalty),
-        )
+        encoding, path = span_dtw_path_for_line(text_encoder, text, image_embeddings_for_alignment, args)
     except Exception as exc:
         print(f"[warn] failed to assign axis tokens: {exc}", flush=True)
         return ["?"] * num_windows
 
     labels = ["?"] * num_windows
     for step in path:
-        span_idx = int(step["span_idx"])
-        fallback = "?"
-        if hasattr(encoding, "texts") and 0 <= span_idx < len(encoding.texts):
-            fallback = str(encoding.texts[span_idx])
-        token = str(step.get("text", fallback))
+        token = _step_text(encoding, step)
         for w in range(int(step["window_start"]), int(step["window_end"])):
             if 0 <= w < num_windows:
                 labels[w] = token
     return labels
 
 
-def base_display_indices(num_windows: int, args) -> np.ndarray:
+def window_items_from_labels(features: torch.Tensor, labels: Sequence[str]) -> List[AxisItem]:
+    items: List[AxisItem] = []
+    for idx in range(int(features.shape[0])):
+        label = str(labels[idx]) if idx < len(labels) else "?"
+        items.append(AxisItem(label=label, start=idx, end=idx + 1, embedding=F.normalize(features[idx].float(), p=2, dim=-1)))
+    return items
+
+
+def span_group_items_for_line(
+    text_encoder,
+    text: Optional[str],
+    alignment_features: torch.Tensor,
+    comparison_features: torch.Tensor,
+    args,
+) -> List[AxisItem]:
+    """Return Span-DTW groups, where each item can cover one or more windows.
+
+    This is the main fix for the AB-vs-A/B case: if one line has one window for
+    a two-character span and the other line has two windows for the same span,
+    the visualization compares the pooled span groups instead of only single
+    windows.
+    """
+    num_windows = int(comparison_features.shape[0])
+    if not text:
+        return window_items_from_labels(comparison_features, ["?"] * num_windows)
+
+    try:
+        encoding, path = span_dtw_path_for_line(text_encoder, text, alignment_features, args)
+    except Exception as exc:
+        print(f"[warn] failed to build span groups: {exc}", flush=True)
+        return window_items_from_labels(comparison_features, ["?"] * num_windows)
+
+    items: List[AxisItem] = []
+    seen_ranges = set()
+    for step in path:
+        start = max(0, int(step["window_start"]))
+        end = min(num_windows, int(step["window_end"]))
+        if end <= start:
+            continue
+        key = (start, end, int(step.get("span_idx", -1)))
+        if key in seen_ranges:
+            continue
+        seen_ranges.add(key)
+        label = _step_text(encoding, step)
+        pooled = pool_window_group(comparison_features, start, end, args.group_pooling)
+        items.append(AxisItem(label=label, start=start, end=end, embedding=pooled))
+
+    if not items:
+        return window_items_from_labels(comparison_features, ["?"] * num_windows)
+
+    items.sort(key=lambda item: (item.start, item.end))
+    return items
+
+
+def features_from_items(items: Sequence[AxisItem]) -> torch.Tensor:
+    if not items:
+        raise ValueError("No axis items to compare.")
+    return torch.stack([item.embedding.float() for item in items], dim=0)
+
+
+def axis_item_order(items: Sequence[AxisItem], args, reverse_axis: bool) -> np.ndarray:
+    n = len(items)
     if args.display_order == "visual" and args.use_flip:
-        return np.arange(num_windows - 1, -1, -1, dtype=np.int64)
-    return np.arange(num_windows, dtype=np.int64)
+        base = np.array(sorted(range(n), key=lambda idx: items[idx].center, reverse=True), dtype=np.int64)
+    else:
+        base = np.array(sorted(range(n), key=lambda idx: items[idx].center), dtype=np.int64)
+    if reverse_axis:
+        return base[::-1].copy()
+    return base
 
 
-def axis_display_indices(n1: int, n2: int, args) -> Tuple[np.ndarray, np.ndarray]:
-    base_x = base_display_indices(n1, args)
-    base_y = base_display_indices(n2, args)
-    x_indices = base_x[::-1].copy() if args.reverse_x_axis else base_x.copy()
-    y_indices = base_y[::-1].copy() if args.reverse_y_axis else base_y.copy()
+def axis_display_indices(line1_items: Sequence[AxisItem], line2_items: Sequence[AxisItem], args) -> Tuple[np.ndarray, np.ndarray]:
+    x_indices = axis_item_order(line1_items, args, bool(args.reverse_x_axis))
+    y_indices = axis_item_order(line2_items, args, bool(args.reverse_y_axis))
     return x_indices, y_indices
 
 
@@ -287,7 +392,7 @@ def model_window_to_visual_range(
     image_width: int,
     use_flip: bool,
 ) -> Tuple[int, int]:
-    visual_idx = (num_windows - 1 - window_idx) if use_flip else window_idx
+    visual_idx = (num_windows - 1 - int(window_idx)) if use_flip else int(window_idx)
     x0 = int(visual_idx * stride)
     x1 = int(x0 + window_size)
     x0 = max(0, min(image_width, x0))
@@ -297,31 +402,35 @@ def model_window_to_visual_range(
     return x0, x1
 
 
-def crop_visual_slice(
+def crop_item_visual_slice(
     image: Image.Image,
-    model_window_idx: int,
+    item: AxisItem,
     num_windows: int,
     window_size: int,
     stride: int,
     use_flip: bool,
     mode: str,
 ) -> Image.Image:
-    x0, x1 = model_window_to_visual_range(model_window_idx, num_windows, window_size, stride, image.width, use_flip)
-    if mode == "window" or stride >= window_size:
-        return image.crop((x0, 0, x1, image.height)).convert("RGB")
+    ranges = []
+    for w in range(int(item.start), int(item.end)):
+        x0, x1 = model_window_to_visual_range(w, num_windows, window_size, stride, image.width, use_flip)
+        if mode == "nonoverlap" and stride < window_size:
+            center = 0.5 * (x0 + x1)
+            half = max(1.0, float(stride) / 2.0)
+            x0 = int(round(center - half))
+            x1 = int(round(center + half))
+            x0 = max(0, min(image.width - 1, x0))
+            x1 = max(x0 + 1, min(image.width, x1))
+        ranges.append((x0, x1))
 
-    if mode != "nonoverlap":
-        raise ValueError(f"Unknown --axis-slice-mode {mode!r}")
+    if not ranges:
+        ranges = [model_window_to_visual_range(0, num_windows, window_size, stride, image.width, use_flip)]
 
-    # Display-only slice: show the centered stride-sized part of each overlapping
-    # model window so the thumbnails are separated and less visually repetitive.
-    center = 0.5 * (x0 + x1)
-    half = max(1.0, float(stride) / 2.0)
-    sx0 = int(round(center - half))
-    sx1 = int(round(center + half))
-    sx0 = max(0, min(image.width - 1, sx0))
-    sx1 = max(sx0 + 1, min(image.width, sx1))
-    return image.crop((sx0, 0, sx1, image.height)).convert("RGB")
+    x0 = min(pair[0] for pair in ranges)
+    x1 = max(pair[1] for pair in ranges)
+    x0 = max(0, min(image.width - 1, x0))
+    x1 = max(x0 + 1, min(image.width, x1))
+    return image.crop((x0, 0, x1, image.height)).convert("RGB")
 
 
 def hstack(images):
@@ -346,15 +455,16 @@ def vstack(images):
     return canvas
 
 
-def make_x_axis_strip(image: Image.Image, x_indices: Sequence[int], num_windows: int, args) -> np.ndarray:
+def make_x_axis_strip(image: Image.Image, items: Sequence[AxisItem], x_order: Sequence[int], num_windows: int, args) -> np.ndarray:
     cells = []
     gap = int(args.window_gap_pixels)
     token_h = int(args.x_token_height) if args.show_axis_tokens else 0
     mirror = bool(args.mirror_axis_windows or args.mirror_x_axis_windows)
-    for model_idx in x_indices:
-        crop = crop_visual_slice(
+    for item_idx in x_order:
+        item = items[int(item_idx)]
+        crop = crop_item_visual_slice(
             image,
-            int(model_idx),
+            item,
             num_windows,
             int(args.window_size),
             int(args.stride),
@@ -376,15 +486,16 @@ def make_x_axis_strip(image: Image.Image, x_indices: Sequence[int], num_windows:
     return np.array(hstack(cells))
 
 
-def make_y_axis_strip(image: Image.Image, y_indices: Sequence[int], num_windows: int, args) -> np.ndarray:
+def make_y_axis_strip(image: Image.Image, items: Sequence[AxisItem], y_order: Sequence[int], num_windows: int, args) -> np.ndarray:
     cells = []
     gap = int(args.window_gap_pixels)
     token_w = int(args.y_token_width) if args.show_axis_tokens else 0
     mirror = bool(args.mirror_axis_windows or args.mirror_y_axis_windows)
-    for model_idx in y_indices:
-        crop = crop_visual_slice(
+    for item_idx in y_order:
+        item = items[int(item_idx)]
+        crop = crop_item_visual_slice(
             image,
-            int(model_idx),
+            item,
             num_windows,
             int(args.window_size),
             int(args.stride),
@@ -441,18 +552,20 @@ def save_pair_similarity_figure(
     sim_model: np.ndarray,
     line1_image: Image.Image,
     line2_image: Image.Image,
-    line1_labels: Sequence[str],
-    line2_labels: Sequence[str],
+    line1_items: Sequence[AxisItem],
+    line2_items: Sequence[AxisItem],
+    n1_windows: int,
+    n2_windows: int,
     args,
     out_path: str,
 ):
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     n2, n1 = int(sim_model.shape[0]), int(sim_model.shape[1])
-    x_indices, y_indices = axis_display_indices(n1, n2, args)
-    sim = reorder_similarity_for_display(sim_model, x_indices, y_indices)
+    x_order, y_order = axis_display_indices(line1_items, line2_items, args)
+    sim = reorder_similarity_for_display(sim_model, x_order, y_order)
 
-    x_strip = make_x_axis_strip(line1_image, x_indices, n1, args)
-    y_strip = make_y_axis_strip(line2_image, y_indices, n2, args)
+    x_strip = make_x_axis_strip(line1_image, line1_items, x_order, n1_windows, args)
+    y_strip = make_y_axis_strip(line2_image, line2_items, y_order, n2_windows, args)
     heatmap_rgb = make_gap_heatmap_image(sim, args)
 
     cbar_width = int(args.colorbar_width)
@@ -475,25 +588,26 @@ def save_pair_similarity_figure(
     y_order_label = _axis_order_label(base_label, args.reverse_y_axis)
     x_mirror_label = " | x mirrored" if (args.mirror_axis_windows or args.mirror_x_axis_windows) else ""
     y_mirror_label = " | y mirrored" if (args.mirror_axis_windows or args.mirror_y_axis_windows) else ""
+    unit_label = "span groups" if args.comparison_mode == "span_group" else "windows"
 
     ax_corner = fig.add_subplot(gs[0, 0])
     ax_corner.axis("off")
-    ax_corner.text(0.5, 0.5, "line1 ↔ line2\nwindow cosine", ha="center", va="center", fontsize=9)
+    ax_corner.text(0.5, 0.5, f"line1 ↔ line2\n{unit_label} cosine", ha="center", va="center", fontsize=9)
 
     ax_x = fig.add_subplot(gs[0, 1])
     ax_x.imshow(x_strip, aspect="auto")
-    ax_x.set_title(f"x-axis: line1 windows in {x_order_label}{x_mirror_label}", fontsize=11)
+    ax_x.set_title(f"x-axis: line1 {unit_label} in {x_order_label}{x_mirror_label}", fontsize=11)
     ax_x.axis("off")
 
     ax_y = fig.add_subplot(gs[1, 0])
     ax_y.imshow(y_strip, aspect="auto")
-    ax_y.set_ylabel(f"y-axis: line2 windows in {y_order_label}{y_mirror_label}", fontsize=10)
+    ax_y.set_ylabel(f"y-axis: line2 {unit_label} in {y_order_label}{y_mirror_label}", fontsize=10)
     ax_y.axis("off")
 
     ax_h = fig.add_subplot(gs[1, 1])
     ax_h.imshow(heatmap_rgb, aspect="auto")
     ax_h.set_title(
-        f"Cosine similarity: line2 windows × line1 windows | feature_space={args.feature_space}",
+        f"Cosine similarity: line2 {unit_label} × line1 {unit_label} | feature_space={args.feature_space} | pooling={args.group_pooling}",
         fontsize=12,
     )
 
@@ -503,8 +617,8 @@ def save_pair_similarity_figure(
     y_centers = np.arange(n2) * (cell + gap) + cell / 2.0
 
     if args.show_axis_tokens:
-        shown_line1_labels = [str(line1_labels[int(idx)]) if 0 <= int(idx) < len(line1_labels) else "?" for idx in x_indices]
-        shown_line2_labels = [str(line2_labels[int(idx)]) if 0 <= int(idx) < len(line2_labels) else "?" for idx in y_indices]
+        shown_line1_labels = [str(line1_items[int(idx)].label) for idx in x_order]
+        shown_line2_labels = [str(line2_items[int(idx)].label) for idx in y_order]
         token_y = max(4.0, float(args.x_token_height) * 0.52)
         for pos, token in enumerate(shown_line1_labels):
             ax_x.text(
@@ -543,9 +657,9 @@ def save_pair_similarity_figure(
         y_tick_pos = np.arange(0, n2, y_step)
 
     if args.tick_labels == "model":
-        x_tick_labels = [str(int(x_indices[i])) for i in x_tick_pos]
-        y_tick_labels = [str(int(y_indices[i])) for i in y_tick_pos]
-        label_suffix = "model idx"
+        x_tick_labels = [f"{line1_items[int(x_order[i])].start}:{line1_items[int(x_order[i])].end}" for i in x_tick_pos]
+        y_tick_labels = [f"{line2_items[int(y_order[i])].start}:{line2_items[int(y_order[i])].end}" for i in y_tick_pos]
+        label_suffix = "model window range"
     else:
         x_tick_labels = [str(int(i)) for i in x_tick_pos]
         y_tick_labels = [str(int(i)) for i in y_tick_pos]
@@ -555,8 +669,8 @@ def save_pair_similarity_figure(
     ax_h.set_yticks(y_centers[y_tick_pos])
     ax_h.set_xticklabels(x_tick_labels, rotation=90, fontsize=6)
     ax_h.set_yticklabels(y_tick_labels, fontsize=6)
-    ax_h.set_xlabel(f"line1 x window ({label_suffix}; {x_order_label})")
-    ax_h.set_ylabel(f"line2 y window ({label_suffix}; {y_order_label})")
+    ax_h.set_xlabel(f"line1 x {unit_label} ({label_suffix}; {x_order_label})")
+    ax_h.set_ylabel(f"line2 y {unit_label} ({label_suffix}; {y_order_label})")
 
     if args.draw_main_diagonal:
         diagonal_len = min(n1, n2)
@@ -589,14 +703,13 @@ def save_pair_similarity_figure(
     cbar = fig.colorbar(sm, cax=ax_cbar)
     cbar.set_label("cosine similarity")
 
-    # Avoid bbox_inches='tight'; it can rescale axes independently and break the
-    # thumbnail-to-cell alignment.
+    # Avoid bbox_inches='tight'; it can rescale axes independently and break the thumbnail-to-cell alignment.
     fig.savefig(out_path, dpi=int(args.dpi))
     plt.close(fig)
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Line1-to-line2 window cosine similarity heatmap.")
+    parser = argparse.ArgumentParser(description="Line1-to-line2 window/span-group cosine similarity heatmap.")
     parser.add_argument("--weights", required=True, help="Checkpoint path with image model weights.")
     parser.add_argument("--line1", default=None, help="Path to line1 image. Alternative to --data-dir/--index.")
     parser.add_argument("--line2", default=None, help="Path to line2 image. Alternative to --data-dir/--index.")
@@ -614,15 +727,17 @@ def parse_args():
     parser.add_argument("--stride", type=int, default=None)
     parser.add_argument("--vector-size", type=int, default=None)
     parser.add_argument("--feature-space", choices=["local", "contextual"], default="local")
-    parser.add_argument("--alignment-space", choices=["local", "contextual"], default="contextual", help="Embedding space used to assign tokens to windows with Span-DTW.")
+    parser.add_argument("--alignment-space", choices=["local", "contextual"], default="local", help="Embedding space used to assign tokens/groups with Span-DTW.")
+    parser.add_argument("--comparison-mode", choices=["window", "span_group"], default="span_group", help="window compares single windows; span_group compares pooled Span-DTW window groups.")
+    parser.add_argument("--group-pooling", choices=["mean", "max"], default="mean", help="How to compose multiple windows into one group vector.")
     parser.add_argument("--use-flip", action="store_true", help="Use RTL flipped model-window order, same as Arabic training/eval.")
     parser.add_argument("--no-bilstm", action="store_true")
     parser.add_argument("--display-order", choices=["model", "visual"], default="visual", help="Base order for axes/heatmap before optional axis-specific reversal.")
-    parser.add_argument("--reverse-x-axis", action="store_true", help="Reverse the line1 top x-axis thumbnails and heatmap columns.")
-    parser.add_argument("--reverse-y-axis", action="store_true", help="Reverse the line2 left y-axis thumbnails and heatmap rows.")
+    parser.add_argument("--reverse-x-axis", action="store_true", help="Reverse the line1 top x-axis items and heatmap columns.")
+    parser.add_argument("--reverse-y-axis", action="store_true", help="Reverse the line2 left y-axis items and heatmap rows.")
     parser.add_argument("--tick-labels", choices=["shown", "model"], default="model")
-    parser.add_argument("--axis-slice-mode", choices=["nonoverlap", "window"], default="nonoverlap")
-    parser.add_argument("--axis-cell-pixels", type=int, default=52)
+    parser.add_argument("--axis-slice-mode", choices=["nonoverlap", "window"], default="window")
+    parser.add_argument("--axis-cell-pixels", type=int, default=58)
     parser.add_argument("--window-gap-pixels", type=int, default=12)
     parser.add_argument("--x-strip-height", type=int, default=84)
     parser.add_argument("--y-strip-width", type=int, default=108)
@@ -637,9 +752,9 @@ def parse_args():
     parser.add_argument("--arabic-text-model-name", default=None)
     parser.add_argument("--max-span-chars", type=int, default=None)
     parser.add_argument("--max-token-chars", type=int, default=None)
-    parser.add_argument("--max-windows-per-span", type=int, default=4)
+    parser.add_argument("--max-windows-per-span", type=int, default=2)
     parser.add_argument("--temperature", type=float, default=0.07)
-    parser.add_argument("--window-count-penalty", type=float, default=0.01)
+    parser.add_argument("--window-count-penalty", type=float, default=0.05)
     parser.add_argument("--mirror-axis-windows", action="store_true")
     parser.add_argument("--mirror-x-axis-windows", action="store_true")
     parser.add_argument("--mirror-y-axis-windows", action="store_true")
@@ -676,11 +791,12 @@ def main():
     if args.vector_size is None:
         args.vector_size = int(cfg.get("vector_size", 128))
     if args.max_span_chars is None:
-        args.max_span_chars = int(cfg.get("max_text_span_chars", 3))
+        # For this visualization the recommended value is 2, so boundary windows can be labeled as a two-character unit.
+        args.max_span_chars = int(cfg.get("max_text_span_chars", 2))
+        args.max_span_chars = min(int(args.max_span_chars), 2)
     if args.max_token_chars is None:
-        args.max_token_chars = int(cfg.get("max_text_token_chars", 3))
-    if args.max_windows_per_span is None:
-        args.max_windows_per_span = int(cfg.get("max_windows_per_span", 4))
+        args.max_token_chars = int(cfg.get("max_text_token_chars", 2))
+        args.max_token_chars = min(int(args.max_token_chars), 2)
     if "contrastive_temperature" in cfg and args.temperature == 0.07:
         args.temperature = float(cfg.get("contrastive_temperature", 0.07))
 
@@ -699,30 +815,52 @@ def main():
     line2_features = line2_local if args.feature_space == "local" else line2_contextual
     line1_align = line1_local if args.alignment_space == "local" else line1_contextual
     line2_align = line2_local if args.alignment_space == "local" else line2_contextual
-    sim = cosine_matrix(line1_features, line2_features)
 
-    if args.show_axis_tokens:
+    if args.show_axis_tokens or args.comparison_mode == "span_group":
         text_encoder = build_text_encoder(args, cfg, loaded, args.device)
-        line1_labels = aligned_tokens_for_windows(text_encoder, text1, line1_align, args)
-        line2_labels = aligned_tokens_for_windows(text_encoder, text2, line2_align, args)
     else:
-        line1_labels = [""] * int(line1_features.shape[0])
-        line2_labels = [""] * int(line2_features.shape[0])
+        text_encoder = None
 
-    save_pair_similarity_figure(sim, line1_img, line2_img, line1_labels, line2_labels, args, args.output)
-    print(f"saved line1-line2 window cosine heatmap: {args.output}")
+    if args.comparison_mode == "span_group":
+        line1_items = span_group_items_for_line(text_encoder, text1, line1_align, line1_features, args)
+        line2_items = span_group_items_for_line(text_encoder, text2, line2_align, line2_features, args)
+    else:
+        if args.show_axis_tokens:
+            line1_labels = aligned_tokens_for_windows(text_encoder, text1, line1_align, args)
+            line2_labels = aligned_tokens_for_windows(text_encoder, text2, line2_align, args)
+        else:
+            line1_labels = [""] * int(line1_features.shape[0])
+            line2_labels = [""] * int(line2_features.shape[0])
+        line1_items = window_items_from_labels(line1_features, line1_labels)
+        line2_items = window_items_from_labels(line2_features, line2_labels)
+
+    sim = cosine_matrix(features_from_items(line1_items), features_from_items(line2_items))
+
+    save_pair_similarity_figure(
+        sim,
+        line1_img,
+        line2_img,
+        line1_items,
+        line2_items,
+        int(line1_features.shape[0]),
+        int(line2_features.shape[0]),
+        args,
+        args.output,
+    )
+    print(f"saved line1-line2 {args.comparison_mode} cosine heatmap: {args.output}")
     print(f"line1={image1_path}")
     print(f"line2={image2_path}")
     print(f"text1={text1_path if text1_path else 'provided' if text1 else 'missing'}")
     print(f"text2={text2_path if text2_path else 'provided' if text2 else 'missing'}")
     print(
         f"line1_windows={line1_features.shape[0]} line2_windows={line2_features.shape[0]} "
-        f"feature_dim={line1_features.shape[1]} feature_space={args.feature_space} alignment_space={args.alignment_space}"
+        f"line1_items={len(line1_items)} line2_items={len(line2_items)} "
+        f"feature_dim={line1_features.shape[1]} feature_space={args.feature_space} "
+        f"alignment_space={args.alignment_space} comparison_mode={args.comparison_mode}"
     )
     print(
-        f"display_order={args.display_order} reverse_x_axis={args.reverse_x_axis} "
-        f"reverse_y_axis={args.reverse_y_axis} tick_labels={args.tick_labels} "
-        f"cell_values={args.cell_values} show_axis_tokens={args.show_axis_tokens}"
+        f"max_span_chars={args.max_span_chars} max_windows_per_span={args.max_windows_per_span} "
+        f"window_count_penalty={args.window_count_penalty} group_pooling={args.group_pooling}"
     )
 
 
