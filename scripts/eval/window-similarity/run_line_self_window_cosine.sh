@@ -34,8 +34,9 @@ FEATURE_SPACE="${FEATURE_SPACE:-local}"
 # Axis-window visualization.
 # nonoverlap = display centered stride-sized slices to avoid visual overlap.
 # window     = display the exact full overlapping model windows.
+# A slightly larger cell makes the cosine values readable inside every element.
 AXIS_SLICE_MODE="${AXIS_SLICE_MODE:-nonoverlap}"
-AXIS_CELL_PIXELS="${AXIS_CELL_PIXELS:-44}"
+AXIS_CELL_PIXELS="${AXIS_CELL_PIXELS:-52}"
 WINDOW_GAP_PIXELS="${WINDOW_GAP_PIXELS:-12}"
 X_STRIP_HEIGHT="${X_STRIP_HEIGHT:-84}"
 Y_STRIP_WIDTH="${Y_STRIP_WIDTH:-108}"
@@ -64,8 +65,9 @@ USE_FLIP="${USE_FLIP:-1}"
 NO_BILSTM="${NO_BILSTM:-0}"
 Y_AXIS_ROTATE="${Y_AXIS_ROTATE:-1}"
 Y_AXIS_FLIP="${Y_AXIS_FLIP:-0}"
-CELL_VALUES="${CELL_VALUES:-0}"
-CELL_VALUE_FONTSIZE="${CELL_VALUE_FONTSIZE:-3.2}"
+# Show cosine value inside every heatmap element by default.
+CELL_VALUES="${CELL_VALUES:-1}"
+CELL_VALUE_FONTSIZE="${CELL_VALUE_FONTSIZE:-4.0}"
 SHOW_ALL_TICKS="${SHOW_ALL_TICKS:-0}"
 COLORBAR_WIDTH="${COLORBAR_WIDTH:-80}"
 FIGURE_DPI_SCALE="${FIGURE_DPI_SCALE:-90}"
@@ -124,6 +126,8 @@ run_one() {
   fi
   if [[ "${CELL_VALUES}" == "1" || "${CELL_VALUES}" == "true" ]]; then
     extra_args+=(--cell-values --cell-value-fontsize "${CELL_VALUE_FONTSIZE}")
+  else
+    extra_args+=(--no-cell-values)
   fi
   if [[ "${SHOW_ALL_TICKS}" == "1" || "${SHOW_ALL_TICKS}" == "true" ]]; then
     extra_args+=(--show-all-ticks)
@@ -144,6 +148,8 @@ run_one() {
   echo "  axis-slice-mode       = ${AXIS_SLICE_MODE}"
   echo "  axis-cell-pixels      = ${AXIS_CELL_PIXELS}"
   echo "  window-gap-pixels     = ${WINDOW_GAP_PIXELS}"
+  echo "  cell-values           = ${CELL_VALUES}"
+  echo "  cell-value-fontsize   = ${CELL_VALUE_FONTSIZE}"
   echo "  use-flip              = ${USE_FLIP}"
   echo "===================================================="
 
