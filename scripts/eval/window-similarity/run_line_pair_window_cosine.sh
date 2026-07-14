@@ -60,14 +60,14 @@ WINDOW_COUNT_PENALTY="${WINDOW_COUNT_PENALTY:-0.01}"
 # REVERSE_X_AXIS=1 additionally reverses the line1 top strip and heatmap columns,
 # matching the latest self-window visualization default.
 DISPLAY_ORDER="${DISPLAY_ORDER:-visual}"
-REVERSE_X_AXIS="${REVERSE_X_AXIS:-1}"
-REVERSE_Y_AXIS="${REVERSE_Y_AXIS:-0}"
+REVERSE_X_AXIS="${REVERSE_X_AXIS:-0}"
+REVERSE_Y_AXIS="${REVERSE_Y_AXIS:-1}"
 TICK_LABELS="${TICK_LABELS:-model}"
 
 # Mirror controls. By default, mirror only the x-axis thumbnails, matching the
 # latest self-window visualization behavior.
 MIRROR_AXIS_WINDOWS="${MIRROR_AXIS_WINDOWS:-0}"
-MIRROR_X_AXIS_WINDOWS="${MIRROR_X_AXIS_WINDOWS:-1}"
+MIRROR_X_AXIS_WINDOWS="${MIRROR_X_AXIS_WINDOWS:-0}"
 MIRROR_Y_AXIS_WINDOWS="${MIRROR_Y_AXIS_WINDOWS:-0}"
 
 CMAP="${CMAP:-viridis}"
