@@ -18,6 +18,8 @@ Important display modes:
   --reverse-x-axis        : additionally reverse only the x-axis/top strip and the
                             heatmap columns. This fixes cases where the upper line
                             appears opposite to the desired reading direction.
+  --cell-values           : write the cosine value inside every heatmap element.
+                            This is enabled by default; use --no-cell-values to hide it.
   --mirror-axis-windows   : horizontally mirror every thumbnail on both axes.
   --mirror-x-axis-windows : mirror only top-axis thumbnails.
   --mirror-y-axis-windows : mirror only left-axis thumbnails.
@@ -305,6 +307,14 @@ def _axis_order_label(base_order: str, reverse: bool) -> str:
     return f"{base_order}{suffix}"
 
 
+def _cell_text_color(value: float, vmin: float, vmax: float) -> str:
+    # Use readable text for the viridis-like colormaps used here. Most positive
+    # similarities are green/yellow and read best in black; negative/dark cells
+    # read best in white.
+    threshold = float(vmin) + 0.45 * (float(vmax) - float(vmin))
+    return "black" if float(value) >= threshold else "white"
+
+
 def save_self_similarity_figure(sim_model: np.ndarray, image: Image.Image, args, out_path: str):
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     n = int(sim_model.shape[0])
@@ -397,14 +407,15 @@ def save_self_similarity_figure(sim_model: np.ndarray, image: Image.Image, args,
     if args.cell_values:
         for i in range(n):
             for j in range(n):
+                value = float(sim[i, j])
                 ax_h.text(
                     centers[j],
                     centers[i],
-                    f"{sim[i, j]:.2f}",
+                    f"{value:.2f}",
                     ha="center",
                     va="center",
                     fontsize=float(args.cell_value_fontsize),
-                    color="black" if sim[i, j] > (args.vmin + args.vmax) / 2 else "white",
+                    color=_cell_text_color(value, args.vmin, args.vmax),
                 )
 
     ax_cbar = fig.add_subplot(gs[1, 2])
@@ -442,7 +453,7 @@ def parse_args():
     parser.add_argument("--reverse-y-axis", action="store_true", help="Reverse the left y-axis thumbnails and the heatmap rows.")
     parser.add_argument("--tick-labels", choices=["shown", "model"], default="model", help="Heatmap tick labels show displayed positions or original model indices.")
     parser.add_argument("--axis-slice-mode", choices=["nonoverlap", "window"], default="nonoverlap")
-    parser.add_argument("--axis-cell-pixels", type=int, default=44)
+    parser.add_argument("--axis-cell-pixels", type=int, default=52)
     parser.add_argument("--window-gap-pixels", type=int, default=12)
     parser.add_argument("--x-strip-height", type=int, default=84)
     parser.add_argument("--y-strip-width", type=int, default=108)
@@ -455,8 +466,9 @@ def parse_args():
     parser.add_argument("--cmap", default="viridis")
     parser.add_argument("--vmin", type=float, default=-1.0)
     parser.add_argument("--vmax", type=float, default=1.0)
-    parser.add_argument("--cell-values", action="store_true", help="Write cosine value inside every cell. Useful only for small matrices.")
-    parser.add_argument("--cell-value-fontsize", type=float, default=3.2)
+    parser.add_argument("--cell-values", dest="cell_values", action="store_true", default=True, help="Write cosine value inside every cell. Enabled by default.")
+    parser.add_argument("--no-cell-values", dest="cell_values", action="store_false", help="Hide cosine values inside cells.")
+    parser.add_argument("--cell-value-fontsize", type=float, default=4.0)
     parser.add_argument("--show-all-ticks", action="store_true")
     parser.add_argument("--dpi", type=int, default=180)
     parser.add_argument("--figure-dpi-scale", type=float, default=90.0)
@@ -490,6 +502,7 @@ def main():
     print(
         f"display_order={args.display_order} reverse_x_axis={args.reverse_x_axis} "
         f"reverse_y_axis={args.reverse_y_axis} tick_labels={args.tick_labels} "
+        f"cell_values={args.cell_values} cell_value_fontsize={args.cell_value_fontsize} "
         f"mirror_axis_windows={args.mirror_axis_windows} "
         f"mirror_x_axis_windows={args.mirror_x_axis_windows} "
         f"mirror_y_axis_windows={args.mirror_y_axis_windows}"
