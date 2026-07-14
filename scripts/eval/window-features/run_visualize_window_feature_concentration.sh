@@ -2,6 +2,9 @@
 #
 # Run feature-concentration visualization for one or more Arabic line samples.
 #
+# Default behavior now creates one PNG per model window:
+#   original window image + feature concentration image + early-fusion overlay
+#
 # Default usage:
 #   bash scripts/eval/window-features/run_visualize_window_feature_concentration.sh
 #
@@ -48,6 +51,16 @@ DEVICE="${DEVICE:-cuda}"
 USE_FLIP="${USE_FLIP:-1}"
 NO_BILSTM="${NO_BILSTM:-0}"
 
+# Per-window mode is the default requested visualization.
+SAVE_PER_WINDOW_IMAGES="${SAVE_PER_WINDOW_IMAGES:-1}"
+SAVE_SUMMARY_IMAGE="${SAVE_SUMMARY_IMAGE:-0}"
+SAVE_CSV="${SAVE_CSV:-0}"
+EARLY_FUSION_ALPHA="${EARLY_FUSION_ALPHA:-0.55}"
+PER_WINDOW_IMAGE_WIDTH="${PER_WINDOW_IMAGE_WIDTH:-256}"
+PER_WINDOW_IMAGE_HEIGHT="${PER_WINDOW_IMAGE_HEIGHT:-256}"
+PER_WINDOW_SCALE="${PER_WINDOW_SCALE:-8}"
+PER_WINDOW_DPI="${PER_WINDOW_DPI:-160}"
+
 mkdir -p "${OUT_DIR}"
 
 if [[ ! -f "${SCRIPT}" ]]; then
@@ -70,8 +83,9 @@ fi
 run_one() {
   local idx="$1"
   local which_line="$2"
-  local out_png="${OUT_DIR}/sample_${idx}_line${which_line}_${FEATURE_SPACE}_features.png"
+  local out_png="${OUT_DIR}/sample_${idx}_line${which_line}_${FEATURE_SPACE}_summary.png"
   local out_csv="${OUT_DIR}/sample_${idx}_line${which_line}_${FEATURE_SPACE}_features.csv"
+  local per_window_dir="${PER_WINDOW_DIR:-${OUT_DIR}/sample_${idx}_line${which_line}_${FEATURE_SPACE}_early_fusion_windows}"
 
   local extra_args=()
   if [[ "${USE_FLIP}" == "1" || "${USE_FLIP}" == "true" ]]; then
@@ -80,17 +94,37 @@ run_one() {
   if [[ "${NO_BILSTM}" == "1" || "${NO_BILSTM}" == "true" ]]; then
     extra_args+=(--no-bilstm)
   fi
+  if [[ "${SAVE_PER_WINDOW_IMAGES}" == "1" || "${SAVE_PER_WINDOW_IMAGES}" == "true" ]]; then
+    extra_args+=(
+      --save-per-window-images
+      --per-window-output-dir "${per_window_dir}"
+      --early-fusion-alpha "${EARLY_FUSION_ALPHA}"
+      --per-window-image-width "${PER_WINDOW_IMAGE_WIDTH}"
+      --per-window-image-height "${PER_WINDOW_IMAGE_HEIGHT}"
+      --per-window-scale "${PER_WINDOW_SCALE}"
+      --per-window-dpi "${PER_WINDOW_DPI}"
+    )
+  fi
+  if [[ "${SAVE_SUMMARY_IMAGE}" == "0" || "${SAVE_SUMMARY_IMAGE}" == "false" ]]; then
+    extra_args+=(--no-summary-image)
+  fi
+  if [[ "${SAVE_CSV}" == "0" || "${SAVE_CSV}" == "false" ]]; then
+    extra_args+=(--no-csv)
+  else
+    extra_args+=(--csv-output "${out_csv}")
+  fi
 
   echo "===================================================="
   echo "Feature concentration sample=${idx} line=${which_line}"
   echo "  weights              = ${WEIGHTS}"
   echo "  data-dir             = ${DATA_DIR}"
-  echo "  output               = ${out_png}"
-  echo "  csv                  = ${out_csv}"
+  echo "  per-window-dir       = ${per_window_dir}"
+  echo "  summary-image        = ${SAVE_SUMMARY_IMAGE} (${out_png})"
+  echo "  save-csv             = ${SAVE_CSV} (${out_csv})"
   echo "  feature-space        = ${FEATURE_SPACE}"
   echo "  alignment-space      = ${ALIGNMENT_SPACE}"
   echo "  concentration-metric = ${CONCENTRATION_METRIC}"
-  echo "  feature-normalize    = ${FEATURE_NORMALIZE}"
+  echo "  early-fusion-alpha   = ${EARLY_FUSION_ALPHA}"
   echo "===================================================="
 
   python "${SCRIPT}" \
@@ -99,7 +133,6 @@ run_one() {
     --which-line "${which_line}" \
     --weights "${WEIGHTS}" \
     --output "${out_png}" \
-    --csv-output "${out_csv}" \
     --window-size "${WINDOW_SIZE}" \
     --stride "${STRIDE}" \
     --height "${HEIGHT}" \
