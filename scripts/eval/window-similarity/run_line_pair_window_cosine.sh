@@ -28,6 +28,7 @@ STRIDE="${STRIDE:-16}"
 HEIGHT="${HEIGHT:-128}"
 WIDTH="${WIDTH:-1024}"
 FEATURE_SPACE="${FEATURE_SPACE:-local}"
+ALIGNMENT_SPACE="${ALIGNMENT_SPACE:-contextual}"
 
 # Axis-window visualization.
 # nonoverlap = display centered stride-sized slices to avoid visual overlap.
@@ -37,6 +38,23 @@ AXIS_CELL_PIXELS="${AXIS_CELL_PIXELS:-52}"
 WINDOW_GAP_PIXELS="${WINDOW_GAP_PIXELS:-12}"
 X_STRIP_HEIGHT="${X_STRIP_HEIGHT:-84}"
 Y_STRIP_WIDTH="${Y_STRIP_WIDTH:-108}"
+
+# Axis token labels. Tokens are inferred by hard Span-DTW and shown:
+#   line1 tokens above x-axis windows
+#   line2 tokens left of y-axis windows
+SHOW_AXIS_TOKENS="${SHOW_AXIS_TOKENS:-1}"
+AXIS_TOKEN_FONTSIZE="${AXIS_TOKEN_FONTSIZE:-7.0}"
+X_TOKEN_HEIGHT="${X_TOKEN_HEIGHT:-44}"
+Y_TOKEN_WIDTH="${Y_TOKEN_WIDTH:-72}"
+X_TOKEN_ROTATION="${X_TOKEN_ROTATION:-90}"
+Y_TOKEN_ROTATION="${Y_TOKEN_ROTATION:-0}"
+TEXT_ENCODER_TYPE="${TEXT_ENCODER_TYPE:-}"
+ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_NAME:-}"
+MAX_SPAN_CHARS="${MAX_SPAN_CHARS:-}"
+MAX_TOKEN_CHARS="${MAX_TOKEN_CHARS:-}"
+MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-4}"
+TEMPERATURE="${TEMPERATURE:-0.07}"
+WINDOW_COUNT_PENALTY="${WINDOW_COUNT_PENALTY:-0.01}"
 
 # display-order visual reorders the base view to the physical image layout.
 # REVERSE_X_AXIS=1 additionally reverses the line1 top strip and heatmap columns,
@@ -125,6 +143,29 @@ run_one() {
   else
     extra_args+=(--cell-value-fontsize "${CELL_VALUE_FONTSIZE}")
   fi
+  if [[ "${SHOW_AXIS_TOKENS}" == "0" || "${SHOW_AXIS_TOKENS}" == "false" ]]; then
+    extra_args+=(--no-axis-tokens)
+  else
+    extra_args+=(
+      --axis-token-fontsize "${AXIS_TOKEN_FONTSIZE}"
+      --x-token-height "${X_TOKEN_HEIGHT}"
+      --y-token-width "${Y_TOKEN_WIDTH}"
+      --x-token-rotation "${X_TOKEN_ROTATION}"
+      --y-token-rotation "${Y_TOKEN_ROTATION}"
+    )
+  fi
+  if [[ -n "${TEXT_ENCODER_TYPE}" ]]; then
+    extra_args+=(--text-encoder-type "${TEXT_ENCODER_TYPE}")
+  fi
+  if [[ -n "${ARABIC_TEXT_MODEL_NAME}" ]]; then
+    extra_args+=(--arabic-text-model-name "${ARABIC_TEXT_MODEL_NAME}")
+  fi
+  if [[ -n "${MAX_SPAN_CHARS}" ]]; then
+    extra_args+=(--max-span-chars "${MAX_SPAN_CHARS}")
+  fi
+  if [[ -n "${MAX_TOKEN_CHARS}" ]]; then
+    extra_args+=(--max-token-chars "${MAX_TOKEN_CHARS}")
+  fi
   if [[ "${SHOW_ALL_TICKS}" == "1" || "${SHOW_ALL_TICKS}" == "true" ]]; then
     extra_args+=(--show-all-ticks)
   fi
@@ -138,6 +179,8 @@ run_one() {
   echo "  data-dir              = ${DATA_DIR}"
   echo "  output                = ${out_png}"
   echo "  feature-space         = ${FEATURE_SPACE}"
+  echo "  alignment-space       = ${ALIGNMENT_SPACE}"
+  echo "  show-axis-tokens      = ${SHOW_AXIS_TOKENS}"
   echo "  display-order         = ${DISPLAY_ORDER}"
   echo "  reverse-x-axis        = ${REVERSE_X_AXIS}"
   echo "  reverse-y-axis        = ${REVERSE_Y_AXIS}"
@@ -161,6 +204,10 @@ run_one() {
     --height "${HEIGHT}" \
     --width "${WIDTH}" \
     --feature-space "${FEATURE_SPACE}" \
+    --alignment-space "${ALIGNMENT_SPACE}" \
+    --max-windows-per-span "${MAX_WINDOWS_PER_SPAN}" \
+    --temperature "${TEMPERATURE}" \
+    --window-count-penalty "${WINDOW_COUNT_PENALTY}" \
     --display-order "${DISPLAY_ORDER}" \
     --tick-labels "${TICK_LABELS}" \
     --axis-slice-mode "${AXIS_SLICE_MODE}" \
