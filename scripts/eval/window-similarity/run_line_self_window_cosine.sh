@@ -40,12 +40,19 @@ WINDOW_GAP_PIXELS="${WINDOW_GAP_PIXELS:-12}"
 X_STRIP_HEIGHT="${X_STRIP_HEIGHT:-84}"
 Y_STRIP_WIDTH="${Y_STRIP_WIDTH:-108}"
 
-# display-order visual reorders BOTH axes and the heatmap to the physical image
-# layout. With USE_FLIP=1, this flips the model-order matrix and makes the top
-# and left thumbnails compatible with the cosine cells.
+# display-order visual reorders the base view to the physical image layout.
+# REVERSE_X_AXIS=1 additionally reverses the top strip and heatmap columns only,
+# which fixes cases where the upper x-axis reads in the wrong direction.
 DISPLAY_ORDER="${DISPLAY_ORDER:-visual}"
+REVERSE_X_AXIS="${REVERSE_X_AXIS:-1}"
+REVERSE_Y_AXIS="${REVERSE_Y_AXIS:-0}"
 TICK_LABELS="${TICK_LABELS:-model}"
-MIRROR_AXIS_WINDOWS="${MIRROR_AXIS_WINDOWS:-1}"
+
+# Mirror controls. MIRROR_AXIS_WINDOWS mirrors both axes. The x/y-specific flags
+# let you fix only one axis if needed.
+MIRROR_AXIS_WINDOWS="${MIRROR_AXIS_WINDOWS:-0}"
+MIRROR_X_AXIS_WINDOWS="${MIRROR_X_AXIS_WINDOWS:-1}"
+MIRROR_Y_AXIS_WINDOWS="${MIRROR_Y_AXIS_WINDOWS:-0}"
 
 CMAP="${CMAP:-viridis}"
 VMIN="${VMIN:--1.0}"
@@ -94,8 +101,20 @@ run_one() {
   if [[ "${NO_BILSTM}" == "1" || "${NO_BILSTM}" == "true" ]]; then
     extra_args+=(--no-bilstm)
   fi
+  if [[ "${REVERSE_X_AXIS}" == "1" || "${REVERSE_X_AXIS}" == "true" ]]; then
+    extra_args+=(--reverse-x-axis)
+  fi
+  if [[ "${REVERSE_Y_AXIS}" == "1" || "${REVERSE_Y_AXIS}" == "true" ]]; then
+    extra_args+=(--reverse-y-axis)
+  fi
   if [[ "${MIRROR_AXIS_WINDOWS}" == "1" || "${MIRROR_AXIS_WINDOWS}" == "true" ]]; then
     extra_args+=(--mirror-axis-windows)
+  fi
+  if [[ "${MIRROR_X_AXIS_WINDOWS}" == "1" || "${MIRROR_X_AXIS_WINDOWS}" == "true" ]]; then
+    extra_args+=(--mirror-x-axis-windows)
+  fi
+  if [[ "${MIRROR_Y_AXIS_WINDOWS}" == "1" || "${MIRROR_Y_AXIS_WINDOWS}" == "true" ]]; then
+    extra_args+=(--mirror-y-axis-windows)
   fi
   if [[ "${Y_AXIS_ROTATE}" == "0" || "${Y_AXIS_ROTATE}" == "false" ]]; then
     extra_args+=(--no-y-axis-rotate)
@@ -112,16 +131,20 @@ run_one() {
 
   echo "===================================================="
   echo "Self window cosine sample=${idx} line=${which_line}"
-  echo "  weights             = ${WEIGHTS}"
-  echo "  data-dir            = ${DATA_DIR}"
-  echo "  output              = ${out_png}"
-  echo "  feature-space       = ${FEATURE_SPACE}"
-  echo "  display-order       = ${DISPLAY_ORDER}"
-  echo "  mirror-axis-windows = ${MIRROR_AXIS_WINDOWS}"
-  echo "  axis-slice-mode     = ${AXIS_SLICE_MODE}"
-  echo "  axis-cell-pixels    = ${AXIS_CELL_PIXELS}"
-  echo "  window-gap-pixels   = ${WINDOW_GAP_PIXELS}"
-  echo "  use-flip            = ${USE_FLIP}"
+  echo "  weights               = ${WEIGHTS}"
+  echo "  data-dir              = ${DATA_DIR}"
+  echo "  output                = ${out_png}"
+  echo "  feature-space         = ${FEATURE_SPACE}"
+  echo "  display-order         = ${DISPLAY_ORDER}"
+  echo "  reverse-x-axis        = ${REVERSE_X_AXIS}"
+  echo "  reverse-y-axis        = ${REVERSE_Y_AXIS}"
+  echo "  mirror-axis-windows   = ${MIRROR_AXIS_WINDOWS}"
+  echo "  mirror-x-axis-windows = ${MIRROR_X_AXIS_WINDOWS}"
+  echo "  mirror-y-axis-windows = ${MIRROR_Y_AXIS_WINDOWS}"
+  echo "  axis-slice-mode       = ${AXIS_SLICE_MODE}"
+  echo "  axis-cell-pixels      = ${AXIS_CELL_PIXELS}"
+  echo "  window-gap-pixels     = ${WINDOW_GAP_PIXELS}"
+  echo "  use-flip              = ${USE_FLIP}"
   echo "===================================================="
 
   python "${SCRIPT}" \
