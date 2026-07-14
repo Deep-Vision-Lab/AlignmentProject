@@ -1,30 +1,10 @@
 #!/usr/bin/env python3
 """Visualize feature concentration and predicted/aligned token for every image window.
 
-Examples:
-  python scripts/eval/window-features/visualize_window_feature_concentration.py \
-    --data-dir DataSet/Synthetic_Arabic \
-    --index 1 \
-    --which-line 1 \
-    --weights Weights/improve_model_win32_fastpair/model_latest.pth \
-    --output Results/Evaluation/Feature_Concentration/sample1_line1.png \
-    --window-size 32 \
-    --stride 16 \
-    --height 128 \
-    --width 1024 \
-    --use-flip
-
-What the figure shows:
-  1. The line image with every model window drawn on top. Each window is colored
-     by a concentration score computed from its feature vector.
-  2. A per-window concentration plot. The x-axis label under every window is the
-     span/token aligned to that window by hard Span-DTW.
-  3. A feature-dimension heatmap: x-axis is windows, y-axis is embedding feature
-     dimensions. This makes it easy to see whether a window activates many
-     dimensions or concentrates on a few.
-
-The script also writes a CSV next to the figure with:
-  window_index, x0, x1, token, concentration, top feature dimensions.
+The script can create either a summary image for the full line, or one PNG per
+model window.  The per-window mode is useful for debugging local embeddings: it
+shows the window crop, the feature-concentration image, and an early-fusion
+blend of both for every window.
 """
 from __future__ import annotations
 
@@ -32,9 +12,10 @@ import argparse
 import csv
 import math
 import os
+import re
 import sys
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -77,6 +58,13 @@ def display_text(text: str) -> str:
         except Exception:
             return text
     return text
+
+
+def safe_filename_token(text: str, max_len: int = 24) -> str:
+    text = str(text or "empty").strip() or "empty"
+    text = re.sub(r"\s+", "_", text)
+    text = re.sub(r"[^\w\-\u0600-\u06FF]+", "", text)
+    return text[:max_len] or "token"
 
 
 def load_image(path: str, height: int, width: int) -> Tuple[Image.Image, torch.Tensor]:
@@ -288,6 +276,93 @@ def window_pixel_range(window_idx: int, num_windows: int, window_size: int, stri
     return x0, x1
 
 
+def crop_window_image(pil_img: Image.Image, window_idx: int, num_windows: int, args) -> Tuple[Image.Image, int, int]:
+    x0, x1 = window_pixel_range(window_idx, num_windows, args.window_size, args.stride, pil_img.width, args.use_flip)
+    if x1 <= x0:
+        x1 = min(pil_img.width, x0 + max(1, args.window_size))
+    crop = pil_img.crop((x0, 0, x1, pil_img.height)).convert("RGB")
+    return crop, x0, x1
+
+
+def feature_vector_grid(feature_vec: torch.Tensor) -> np.ndarray:
+    values = torch.abs(feature_vec.detach().float()).cpu().numpy()
+    dim = int(values.shape[0])
+    cols = int(math.ceil(math.sqrt(dim)))
+    rows = int(math.ceil(dim / cols))
+    grid = np.zeros((rows, cols), dtype=np.float32)
+    grid.flat[:dim] = values
+    if grid.max() > 1e-8:
+        grid = grid / (grid.max() + 1e-8)
+    return grid
+
+
+def feature_vector_colored_image(feature_vec: torch.Tensor, width: int, height: int, cmap_name: str) -> Image.Image:
+    grid = feature_vector_grid(feature_vec)
+    cmap = plt.get_cmap(cmap_name)
+    rgba = cmap(grid)
+    rgb = (rgba[..., :3] * 255.0).astype(np.uint8)
+    return Image.fromarray(rgb, mode="RGB").resize((int(width), int(height)), Image.NEAREST)
+
+
+def make_early_fusion(crop: Image.Image, heatmap: Image.Image, alpha: float) -> Image.Image:
+    crop = crop.convert("RGB")
+    heatmap = heatmap.resize(crop.size, Image.NEAREST).convert("RGB")
+    alpha = max(0.0, min(1.0, float(alpha)))
+    return Image.blend(crop, heatmap, alpha=alpha)
+
+
+def top_feature_dims_for_one(feature_vec: torch.Tensor, top_k: int) -> str:
+    z = torch.abs(feature_vec.detach().float()).cpu()
+    k = min(max(1, int(top_k)), z.numel())
+    idx = torch.topk(z, k=k).indices.tolist()
+    return ";".join(str(int(x)) for x in idx)
+
+
+def save_per_window_images(
+    pil_img: Image.Image,
+    labels: List[str],
+    concentration: np.ndarray,
+    features: torch.Tensor,
+    args,
+    out_dir: str,
+):
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    num_windows = len(labels)
+
+    for i in range(num_windows):
+        crop, x0, x1 = crop_window_image(pil_img, i, num_windows, args)
+        # Upscale narrow windows so the visual crop is readable.
+        display_w = max(int(args.per_window_image_width), int(crop.width) * int(args.per_window_scale))
+        display_h = int(args.per_window_image_height)
+        crop_display = crop.resize((display_w, display_h), Image.BILINEAR)
+        heatmap = feature_vector_colored_image(features[i], display_w, display_h, args.cmap)
+        fused = make_early_fusion(crop_display, heatmap, args.early_fusion_alpha)
+        token_label = display_text(labels[i])
+        top_dims = top_feature_dims_for_one(features[i], args.csv_top_features)
+
+        fig = plt.figure(figsize=(12, 4), constrained_layout=True)
+        axes = fig.subplots(1, 3)
+        panels = [
+            (crop_display, "window image"),
+            (heatmap, "feature concentration image"),
+            (fused, f"early fusion alpha={args.early_fusion_alpha:.2f}"),
+        ]
+        for ax, (img, title) in zip(axes, panels):
+            ax.imshow(img)
+            ax.set_title(title, fontsize=10)
+            ax.axis("off")
+
+        fig.suptitle(
+            f"window {i:03d} | x={x0}:{x1} | token/span={token_label} | "
+            f"concentration={float(concentration[i]):.4f} | top dims={top_dims}",
+            fontsize=11,
+        )
+        filename = f"window_{i:03d}_x{x0:04d}_{x1:04d}_{safe_filename_token(labels[i])}.png"
+        fig.savefig(out_path / filename, dpi=args.per_window_dpi, bbox_inches="tight")
+        plt.close(fig)
+
+
 def top_feature_dims(features: torch.Tensor, top_k: int) -> List[str]:
     z = torch.abs(features.detach().float()).cpu()
     k = min(max(1, int(top_k)), z.shape[1])
@@ -397,7 +472,6 @@ def plot_visualization(
     ax_feat.set_yticks(np.arange(0, features.shape[1], y_step))
     fig.colorbar(im, ax=ax_feat, fraction=0.018, pad=0.01).set_label("|feature activation|")
 
-    # Mark Span-DTW window groups on the feature heatmap.
     for step in path:
         w0 = int(step["window_start"])
         w1 = int(step["window_end"])
@@ -411,7 +485,7 @@ def plot_visualization(
     ax_note.text(
         0,
         0.4,
-        "CSV contains exact window index, visual x-range, token/span label, concentration score, and top feature dimensions.",
+        "Per-window images can be enabled with --save-per-window-images. CSV can be disabled with --no-csv.",
         fontsize=10,
     )
 
@@ -428,8 +502,17 @@ def parse_args():
     parser.add_argument("--data-dir", default=None, help="Dataset root with images/ and texts/ folders.")
     parser.add_argument("--index", type=int, default=None, help="1-based dataset sample index.")
     parser.add_argument("--which-line", type=int, choices=[1, 2], default=1, help="Use img1/text1 or img2/text2 in dataset mode.")
-    parser.add_argument("--output", required=True, help="Output PNG path.")
+    parser.add_argument("--output", required=True, help="Output PNG path for the optional summary image.")
     parser.add_argument("--csv-output", default=None, help="Optional CSV output path. Defaults to output path with .csv suffix.")
+    parser.add_argument("--no-csv", action="store_true", help="Do not save the CSV file.")
+    parser.add_argument("--no-summary-image", action="store_true", help="Do not save the full-line summary image.")
+    parser.add_argument("--save-per-window-images", action="store_true", help="Save one image per model window.")
+    parser.add_argument("--per-window-output-dir", default=None, help="Directory for per-window PNG files.")
+    parser.add_argument("--early-fusion-alpha", type=float, default=0.55, help="Blend weight for feature heatmap over window image.")
+    parser.add_argument("--per-window-image-width", type=int, default=256)
+    parser.add_argument("--per-window-image-height", type=int, default=256)
+    parser.add_argument("--per-window-scale", type=int, default=8)
+    parser.add_argument("--per-window-dpi", type=int, default=160)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--height", type=int, default=128)
     parser.add_argument("--width", type=int, default=1024)
@@ -492,12 +575,20 @@ def main():
     labels, path, _encoding = aligned_tokens_for_windows(text_encoder, text, align_features, args)
     concentration = feature_concentration(features, metric=args.concentration_metric, top_k=args.concentration_top_k)
 
-    plot_visualization(pil_img, labels, concentration, features, path, args, args.output)
-    csv_path = args.csv_output or str(Path(args.output).with_suffix(".csv"))
-    save_window_csv(csv_path, labels, concentration, features, args, len(labels), pil_img.width)
+    if not args.no_summary_image:
+        plot_visualization(pil_img, labels, concentration, features, path, args, args.output)
+        print(f"saved summary figure: {args.output}")
 
-    print(f"saved figure: {args.output}")
-    print(f"saved csv: {csv_path}")
+    if args.save_per_window_images:
+        per_window_dir = args.per_window_output_dir or str(Path(args.output).with_suffix("")) + "_windows"
+        save_per_window_images(pil_img, labels, concentration, features, args, per_window_dir)
+        print(f"saved per-window images: {per_window_dir}")
+
+    if not args.no_csv:
+        csv_path = args.csv_output or str(Path(args.output).with_suffix(".csv"))
+        save_window_csv(csv_path, labels, concentration, features, args, len(labels), pil_img.width)
+        print(f"saved csv: {csv_path}")
+
     print(f"windows={len(labels)} feature_dim={features.shape[1]} text_length={len(text)}")
 
 
