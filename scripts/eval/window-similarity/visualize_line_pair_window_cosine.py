@@ -7,8 +7,11 @@ This creates a line-pair window similarity heatmap:
     y-axis = windows from line2
     cell(row, col) = cosine(line2_window_row_embedding, line1_window_col_embedding)
 
-The top and left axes show the actual separated window thumbnails, so every
-cosine cell is visually tied to the two windows it compares.
+The top and left axes show separated window thumbnails.  By default, the script
+also shows the Span-DTW assigned token/span for every displayed window:
+
+    line1 tokens are written above the x-axis window thumbnails
+    line2 tokens are written to the left of the y-axis window thumbnails
 """
 from __future__ import annotations
 
@@ -16,7 +19,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -30,7 +33,18 @@ PROJECT_ROOT = SCRIPT_DIR.parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from arabic_span_text_encoder import ArabicSpanTextEncoder  # noqa: E402
+from arabic_token_text_encoder import ArabicTokenTextEncoder  # noqa: E402
 from embeddingModel import EmbeddingModel  # noqa: E402
+from span_alignment_loss import hard_span_dtw_path  # noqa: E402
+from textEmbedding import TextEmbedding  # noqa: E402
+
+try:
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+except Exception:  # pragma: no cover - optional visualization dependency
+    arabic_reshaper = None
+    get_display = None
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
@@ -41,6 +55,19 @@ try:
 except AttributeError:  # Pillow<9 compatibility
     _RESAMPLE_BILINEAR = Image.BILINEAR
     _ROTATE_90 = Image.ROTATE_90
+
+
+def display_text(text: str) -> str:
+    """Shape Arabic labels when optional bidi packages are installed."""
+    if text is None:
+        return ""
+    text = str(text)
+    if arabic_reshaper is not None and get_display is not None:
+        try:
+            return get_display(arabic_reshaper.reshape(text))
+        except Exception:
+            return text
+    return text
 
 
 def infer_image_paths(args) -> Tuple[str, str]:
@@ -55,6 +82,29 @@ def infer_image_paths(args) -> Tuple[str, str]:
     image1 = os.path.join(args.data_dir, "images", f"img1_{int(args.index)}.png")
     image2 = os.path.join(args.data_dir, "images", f"img2_{int(args.index)}.png")
     return image1, image2
+
+
+def infer_text_paths(args) -> Tuple[Optional[str], Optional[str]]:
+    if args.text1 is not None or args.text2 is not None:
+        return args.text1_path, args.text2_path
+    if args.text1_path is not None or args.text2_path is not None:
+        return args.text1_path, args.text2_path
+    if args.data_dir is None or args.index is None:
+        return None, None
+    text1 = os.path.join(args.data_dir, "texts", f"text1_{int(args.index)}.txt")
+    text2 = os.path.join(args.data_dir, "texts", f"text2_{int(args.index)}.txt")
+    return text1, text2
+
+
+def read_text(text_arg: Optional[str], text_path: Optional[str]) -> Optional[str]:
+    if text_arg is not None:
+        return text_arg.strip()
+    if text_path is None:
+        return None
+    if not os.path.exists(text_path):
+        return None
+    with open(text_path, "r", encoding="utf-8") as handle:
+        return handle.read().strip()
 
 
 def load_image(path: str, height: int, width: int) -> Tuple[Image.Image, torch.Tensor]:
@@ -106,19 +156,63 @@ def build_image_model(args, cfg: dict, device: str) -> EmbeddingModel:
     ).to(device)
 
 
+def build_text_encoder(args, cfg: dict, loaded, device: str):
+    text_encoder_type = str(args.text_encoder_type or cfg.get("text_encoder_type", "arabic_span")).lower()
+    vector_size = int(args.vector_size or cfg.get("vector_size", 128))
+
+    if text_encoder_type == "arabic_span":
+        encoder = ArabicSpanTextEncoder(
+            model_name=args.arabic_text_model_name or cfg.get("arabic_text_model_name", "aubmindlab/bert-base-arabertv02"),
+            output_dim=vector_size,
+            max_span_chars=int(args.max_span_chars or cfg.get("max_text_span_chars", 3)),
+            freeze_backbone=True,
+            device=device,
+            strip_text_edges=bool(cfg.get("strip_span_text_edges", True)),
+            cache_size=int(cfg.get("span_feature_cache_size", 2048)),
+            cache_dtype=str(cfg.get("span_feature_cache_dtype", "float16")),
+        )
+    elif text_encoder_type == "arabic_token":
+        encoder = ArabicTokenTextEncoder(
+            model_name=args.arabic_text_model_name or cfg.get("arabic_text_model_name", "aubmindlab/bert-base-arabertv02"),
+            output_dim=vector_size,
+            max_token_chars=int(args.max_token_chars or cfg.get("max_text_token_chars", 3)),
+            freeze_backbone=True,
+            device=device,
+        )
+    elif text_encoder_type == "char":
+        encoder = TextEmbedding(embedding_dim=vector_size)
+        for parameter in encoder.parameters():
+            parameter.requires_grad_(False)
+        encoder = encoder.to(device)
+    else:
+        raise ValueError(f"Unknown text encoder type: {text_encoder_type!r}")
+
+    if isinstance(loaded, dict):
+        state = loaded.get("text_encoder_state_dict") or loaded.get("text_embedder_state_dict")
+        if state:
+            missing, unexpected = encoder.load_state_dict(state, strict=False)
+            if missing or unexpected:
+                print(
+                    f"[warn] text encoder state loaded with missing={len(missing)} unexpected={len(unexpected)}",
+                    flush=True,
+                )
+        else:
+            print("[warn] checkpoint has no text encoder state; axis token assignments may be unreliable.", flush=True)
+    encoder.eval()
+    return encoder
+
+
 def get_window_embeddings_pair(
     model: EmbeddingModel,
     image1_tensor: torch.Tensor,
     image2_tensor: torch.Tensor,
     device: str,
-    feature_space: str,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     model.eval()
     images = torch.cat([image1_tensor, image2_tensor], dim=0).to(device)
     with torch.no_grad():
         contextual, local = model(images, return_local=True)
-    emb = local if feature_space == "local" else contextual
-    return emb[0].float(), emb[1].float()
+    return contextual[0].float(), local[0].float(), contextual[1].float(), local[1].float()
 
 
 def cosine_matrix(line1_features: torch.Tensor, line2_features: torch.Tensor) -> np.ndarray:
@@ -127,6 +221,44 @@ def cosine_matrix(line1_features: torch.Tensor, line2_features: torch.Tensor) ->
     z2 = F.normalize(line2_features.float(), p=2, dim=-1)
     sim = torch.matmul(z2, z1.T)
     return sim.detach().cpu().numpy()
+
+
+def encode_text(text_encoder, text: str):
+    try:
+        return text_encoder(text, use_cache=True)
+    except TypeError:
+        return text_encoder(text)
+
+
+def aligned_tokens_for_windows(text_encoder, text: Optional[str], image_embeddings_for_alignment: torch.Tensor, args) -> List[str]:
+    num_windows = int(image_embeddings_for_alignment.shape[0])
+    if not text:
+        return ["?"] * num_windows
+    try:
+        encoding = encode_text(text_encoder, text)
+        norm_img = F.normalize(image_embeddings_for_alignment.float(), p=2, dim=-1)
+        path = hard_span_dtw_path(
+            encoding,
+            norm_img,
+            temperature=float(args.temperature),
+            max_windows=int(args.max_windows_per_span),
+            window_count_penalty=float(args.window_count_penalty),
+        )
+    except Exception as exc:
+        print(f"[warn] failed to assign axis tokens: {exc}", flush=True)
+        return ["?"] * num_windows
+
+    labels = ["?"] * num_windows
+    for step in path:
+        span_idx = int(step["span_idx"])
+        fallback = "?"
+        if hasattr(encoding, "texts") and 0 <= span_idx < len(encoding.texts):
+            fallback = str(encoding.texts[span_idx])
+        token = str(step.get("text", fallback))
+        for w in range(int(step["window_start"]), int(step["window_end"])):
+            if 0 <= w < num_windows:
+                labels[w] = token
+    return labels
 
 
 def base_display_indices(num_windows: int, args) -> np.ndarray:
@@ -217,6 +349,7 @@ def vstack(images):
 def make_x_axis_strip(image: Image.Image, x_indices: Sequence[int], num_windows: int, args) -> np.ndarray:
     cells = []
     gap = int(args.window_gap_pixels)
+    token_h = int(args.x_token_height) if args.show_axis_tokens else 0
     mirror = bool(args.mirror_axis_windows or args.mirror_x_axis_windows)
     for model_idx in x_indices:
         crop = crop_visual_slice(
@@ -233,19 +366,20 @@ def make_x_axis_strip(image: Image.Image, x_indices: Sequence[int], num_windows:
         crop = crop.resize((int(args.axis_cell_pixels), int(args.x_strip_height)), _RESAMPLE_BILINEAR)
         cell = Image.new(
             "RGB",
-            (int(args.axis_cell_pixels) + gap, int(args.x_strip_height)),
+            (int(args.axis_cell_pixels) + gap, token_h + int(args.x_strip_height)),
             (255, 255, 255),
         )
-        cell.paste(crop, (0, 0))
+        cell.paste(crop, (0, token_h))
         cells.append(cell)
     if cells:
-        cells[-1] = cells[-1].crop((0, 0, int(args.axis_cell_pixels), int(args.x_strip_height)))
+        cells[-1] = cells[-1].crop((0, 0, int(args.axis_cell_pixels), token_h + int(args.x_strip_height)))
     return np.array(hstack(cells))
 
 
 def make_y_axis_strip(image: Image.Image, y_indices: Sequence[int], num_windows: int, args) -> np.ndarray:
     cells = []
     gap = int(args.window_gap_pixels)
+    token_w = int(args.y_token_width) if args.show_axis_tokens else 0
     mirror = bool(args.mirror_axis_windows or args.mirror_y_axis_windows)
     for model_idx in y_indices:
         crop = crop_visual_slice(
@@ -266,13 +400,13 @@ def make_y_axis_strip(image: Image.Image, y_indices: Sequence[int], num_windows:
         crop = crop.resize((int(args.y_strip_width), int(args.axis_cell_pixels)), _RESAMPLE_BILINEAR)
         cell = Image.new(
             "RGB",
-            (int(args.y_strip_width), int(args.axis_cell_pixels) + gap),
+            (token_w + int(args.y_strip_width), int(args.axis_cell_pixels) + gap),
             (255, 255, 255),
         )
-        cell.paste(crop, (0, 0))
+        cell.paste(crop, (token_w, 0))
         cells.append(cell)
     if cells:
-        cells[-1] = cells[-1].crop((0, 0, int(args.y_strip_width), int(args.axis_cell_pixels)))
+        cells[-1] = cells[-1].crop((0, 0, token_w + int(args.y_strip_width), int(args.axis_cell_pixels)))
     return np.array(vstack(cells))
 
 
@@ -307,6 +441,8 @@ def save_pair_similarity_figure(
     sim_model: np.ndarray,
     line1_image: Image.Image,
     line2_image: Image.Image,
+    line1_labels: Sequence[str],
+    line2_labels: Sequence[str],
     args,
     out_path: str,
 ):
@@ -320,14 +456,16 @@ def save_pair_similarity_figure(
     heatmap_rgb = make_gap_heatmap_image(sim, args)
 
     cbar_width = int(args.colorbar_width)
-    fig_w = max(10.0, (args.y_strip_width + heatmap_rgb.shape[1] + cbar_width) / float(args.figure_dpi_scale))
-    fig_h = max(10.0, (args.x_strip_height + heatmap_rgb.shape[0]) / float(args.figure_dpi_scale))
+    y_axis_width = int(y_strip.shape[1])
+    x_axis_height = int(x_strip.shape[0])
+    fig_w = max(10.0, (y_axis_width + heatmap_rgb.shape[1] + cbar_width) / float(args.figure_dpi_scale))
+    fig_h = max(10.0, (x_axis_height + heatmap_rgb.shape[0]) / float(args.figure_dpi_scale))
     fig = plt.figure(figsize=(fig_w, fig_h), constrained_layout=False)
     gs = fig.add_gridspec(
         2,
         3,
-        width_ratios=[args.y_strip_width, heatmap_rgb.shape[1], cbar_width],
-        height_ratios=[args.x_strip_height, heatmap_rgb.shape[0]],
+        width_ratios=[y_axis_width, heatmap_rgb.shape[1], cbar_width],
+        height_ratios=[x_axis_height, heatmap_rgb.shape[0]],
         wspace=0.0,
         hspace=0.0,
     )
@@ -363,6 +501,34 @@ def save_pair_similarity_figure(
     gap = int(args.window_gap_pixels)
     x_centers = np.arange(n1) * (cell + gap) + cell / 2.0
     y_centers = np.arange(n2) * (cell + gap) + cell / 2.0
+
+    if args.show_axis_tokens:
+        shown_line1_labels = [str(line1_labels[int(idx)]) if 0 <= int(idx) < len(line1_labels) else "?" for idx in x_indices]
+        shown_line2_labels = [str(line2_labels[int(idx)]) if 0 <= int(idx) < len(line2_labels) else "?" for idx in y_indices]
+        token_y = max(4.0, float(args.x_token_height) * 0.52)
+        for pos, token in enumerate(shown_line1_labels):
+            ax_x.text(
+                x_centers[pos],
+                token_y,
+                display_text(token),
+                ha="center",
+                va="center",
+                rotation=float(args.x_token_rotation),
+                fontsize=float(args.axis_token_fontsize),
+                clip_on=True,
+            )
+        token_x = max(4.0, float(args.y_token_width) * 0.50)
+        for pos, token in enumerate(shown_line2_labels):
+            ax_y.text(
+                token_x,
+                y_centers[pos],
+                display_text(token),
+                ha="center",
+                va="center",
+                rotation=float(args.y_token_rotation),
+                fontsize=float(args.axis_token_fontsize),
+                clip_on=True,
+            )
 
     if args.show_all_ticks or n1 <= 32:
         x_tick_pos = np.arange(n1)
@@ -434,7 +600,11 @@ def parse_args():
     parser.add_argument("--weights", required=True, help="Checkpoint path with image model weights.")
     parser.add_argument("--line1", default=None, help="Path to line1 image. Alternative to --data-dir/--index.")
     parser.add_argument("--line2", default=None, help="Path to line2 image. Alternative to --data-dir/--index.")
-    parser.add_argument("--data-dir", default=None, help="Dataset root with images/ folder.")
+    parser.add_argument("--text1", default=None, help="Line1 text. Optional; used for axis token labels.")
+    parser.add_argument("--text2", default=None, help="Line2 text. Optional; used for axis token labels.")
+    parser.add_argument("--text1-path", default=None, help="Path to line1 text. Defaults to data-dir/texts/text1_INDEX.txt.")
+    parser.add_argument("--text2-path", default=None, help="Path to line2 text. Defaults to data-dir/texts/text2_INDEX.txt.")
+    parser.add_argument("--data-dir", default=None, help="Dataset root with images/ and texts/ folders.")
     parser.add_argument("--index", type=int, default=None, help="1-based dataset sample index.")
     parser.add_argument("--output", required=True, help="Output PNG path.")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -444,6 +614,7 @@ def parse_args():
     parser.add_argument("--stride", type=int, default=None)
     parser.add_argument("--vector-size", type=int, default=None)
     parser.add_argument("--feature-space", choices=["local", "contextual"], default="local")
+    parser.add_argument("--alignment-space", choices=["local", "contextual"], default="contextual", help="Embedding space used to assign tokens to windows with Span-DTW.")
     parser.add_argument("--use-flip", action="store_true", help="Use RTL flipped model-window order, same as Arabic training/eval.")
     parser.add_argument("--no-bilstm", action="store_true")
     parser.add_argument("--display-order", choices=["model", "visual"], default="visual", help="Base order for axes/heatmap before optional axis-specific reversal.")
@@ -455,6 +626,20 @@ def parse_args():
     parser.add_argument("--window-gap-pixels", type=int, default=12)
     parser.add_argument("--x-strip-height", type=int, default=84)
     parser.add_argument("--y-strip-width", type=int, default=108)
+    parser.add_argument("--show-axis-tokens", dest="show_axis_tokens", action="store_true", default=True, help="Show Span-DTW token/span labels on the axes.")
+    parser.add_argument("--no-axis-tokens", dest="show_axis_tokens", action="store_false", help="Hide token/span labels on the axes.")
+    parser.add_argument("--axis-token-fontsize", type=float, default=7.0)
+    parser.add_argument("--x-token-height", type=int, default=44, help="White band above x-axis thumbnails for line1 tokens.")
+    parser.add_argument("--y-token-width", type=int, default=72, help="White band left of y-axis thumbnails for line2 tokens.")
+    parser.add_argument("--x-token-rotation", type=float, default=90.0)
+    parser.add_argument("--y-token-rotation", type=float, default=0.0)
+    parser.add_argument("--text-encoder-type", choices=["arabic_span", "arabic_token", "char"], default=None)
+    parser.add_argument("--arabic-text-model-name", default=None)
+    parser.add_argument("--max-span-chars", type=int, default=None)
+    parser.add_argument("--max-token-chars", type=int, default=None)
+    parser.add_argument("--max-windows-per-span", type=int, default=4)
+    parser.add_argument("--temperature", type=float, default=0.07)
+    parser.add_argument("--window-count-penalty", type=float, default=0.01)
     parser.add_argument("--mirror-axis-windows", action="store_true")
     parser.add_argument("--mirror-x-axis-windows", action="store_true")
     parser.add_argument("--mirror-y-axis-windows", action="store_true")
@@ -478,6 +663,9 @@ def parse_args():
 def main():
     args = parse_args()
     image1_path, image2_path = infer_image_paths(args)
+    text1_path, text2_path = infer_text_paths(args)
+    text1 = read_text(args.text1, text1_path)
+    text2 = read_text(args.text2, text2_path)
 
     loaded = torch.load(args.weights, map_location=args.device)
     cfg = checkpoint_config(loaded)
@@ -487,33 +675,54 @@ def main():
         args.stride = int(cfg.get("stride", max(1, args.window_size // 2)))
     if args.vector_size is None:
         args.vector_size = int(cfg.get("vector_size", 128))
+    if args.max_span_chars is None:
+        args.max_span_chars = int(cfg.get("max_text_span_chars", 3))
+    if args.max_token_chars is None:
+        args.max_token_chars = int(cfg.get("max_text_token_chars", 3))
+    if args.max_windows_per_span is None:
+        args.max_windows_per_span = int(cfg.get("max_windows_per_span", 4))
+    if "contrastive_temperature" in cfg and args.temperature == 0.07:
+        args.temperature = float(cfg.get("contrastive_temperature", 0.07))
 
     line1_img, line1_tensor = load_image(image1_path, args.height, args.width)
     line2_img, line2_tensor = load_image(image2_path, args.height, args.width)
     model = build_image_model(args, cfg, args.device)
     model.load_state_dict(extract_image_state(loaded), strict=False)
 
-    line1_features, line2_features = get_window_embeddings_pair(
+    line1_contextual, line1_local, line2_contextual, line2_local = get_window_embeddings_pair(
         model,
         line1_tensor,
         line2_tensor,
         args.device,
-        args.feature_space,
     )
+    line1_features = line1_local if args.feature_space == "local" else line1_contextual
+    line2_features = line2_local if args.feature_space == "local" else line2_contextual
+    line1_align = line1_local if args.alignment_space == "local" else line1_contextual
+    line2_align = line2_local if args.alignment_space == "local" else line2_contextual
     sim = cosine_matrix(line1_features, line2_features)
 
-    save_pair_similarity_figure(sim, line1_img, line2_img, args, args.output)
+    if args.show_axis_tokens:
+        text_encoder = build_text_encoder(args, cfg, loaded, args.device)
+        line1_labels = aligned_tokens_for_windows(text_encoder, text1, line1_align, args)
+        line2_labels = aligned_tokens_for_windows(text_encoder, text2, line2_align, args)
+    else:
+        line1_labels = [""] * int(line1_features.shape[0])
+        line2_labels = [""] * int(line2_features.shape[0])
+
+    save_pair_similarity_figure(sim, line1_img, line2_img, line1_labels, line2_labels, args, args.output)
     print(f"saved line1-line2 window cosine heatmap: {args.output}")
     print(f"line1={image1_path}")
     print(f"line2={image2_path}")
+    print(f"text1={text1_path if text1_path else 'provided' if text1 else 'missing'}")
+    print(f"text2={text2_path if text2_path else 'provided' if text2 else 'missing'}")
     print(
         f"line1_windows={line1_features.shape[0]} line2_windows={line2_features.shape[0]} "
-        f"feature_dim={line1_features.shape[1]} feature_space={args.feature_space}"
+        f"feature_dim={line1_features.shape[1]} feature_space={args.feature_space} alignment_space={args.alignment_space}"
     )
     print(
         f"display_order={args.display_order} reverse_x_axis={args.reverse_x_axis} "
         f"reverse_y_axis={args.reverse_y_axis} tick_labels={args.tick_labels} "
-        f"cell_values={args.cell_values}"
+        f"cell_values={args.cell_values} show_axis_tokens={args.show_axis_tokens}"
     )
 
 
