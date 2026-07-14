@@ -10,8 +10,10 @@ image-image training:
    gradients for the retrieval task.
 2. Limit image-pair pseudo-alignment mining to a subset of samples per batch.
 3. Run local hard-negative mining every N batches and only on a subset of the
-   batch when it runs. This is the main speed fix after the 2026-07-14 logs:
-   local hard-negative batches were ~50s while non-local batches were ~23s.
+   batch when it runs.
+4. Keep NUM_NEGATIVES as the full generated pool, but optionally score only a
+   rotating subset of negatives with Span-DTW each batch. This preserves varied
+   negatives across training while cutting the dominant JAX DTW calls.
 
 The defaults are controlled through Parameters.py / environment variables and
 can be overridden from the sbatch script.
@@ -70,6 +72,29 @@ def _select_local_subset(pos_texts, norm_context_img, norm_local_img, ink_ratios
     return selected_texts, selected_context, selected_local, selected_ink
 
 
+def _select_active_negatives(neg_texts, active_per_sample: int):
+    """Keep a rotating subset of generated negatives for expensive Span-DTW scoring.
+
+    This does NOT reduce NUM_NEGATIVES in the dataloader. It keeps the generated
+    negative pool and rotates which negatives are passed to Span-DTW each batch.
+    With NUM_NEGATIVES=4 and active_per_sample=2, each batch uses two negatives,
+    then the next batches use different offsets.
+    """
+    if active_per_sample <= 0:
+        return neg_texts
+
+    selected = []
+    for sample_idx, sample_negs in enumerate(neg_texts):
+        sample_negs = list(sample_negs)
+        n = len(sample_negs)
+        if n == 0 or active_per_sample >= n:
+            selected.append(sample_negs)
+            continue
+        start = (_BATCH_COUNTER + sample_idx) % n
+        selected.append([sample_negs[(start + offset) % n] for offset in range(active_per_sample)])
+    return selected
+
+
 def _zero_pair_stats(tensor):
     zero = tensor.new_tensor(0.0)
     return zero, zero, {"image_pair_loss": 0.0, "order_loss": 0.0, "pair_terms": 0.0}
@@ -93,12 +118,7 @@ def compute_local_hard_negative_loss_fast(
     pos_texts,
     ink_ratios=None,
 ):
-    """Run local hard-negative mining on only a subset of the batch.
-
-    The expensive part is hard_span_dtw_path for every sample. The logs showed
-    batches with local mining were roughly 2x slower, so this keeps the loss but
-    limits the number of samples that run the Python hard-path miner.
-    """
+    """Run local hard-negative mining on only a subset of the batch."""
     if (
         not P.use_local_hard_negatives
         or P.local_hard_negative_weight <= 0
@@ -136,7 +156,7 @@ def compute_single_image_text_loss_fast(
     neg_texts,
     embeddings=None,
 ):
-    """Like train.compute_single_image_text_loss, but local mining is subset-limited."""
+    """Like train.compute_single_image_text_loss, with active negatives and subset-limited local mining."""
     if P.text_encoder_type != "arabic_span":
         return base.compute_single_image_text_loss(
             image_embedder,
@@ -153,7 +173,16 @@ def compute_single_image_text_loss_fast(
     else:
         norm_img, norm_local_img, ink_ratio, local_img_emb = embeddings
 
-    loss, stats = criterion.forward_varlen(text_encoder, norm_img, pos_texts, neg_texts)
+    active_negatives = _get_int_env(
+        "SPAN_DTW_ACTIVE_NEGATIVES_PER_SAMPLE",
+        getattr(P, "span_dtw_active_negatives_per_sample", 0),
+    )
+    neg_texts_for_dtw = _select_active_negatives(neg_texts, active_negatives)
+
+    loss, stats = criterion.forward_varlen(text_encoder, norm_img, pos_texts, neg_texts_for_dtw)
+    stats["active_negatives"] = float(
+        len(neg_texts_for_dtw[0]) if neg_texts_for_dtw and len(neg_texts_for_dtw[0]) > 0 else 0
+    )
 
     local_loss, local_stats = compute_local_hard_negative_loss_fast(
         text_encoder,
@@ -270,7 +299,7 @@ def compute_batch_loss_fast(image_embedder, text_encoder, criterion, batch):
     ))
     local_enabled = (_BATCH_COUNTER % local_every) == 0
 
-    # Keep old non-paired behavior, but use the subset-limited local loss.
+    # Keep old non-paired behavior, but use active negatives and subset-limited local loss.
     if not isinstance(batch, dict):
         images, pos_texts, neg_texts = batch
         images = images.to(P.device, non_blocking=True)
@@ -370,6 +399,7 @@ def model_config_fast(stride):
             "image_pair_max_samples_per_batch": getattr(P, "image_pair_max_samples_per_batch", 8),
             "local_hard_negative_every_n_batches": getattr(P, "local_hard_negative_every_n_batches", 1),
             "local_hard_negative_max_samples_per_batch": getattr(P, "local_hard_negative_max_samples_per_batch", 8),
+            "span_dtw_active_negatives_per_sample": getattr(P, "span_dtw_active_negatives_per_sample", 0),
         }
     )
     return cfg
