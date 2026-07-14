@@ -40,6 +40,13 @@ WINDOW_GAP_PIXELS="${WINDOW_GAP_PIXELS:-12}"
 X_STRIP_HEIGHT="${X_STRIP_HEIGHT:-84}"
 Y_STRIP_WIDTH="${Y_STRIP_WIDTH:-108}"
 
+# display-order visual reorders BOTH axes and the heatmap to the physical image
+# layout. With USE_FLIP=1, this flips the model-order matrix and makes the top
+# and left thumbnails compatible with the cosine cells.
+DISPLAY_ORDER="${DISPLAY_ORDER:-visual}"
+TICK_LABELS="${TICK_LABELS:-model}"
+MIRROR_AXIS_WINDOWS="${MIRROR_AXIS_WINDOWS:-1}"
+
 CMAP="${CMAP:-viridis}"
 VMIN="${VMIN:--1.0}"
 VMAX="${VMAX:-1.0}"
@@ -53,6 +60,8 @@ Y_AXIS_FLIP="${Y_AXIS_FLIP:-0}"
 CELL_VALUES="${CELL_VALUES:-0}"
 CELL_VALUE_FONTSIZE="${CELL_VALUE_FONTSIZE:-3.2}"
 SHOW_ALL_TICKS="${SHOW_ALL_TICKS:-0}"
+COLORBAR_WIDTH="${COLORBAR_WIDTH:-80}"
+FIGURE_DPI_SCALE="${FIGURE_DPI_SCALE:-90}"
 
 mkdir -p "${OUT_DIR}"
 
@@ -85,6 +94,9 @@ run_one() {
   if [[ "${NO_BILSTM}" == "1" || "${NO_BILSTM}" == "true" ]]; then
     extra_args+=(--no-bilstm)
   fi
+  if [[ "${MIRROR_AXIS_WINDOWS}" == "1" || "${MIRROR_AXIS_WINDOWS}" == "true" ]]; then
+    extra_args+=(--mirror-axis-windows)
+  fi
   if [[ "${Y_AXIS_ROTATE}" == "0" || "${Y_AXIS_ROTATE}" == "false" ]]; then
     extra_args+=(--no-y-axis-rotate)
   fi
@@ -100,14 +112,16 @@ run_one() {
 
   echo "===================================================="
   echo "Self window cosine sample=${idx} line=${which_line}"
-  echo "  weights           = ${WEIGHTS}"
-  echo "  data-dir          = ${DATA_DIR}"
-  echo "  output            = ${out_png}"
-  echo "  feature-space     = ${FEATURE_SPACE}"
-  echo "  axis-slice-mode   = ${AXIS_SLICE_MODE}"
-  echo "  axis-cell-pixels  = ${AXIS_CELL_PIXELS}"
-  echo "  window-gap-pixels = ${WINDOW_GAP_PIXELS}"
-  echo "  use-flip          = ${USE_FLIP}"
+  echo "  weights             = ${WEIGHTS}"
+  echo "  data-dir            = ${DATA_DIR}"
+  echo "  output              = ${out_png}"
+  echo "  feature-space       = ${FEATURE_SPACE}"
+  echo "  display-order       = ${DISPLAY_ORDER}"
+  echo "  mirror-axis-windows = ${MIRROR_AXIS_WINDOWS}"
+  echo "  axis-slice-mode     = ${AXIS_SLICE_MODE}"
+  echo "  axis-cell-pixels    = ${AXIS_CELL_PIXELS}"
+  echo "  window-gap-pixels   = ${WINDOW_GAP_PIXELS}"
+  echo "  use-flip            = ${USE_FLIP}"
   echo "===================================================="
 
   python "${SCRIPT}" \
@@ -121,6 +135,8 @@ run_one() {
     --height "${HEIGHT}" \
     --width "${WIDTH}" \
     --feature-space "${FEATURE_SPACE}" \
+    --display-order "${DISPLAY_ORDER}" \
+    --tick-labels "${TICK_LABELS}" \
     --axis-slice-mode "${AXIS_SLICE_MODE}" \
     --axis-cell-pixels "${AXIS_CELL_PIXELS}" \
     --window-gap-pixels "${WINDOW_GAP_PIXELS}" \
@@ -130,6 +146,8 @@ run_one() {
     --vmin "${VMIN}" \
     --vmax "${VMAX}" \
     --dpi "${DPI}" \
+    --figure-dpi-scale "${FIGURE_DPI_SCALE}" \
+    --colorbar-width "${COLORBAR_WIDTH}" \
     --device "${DEVICE}" \
     "${extra_args[@]}"
 }
