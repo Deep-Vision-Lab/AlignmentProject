@@ -64,6 +64,10 @@ span_dtw_bucket_text_lengths = os.environ.get("SPAN_DTW_BUCKET_TEXT_LENGTHS", "1
 }
 span_dtw_text_bucket_size = int(os.environ.get("SPAN_DTW_TEXT_BUCKET_SIZE", 16))
 span_dtw_max_text_bucket = int(os.environ.get("SPAN_DTW_MAX_TEXT_BUCKET", 256))
+# Keep NUM_NEGATIVES as the generated negative pool, but in fast mode score only
+# a rotating subset with expensive Span-DTW each batch. 2 keeps a hard signal
+# while cutting roughly one third of the dominant JAX negative DTW calls.
+span_dtw_active_negatives_per_sample = int(os.environ.get("SPAN_DTW_ACTIVE_NEGATIVES_PER_SAMPLE", 2))
 
 # Local hard negatives.
 # Stronger defaults because the heatmaps showed many scattered false-positive
@@ -113,8 +117,8 @@ image_variance_target_std = float(os.environ.get("IMAGE_VARIANCE_TARGET_STD", 0.
 
 # Negatives
 negative_mode = os.environ.get("NEGATIVE_MODE", "mixed").lower()
-# Keep four transcript negatives by default for training quality. The speed
-# optimizations should come from validation limits/local top-k/optional warmup,
-# not from weakening the contrastive task to one negative.
+# Keep four transcript negatives by default for training quality. Fast mode can
+# score a rotating subset of this pool with Span-DTW using
+# SPAN_DTW_ACTIVE_NEGATIVES_PER_SAMPLE without changing the generated pool size.
 num_negatives = int(os.environ.get("NUM_NEGATIVES", 4))
 span_negative_grad_mode = os.environ.get("SPAN_NEGATIVE_GRAD_MODE", "hardest").lower()
