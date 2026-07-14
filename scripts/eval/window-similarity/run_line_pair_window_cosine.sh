@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
 #
-# Run line1-to-line2 window cosine similarity visualization.
+# Run line1-to-line2 cosine similarity visualization.
+#
+# Default mode is span_group, not raw window-to-window:
+#   line1 item = one Span-DTW token/span group, possibly 1 or 2 characters and 1+ windows
+#   line2 item = same idea for line2
+#   cell(row, col) = cosine(pooled_line2_group, pooled_line1_group)
+#
+# This is the recommended mode for cases like:
+#   line1: one window contains two characters AB
+#   line2: two neighboring windows contain A and B separately
+# because the visualization compares composed groups instead of forcing one-window-to-one-window matching.
 #
 # Default usage:
 #   bash scripts/eval/window-similarity/run_line_pair_window_cosine.sh
 #
 # Override examples:
 #   INDEX=5 bash scripts/eval/window-similarity/run_line_pair_window_cosine.sh
+#   COMPARISON_MODE=window bash scripts/eval/window-similarity/run_line_pair_window_cosine.sh
 #   FEATURE_SPACE=contextual bash scripts/eval/window-similarity/run_line_pair_window_cosine.sh
 #   START_INDEX=1 END_INDEX=10 bash scripts/eval/window-similarity/run_line_pair_window_cosine.sh
 #
@@ -27,21 +38,28 @@ WINDOW_SIZE="${WINDOW_SIZE:-32}"
 STRIDE="${STRIDE:-16}"
 HEIGHT="${HEIGHT:-128}"
 WIDTH="${WIDTH:-1024}"
-FEATURE_SPACE="${FEATURE_SPACE:-local}"
-ALIGNMENT_SPACE="${ALIGNMENT_SPACE:-contextual}"
 
-# Axis-window visualization.
-# nonoverlap = display centered stride-sized slices to avoid visual overlap.
-# window     = display the exact full overlapping model windows.
-AXIS_SLICE_MODE="${AXIS_SLICE_MODE:-nonoverlap}"
-AXIS_CELL_PIXELS="${AXIS_CELL_PIXELS:-52}"
+# Correct defaults for the idea discussed:
+#   - use local CNN windows for visual composition
+#   - use local alignment to keep labels closer to the specific visual window/group
+#   - compare Span-DTW groups, not only single windows
+FEATURE_SPACE="${FEATURE_SPACE:-local}"
+ALIGNMENT_SPACE="${ALIGNMENT_SPACE:-local}"
+COMPARISON_MODE="${COMPARISON_MODE:-span_group}"   # span_group or window
+GROUP_POOLING="${GROUP_POOLING:-mean}"             # mean or max
+
+# Axis visualization.
+# For span_group mode, window mode gives the full visual group crop.
+# For raw window mode, you can set AXIS_SLICE_MODE=nonoverlap if you prefer centered slices.
+AXIS_SLICE_MODE="${AXIS_SLICE_MODE:-window}"
+AXIS_CELL_PIXELS="${AXIS_CELL_PIXELS:-58}"
 WINDOW_GAP_PIXELS="${WINDOW_GAP_PIXELS:-12}"
 X_STRIP_HEIGHT="${X_STRIP_HEIGHT:-84}"
 Y_STRIP_WIDTH="${Y_STRIP_WIDTH:-108}"
 
 # Axis token labels. Tokens are inferred by hard Span-DTW and shown:
-#   line1 tokens above x-axis windows
-#   line2 tokens left of y-axis windows
+#   line1 tokens above x-axis groups/windows
+#   line2 tokens left of y-axis groups/windows
 SHOW_AXIS_TOKENS="${SHOW_AXIS_TOKENS:-1}"
 AXIS_TOKEN_FONTSIZE="${AXIS_TOKEN_FONTSIZE:-7.0}"
 X_TOKEN_HEIGHT="${X_TOKEN_HEIGHT:-44}"
@@ -50,22 +68,23 @@ X_TOKEN_ROTATION="${X_TOKEN_ROTATION:-90}"
 Y_TOKEN_ROTATION="${Y_TOKEN_ROTATION:-0}"
 TEXT_ENCODER_TYPE="${TEXT_ENCODER_TYPE:-}"
 ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_NAME:-}"
-MAX_SPAN_CHARS="${MAX_SPAN_CHARS:-}"
-MAX_TOKEN_CHARS="${MAX_TOKEN_CHARS:-}"
-MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-4}"
+
+# Correct Span-DTW label/group parameters for the current visualization.
+# MAX_SPAN_CHARS=2 lets boundary windows/groups be labeled by at most two characters.
+# MAX_WINDOWS_PER_SPAN=2 allows a 2-char token/group to cover up to two neighboring windows.
+# WINDOW_COUNT_PENALTY=0.05 discourages unnecessary stretching.
+MAX_SPAN_CHARS="${MAX_SPAN_CHARS:-2}"
+MAX_TOKEN_CHARS="${MAX_TOKEN_CHARS:-2}"
+MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-2}"
 TEMPERATURE="${TEMPERATURE:-0.07}"
-WINDOW_COUNT_PENALTY="${WINDOW_COUNT_PENALTY:-0.01}"
+WINDOW_COUNT_PENALTY="${WINDOW_COUNT_PENALTY:-0.05}"
 
 # display-order visual reorders the base view to the physical image layout.
-# REVERSE_X_AXIS=1 additionally reverses the line1 top strip and heatmap columns,
-# matching the latest self-window visualization default.
 DISPLAY_ORDER="${DISPLAY_ORDER:-visual}"
 REVERSE_X_AXIS="${REVERSE_X_AXIS:-0}"
 REVERSE_Y_AXIS="${REVERSE_Y_AXIS:-1}"
 TICK_LABELS="${TICK_LABELS:-model}"
 
-# Mirror controls. By default, mirror only the x-axis thumbnails, matching the
-# latest self-window visualization behavior.
 MIRROR_AXIS_WINDOWS="${MIRROR_AXIS_WINDOWS:-0}"
 MIRROR_X_AXIS_WINDOWS="${MIRROR_X_AXIS_WINDOWS:-0}"
 MIRROR_Y_AXIS_WINDOWS="${MIRROR_Y_AXIS_WINDOWS:-0}"
@@ -108,7 +127,7 @@ fi
 
 run_one() {
   local idx="$1"
-  local out_png="${OUT_DIR}/sample_${idx}_line1_line2_${FEATURE_SPACE}_window_cosine.png"
+  local out_png="${OUT_DIR}/sample_${idx}_line1_line2_${FEATURE_SPACE}_${COMPARISON_MODE}_cosine.png"
 
   local extra_args=()
   if [[ "${USE_FLIP}" == "1" || "${USE_FLIP}" == "true" ]]; then
@@ -160,12 +179,6 @@ run_one() {
   if [[ -n "${ARABIC_TEXT_MODEL_NAME}" ]]; then
     extra_args+=(--arabic-text-model-name "${ARABIC_TEXT_MODEL_NAME}")
   fi
-  if [[ -n "${MAX_SPAN_CHARS}" ]]; then
-    extra_args+=(--max-span-chars "${MAX_SPAN_CHARS}")
-  fi
-  if [[ -n "${MAX_TOKEN_CHARS}" ]]; then
-    extra_args+=(--max-token-chars "${MAX_TOKEN_CHARS}")
-  fi
   if [[ "${SHOW_ALL_TICKS}" == "1" || "${SHOW_ALL_TICKS}" == "true" ]]; then
     extra_args+=(--show-all-ticks)
   fi
@@ -174,19 +187,21 @@ run_one() {
   fi
 
   echo "===================================================="
-  echo "Line1-line2 window cosine sample=${idx}"
+  echo "Line1-line2 cosine sample=${idx}"
   echo "  weights               = ${WEIGHTS}"
   echo "  data-dir              = ${DATA_DIR}"
   echo "  output                = ${out_png}"
+  echo "  comparison-mode       = ${COMPARISON_MODE}"
+  echo "  group-pooling         = ${GROUP_POOLING}"
   echo "  feature-space         = ${FEATURE_SPACE}"
   echo "  alignment-space       = ${ALIGNMENT_SPACE}"
+  echo "  max-span-chars        = ${MAX_SPAN_CHARS}"
+  echo "  max-windows-per-span  = ${MAX_WINDOWS_PER_SPAN}"
+  echo "  window-count-penalty  = ${WINDOW_COUNT_PENALTY}"
   echo "  show-axis-tokens      = ${SHOW_AXIS_TOKENS}"
   echo "  display-order         = ${DISPLAY_ORDER}"
   echo "  reverse-x-axis        = ${REVERSE_X_AXIS}"
   echo "  reverse-y-axis        = ${REVERSE_Y_AXIS}"
-  echo "  mirror-axis-windows   = ${MIRROR_AXIS_WINDOWS}"
-  echo "  mirror-x-axis-windows = ${MIRROR_X_AXIS_WINDOWS}"
-  echo "  mirror-y-axis-windows = ${MIRROR_Y_AXIS_WINDOWS}"
   echo "  axis-slice-mode       = ${AXIS_SLICE_MODE}"
   echo "  axis-cell-pixels      = ${AXIS_CELL_PIXELS}"
   echo "  window-gap-pixels     = ${WINDOW_GAP_PIXELS}"
@@ -205,6 +220,10 @@ run_one() {
     --width "${WIDTH}" \
     --feature-space "${FEATURE_SPACE}" \
     --alignment-space "${ALIGNMENT_SPACE}" \
+    --comparison-mode "${COMPARISON_MODE}" \
+    --group-pooling "${GROUP_POOLING}" \
+    --max-span-chars "${MAX_SPAN_CHARS}" \
+    --max-token-chars "${MAX_TOKEN_CHARS}" \
     --max-windows-per-span "${MAX_WINDOWS_PER_SPAN}" \
     --temperature "${TEMPERATURE}" \
     --window-count-penalty "${WINDOW_COUNT_PENALTY}" \
