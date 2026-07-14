@@ -45,14 +45,14 @@ Y_STRIP_WIDTH="${Y_STRIP_WIDTH:-108}"
 # REVERSE_X_AXIS=1 additionally reverses the top strip and heatmap columns only,
 # which fixes cases where the upper x-axis reads in the wrong direction.
 DISPLAY_ORDER="${DISPLAY_ORDER:-visual}"
-REVERSE_X_AXIS="${REVERSE_X_AXIS:-1}"
-REVERSE_Y_AXIS="${REVERSE_Y_AXIS:-0}"
+REVERSE_X_AXIS="${REVERSE_X_AXIS:-0}"
+REVERSE_Y_AXIS="${REVERSE_Y_AXIS:-1}"
 TICK_LABELS="${TICK_LABELS:-model}"
 
 # Mirror controls. MIRROR_AXIS_WINDOWS mirrors both axes. The x/y-specific flags
 # let you fix only one axis if needed.
 MIRROR_AXIS_WINDOWS="${MIRROR_AXIS_WINDOWS:-0}"
-MIRROR_X_AXIS_WINDOWS="${MIRROR_X_AXIS_WINDOWS:-1}"
+MIRROR_X_AXIS_WINDOWS="${MIRROR_X_AXIS_WINDOWS:-0}"
 MIRROR_Y_AXIS_WINDOWS="${MIRROR_Y_AXIS_WINDOWS:-0}"
 
 CMAP="${CMAP:-viridis}"
