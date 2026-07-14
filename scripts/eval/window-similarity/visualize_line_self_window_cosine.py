@@ -9,6 +9,16 @@ This creates a self-similarity heatmap:
 
 The top and left axes show the actual window image slices with visible gaps so it
 is easy to map every cosine cell to the two visual windows it compares.
+
+Important display modes:
+  --display-order model   : show the matrix in model-window order.
+  --display-order visual  : reorder both axes and the heatmap to physical visual
+                            left-to-right order. For Arabic/RTL models using
+                            --use-flip, this reverses the heatmap and the axis
+                            thumbnails together, so they stay compatible.
+  --mirror-axis-windows   : horizontally mirror every thumbnail on both axes.
+                            This only changes the thumbnail display, not the
+                            cosine matrix values.
 """
 from __future__ import annotations
 
@@ -16,7 +26,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import Tuple
+from typing import Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -37,11 +47,9 @@ IMAGENET_STD = [0.229, 0.224, 0.225]
 
 try:
     _RESAMPLE_BILINEAR = Image.Resampling.BILINEAR
-    _RESAMPLE_NEAREST = Image.Resampling.NEAREST
     _ROTATE_90 = Image.Transpose.ROTATE_90
 except AttributeError:  # Pillow<9 compatibility
     _RESAMPLE_BILINEAR = Image.BILINEAR
-    _RESAMPLE_NEAREST = Image.NEAREST
     _ROTATE_90 = Image.ROTATE_90
 
 
@@ -117,6 +125,23 @@ def cosine_matrix(features: torch.Tensor) -> np.ndarray:
     return sim.detach().cpu().numpy()
 
 
+def display_indices(num_windows: int, args) -> np.ndarray:
+    """Return model-window indices in the order shown on the axes.
+
+    In model order, index 0 is whatever the model sees first. For Arabic training
+    with --use-flip, this is usually the visually rightmost window. In visual
+    order, we reverse that order so the top axis, y-axis, and heatmap all follow
+    the physical left-to-right layout of the displayed image.
+    """
+    if args.display_order == "visual" and args.use_flip:
+        return np.arange(num_windows - 1, -1, -1, dtype=np.int64)
+    return np.arange(num_windows, dtype=np.int64)
+
+
+def reorder_similarity_for_display(sim: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    return sim[np.ix_(indices, indices)]
+
+
 def model_window_to_visual_range(
     window_idx: int,
     num_windows: int,
@@ -137,14 +162,14 @@ def model_window_to_visual_range(
 
 def crop_visual_slice(
     image: Image.Image,
-    window_idx: int,
+    model_window_idx: int,
     num_windows: int,
     window_size: int,
     stride: int,
     use_flip: bool,
     mode: str,
 ) -> Image.Image:
-    x0, x1 = model_window_to_visual_range(window_idx, num_windows, window_size, stride, image.width, use_flip)
+    x0, x1 = model_window_to_visual_range(model_window_idx, num_windows, window_size, stride, image.width, use_flip)
     if mode == "window" or stride >= window_size:
         return image.crop((x0, 0, x1, image.height)).convert("RGB")
 
@@ -184,19 +209,26 @@ def vstack(images):
     return canvas
 
 
-def make_x_axis_strip(image: Image.Image, num_windows: int, args) -> np.ndarray:
+def _maybe_mirror_thumbnail(crop: Image.Image, args) -> Image.Image:
+    if args.mirror_axis_windows:
+        crop = ImageOps.mirror(crop)
+    return crop
+
+
+def make_x_axis_strip(image: Image.Image, shown_indices: Sequence[int], num_windows: int, args) -> np.ndarray:
     cells = []
     gap = int(args.window_gap_pixels)
-    for idx in range(num_windows):
+    for model_idx in shown_indices:
         crop = crop_visual_slice(
             image,
-            idx,
+            int(model_idx),
             num_windows,
             int(args.window_size),
             int(args.stride),
             bool(args.use_flip),
             args.axis_slice_mode,
         )
+        crop = _maybe_mirror_thumbnail(crop, args)
         crop = crop.resize((int(args.axis_cell_pixels), int(args.x_strip_height)), _RESAMPLE_BILINEAR)
         cell = Image.new(
             "RGB",
@@ -210,19 +242,20 @@ def make_x_axis_strip(image: Image.Image, num_windows: int, args) -> np.ndarray:
     return np.array(hstack(cells))
 
 
-def make_y_axis_strip(image: Image.Image, num_windows: int, args) -> np.ndarray:
+def make_y_axis_strip(image: Image.Image, shown_indices: Sequence[int], num_windows: int, args) -> np.ndarray:
     cells = []
     gap = int(args.window_gap_pixels)
-    for idx in range(num_windows):
+    for model_idx in shown_indices:
         crop = crop_visual_slice(
             image,
-            idx,
+            int(model_idx),
             num_windows,
             int(args.window_size),
             int(args.stride),
             bool(args.use_flip),
             args.axis_slice_mode,
         )
+        crop = _maybe_mirror_thumbnail(crop, args)
         if args.y_axis_rotate:
             crop = crop.transpose(_ROTATE_90)
         if args.y_axis_flip:
@@ -262,67 +295,84 @@ def make_gap_heatmap_image(sim: np.ndarray, args) -> Tuple[np.ndarray, np.ndarra
     return rgb, value_canvas
 
 
-def save_self_similarity_figure(sim: np.ndarray, image: Image.Image, args, out_path: str):
+def save_self_similarity_figure(sim_model: np.ndarray, image: Image.Image, args, out_path: str):
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    n = int(sim.shape[0])
-    x_strip = make_x_axis_strip(image, n, args)
-    y_strip = make_y_axis_strip(image, n, args)
-    heatmap_rgb, expanded_values = make_gap_heatmap_image(sim, args)
+    n = int(sim_model.shape[0])
+    shown_indices = display_indices(n, args)
+    sim = reorder_similarity_for_display(sim_model, shown_indices)
 
-    # Match physical sizes to the generated pixel dimensions so axis thumbnails
-    # align exactly with the heatmap cells.
-    fig_w = max(10.0, (args.y_strip_width + heatmap_rgb.shape[1]) / 90.0)
-    fig_h = max(10.0, (args.x_strip_height + heatmap_rgb.shape[0]) / 90.0)
+    x_strip = make_x_axis_strip(image, shown_indices, n, args)
+    y_strip = make_y_axis_strip(image, shown_indices, n, args)
+    heatmap_rgb, _expanded_values = make_gap_heatmap_image(sim, args)
+
+    # Dedicated colorbar axis prevents the colorbar from shrinking only the
+    # heatmap axis, which was the main reason the top strip did not visually line
+    # up with the heatmap cells.
+    cbar_width = int(args.colorbar_width)
+    fig_w = max(10.0, (args.y_strip_width + heatmap_rgb.shape[1] + cbar_width) / float(args.figure_dpi_scale))
+    fig_h = max(10.0, (args.x_strip_height + heatmap_rgb.shape[0]) / float(args.figure_dpi_scale))
     fig = plt.figure(figsize=(fig_w, fig_h), constrained_layout=False)
     gs = fig.add_gridspec(
         2,
-        2,
-        width_ratios=[args.y_strip_width, heatmap_rgb.shape[1]],
+        3,
+        width_ratios=[args.y_strip_width, heatmap_rgb.shape[1], cbar_width],
         height_ratios=[args.x_strip_height, heatmap_rgb.shape[0]],
-        wspace=0.02,
-        hspace=0.02,
+        wspace=0.0,
+        hspace=0.0,
     )
 
     ax_corner = fig.add_subplot(gs[0, 0])
     ax_corner.axis("off")
     ax_corner.text(0.5, 0.5, "line self\nwindow cosine", ha="center", va="center", fontsize=9)
 
+    order_label = "visual image order" if args.display_order == "visual" else "model order"
+    mirror_label = " | mirrored thumbnails" if args.mirror_axis_windows else ""
+
     ax_x = fig.add_subplot(gs[0, 1])
-    ax_x.imshow(x_strip)
-    ax_x.set_title("x-axis: line windows in model order", fontsize=11)
+    ax_x.imshow(x_strip, aspect="auto")
+    ax_x.set_title(f"x-axis: line windows in {order_label}{mirror_label}", fontsize=11)
     ax_x.axis("off")
 
     ax_y = fig.add_subplot(gs[1, 0])
-    ax_y.imshow(y_strip)
-    ax_y.set_ylabel("y-axis: same line windows", fontsize=10)
+    ax_y.imshow(y_strip, aspect="auto")
+    ax_y.set_ylabel(f"y-axis: same line windows in {order_label}{mirror_label}", fontsize=10)
     ax_y.axis("off")
 
     ax_h = fig.add_subplot(gs[1, 1])
-    ax_h.imshow(heatmap_rgb)
+    ax_h.imshow(heatmap_rgb, aspect="auto")
     ax_h.set_title(
         f"Cosine similarity: each window with every window in the same line | feature_space={args.feature_space}",
         fontsize=12,
     )
-    ax_h.set_xlabel("window index in model order" + (" (RTL flipped)" if args.use_flip else ""))
-    ax_h.set_ylabel("window index in model order" + (" (RTL flipped)" if args.use_flip else ""))
+    ax_h.set_xlabel(f"shown window index ({order_label})")
+    ax_h.set_ylabel(f"shown window index ({order_label})")
 
     cell = int(args.axis_cell_pixels)
     gap = int(args.window_gap_pixels)
     centers = np.arange(n) * (cell + gap) + cell / 2.0
     if args.show_all_ticks or n <= 32:
-        tick_idx = np.arange(n)
+        tick_pos = np.arange(n)
     else:
         step = max(1, int(np.ceil(n / 32)))
-        tick_idx = np.arange(0, n, step)
-    ax_h.set_xticks(centers[tick_idx])
-    ax_h.set_yticks(centers[tick_idx])
-    ax_h.set_xticklabels([str(i) for i in tick_idx], rotation=90, fontsize=6)
-    ax_h.set_yticklabels([str(i) for i in tick_idx], fontsize=6)
+        tick_pos = np.arange(0, n, step)
 
-    # Mark the self-similarity diagonal.
-    diag_x = centers
-    diag_y = centers
-    ax_h.plot(diag_x, diag_y, color="white", linewidth=1.0, alpha=0.9)
+    if args.tick_labels == "model":
+        tick_labels = [str(int(shown_indices[i])) for i in tick_pos]
+        label_suffix = "model idx"
+    else:
+        tick_labels = [str(int(i)) for i in tick_pos]
+        label_suffix = "shown idx"
+
+    ax_h.set_xticks(centers[tick_pos])
+    ax_h.set_yticks(centers[tick_pos])
+    ax_h.set_xticklabels(tick_labels, rotation=90, fontsize=6)
+    ax_h.set_yticklabels(tick_labels, fontsize=6)
+    ax_h.set_xlabel(f"window ({label_suffix})")
+    ax_h.set_ylabel(f"window ({label_suffix})")
+
+    # Mark the self-similarity diagonal after reordering. Because the same order
+    # is used for x and y, the diagonal remains the true self-similarity diagonal.
+    ax_h.plot(centers, centers, color="white", linewidth=1.0, alpha=0.9)
 
     if args.cell_values:
         for i in range(n):
@@ -337,13 +387,16 @@ def save_self_similarity_figure(sim: np.ndarray, image: Image.Image, args, out_p
                     color="black" if sim[i, j] > (args.vmin + args.vmax) / 2 else "white",
                 )
 
+    ax_cbar = fig.add_subplot(gs[1, 2])
     cmap = plt.get_cmap(args.cmap)
     norm = plt.Normalize(float(args.vmin), float(args.vmax))
     sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
-    cbar = fig.colorbar(sm, ax=ax_h, fraction=0.025, pad=0.01)
+    cbar = fig.colorbar(sm, cax=ax_cbar)
     cbar.set_label("cosine similarity")
 
-    fig.savefig(out_path, dpi=int(args.dpi), bbox_inches="tight")
+    # Avoid bbox_inches='tight': it can rescale axes independently and break the
+    # visual alignment between thumbnails and heatmap cells.
+    fig.savefig(out_path, dpi=int(args.dpi))
     plt.close(fig)
 
 
@@ -364,11 +417,14 @@ def parse_args():
     parser.add_argument("--feature-space", choices=["local", "contextual"], default="local")
     parser.add_argument("--use-flip", action="store_true", help="Use RTL flipped model-window order, same as Arabic training/eval.")
     parser.add_argument("--no-bilstm", action="store_true")
+    parser.add_argument("--display-order", choices=["model", "visual"], default="visual", help="Show axes/heatmap in model order or physical visual image order.")
+    parser.add_argument("--tick-labels", choices=["shown", "model"], default="model", help="Heatmap tick labels show displayed positions or original model indices.")
     parser.add_argument("--axis-slice-mode", choices=["nonoverlap", "window"], default="nonoverlap")
     parser.add_argument("--axis-cell-pixels", type=int, default=44)
     parser.add_argument("--window-gap-pixels", type=int, default=12)
     parser.add_argument("--x-strip-height", type=int, default=84)
     parser.add_argument("--y-strip-width", type=int, default=108)
+    parser.add_argument("--mirror-axis-windows", action="store_true", help="Horizontally mirror every thumbnail on x/y axes for easier visual reading.")
     parser.add_argument("--no-y-axis-rotate", dest="y_axis_rotate", action="store_false")
     parser.set_defaults(y_axis_rotate=True)
     parser.add_argument("--y-axis-flip", action="store_true")
@@ -379,6 +435,8 @@ def parse_args():
     parser.add_argument("--cell-value-fontsize", type=float, default=3.2)
     parser.add_argument("--show-all-ticks", action="store_true")
     parser.add_argument("--dpi", type=int, default=180)
+    parser.add_argument("--figure-dpi-scale", type=float, default=90.0)
+    parser.add_argument("--colorbar-width", type=int, default=80)
     return parser.parse_args()
 
 
@@ -405,6 +463,7 @@ def main():
     print(f"saved self window cosine heatmap: {args.output}")
     print(f"image={image_path}")
     print(f"windows={sim.shape[0]} feature_dim={features.shape[1]} feature_space={args.feature_space}")
+    print(f"display_order={args.display_order} tick_labels={args.tick_labels} mirror_axis_windows={args.mirror_axis_windows}")
 
 
 if __name__ == "__main__":
