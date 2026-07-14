@@ -25,9 +25,13 @@ arabic_text_model_name = os.environ.get(
     "ARABIC_TEXT_MODEL_NAME",
     "aubmindlab/bert-base-arabertv02",
 )
+# Span grouping defaults are intentionally small: the model should learn one-to-one
+# and one-to-two visual alignments, e.g. one window with "AB" should match two
+# neighboring windows "A" + "B" in the paired line. Larger spans/windows make the
+# axis labels and image-image pair loss too coarse.
 max_text_token_chars = int(os.environ.get("MAX_TEXT_TOKEN_CHARS", 2))
 max_text_span_chars = int(os.environ.get("MAX_TEXT_SPAN_CHARS", 2))
-max_windows_per_span = int(os.environ.get("MAX_WINDOWS_PER_SPAN", 4))
+max_windows_per_span = int(os.environ.get("MAX_WINDOWS_PER_SPAN", 2))
 strip_span_text_edges = os.environ.get("STRIP_SPAN_TEXT_EDGES", "1").lower() in {
     "1", "true", "yes", "on"
 }
@@ -92,12 +96,15 @@ local_hard_negative_max_samples_per_batch = int(os.environ.get("LOCAL_HARD_NEGAT
 # Image-image pair contrastive loss.
 # Uses img1/text1 and img2/text2 from the same sample. DTW gives pseudo span-window
 # regions in both images. Regions with matching span text are positives; other
-# regions are hard negatives. This directly targets line2-part-in-line1 retrieval.
+# regions are hard negatives. With MAX_TEXT_SPAN_CHARS=2 and MAX_WINDOWS_PER_SPAN=2,
+# this directly trains the correct one-window<->two-window composition behavior:
+# one image region containing two characters must match the paired line region that
+# may be split over two neighboring windows.
 use_image_pair_contrastive = os.environ.get("USE_IMAGE_PAIR_CONTRASTIVE", "1").lower() in {
     "1", "true", "yes", "on"
 }
-image_pair_loss_weight = float(os.environ.get("IMAGE_PAIR_LOSS_WEIGHT", 0.2))
-image_pair_margin = float(os.environ.get("IMAGE_PAIR_MARGIN", 0.35))
+image_pair_loss_weight = float(os.environ.get("IMAGE_PAIR_LOSS_WEIGHT", 0.35))
+image_pair_margin = float(os.environ.get("IMAGE_PAIR_MARGIN", 0.40))
 image_pair_top_k = int(os.environ.get("IMAGE_PAIR_TOP_K", 8))
 # Fast image-pair controls used by train_fast_image_pair.py.
 image_text_loss_on_both_lines = os.environ.get("IMAGE_TEXT_LOSS_ON_BOTH_LINES", "0").lower() in {
@@ -105,9 +112,9 @@ image_text_loss_on_both_lines = os.environ.get("IMAGE_TEXT_LOSS_ON_BOTH_LINES", 
 }
 image_pair_every_n_batches = int(os.environ.get("IMAGE_PAIR_EVERY_N_BATCHES", 1))
 image_pair_max_samples_per_batch = int(os.environ.get("IMAGE_PAIR_MAX_SAMPLES_PER_BATCH", 8))
-# Keep sequence consistency optional. It can be large and is less important than
-# image-image contrastive for speeding up the current part-search issue.
-sequence_consistency_loss_weight = float(os.environ.get("SEQUENCE_CONSISTENCY_LOSS_WEIGHT", 0.0))
+# Small order consistency keeps matched span groups monotonic without dominating
+# the pair contrastive loss.
+sequence_consistency_loss_weight = float(os.environ.get("SEQUENCE_CONSISTENCY_LOSS_WEIGHT", 0.02))
 
 # Embedding variance regularization.
 # Keeps image embeddings from collapsing into a narrow cone where unrelated
