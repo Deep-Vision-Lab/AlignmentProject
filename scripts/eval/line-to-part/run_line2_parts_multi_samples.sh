@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT="scripts/eval/line-to-part/visualize_line2_parts_in_line1.py"
 
-WEIGHTS="${WEIGHTS:-Weights/improve_neg_win32_offline/model_latest.pth}"
+WEIGHTS="${WEIGHTS:-Weights/improve_model_win32_fastpair_span2/model_latest.pth}"
 DATA_DIR="${DATA_DIR:-DataSet/Synthetic_Arabic}"
 OUT_DIR="${OUT_DIR:-Results/Evaluation/Part_Search_Multi_Local}"
 
@@ -17,25 +17,31 @@ WINDOW_SIZE="${WINDOW_SIZE:-32}"
 STRIDE="${STRIDE:-16}"
 HEIGHT="${HEIGHT:-128}"
 
+# Use the same RTL flip setting used by the Arabic training/eval pipeline.
+# This affects the model window order. The heatmap display can still be shown in
+# readable visual order using HEATMAP_DISPLAY_ORDER=visual.
+USE_FLIP="${USE_FLIP:-1}"
+NO_BILSTM="${NO_BILSTM:-0}"
+
 # improve_model recommendation:
 # Use local pre-BiLSTM CNN embeddings for part/window matching.
 EMBEDDING_SPACE="${EMBEDDING_SPACE:-local}"
+ALIGNMENT_SPACE="${ALIGNMENT_SPACE:-local}"
 
-# Keep a fixed floor, but by default use per-part percentile thresholding because
-# older checkpoints often have high similarity almost everywhere.
-THRESHOLD="${THRESHOLD:-0.8}"
+# Stricter defaults than the old script. The previous 80th percentile with a 0.6
+# floor allowed many repeated Arabic strokes to become false positives.
+THRESHOLD="${THRESHOLD:-0.85}"
 ADAPTIVE_THRESHOLD="${ADAPTIVE_THRESHOLD:-percentile}"
-THRESHOLD_PERCENTILE="${THRESHOLD_PERCENTILE:-70}"
+THRESHOLD_PERCENTILE="${THRESHOLD_PERCENTILE:-95}"
 
 MATCH="${MATCH:-1.0}"
-MISMATCH="${MISMATCH:--1.5}"
-GAP="${GAP:--0.5}"
-MIN_RUN_LENGTH="${MIN_RUN_LENGTH:-3}"
+MISMATCH="${MISMATCH:--4.0}"
+GAP="${GAP:--1.0}"
+MIN_RUN_LENGTH="${MIN_RUN_LENGTH:-4}"
 
 # Visual mask padding in window units.
 # 0 = exact Smith-Waterman window span.
-# 1 = expand by one window on both sides, useful when the mask looks shifted/tight.
-MASK_PADDING_WINDOWS="${MASK_PADDING_WINDOWS:-1}"
+MASK_PADDING_WINDOWS="${MASK_PADDING_WINDOWS:-0}"
 
 # Save one cosine-similarity heatmap per chosen part.
 # Enable with: HEATMAP=1 bash scripts/eval/line-to-part/run_line2_parts_multi_samples.sh
@@ -43,17 +49,38 @@ HEATMAP="${HEATMAP:-0}"
 HEATMAP_DIR="${HEATMAP_DIR:-$OUT_DIR/heatmaps}"
 
 # Heatmap sliced-window display options.
-# nonoverlap = show separated central/non-overlapping slices for readability.
-# window     = show the full model windows, including overlap.
+# visual = show the x/y axes in the same visual order as the readable image.
+# model  = show raw model order.
+HEATMAP_DISPLAY_ORDER="${HEATMAP_DISPLAY_ORDER:-visual}"
 HEATMAP_AXIS_SLICE_MODE="${HEATMAP_AXIS_SLICE_MODE:-nonoverlap}"
 HEATMAP_WINDOW_GAP_PIXELS="${HEATMAP_WINDOW_GAP_PIXELS:-10}"
 HEATMAP_AXIS_CELL_PIXELS="${HEATMAP_AXIS_CELL_PIXELS:-42}"
 HEATMAP_LINE1_STRIP_HEIGHT="${HEATMAP_LINE1_STRIP_HEIGHT:-84}"
 HEATMAP_PART_STRIP_WIDTH="${HEATMAP_PART_STRIP_WIDTH:-96}"
 
-# By default, flip the rotated part-window slices on the y-axis to make the side
-# window thumbnails easier to read. Set to 0/false to disable.
-HEATMAP_FLIP_PART_AXIS_WINDOWS="${HEATMAP_FLIP_PART_AXIS_WINDOWS:-1}"
+# Axis-token labels are inferred by hard Span-DTW and written on the heatmap axes.
+# For this experiment, keep labels at most 2 chars and at most 2 windows per span.
+SHOW_AXIS_TOKENS="${SHOW_AXIS_TOKENS:-1}"
+AXIS_TOKEN_FONTSIZE="${AXIS_TOKEN_FONTSIZE:-6.5}"
+X_TOKEN_ROTATION="${X_TOKEN_ROTATION:-90}"
+Y_TOKEN_ROTATION="${Y_TOKEN_ROTATION:-0}"
+MAX_SPAN_CHARS="${MAX_SPAN_CHARS:-2}"
+MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-2}"
+WINDOW_COUNT_PENALTY="${WINDOW_COUNT_PENALTY:-0.05}"
+TOKEN_TEMPERATURE="${TOKEN_TEMPERATURE:-0.07}"
+TEXT_ENCODER_TYPE="${TEXT_ENCODER_TYPE:-}"
+ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_NAME:-}"
+
+# Keep axis thumbnails unmirrored by default so the characters are readable.
+HEATMAP_MIRROR_LINE1_AXIS_WINDOWS="${HEATMAP_MIRROR_LINE1_AXIS_WINDOWS:-0}"
+HEATMAP_MIRROR_PART_AXIS_WINDOWS="${HEATMAP_MIRROR_PART_AXIS_WINDOWS:-0}"
+
+# Backward-compatible old variable. 1 means mirror the part thumbnails before rotation.
+HEATMAP_FLIP_PART_AXIS_WINDOWS="${HEATMAP_FLIP_PART_AXIS_WINDOWS:-$HEATMAP_MIRROR_PART_AXIS_WINDOWS}"
+
+HEATMAP_CELL_VALUES="${HEATMAP_CELL_VALUES:-1}"
+HEATMAP_CELL_VALUE_FONTSIZE="${HEATMAP_CELL_VALUE_FONTSIZE:-4.2}"
+HEATMAP_MARK_ABOVE_THRESHOLD="${HEATMAP_MARK_ABOVE_THRESHOLD:-1}"
 
 mkdir -p "$OUT_DIR"
 
@@ -71,25 +98,68 @@ fi
 
 for IDX in $(seq "$START_INDEX" "$END_INDEX"); do
   EXTRA_ARGS=()
+
+  if [[ "$USE_FLIP" == "1" || "$USE_FLIP" == "true" ]]; then
+    EXTRA_ARGS+=(--use-flip)
+  fi
+  if [[ "$NO_BILSTM" == "1" || "$NO_BILSTM" == "true" ]]; then
+    EXTRA_ARGS+=(--no-bilstm)
+  fi
+  if [[ -n "$TEXT_ENCODER_TYPE" ]]; then
+    EXTRA_ARGS+=(--text-encoder-type "$TEXT_ENCODER_TYPE")
+  fi
+  if [[ -n "$ARABIC_TEXT_MODEL_NAME" ]]; then
+    EXTRA_ARGS+=(--arabic-text-model-name "$ARABIC_TEXT_MODEL_NAME")
+  fi
+
   if [[ "$HEATMAP" == "1" || "$HEATMAP" == "true" ]]; then
     EXTRA_ARGS+=(
       --heatmap
       --heatmap-dir "$HEATMAP_DIR"
+      --heatmap-display-order "$HEATMAP_DISPLAY_ORDER"
       --heatmap-axis-slice-mode "$HEATMAP_AXIS_SLICE_MODE"
       --heatmap-window-gap-pixels "$HEATMAP_WINDOW_GAP_PIXELS"
       --heatmap-axis-cell-pixels "$HEATMAP_AXIS_CELL_PIXELS"
       --heatmap-line1-strip-height "$HEATMAP_LINE1_STRIP_HEIGHT"
       --heatmap-part-strip-width "$HEATMAP_PART_STRIP_WIDTH"
     )
-
-    if [[ "$HEATMAP_FLIP_PART_AXIS_WINDOWS" == "0" || "$HEATMAP_FLIP_PART_AXIS_WINDOWS" == "false" ]]; then
+    if [[ "$HEATMAP_MIRROR_LINE1_AXIS_WINDOWS" == "1" || "$HEATMAP_MIRROR_LINE1_AXIS_WINDOWS" == "true" ]]; then
+      EXTRA_ARGS+=(--heatmap-mirror-line1-axis-windows)
+    fi
+    if [[ "$HEATMAP_MIRROR_PART_AXIS_WINDOWS" == "1" || "$HEATMAP_MIRROR_PART_AXIS_WINDOWS" == "true" || "$HEATMAP_FLIP_PART_AXIS_WINDOWS" == "1" || "$HEATMAP_FLIP_PART_AXIS_WINDOWS" == "true" ]]; then
+      EXTRA_ARGS+=(--heatmap-mirror-part-axis-windows)
+    else
       EXTRA_ARGS+=(--no-heatmap-flip-part-axis-windows)
+    fi
+    if [[ "$HEATMAP_CELL_VALUES" == "0" || "$HEATMAP_CELL_VALUES" == "false" ]]; then
+      EXTRA_ARGS+=(--no-heatmap-cell-values)
+    else
+      EXTRA_ARGS+=(--heatmap-cell-value-fontsize "$HEATMAP_CELL_VALUE_FONTSIZE")
+    fi
+    if [[ "$HEATMAP_MARK_ABOVE_THRESHOLD" == "0" || "$HEATMAP_MARK_ABOVE_THRESHOLD" == "false" ]]; then
+      EXTRA_ARGS+=(--no-heatmap-mark-above-threshold)
+    fi
+    if [[ "$SHOW_AXIS_TOKENS" == "0" || "$SHOW_AXIS_TOKENS" == "false" ]]; then
+      EXTRA_ARGS+=(--no-axis-tokens)
+    else
+      EXTRA_ARGS+=(
+        --axis-token-fontsize "$AXIS_TOKEN_FONTSIZE"
+        --x-token-rotation "$X_TOKEN_ROTATION"
+        --y-token-rotation "$Y_TOKEN_ROTATION"
+        --max-span-chars "$MAX_SPAN_CHARS"
+        --max-windows-per-span "$MAX_WINDOWS_PER_SPAN"
+        --window-count-penalty "$WINDOW_COUNT_PENALTY"
+        --token-temperature "$TOKEN_TEMPERATURE"
+      )
     fi
   fi
 
   echo "===================================================="
   echo "Running sample $IDX"
+  echo "  weights                         = $WEIGHTS"
   echo "  embedding-space                 = $EMBEDDING_SPACE"
+  echo "  alignment-space                 = $ALIGNMENT_SPACE"
+  echo "  use-flip                        = $USE_FLIP"
   echo "  threshold floor                 = $THRESHOLD"
   echo "  adaptive-threshold              = $ADAPTIVE_THRESHOLD"
   echo "  threshold-percentile            = $THRESHOLD_PERCENTILE"
@@ -97,12 +167,15 @@ for IDX in $(seq "$START_INDEX" "$END_INDEX"); do
   echo "  heatmap                         = $HEATMAP"
   if [[ "$HEATMAP" == "1" || "$HEATMAP" == "true" ]]; then
     echo "  heatmap-dir                     = $HEATMAP_DIR"
+    echo "  heatmap-display-order           = $HEATMAP_DISPLAY_ORDER"
     echo "  heatmap-axis-slice-mode         = $HEATMAP_AXIS_SLICE_MODE"
     echo "  heatmap-window-gap-pixels       = $HEATMAP_WINDOW_GAP_PIXELS"
     echo "  heatmap-axis-cell-pixels        = $HEATMAP_AXIS_CELL_PIXELS"
-    echo "  heatmap-line1-strip-height      = $HEATMAP_LINE1_STRIP_HEIGHT"
-    echo "  heatmap-part-strip-width        = $HEATMAP_PART_STRIP_WIDTH"
-    echo "  heatmap-flip-part-axis-windows  = $HEATMAP_FLIP_PART_AXIS_WINDOWS"
+    echo "  show-axis-tokens                = $SHOW_AXIS_TOKENS"
+    echo "  max-span-chars                  = $MAX_SPAN_CHARS"
+    echo "  max-windows-per-span            = $MAX_WINDOWS_PER_SPAN"
+    echo "  mirror-line1-axis-windows       = $HEATMAP_MIRROR_LINE1_AXIS_WINDOWS"
+    echo "  mirror-part-axis-windows        = $HEATMAP_MIRROR_PART_AXIS_WINDOWS"
   fi
   echo "===================================================="
 
@@ -118,6 +191,7 @@ for IDX in $(seq "$START_INDEX" "$END_INDEX"); do
     --stride "$STRIDE" \
     --height "$HEIGHT" \
     --embedding-space "$EMBEDDING_SPACE" \
+    --alignment-space "$ALIGNMENT_SPACE" \
     --threshold "$THRESHOLD" \
     --adaptive-threshold "$ADAPTIVE_THRESHOLD" \
     --threshold-percentile "$THRESHOLD_PERCENTILE" \
