@@ -61,9 +61,16 @@ HEATMAP_WINDOW_GAP_PIXELS="${HEATMAP_WINDOW_GAP_PIXELS:-12}"
 HEATMAP_AXIS_CELL_PIXELS="${HEATMAP_AXIS_CELL_PIXELS:-52}"
 HEATMAP_LINE1_STRIP_HEIGHT="${HEATMAP_LINE1_STRIP_HEIGHT:-84}"
 HEATMAP_PART_STRIP_WIDTH="${HEATMAP_PART_STRIP_WIDTH:-108}"
+
+# Independent axis reversal, same idea as visualize_line_self_window_cosine.py.
+# These reverse the displayed heatmap axis, thumbnails, model-id ticks, token labels,
+# SW path, and selected red cells together so alignment remains correct.
+HEATMAP_REVERSE_X_AXIS="${HEATMAP_REVERSE_X_AXIS:-0}"
+HEATMAP_REVERSE_Y_AXIS="${HEATMAP_REVERSE_Y_AXIS:-0}"
+
 HEATMAP_Y_AXIS_ROTATE="${HEATMAP_Y_AXIS_ROTATE:-1}"
 HEATMAP_Y_AXIS_FLIP="${HEATMAP_Y_AXIS_FLIP:-0}"
-export HEATMAP_Y_AXIS_ROTATE HEATMAP_Y_AXIS_FLIP
+export HEATMAP_REVERSE_X_AXIS HEATMAP_REVERSE_Y_AXIS HEATMAP_Y_AXIS_ROTATE HEATMAP_Y_AXIS_FLIP
 
 # Axis-token labels are inferred by hard Span-DTW and written on the heatmap axes.
 # For this experiment, keep labels at most 2 chars and at most 2 windows per span.
@@ -176,6 +183,8 @@ for IDX in $(seq "$START_INDEX" "$END_INDEX"); do
   if [[ "$HEATMAP" == "1" || "$HEATMAP" == "true" ]]; then
     echo "  heatmap-dir                     = $HEATMAP_DIR"
     echo "  heatmap-display-order           = $HEATMAP_DISPLAY_ORDER"
+    echo "  heatmap-reverse-x-axis          = $HEATMAP_REVERSE_X_AXIS"
+    echo "  heatmap-reverse-y-axis          = $HEATMAP_REVERSE_Y_AXIS"
     echo "  heatmap-axis-slice-mode         = $HEATMAP_AXIS_SLICE_MODE"
     echo "  heatmap-window-gap-pixels       = $HEATMAP_WINDOW_GAP_PIXELS"
     echo "  heatmap-axis-cell-pixels        = $HEATMAP_AXIS_CELL_PIXELS"
