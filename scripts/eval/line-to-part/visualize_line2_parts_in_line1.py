@@ -7,7 +7,7 @@ import random
 import sys
 import tempfile
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import matplotlib
 matplotlib.use("Agg")
@@ -17,6 +17,7 @@ from matplotlib.patches import FancyArrowPatch, Rectangle
 import numpy as np
 from PIL import Image, ImageOps
 import torch
+import torch.nn.functional as F
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
@@ -24,6 +25,10 @@ LINE_TO_LINE_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "line-to-line"
 sys.path.insert(0, PROJECT_ROOT)
 sys.path.insert(0, LINE_TO_LINE_DIR)
 
+from arabic_span_text_encoder import ArabicSpanTextEncoder  # noqa: E402
+from arabic_token_text_encoder import ArabicTokenTextEncoder  # noqa: E402
+from span_alignment_loss import hard_span_dtw_path  # noqa: E402
+from textEmbedding import TextEmbedding  # noqa: E402
 from visualize_sw_longest_alignment import (  # noqa: E402
     PALETTE,
     cosine_similarity_matrix,
@@ -34,6 +39,13 @@ from visualize_sw_longest_alignment import (  # noqa: E402
     smith_waterman,
     window_range_to_pixels,
 )
+
+try:
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+except Exception:  # pragma: no cover - optional visualization dependency
+    arabic_reshaper = None
+    get_display = None
 
 try:
     _RESAMPLE = Image.Resampling.BILINEAR
@@ -93,6 +105,18 @@ class Result:
     message: str = ""
 
 
+def display_text(text: str) -> str:
+    if text is None:
+        return ""
+    text = str(text)
+    if arabic_reshaper is not None and get_display is not None:
+        try:
+            return get_display(arabic_reshaper.reshape(text))
+        except Exception:
+            return text
+    return text
+
+
 def parse_part_starts(text: Optional[str]) -> Optional[List[int]]:
     if not text or not text.strip():
         return None
@@ -146,6 +170,107 @@ def resolve_line_paths(args: argparse.Namespace) -> Tuple[str, str]:
         root = os.path.join(args.data_dir, "images")
         return os.path.join(root, f"img1_{args.index}.png"), os.path.join(root, f"img2_{args.index}.png")
     raise ValueError("Use either --line1/--line2 or --data-dir/--index")
+
+
+def resolve_text_paths(args: argparse.Namespace) -> Tuple[Optional[str], Optional[str]]:
+    if args.text1_path or args.text2_path:
+        return args.text1_path, args.text2_path
+    if args.data_dir and args.index is not None:
+        root = os.path.join(args.data_dir, "texts")
+        return os.path.join(root, f"text1_{args.index}.txt"), os.path.join(root, f"text2_{args.index}.txt")
+    return None, None
+
+
+def read_text(text_arg: Optional[str], text_path: Optional[str]) -> Optional[str]:
+    if text_arg is not None:
+        return text_arg.strip()
+    if text_path is None or not os.path.exists(text_path):
+        return None
+    with open(text_path, "r", encoding="utf-8") as handle:
+        return handle.read().strip()
+
+
+def checkpoint_config(loaded) -> dict:
+    if isinstance(loaded, dict):
+        return dict(loaded.get("model_config") or {})
+    return {}
+
+
+def build_text_encoder(args, cfg: dict, loaded, device: str):
+    text_encoder_type = str(args.text_encoder_type or cfg.get("text_encoder_type", "arabic_span")).lower()
+    vector_size = int(args.vector_size or cfg.get("vector_size", 128))
+    if text_encoder_type == "arabic_span":
+        encoder = ArabicSpanTextEncoder(
+            model_name=args.arabic_text_model_name or cfg.get("arabic_text_model_name", "aubmindlab/bert-base-arabertv02"),
+            output_dim=vector_size,
+            max_span_chars=int(args.max_span_chars or cfg.get("max_text_span_chars", 2)),
+            freeze_backbone=True,
+            device=device,
+            strip_text_edges=bool(cfg.get("strip_span_text_edges", True)),
+            cache_size=int(cfg.get("span_feature_cache_size", 2048)),
+            cache_dtype=str(cfg.get("span_feature_cache_dtype", "float16")),
+        )
+    elif text_encoder_type == "arabic_token":
+        encoder = ArabicTokenTextEncoder(
+            model_name=args.arabic_text_model_name or cfg.get("arabic_text_model_name", "aubmindlab/bert-base-arabertv02"),
+            output_dim=vector_size,
+            max_token_chars=int(args.max_token_chars or cfg.get("max_text_token_chars", 2)),
+            freeze_backbone=True,
+            device=device,
+        )
+    elif text_encoder_type == "char":
+        encoder = TextEmbedding(embedding_dim=vector_size).to(device)
+        for parameter in encoder.parameters():
+            parameter.requires_grad_(False)
+    else:
+        raise ValueError(f"Unknown text encoder type: {text_encoder_type!r}")
+
+    if isinstance(loaded, dict):
+        state = loaded.get("text_encoder_state_dict") or loaded.get("text_embedder_state_dict")
+        if state:
+            encoder.load_state_dict(state, strict=False)
+        else:
+            print("[warn] checkpoint has no text encoder state; heatmap axis token labels may be unreliable.", flush=True)
+    encoder.eval()
+    return encoder
+
+
+def encode_text(text_encoder, text: str):
+    try:
+        return text_encoder(text, use_cache=True)
+    except TypeError:
+        return text_encoder(text)
+
+
+def aligned_tokens_for_windows(text_encoder, text: Optional[str], image_embeddings_for_alignment: torch.Tensor, args) -> List[str]:
+    num_windows = int(image_embeddings_for_alignment.shape[0])
+    if text_encoder is None or not text:
+        return [""] * num_windows
+    try:
+        encoding = encode_text(text_encoder, text)
+        norm_img = F.normalize(image_embeddings_for_alignment.float(), p=2, dim=-1)
+        path = hard_span_dtw_path(
+            encoding,
+            norm_img,
+            temperature=float(args.token_temperature),
+            max_windows=int(args.max_windows_per_span),
+            window_count_penalty=float(args.window_count_penalty),
+        )
+    except Exception as exc:
+        print(f"[warn] failed to assign heatmap axis tokens: {exc}", flush=True)
+        return ["?"] * num_windows
+
+    labels = ["?"] * num_windows
+    for step in path:
+        span_idx = int(step["span_idx"])
+        fallback = "?"
+        if hasattr(encoding, "texts") and 0 <= span_idx < len(encoding.texts):
+            fallback = str(encoding.texts[span_idx])
+        token = str(step.get("text", fallback))
+        for w in range(int(step["window_start"]), int(step["window_end"])):
+            if 0 <= w < num_windows:
+                labels[w] = token
+    return labels
 
 
 def make_source_parts(line2_path: str, starts: Sequence[int], part_width: int, tmp_dir: str) -> List[SourcePart]:
@@ -258,27 +383,34 @@ def heatmap_output_path(main_output: str, heatmap_dir: Optional[str], part_id: i
     return os.path.join(base_dir, f"{stem}_part{part_id}_cosine_heatmap.png")
 
 
-def ordered_image(image: Image.Image, use_flip: bool) -> Image.Image:
+def display_indices(num_windows: int, args) -> np.ndarray:
+    if args.heatmap_display_order == "visual" and args.use_flip:
+        return np.arange(num_windows - 1, -1, -1, dtype=np.int64)
+    return np.arange(num_windows, dtype=np.int64)
+
+
+def model_window_to_visual_range(model_idx: int, n: int, image_width: int, args) -> Tuple[int, int]:
+    visual_idx = (n - 1 - int(model_idx)) if args.use_flip else int(model_idx)
+    x0 = visual_idx * int(args.stride)
+    x1 = x0 + int(args.window_size)
+    x0 = max(0, min(int(x0), max(0, image_width - 1)))
+    x1 = max(x0 + 1, min(int(x1), image_width))
+    return x0, x1
+
+
+def crop_visual_slice_for_model_window(image: Image.Image, model_idx: int, n: int, args) -> Image.Image:
     image = image.convert("RGB")
-    return ImageOps.mirror(image) if use_flip else image
+    x0, x1 = model_window_to_visual_range(model_idx, n, image.size[0], args)
+    if args.heatmap_axis_slice_mode == "window" or args.stride >= args.window_size:
+        return image.crop((x0, 0, x1, image.size[1]))
 
-
-def crop_visual_slice(image: Image.Image, idx: int, n: int, window_size: int, stride: int, mode: str) -> Image.Image:
-    width, height = image.size
-    if mode == "window":
-        x0 = idx * stride
-        x1 = idx * stride + window_size
-    else:
-        center = idx * stride + window_size / 2.0
-        x0 = int(round(center - stride / 2.0))
-        x1 = int(round(center + stride / 2.0))
-        if idx == 0:
-            x0 = max(0, x0)
-        if idx == n - 1:
-            x1 = min(width, x1)
-    x0 = max(0, min(int(x0), max(0, width - 1)))
-    x1 = max(x0 + 1, min(int(x1), width))
-    return image.crop((x0, 0, x1, height))
+    center = 0.5 * (x0 + x1)
+    half = max(1.0, float(args.stride) / 2.0)
+    sx0 = int(round(center - half))
+    sx1 = int(round(center + half))
+    sx0 = max(0, min(image.size[0] - 1, sx0))
+    sx1 = max(sx0 + 1, min(image.size[0], sx1))
+    return image.crop((sx0, 0, sx1, image.size[1]))
 
 
 def hstack(images: Sequence[Image.Image]) -> Image.Image:
@@ -303,30 +435,33 @@ def vstack(images: Sequence[Image.Image]) -> Image.Image:
     return canvas
 
 
-def make_x_strip(image: Image.Image, n: int, args) -> np.ndarray:
-    im = ordered_image(image, args.use_flip)
+def make_x_strip(image: Image.Image, indices: Sequence[int], n: int, args) -> np.ndarray:
     cells = []
-    for idx in range(n):
-        crop = crop_visual_slice(im, idx, n, args.window_size, args.stride, args.heatmap_axis_slice_mode)
+    for model_idx in indices:
+        crop = crop_visual_slice_for_model_window(image, int(model_idx), n, args)
+        if args.heatmap_mirror_line1_axis_windows:
+            crop = ImageOps.mirror(crop)
         crop = crop.resize((args.heatmap_axis_cell_pixels, args.heatmap_line1_strip_height), _RESAMPLE)
         cell = Image.new("RGB", (args.heatmap_axis_cell_pixels + args.heatmap_window_gap_pixels, args.heatmap_line1_strip_height), (255, 255, 255))
         cell.paste(crop, (0, 0))
         cells.append(cell)
+    if cells:
+        cells[-1] = cells[-1].crop((0, 0, args.heatmap_axis_cell_pixels, args.heatmap_line1_strip_height))
     return np.array(hstack(cells))
 
 
-def make_y_strip(image: Image.Image, n: int, args) -> np.ndarray:
-    im = ordered_image(image, args.use_flip)
+def make_y_strip(image: Image.Image, indices: Sequence[int], n: int, args) -> np.ndarray:
     cells = []
-    for idx in range(n):
-        crop = crop_visual_slice(im, idx, n, args.window_size, args.stride, args.heatmap_axis_slice_mode)
-        if args.heatmap_flip_part_axis_windows:
-            # Reverted behavior: mirror the part slice first, then rotate it for the side axis.
+    for model_idx in indices:
+        crop = crop_visual_slice_for_model_window(image, int(model_idx), n, args)
+        if args.heatmap_mirror_part_axis_windows:
             crop = ImageOps.mirror(crop)
         crop = crop.transpose(_ROTATE_90).resize((args.heatmap_part_strip_width, args.heatmap_axis_cell_pixels), _RESAMPLE)
         cell = Image.new("RGB", (args.heatmap_part_strip_width, args.heatmap_axis_cell_pixels + args.heatmap_window_gap_pixels), (255, 255, 255))
         cell.paste(crop, (0, 0))
         cells.append(cell)
+    if cells:
+        cells[-1] = cells[-1].crop((0, 0, args.heatmap_part_strip_width, args.heatmap_axis_cell_pixels))
     return np.array(vstack(cells))
 
 
@@ -352,94 +487,166 @@ def selected_cell_set(sw_path, seg: Optional[Segment]) -> set:
     return selected
 
 
-def annotate_heatmap_cells(ax, sim: np.ndarray, threshold: float, sw_path, seg: Optional[Segment], args):
-    n_line1, n_part = int(sim.shape[0]), int(sim.shape[1])
-    selected = selected_cell_set(sw_path, seg)
+def transform_pairs(pairs: Sequence[Tuple[int, int]], line1_pos: Dict[int, int], part_pos: Dict[int, int]) -> List[Tuple[int, int]]:
+    out = []
+    for i, j in pairs:
+        if int(i) in line1_pos and int(j) in part_pos:
+            out.append((line1_pos[int(i)], part_pos[int(j)]))
+    return out
+
+
+def annotate_heatmap_cells(ax, sim_display: np.ndarray, threshold: float, selected_display: set, args):
+    n_line1, n_part = int(sim_display.shape[0]), int(sim_display.shape[1])
     for j in range(n_part):
         for i in range(n_line1):
-            value = float(sim[i, j])
+            value = float(sim_display[i, j])
             if args.heatmap_mark_above_threshold and value >= threshold:
                 ax.add_patch(Rectangle((i - 0.5, j - 0.5), 1, 1, fill=False, edgecolor="orange", linewidth=0.85, alpha=0.95, zorder=12))
             if args.heatmap_cell_values:
                 text_color = "black" if value >= 0.62 else "white"
-                ax.text(i, j, f"{value:.2f}", ha="center", va="center", fontsize=args.heatmap_cell_value_fontsize, color=text_color, weight="bold" if (i, j) in selected else "normal", zorder=14)
-    for i, j in selected:
+                ax.text(i, j, f"{value:.2f}", ha="center", va="center", fontsize=args.heatmap_cell_value_fontsize, color=text_color, weight="bold" if (i, j) in selected_display else "normal", zorder=14)
+    for i, j in selected_display:
         ax.add_patch(Rectangle((i - 0.5, j - 0.5), 1, 1, fill=False, edgecolor="red", linewidth=2.2, alpha=1.0, zorder=15))
 
 
-def draw_path(ax, sw_path, seg: Optional[Segment]):
-    dx = [i for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
-    dy = [j for op, i, j in sw_path if op == "diag" and i is not None and j is not None]
+def draw_path(ax, path_pairs_display: Sequence[Tuple[int, int]], selected_display: set, seg: Optional[Segment]):
+    dx = [i for i, _j in path_pairs_display]
+    dy = [j for _i, j in path_pairs_display]
     if dx:
         ax.plot(dx, dy, color="white", lw=1.5, alpha=0.95, label="SW diag path", zorder=16)
-    if seg is not None:
-        ax.plot([seg.line1_start, seg.line1_end], [seg.part_start, seg.part_end], color="red", lw=2.6, alpha=0.95, label=f"selected {seg.match_kind}", zorder=17)
-        ax.scatter([seg.line1_start, seg.line1_end], [seg.part_start, seg.part_end], color="red", s=22, zorder=18)
+    if seg is not None and selected_display:
+        selected = sorted(selected_display)
+        sx = [i for i, _j in selected]
+        sy = [j for _i, j in selected]
+        ax.plot(sx, sy, color="red", lw=2.6, alpha=0.95, label=f"selected {seg.match_kind}", zorder=17)
+        ax.scatter([sx[0], sx[-1]], [sy[0], sy[-1]], color="red", s=22, zorder=18)
     return dx, dy
 
 
-def save_heatmap(sim, sw_path, seg, part: SourcePart, threshold: float, args, line1_display=None, part_display=None) -> str:
+def draw_axis_tokens(ax_x, ax_y, line1_labels, part_labels, line1_indices, part_indices, args):
+    if not args.show_axis_tokens:
+        return
+    n_line1 = len(line1_indices)
+    n_part = len(part_indices)
+    for shown_i, model_i in enumerate(line1_indices):
+        label = str(line1_labels[int(model_i)]) if 0 <= int(model_i) < len(line1_labels) else "?"
+        ax_x.text(
+            shown_i,
+            -0.18,
+            display_text(label),
+            ha="center",
+            va="center",
+            rotation=float(args.x_token_rotation),
+            fontsize=float(args.axis_token_fontsize),
+            clip_on=False,
+        )
+    for shown_j, model_j in enumerate(part_indices):
+        label = str(part_labels[int(model_j)]) if 0 <= int(model_j) < len(part_labels) else "?"
+        ax_y.text(
+            -0.20,
+            shown_j,
+            display_text(label),
+            ha="center",
+            va="center",
+            rotation=float(args.y_token_rotation),
+            fontsize=float(args.axis_token_fontsize),
+            clip_on=False,
+        )
+    ax_x.set_ylim(1.0, -0.42 if n_line1 else 0.0)
+    ax_y.set_xlim(-0.42, 1.0 if n_part else 0.0)
+
+
+def save_heatmap(
+    sim,
+    sw_path,
+    seg,
+    part: SourcePart,
+    threshold: float,
+    args,
+    line1_display=None,
+    part_display=None,
+    line1_labels: Optional[Sequence[str]] = None,
+    part_labels: Optional[Sequence[str]] = None,
+) -> str:
     out = heatmap_output_path(args.output, args.heatmap_dir, part.part_id)
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     axis_images = args.heatmap_axis_images and line1_display is not None and part_display is not None
     n_line1, n_part = int(sim.shape[0]), int(sim.shape[1])
+    line1_indices = display_indices(n_line1, args)
+    part_indices = display_indices(n_part, args)
+    line1_pos = {int(model_idx): int(pos) for pos, model_idx in enumerate(line1_indices)}
+    part_pos = {int(model_idx): int(pos) for pos, model_idx in enumerate(part_indices)}
+    sim_display = sim[np.ix_(line1_indices, part_indices)]
+    path_pairs_display = transform_pairs(diag_pairs(sw_path), line1_pos, part_pos)
+    selected_display = set(transform_pairs(selected_cell_set(sw_path, seg), line1_pos, part_pos))
+    line1_labels = list(line1_labels) if line1_labels is not None else [""] * n_line1
+    part_labels = list(part_labels) if part_labels is not None else [""] * n_part
 
     if axis_images:
-        fig = plt.figure(figsize=(max(13, min(38, n_line1 * 0.38 + 5)), max(7.5, min(20, n_part * 0.88 + 5.5))))
-        gs = GridSpec(2, 3, figure=fig, width_ratios=[2.2, 8.8, 0.34], height_ratios=[1.55, 6.0], wspace=0.08, hspace=0.08)
+        fig = plt.figure(figsize=(max(13, min(38, n_line1 * 0.38 + 5)), max(8.0, min(21, n_part * 0.88 + 6.0))))
+        gs = GridSpec(2, 3, figure=fig, width_ratios=[2.55, 8.8, 0.34], height_ratios=[1.85, 6.0], wspace=0.08, hspace=0.10)
         ax_corner = fig.add_subplot(gs[0, 0])
         ax_x = fig.add_subplot(gs[0, 1])
         ax_y = fig.add_subplot(gs[1, 0])
         ax_h = fig.add_subplot(gs[1, 1])
         cax = fig.add_subplot(gs[1, 2])
         ax_corner.axis("off")
-        ax_corner.text(0.5, 0.5, f"separated\nwindow slices\nmode={args.heatmap_axis_slice_mode}", ha="center", va="center", fontsize=8, weight="bold")
-        ax_x.imshow(make_x_strip(line1_display, n_line1, args), extent=(-0.5, n_line1 - 0.5, 1, 0), aspect="auto")
-        ax_y.imshow(make_y_strip(part_display, n_part, args), extent=(0, 1, n_part - 0.5, -0.5), aspect="auto")
+        ax_corner.text(
+            0.5,
+            0.5,
+            f"separated\nwindow slices\nmode={args.heatmap_axis_slice_mode}\ndisplay={args.heatmap_display_order}",
+            ha="center",
+            va="center",
+            fontsize=8,
+            weight="bold",
+        )
+        ax_x.imshow(make_x_strip(line1_display, line1_indices, n_line1, args), extent=(-0.5, n_line1 - 0.5, 1, 0), aspect="auto")
+        ax_y.imshow(make_y_strip(part_display, part_indices, n_part, args), extent=(0, 1, n_part - 0.5, -0.5), aspect="auto")
         ax_x.set_xlim(-0.5, n_line1 - 0.5)
         ax_x.set_ylim(1, 0)
         ax_x.set_yticks([])
         ax_y.set_xlim(0, 1)
         ax_y.set_ylim(n_part - 0.5, -0.5)
         ax_y.set_xticks([])
+        draw_axis_tokens(ax_x, ax_y, line1_labels, part_labels, line1_indices, part_indices, args)
         xs = label_step(n_line1)
         ys = 1 if n_part <= 16 else label_step(n_part)
         ax_x.set_xticks(list(range(0, n_line1, xs)))
-        ax_x.set_xticklabels([str(i) for i in range(0, n_line1, xs)], fontsize=7)
+        ax_x.set_xticklabels([str(int(line1_indices[i])) for i in range(0, n_line1, xs)], fontsize=7)
         ax_x.tick_params(axis="x", labeltop=True, labelbottom=False, pad=1)
-        ax_x.set_title("line1 separated window slices (same order as heatmap columns)", fontsize=9)
+        ax_x.set_title("line1 windows: labels are model ids; images are unmirrored visual crops", fontsize=9)
         ax_y.set_yticks(list(range(0, n_part, ys)))
-        ax_y.set_yticklabels([str(i) for i in range(0, n_part, ys)], fontsize=7)
-        ax_y.set_ylabel("part separated windows\nrotated 90° + flipped", fontsize=8)
+        ax_y.set_yticklabels([str(int(part_indices[i])) for i in range(0, n_part, ys)], fontsize=7)
+        ax_y.set_ylabel("part windows\nmodel ids + tokens", fontsize=8)
         grid_cells(ax_x, n_line1, None, alpha=0.60, lw=0.55)
         for y in np.arange(-0.5, n_part + 0.5, 1.0):
             ax_y.axhline(y, color="white", lw=0.55, alpha=0.65, zorder=10)
-        im = ax_h.imshow(sim.T, origin="upper", aspect="auto", vmin=args.heatmap_vmin, vmax=args.heatmap_vmax)
+        im = ax_h.imshow(sim_display.T, origin="upper", aspect="auto", vmin=args.heatmap_vmin, vmax=args.heatmap_vmax)
         plt.colorbar(im, cax=cax).set_label("cosine similarity")
         grid_cells(ax_h, n_line1, n_part, alpha=0.24, lw=0.40)
-        annotate_heatmap_cells(ax_h, sim, threshold, sw_path, seg, args)
-        dx, dy = draw_path(ax_h, sw_path, seg)
+        annotate_heatmap_cells(ax_h, sim_display, threshold, selected_display, args)
+        dx, dy = draw_path(ax_h, path_pairs_display, selected_display, seg)
         ax_h.set_xlim(-0.5, n_line1 - 0.5)
         ax_h.set_ylim(n_part - 0.5, -0.5)
-        ax_h.set_xlabel("line1 window index / x-axis slices")
-        ax_h.set_ylabel("part window index / y-axis slices")
+        ax_h.set_xlabel(f"line1 displayed windows ({args.heatmap_display_order} order; tick=model id)")
+        ax_h.set_ylabel(f"part displayed windows ({args.heatmap_display_order} order; tick=model id)")
         ax_h.set_xticks(list(range(0, n_line1, xs)))
-        ax_h.set_xticklabels([str(i) for i in range(0, n_line1, xs)], fontsize=8)
+        ax_h.set_xticklabels([str(int(line1_indices[i])) for i in range(0, n_line1, xs)], fontsize=8)
         ax_h.set_yticks(list(range(0, n_part, ys)))
-        ax_h.set_yticklabels([str(i) for i in range(0, n_part, ys)], fontsize=8)
+        ax_h.set_yticklabels([str(int(part_indices[i])) for i in range(0, n_part, ys)], fontsize=8)
         if dx or dy or seg is not None:
             ax_h.legend(loc="upper right", fontsize=8)
     else:
         fig, ax_h = plt.subplots(figsize=(max(9, min(26, n_line1 / 3.6)), max(4.2, min(13, n_part / 1.8 + 2))))
-        im = ax_h.imshow(sim.T, origin="upper", aspect="auto", vmin=args.heatmap_vmin, vmax=args.heatmap_vmax)
+        im = ax_h.imshow(sim_display.T, origin="upper", aspect="auto", vmin=args.heatmap_vmin, vmax=args.heatmap_vmax)
         plt.colorbar(im, ax=ax_h, fraction=0.025, pad=0.02).set_label("cosine similarity")
         grid_cells(ax_h, n_line1, n_part, alpha=0.24, lw=0.40)
-        annotate_heatmap_cells(ax_h, sim, threshold, sw_path, seg, args)
-        dx, dy = draw_path(ax_h, sw_path, seg)
+        annotate_heatmap_cells(ax_h, sim_display, threshold, selected_display, args)
+        dx, dy = draw_path(ax_h, path_pairs_display, selected_display, seg)
         ax_h.set_xlim(-0.5, n_line1 - 0.5)
         ax_h.set_ylim(n_part - 0.5, -0.5)
-        ax_h.set_xlabel("line1 window index")
-        ax_h.set_ylabel("part window index")
+        ax_h.set_xlabel("line1 displayed window index")
+        ax_h.set_ylabel("part displayed window index")
         if dx or dy or seg is not None:
             ax_h.legend(loc="upper right", fontsize=8)
 
@@ -455,16 +662,37 @@ def save_heatmap(sim, sw_path, seg, part: SourcePart, threshold: float, args, li
     return out
 
 
-def search_one_part(model, emb_line1, part: SourcePart, line1_num_windows: int, line1_display_width: int, line1_original_width: int, args, line1_display=None) -> Result:
+def search_one_part(
+    model,
+    emb_line1,
+    line1_labels: Sequence[str],
+    text_encoder,
+    text2: Optional[str],
+    part: SourcePart,
+    line1_num_windows: int,
+    line1_display_width: int,
+    line1_original_width: int,
+    args,
+    line1_display=None,
+) -> Result:
     part_display, part_tensor = preprocess_line_image(part.path, target_height=args.height)
     emb_part = image_embeddings(model, part_tensor, args.device, embedding_space=args.embedding_space)
+    if args.show_axis_tokens:
+        if args.alignment_space == args.embedding_space:
+            emb_part_align = emb_part
+        else:
+            emb_part_align = image_embeddings(model, part_tensor, args.device, embedding_space=args.alignment_space)
+        part_labels = aligned_tokens_for_windows(text_encoder, text2, emb_part_align, args)
+    else:
+        part_labels = [""] * int(emb_part.shape[0])
+
     sim = cosine_similarity_matrix(emb_line1, emb_part)
     threshold = resolve_threshold(sim, args)
     best_sim = highest_similarity(sim)
     sw_path, sw_score, _H = smith_waterman(sim, threshold=threshold, gap_penalty=args.gap, match_reward=args.match, mismatch_penalty=args.mismatch)
     diag_mean = best_diag_mean(sw_path, sim)
     seg = choose_segment(sw_path, sim, threshold, args.min_run_length, args.require_all_windows_above_threshold)
-    heatmap_path = save_heatmap(sim, sw_path, seg, part, threshold, args, line1_display, part_display) if args.heatmap else None
+    heatmap_path = save_heatmap(sim, sw_path, seg, part, threshold, args, line1_display, part_display, line1_labels, part_labels) if args.heatmap else None
 
     if seg is None:
         return Result(
@@ -594,6 +822,7 @@ def main():
     parser.add_argument("--height", type=int, default=128)
     parser.add_argument("--vector-size", type=int, default=128)
     parser.add_argument("--embedding-space", choices=("local", "contextual"), default="local")
+    parser.add_argument("--alignment-space", choices=("local", "contextual"), default="local", help="Embedding space used to assign axis tokens with Span-DTW.")
     parser.add_argument("--threshold", type=float, default=0.85)
     parser.add_argument("--adaptive-threshold", choices=("none", "percentile", "mean_std"), default="percentile")
     parser.add_argument("--threshold-percentile", type=float, default=90.0)
@@ -615,18 +844,39 @@ def main():
     parser.add_argument("--heatmap-vmax", type=float, default=1.0)
     parser.add_argument("--no-heatmap-axis-images", dest="heatmap_axis_images", action="store_false")
     parser.set_defaults(heatmap_axis_images=True)
+    parser.add_argument("--heatmap-display-order", choices=("model", "visual"), default="visual")
     parser.add_argument("--heatmap-axis-cell-pixels", type=int, default=52)
     parser.add_argument("--heatmap-window-gap-pixels", type=int, default=10)
     parser.add_argument("--heatmap-axis-slice-mode", choices=("nonoverlap", "window"), default="nonoverlap")
     parser.add_argument("--heatmap-line1-strip-height", type=int, default=88)
     parser.add_argument("--heatmap-part-strip-width", type=int, default=112)
-    parser.add_argument("--no-heatmap-flip-part-axis-windows", dest="heatmap_flip_part_axis_windows", action="store_false")
-    parser.set_defaults(heatmap_flip_part_axis_windows=True)
+    parser.add_argument("--heatmap-mirror-line1-axis-windows", action="store_true")
+    parser.add_argument("--heatmap-mirror-part-axis-windows", action="store_true")
+    parser.add_argument("--heatmap-flip-part-axis-windows", dest="heatmap_mirror_part_axis_windows", action="store_true", help="Backward-compatible alias: mirror part-window thumbnails before rotation.")
+    parser.add_argument("--no-heatmap-flip-part-axis-windows", dest="heatmap_mirror_part_axis_windows", action="store_false")
+    parser.set_defaults(heatmap_mirror_part_axis_windows=False)
     parser.add_argument("--no-heatmap-cell-values", dest="heatmap_cell_values", action="store_false")
     parser.set_defaults(heatmap_cell_values=True)
     parser.add_argument("--heatmap-cell-value-fontsize", type=float, default=4.2)
     parser.add_argument("--no-heatmap-mark-above-threshold", dest="heatmap_mark_above_threshold", action="store_false")
     parser.set_defaults(heatmap_mark_above_threshold=True)
+
+    parser.add_argument("--show-axis-tokens", dest="show_axis_tokens", action="store_true", default=True)
+    parser.add_argument("--no-axis-tokens", dest="show_axis_tokens", action="store_false")
+    parser.add_argument("--axis-token-fontsize", type=float, default=6.5)
+    parser.add_argument("--x-token-rotation", type=float, default=90.0)
+    parser.add_argument("--y-token-rotation", type=float, default=0.0)
+    parser.add_argument("--text1", default=None)
+    parser.add_argument("--text2", default=None)
+    parser.add_argument("--text1-path", default=None)
+    parser.add_argument("--text2-path", default=None)
+    parser.add_argument("--text-encoder-type", choices=("arabic_span", "arabic_token", "char"), default=None)
+    parser.add_argument("--arabic-text-model-name", default=None)
+    parser.add_argument("--max-span-chars", type=int, default=None)
+    parser.add_argument("--max-token-chars", type=int, default=None)
+    parser.add_argument("--max-windows-per-span", type=int, default=2)
+    parser.add_argument("--token-temperature", type=float, default=0.07)
+    parser.add_argument("--window-count-penalty", type=float, default=0.05)
 
     parser.add_argument("--line1", default=None)
     parser.add_argument("--line2", default=None)
@@ -649,17 +899,27 @@ def main():
         raise ValueError("--heatmap-vmax must be larger than --heatmap-vmin")
     if min(args.heatmap_axis_cell_pixels, args.heatmap_line1_strip_height, args.heatmap_part_strip_width) <= 0:
         raise ValueError("heatmap axis image sizes must be positive")
-    if args.heatmap_cell_value_fontsize <= 0:
-        raise ValueError("--heatmap-cell-value-fontsize must be positive")
+    if args.heatmap_cell_value_fontsize <= 0 or args.axis_token_fontsize <= 0:
+        raise ValueError("font sizes must be positive")
     if args.gap > 0 or args.mismatch > 0 or args.match <= 0:
         raise ValueError("use negative --gap/--mismatch and positive --match")
 
     line1_path, line2_path = resolve_line_paths(args)
+    text1_path, text2_path = resolve_text_paths(args)
+    text1 = read_text(args.text1, text1_path)
+    text2 = read_text(args.text2, text2_path)
     if not os.path.exists(line1_path):
         raise FileNotFoundError(line1_path)
     if not os.path.exists(line2_path):
         raise FileNotFoundError(line2_path)
     print(f"Line1: {line1_path}\nLine2: {line2_path}")
+
+    loaded = torch.load(args.weights, map_location=args.device)
+    cfg = checkpoint_config(loaded)
+    if args.max_span_chars is None:
+        args.max_span_chars = int(cfg.get("max_text_span_chars", 2))
+    if args.max_token_chars is None:
+        args.max_token_chars = int(cfg.get("max_text_token_chars", 2))
 
     model = load_image_model(
         args.weights,
@@ -672,6 +932,16 @@ def main():
     )
     img1_display, tensor1 = preprocess_line_image(line1_path, target_height=args.height)
     emb_line1 = image_embeddings(model, tensor1, args.device, embedding_space=args.embedding_space)
+    if args.show_axis_tokens:
+        text_encoder = build_text_encoder(args, cfg, loaded, args.device)
+        if args.alignment_space == args.embedding_space:
+            emb_line1_align = emb_line1
+        else:
+            emb_line1_align = image_embeddings(model, tensor1, args.device, embedding_space=args.alignment_space)
+        line1_labels = aligned_tokens_for_windows(text_encoder, text1, emb_line1_align, args)
+    else:
+        text_encoder = None
+        line1_labels = [""] * int(emb_line1.shape[0])
     line1_original = Image.open(line1_path).convert("RGB")
     line2_original = Image.open(line2_path).convert("RGB")
 
@@ -686,9 +956,9 @@ def main():
     if args.heatmap:
         print(
             f"Cosine heatmaps: enabled, dir={args.heatmap_dir or os.path.dirname(args.output) or '.'}, "
-            f"separated windows gap={args.heatmap_window_gap_pixels}, slice_mode={args.heatmap_axis_slice_mode}, "
-            f"flip_part_axis={args.heatmap_flip_part_axis_windows}, cell_values={args.heatmap_cell_values}, "
-            f"mark_above_threshold={args.heatmap_mark_above_threshold}"
+            f"display_order={args.heatmap_display_order}, use_flip={args.use_flip}, "
+            f"slice_mode={args.heatmap_axis_slice_mode}, cell_values={args.heatmap_cell_values}, "
+            f"axis_tokens={args.show_axis_tokens}, max_span_chars={args.max_span_chars}, max_windows_per_span={args.max_windows_per_span}"
         )
 
     results: List[Result] = []
@@ -698,6 +968,9 @@ def main():
                 search_one_part(
                     model,
                     emb_line1,
+                    line1_labels,
+                    text_encoder,
+                    text2,
                     part,
                     int(emb_line1.shape[0]),
                     int(img1_display.size[0]),
