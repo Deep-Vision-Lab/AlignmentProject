@@ -16,13 +16,13 @@ PART_WIDTH="${PART_WIDTH:-128}"
 NUM_PARTS="${NUM_PARTS:-3}"
 
 WINDOW_SIZE="${WINDOW_SIZE:-32}"
-STRIDE="${STRIDE:-16}"
+STRIDE="${STRIDE:-32}"
 HEIGHT="${HEIGHT:-128}"
 
 # Use the same RTL flip setting used by the Arabic training/eval pipeline.
 # This affects the model window order. The heatmap display can still be shown in
 # readable visual order using HEATMAP_DISPLAY_ORDER=visual.
-USE_FLIP="${USE_FLIP:-1}"
+USE_FLIP="${USE_FLIP:-0}"
 NO_BILSTM="${NO_BILSTM:-0}"
 
 # improve_model recommendation:
@@ -32,9 +32,9 @@ ALIGNMENT_SPACE="${ALIGNMENT_SPACE:-local}"
 
 # Stricter defaults than the old script. The previous 80th percentile with a 0.6
 # floor allowed many repeated Arabic strokes to become false positives.
-THRESHOLD="${THRESHOLD:-0.85}"
+THRESHOLD="${THRESHOLD:-0.8}"
 ADAPTIVE_THRESHOLD="${ADAPTIVE_THRESHOLD:-percentile}"
-THRESHOLD_PERCENTILE="${THRESHOLD_PERCENTILE:-95}"
+THRESHOLD_PERCENTILE="${THRESHOLD_PERCENTILE:-80}"
 
 MATCH="${MATCH:-1.0}"
 MISMATCH="${MISMATCH:--4.0}"
@@ -47,7 +47,7 @@ MASK_PADDING_WINDOWS="${MASK_PADDING_WINDOWS:-0}"
 
 # Save one cosine-similarity heatmap per chosen part.
 # Enable with: HEATMAP=1 bash scripts/eval/line-to-part/run_line2_parts_multi_samples.sh
-HEATMAP="${HEATMAP:-0}"
+HEATMAP="${HEATMAP:-1}"
 HEATMAP_DIR="${HEATMAP_DIR:-$OUT_DIR/heatmaps}"
 
 # Heatmap sliced-window display options.
