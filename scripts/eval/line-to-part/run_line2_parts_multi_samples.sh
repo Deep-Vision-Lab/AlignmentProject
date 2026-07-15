@@ -7,16 +7,16 @@ SCRIPT="${SCRIPT:-scripts/eval/line-to-part/visualize_line2_parts_in_line1_self_
 
 WEIGHTS="${WEIGHTS:-Weights/improve_model_win32_fastpair_span2/model_latest.pth}"
 DATA_DIR="${DATA_DIR:-DataSet/Synthetic_Arabic}"
-OUT_DIR="${OUT_DIR:-Results/Evaluation/Part_Search_Multi_Local}"
+OUT_DIR="${OUT_DIR:-Results/Part_Search_Multi_Local}"
 
 START_INDEX="${START_INDEX:-1}"
-END_INDEX="${END_INDEX:-10}"
+END_INDEX="${END_INDEX:-1}"
 
 PART_WIDTH="${PART_WIDTH:-128}"
 NUM_PARTS="${NUM_PARTS:-3}"
 
 WINDOW_SIZE="${WINDOW_SIZE:-32}"
-STRIDE="${STRIDE:-32}"
+STRIDE="${STRIDE:-16}"
 HEIGHT="${HEIGHT:-128}"
 
 # Use the same RTL flip setting used by the Arabic training/eval pipeline.
@@ -28,7 +28,7 @@ NO_BILSTM="${NO_BILSTM:-0}"
 # improve_model recommendation:
 # Use local pre-BiLSTM CNN embeddings for part/window matching.
 EMBEDDING_SPACE="${EMBEDDING_SPACE:-local}"
-ALIGNMENT_SPACE="${ALIGNMENT_SPACE:-local}"
+ALIGNMENT_SPACE="${ALIGNMENT_SPACE:-contextual}"
 
 # Stricter defaults than the old script. The previous 80th percentile with a 0.6
 # floor allowed many repeated Arabic strokes to become false positives.
@@ -36,14 +36,14 @@ THRESHOLD="${THRESHOLD:-0.8}"
 ADAPTIVE_THRESHOLD="${ADAPTIVE_THRESHOLD:-percentile}"
 THRESHOLD_PERCENTILE="${THRESHOLD_PERCENTILE:-80}"
 
-MATCH="${MATCH:-1.0}"
+MATCH="${MATCH:-3.0}"
 MISMATCH="${MISMATCH:--4.0}"
 GAP="${GAP:--1.0}"
 MIN_RUN_LENGTH="${MIN_RUN_LENGTH:-4}"
 
 # Visual mask padding in window units.
 # 0 = exact Smith-Waterman window span.
-MASK_PADDING_WINDOWS="${MASK_PADDING_WINDOWS:-0}"
+MASK_PADDING_WINDOWS="${MASK_PADDING_WINDOWS:-1}"
 
 # Save one cosine-similarity heatmap per chosen part.
 # Enable with: HEATMAP=1 bash scripts/eval/line-to-part/run_line2_parts_multi_samples.sh
@@ -66,7 +66,7 @@ HEATMAP_PART_STRIP_WIDTH="${HEATMAP_PART_STRIP_WIDTH:-108}"
 # These reverse the displayed heatmap axis, thumbnails, model-id ticks, token labels,
 # SW path, and selected red cells together so alignment remains correct.
 HEATMAP_REVERSE_X_AXIS="${HEATMAP_REVERSE_X_AXIS:-0}"
-HEATMAP_REVERSE_Y_AXIS="${HEATMAP_REVERSE_Y_AXIS:-0}"
+HEATMAP_REVERSE_Y_AXIS="${HEATMAP_REVERSE_Y_AXIS:-1}"
 
 HEATMAP_Y_AXIS_ROTATE="${HEATMAP_Y_AXIS_ROTATE:-1}"
 HEATMAP_Y_AXIS_FLIP="${HEATMAP_Y_AXIS_FLIP:-0}"
