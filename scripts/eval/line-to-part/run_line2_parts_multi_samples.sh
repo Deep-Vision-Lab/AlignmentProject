@@ -1,7 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-SCRIPT="scripts/eval/line-to-part/visualize_line2_parts_in_line1.py"
+# Default to a thin wrapper that keeps the original line-to-part logic but draws
+# the heatmap y-axis with the same style as visualize_line_self_window_cosine.py.
+SCRIPT="${SCRIPT:-scripts/eval/line-to-part/visualize_line2_parts_in_line1_self_yaxis.py}"
 
 WEIGHTS="${WEIGHTS:-Weights/improve_model_win32_fastpair_span2/model_latest.pth}"
 DATA_DIR="${DATA_DIR:-DataSet/Synthetic_Arabic}"
@@ -53,10 +55,15 @@ HEATMAP_DIR="${HEATMAP_DIR:-$OUT_DIR/heatmaps}"
 # model  = show raw model order.
 HEATMAP_DISPLAY_ORDER="${HEATMAP_DISPLAY_ORDER:-visual}"
 HEATMAP_AXIS_SLICE_MODE="${HEATMAP_AXIS_SLICE_MODE:-nonoverlap}"
-HEATMAP_WINDOW_GAP_PIXELS="${HEATMAP_WINDOW_GAP_PIXELS:-10}"
-HEATMAP_AXIS_CELL_PIXELS="${HEATMAP_AXIS_CELL_PIXELS:-42}"
+
+# Match visualize_line_self_window_cosine.py axis defaults.
+HEATMAP_WINDOW_GAP_PIXELS="${HEATMAP_WINDOW_GAP_PIXELS:-12}"
+HEATMAP_AXIS_CELL_PIXELS="${HEATMAP_AXIS_CELL_PIXELS:-52}"
 HEATMAP_LINE1_STRIP_HEIGHT="${HEATMAP_LINE1_STRIP_HEIGHT:-84}"
-HEATMAP_PART_STRIP_WIDTH="${HEATMAP_PART_STRIP_WIDTH:-96}"
+HEATMAP_PART_STRIP_WIDTH="${HEATMAP_PART_STRIP_WIDTH:-108}"
+HEATMAP_Y_AXIS_ROTATE="${HEATMAP_Y_AXIS_ROTATE:-1}"
+HEATMAP_Y_AXIS_FLIP="${HEATMAP_Y_AXIS_FLIP:-0}"
+export HEATMAP_Y_AXIS_ROTATE HEATMAP_Y_AXIS_FLIP
 
 # Axis-token labels are inferred by hard Span-DTW and written on the heatmap axes.
 # For this experiment, keep labels at most 2 chars and at most 2 windows per span.
@@ -71,7 +78,8 @@ TOKEN_TEMPERATURE="${TOKEN_TEMPERATURE:-0.07}"
 TEXT_ENCODER_TYPE="${TEXT_ENCODER_TYPE:-}"
 ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_NAME:-}"
 
-# Keep axis thumbnails unmirrored by default so the characters are readable.
+# Same y-axis behavior as visualize_line_self_window_cosine.py: rotated by default,
+# not mirrored and not extra-flipped unless explicitly requested.
 HEATMAP_MIRROR_LINE1_AXIS_WINDOWS="${HEATMAP_MIRROR_LINE1_AXIS_WINDOWS:-0}"
 HEATMAP_MIRROR_PART_AXIS_WINDOWS="${HEATMAP_MIRROR_PART_AXIS_WINDOWS:-0}"
 
@@ -171,6 +179,8 @@ for IDX in $(seq "$START_INDEX" "$END_INDEX"); do
     echo "  heatmap-axis-slice-mode         = $HEATMAP_AXIS_SLICE_MODE"
     echo "  heatmap-window-gap-pixels       = $HEATMAP_WINDOW_GAP_PIXELS"
     echo "  heatmap-axis-cell-pixels        = $HEATMAP_AXIS_CELL_PIXELS"
+    echo "  heatmap-y-axis-rotate           = $HEATMAP_Y_AXIS_ROTATE"
+    echo "  heatmap-y-axis-flip             = $HEATMAP_Y_AXIS_FLIP"
     echo "  show-axis-tokens                = $SHOW_AXIS_TOKENS"
     echo "  max-span-chars                  = $MAX_SPAN_CHARS"
     echo "  max-windows-per-span            = $MAX_WINDOWS_PER_SPAN"
