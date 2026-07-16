@@ -62,11 +62,11 @@ HEATMAP_AXIS_CELL_PIXELS="${HEATMAP_AXIS_CELL_PIXELS:-52}"
 HEATMAP_LINE1_STRIP_HEIGHT="${HEATMAP_LINE1_STRIP_HEIGHT:-84}"
 HEATMAP_PART_STRIP_WIDTH="${HEATMAP_PART_STRIP_WIDTH:-108}"
 
-# The visual display order already compensates for USE_FLIP=1. Do not reverse
-# either axis again by default. Optional reversal still changes thumbnails,
-# matrix rows/columns, tokens, ticks, and SW paths together.
+# The y-axis is reversed by default so its last model/displayed window is shown
+# first and its first window is shown last. The wrapper reverses the thumbnails,
+# heatmap rows, token labels, ticks, SW path, and selected cells together.
 HEATMAP_REVERSE_X_AXIS="${HEATMAP_REVERSE_X_AXIS:-0}"
-HEATMAP_REVERSE_Y_AXIS="${HEATMAP_REVERSE_Y_AXIS:-0}"
+HEATMAP_REVERSE_Y_AXIS="${HEATMAP_REVERSE_Y_AXIS:-1}"
 
 # Same y-axis orientation used by the self-window cosine script.
 HEATMAP_Y_AXIS_ROTATE="${HEATMAP_Y_AXIS_ROTATE:-1}"
