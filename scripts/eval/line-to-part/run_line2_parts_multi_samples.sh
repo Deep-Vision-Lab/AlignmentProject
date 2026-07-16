@@ -54,7 +54,7 @@ HEATMAP_DIR="${HEATMAP_DIR:-$OUT_DIR/heatmaps}"
 # window = show the complete model window on each axis. Use nonoverlap only for
 # a compressed display of the central stride-sized region.
 HEATMAP_DISPLAY_ORDER="${HEATMAP_DISPLAY_ORDER:-visual}"
-HEATMAP_AXIS_SLICE_MODE="${HEATMAP_AXIS_SLICE_MODE:-window}"
+HEATMAP_AXIS_SLICE_MODE="${HEATMAP_AXIS_SLICE_MODE:-nonoverlap}"
 
 # Match visualize_line_self_window_cosine.py axis sizing.
 HEATMAP_WINDOW_GAP_PIXELS="${HEATMAP_WINDOW_GAP_PIXELS:-12}"
