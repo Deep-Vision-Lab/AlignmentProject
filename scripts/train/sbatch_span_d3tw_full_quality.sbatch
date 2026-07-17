@@ -14,12 +14,13 @@
 #
 #SBATCH --job-name=align_full_q
 #SBATCH --output=out/%x_%J.out
-#SBATCH --partition=rtx4090
-#SBATCH --gpus=rtx_4090:1
+#SBATCH --partition=rtx6000
+#SBATCH --gpus=rtx_6000:1
 #SBATCH --time=03-00:00:00
 #SBATCH --tasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --qos=jelsana
+
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ahmedmas@post.bgu.ac.il
 
