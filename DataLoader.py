@@ -1,21 +1,145 @@
 import os
 import random
+from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn.functional as F  # kept for pad_matrices helper
-from torch.utils.data import DataLoader, random_split
+from PIL import Image, ImageOps
+from torch.utils.data import DataLoader, Subset, random_split
 from torchvision import transforms
 
 from DataSet import TextLineModern
+from RealDataSet import ArabicManifestLinePairDataset
 from Parameters import *
 
 
 _default_data_dir = f"DataSet/Synthetic_{lang}"
 
+try:
+    _RESAMPLE_BILINEAR = Image.Resampling.BILINEAR
+except AttributeError:  # Pillow < 9
+    _RESAMPLE_BILINEAR = Image.BILINEAR
 
-# Plain ToTensor + Resize. Inputs are NEVER differentiated wrt; setting
-# requires_grad on them just wastes GPU memory on the input grad buffer.
-transform = transforms.Compose([
+
+# ---------------------------------------------------------------------------
+# Image preprocessing
+# ---------------------------------------------------------------------------
+
+
+def _otsu_threshold(gray_array: np.ndarray) -> int:
+    """Return an Otsu threshold for an uint8 grayscale image."""
+    values = np.asarray(gray_array, dtype=np.uint8)
+    histogram = np.bincount(values.reshape(-1), minlength=256).astype(np.float64)
+    total = float(values.size)
+    if total <= 0:
+        return 127
+
+    levels = np.arange(256, dtype=np.float64)
+    total_sum = float(np.dot(levels, histogram))
+    background_weight = 0.0
+    background_sum = 0.0
+    best_variance = -1.0
+    best_threshold = 127
+
+    for threshold in range(256):
+        background_weight += histogram[threshold]
+        if background_weight <= 0:
+            continue
+        foreground_weight = total - background_weight
+        if foreground_weight <= 0:
+            break
+
+        background_sum += threshold * histogram[threshold]
+        background_mean = background_sum / background_weight
+        foreground_mean = (total_sum - background_sum) / foreground_weight
+        between_variance = (
+            background_weight
+            * foreground_weight
+            * (background_mean - foreground_mean) ** 2
+        )
+        if between_variance > best_variance:
+            best_variance = between_variance
+            best_threshold = threshold
+
+    return int(best_threshold)
+
+
+class ResizeAndBinarize:
+    """Resize a real line image and optionally binarize it.
+
+    Binarization is performed after resizing so the final network input remains
+    strictly black/white.  ``auto_invert`` checks the image border and ensures
+    that the page background is white rather than black.
+    """
+
+    def __init__(
+        self,
+        size=(128, 1024),
+        enabled=True,
+        method="otsu",
+        fixed_threshold=180,
+        auto_invert=True,
+        autocontrast=True,
+    ):
+        self.height = int(size[0])
+        self.width = int(size[1])
+        self.enabled = bool(enabled)
+        self.method = str(method).lower()
+        self.fixed_threshold = int(fixed_threshold)
+        self.auto_invert = bool(auto_invert)
+        self.autocontrast = bool(autocontrast)
+
+        if self.method not in {"otsu", "fixed"}:
+            raise ValueError(
+                f"REAL_BINARIZE_METHOD must be 'otsu' or 'fixed', got {self.method!r}."
+            )
+
+    @staticmethod
+    def _border_mean(binary: np.ndarray) -> float:
+        height, width = binary.shape
+        border_h = max(1, int(round(height * 0.05)))
+        border_w = max(1, int(round(width * 0.01)))
+        border = np.concatenate(
+            [
+                binary[:border_h, :].reshape(-1),
+                binary[-border_h:, :].reshape(-1),
+                binary[:, :border_w].reshape(-1),
+                binary[:, -border_w:].reshape(-1),
+            ]
+        )
+        return float(border.mean()) if border.size else 255.0
+
+    def __call__(self, image: Image.Image) -> Image.Image:
+        image = image.convert("L").resize(
+            (self.width, self.height),
+            _RESAMPLE_BILINEAR,
+        )
+
+        if not self.enabled:
+            return image.convert("RGB")
+
+        if self.autocontrast:
+            image = ImageOps.autocontrast(image)
+
+        gray = np.asarray(image, dtype=np.uint8)
+        threshold = (
+            _otsu_threshold(gray)
+            if self.method == "otsu"
+            else max(0, min(255, self.fixed_threshold))
+        )
+        binary = np.where(gray > threshold, 255, 0).astype(np.uint8)
+
+        # Real datasets may contain scans with inverted polarity.  A cropped
+        # handwriting line normally has page background along most of its border.
+        if self.auto_invert and self._border_mean(binary) < 127.5:
+            binary = 255 - binary
+
+        return Image.fromarray(binary, mode="L").convert("RGB")
+
+
+# Synthetic data keeps its original preprocessing.
+synthetic_transform = transforms.Compose([
     transforms.Resize((128, 1024)),
     transforms.ToTensor(),
     transforms.Normalize(
@@ -23,6 +147,37 @@ transform = transforms.Compose([
         std=[0.229, 0.224, 0.225],
     ),
 ])
+
+_real_binarize = os.environ.get("REAL_BINARIZE", "1").lower() in {
+    "1", "true", "yes", "on"
+}
+_real_binarize_auto_invert = os.environ.get(
+    "REAL_BINARIZE_AUTO_INVERT", "1"
+).lower() in {"1", "true", "yes", "on"}
+_real_binarize_autocontrast = os.environ.get(
+    "REAL_BINARIZE_AUTOCONTRAST", "1"
+).lower() in {"1", "true", "yes", "on"}
+_real_binarize_method = os.environ.get("REAL_BINARIZE_METHOD", "otsu").lower()
+_real_binarize_threshold = int(os.environ.get("REAL_BINARIZE_THRESHOLD", 180))
+
+real_transform = transforms.Compose([
+    ResizeAndBinarize(
+        size=(128, 1024),
+        enabled=_real_binarize,
+        method=_real_binarize_method,
+        fixed_threshold=_real_binarize_threshold,
+        auto_invert=_real_binarize_auto_invert,
+        autocontrast=_real_binarize_autocontrast,
+    ),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225],
+    ),
+])
+
+# Backward-compatible name used by older callers.
+transform = synthetic_transform
 
 
 # ---------- Tunables for the DataLoader (override via env vars) ----------
@@ -40,6 +195,7 @@ else:
 _pin_memory = torch.cuda.is_available()
 _persistent_workers = _num_workers > 0
 _prefetch_factor = int(os.environ.get("DATALOADER_PREFETCH", 4)) if _num_workers > 0 else None
+_split_seed = int(os.environ.get("DATASET_SPLIT_SEED", 42))
 
 
 def _make_loader(ds, shuffle):
@@ -57,28 +213,197 @@ def _make_loader(ds, shuffle):
     return DataLoader(ds, **kwargs)
 
 
-def build_dataloaders(data_dir=None):
-    """Build train/valid/test DataLoaders for the given dataset directory."""
-    if data_dir is None:
-        data_dir = _default_data_dir
+def _detect_dataset_type(data_dir) -> str:
+    requested = os.environ.get("DATASET_TYPE", "auto").strip().lower()
+    if requested not in {"auto", "synthetic", "real"}:
+        raise ValueError(
+            f"DATASET_TYPE must be auto, synthetic, or real; got {requested!r}."
+        )
+    if requested != "auto":
+        return requested
 
+    path = Path(data_dir)
+    if path.suffix.lower() == ".jsonl" or (path / "dataset_manifest.jsonl").is_file():
+        return "real"
+    return "synthetic"
+
+
+def _real_manifest_path(data_dir) -> Path:
+    path = Path(data_dir)
+    if path.suffix.lower() == ".jsonl":
+        return path
+    manifest_name = os.environ.get("REAL_MANIFEST_NAME", "dataset_manifest.jsonl")
+    return path / manifest_name
+
+
+def _parse_real_labels():
+    raw = os.environ.get("REAL_DATASET_LABELS", "high_match,medium_match").strip()
+    if raw.lower() in {"all", "*", "any"}:
+        return None
+    labels = [label.strip() for label in raw.split(",") if label.strip()]
+    if not labels:
+        raise ValueError(
+            "REAL_DATASET_LABELS is empty. Use high_match,medium_match or 'all'."
+        )
+    return labels
+
+
+def _build_synthetic_dataset(data_dir):
+    images_dir = os.path.join(data_dir, "images")
+    texts_dir = os.path.join(data_dir, "texts")
+    if not os.path.isdir(images_dir) or not os.path.isdir(texts_dir):
+        raise FileNotFoundError(
+            f"Synthetic dataset expects images/ and texts/ under {data_dir}."
+        )
+
+    detected = len([
+        name
+        for name in os.listdir(images_dir)
+        if name.startswith("img1_") and name.endswith(".png")
+    ])
+    sample_cap = min(int(num_samples), detected) if detected > 0 else int(num_samples)
     dataset_paths = {
-        "images": os.path.join(data_dir, "images"),
+        "images": images_dir,
         "matrices": os.path.join(data_dir, "matrices"),
         "diffNWmatrices": os.path.join(data_dir, "diffNWmatrices"),
         "similarity_matrices": os.path.join(data_dir, "similarity_matrices"),
-        "texts": os.path.join(data_dir, "texts"),
+        "texts": texts_dir,
     }
+    return TextLineModern(
+        new_dataset=dataset_paths,
+        transform=synthetic_transform,
+        num_samples_override=sample_cap,
+    )
 
-    full_dataset = TextLineModern(new_dataset=dataset_paths, transform=transform, num_samples_override=num_samples)
 
-    train_sz = int(0.6 * len(full_dataset))
-    valid_sz = int(0.2 * len(full_dataset))
-    test_sz = len(full_dataset) - train_sz - valid_sz
+def _build_real_dataset(data_dir):
+    labels = _parse_real_labels()
+    text_key = os.environ.get("REAL_TEXT_KEY", "text_original_path")
+    min_text_score = float(os.environ.get("REAL_MIN_TEXT_SCORE", 0.0))
+    validate_paths = os.environ.get("REAL_VALIDATE_PATHS", "0").lower() in {
+        "1", "true", "yes", "on"
+    }
+    max_samples = int(num_samples) if int(num_samples) > 0 else None
 
-    train_ds, valid_ds, test_ds = random_split(full_dataset, [train_sz, valid_sz, test_sz])
+    return ArabicManifestLinePairDataset(
+        manifest_path=_real_manifest_path(data_dir),
+        transform=real_transform,
+        text_key=text_key,
+        allowed_labels=labels,
+        max_samples=max_samples,
+        paired=bool(use_image_pair_contrastive),
+        min_text_score=min_text_score,
+        validate_paths=validate_paths,
+    )
 
-    return _make_loader(train_ds, shuffle=True), _make_loader(valid_ds, shuffle=False), _make_loader(test_ds, shuffle=False)
+
+def _split_lengths(dataset_length):
+    train_size = int(0.6 * dataset_length)
+    valid_size = int(0.2 * dataset_length)
+    test_size = dataset_length - train_size - valid_size
+    return train_size, valid_size, test_size
+
+
+def _random_split_seeded(full_dataset):
+    lengths = _split_lengths(len(full_dataset))
+    return random_split(
+        full_dataset,
+        lengths,
+        generator=torch.Generator().manual_seed(_split_seed),
+    )
+
+
+def _group_split_real_dataset(full_dataset):
+    """Split by page-pair id so related lines cannot leak across splits."""
+    groups = {}
+    for sample_index, sample in enumerate(full_dataset.samples):
+        pair_id = str(sample.get("pair_id", f"sample_{sample_index}"))
+        groups.setdefault(pair_id, []).append(sample_index)
+
+    if len(groups) < 3:
+        return _random_split_seeded(full_dataset)
+
+    group_ids = list(groups)
+    random.Random(_split_seed).shuffle(group_ids)
+
+    # Allocate complete groups while approximately matching the 60/20/20 sample
+    # targets.  Group boundaries are more important than exact split counts.
+    total = len(full_dataset)
+    train_target = int(0.6 * total)
+    valid_target = int(0.2 * total)
+    train_indices = []
+    valid_indices = []
+    test_indices = []
+
+    for group_id in group_ids:
+        indices = groups[group_id]
+        if len(train_indices) < train_target:
+            train_indices.extend(indices)
+        elif len(valid_indices) < valid_target:
+            valid_indices.extend(indices)
+        else:
+            test_indices.extend(indices)
+
+    # Defensive fallback for very uneven manifests.
+    if not train_indices or not valid_indices or not test_indices:
+        return _random_split_seeded(full_dataset)
+
+    return (
+        Subset(full_dataset, train_indices),
+        Subset(full_dataset, valid_indices),
+        Subset(full_dataset, test_indices),
+    )
+
+
+def build_dataloaders(data_dir=None):
+    """Build train/valid/test loaders for synthetic or real Arabic lines.
+
+    Auto detection:
+      - a directory containing ``dataset_manifest.jsonl`` is treated as real;
+      - a direct ``.jsonl`` path is treated as real;
+      - otherwise the old synthetic ``images/`` + ``texts/`` layout is used.
+
+    Override with ``DATASET_TYPE=synthetic`` or ``DATASET_TYPE=real``.
+    """
+    if data_dir is None:
+        data_dir = _default_data_dir
+
+    dataset_type = _detect_dataset_type(data_dir)
+    if dataset_type == "real":
+        full_dataset = _build_real_dataset(data_dir)
+        split_by_pair = os.environ.get("REAL_SPLIT_BY_PAIR_ID", "1").lower() in {
+            "1", "true", "yes", "on"
+        }
+        splits = (
+            _group_split_real_dataset(full_dataset)
+            if split_by_pair
+            else _random_split_seeded(full_dataset)
+        )
+        print(
+            "Loaded real Arabic manifest dataset: "
+            f"samples={len(full_dataset)} labels={_parse_real_labels() or 'all'} "
+            f"text_key={full_dataset.text_key} binarize={_real_binarize} "
+            f"method={_real_binarize_method} split_by_pair_id={split_by_pair}",
+            flush=True,
+        )
+    else:
+        full_dataset = _build_synthetic_dataset(data_dir)
+        splits = _random_split_seeded(full_dataset)
+        print(
+            f"Loaded synthetic dataset: samples={len(full_dataset)} data_dir={data_dir}",
+            flush=True,
+        )
+
+    train_ds, valid_ds, test_ds = splits
+    print(
+        f"Dataset split sizes: train={len(train_ds)} valid={len(valid_ds)} test={len(test_ds)}",
+        flush=True,
+    )
+    return (
+        _make_loader(train_ds, shuffle=True),
+        _make_loader(valid_ds, shuffle=False),
+        _make_loader(test_ds, shuffle=False),
+    )
 
 
 train_dataloader = None
@@ -215,11 +540,7 @@ def _build_negatives_for_sample(pos_text, all_pos_texts, sample_idx, mode):
 
 
 def custom_collate_fn(batch):
-    """Collate function for contrastive learning.
-
-    Supports old samples `(text1, image1)` and new paired samples containing
-    image1/text1 + image2/text2 for image-image span contrastive training.
-    """
+    """Collate synthetic or manifest samples for contrastive learning."""
     try:
         from Parameters import negative_mode as _neg_mode
     except ImportError:
