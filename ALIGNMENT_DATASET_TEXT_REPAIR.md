@@ -1,26 +1,35 @@
 # ArabicDataset text repair
 
-This branch adds a conservative audit-and-repair utility for incorrect line transcripts in:
+This branch adds a conservative audit-and-repair workflow for incorrect Arabic line transcripts in:
 
 ```text
 DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_*/{A,B}/text/
 ```
 
-The common problems it targets are:
+It targets problems such as:
 
 - missing spaces between Arabic words;
 - incorrect textual forms or OCR substitutions;
-- disagreement between `raw`, `final/original`, and optional LLM-generated text;
+- disagreement between raw, final, and optional LLM-generated text;
 - missing or stale `final/tashkeel` files;
 - stale page-level `full_final_original.txt` and `full_final_tashkeel.txt` files.
 
-The script does **not** alter page images, line images, or raw OCR. It repairs only the final text files, and only when a sequential match against trusted Quran references reaches the requested confidence threshold.
+The workflow does not alter page images, line images, or raw OCR files. It changes only accepted final-text repairs and keeps the existing manifest paths.
 
-## Added script
+## Scripts
 
 ```text
+scripts/dataset/repair_alignment_texts_from_surahs.py
 scripts/dataset/repair_alignment_texts.py
 ```
+
+Use `repair_alignment_texts_from_surahs.py` for this dataset. It automatically reads the Quran text already included under:
+
+```text
+DataSet/ArabicDataset/Surahs/surah_*.json
+```
+
+It generates the clean and tashkeel reference files itself, so external Quran reference files are not required.
 
 ## Safety behavior
 
@@ -30,181 +39,190 @@ The default mode is a dry run.
 - Low-confidence lines are skipped.
 - Proposed files are written under a timestamped `preview/` tree.
 - Existing files are backed up under `backup/` before an apply operation.
-- Every line receives a CSV and JSONL audit record.
+- Every line receives CSV and JSONL audit records.
 - Images and `text/raw/` files are never modified.
-- The manifest does not need to be rewritten because repaired files keep their existing paths.
+- The manifest does not need to be rewritten because repaired files keep their paths.
 
-## Reference file format
-
-The recommended reference format is one verse per line:
-
-```text
-surah_number|ayah_number|verse text
-```
-
-Example:
-
-```text
-1|1|بسم الله الرحمن الرحيم
-1|2|الحمد لله رب العالمين
-```
-
-The clean and tashkeel files must describe the same Quran verses. The parser also supports compatible JSON/JSONL verse data and equal-length one-verse-per-line text files.
-
-## 1. Audit one page pair
-
-Run this first:
+## 1. Switch to the repair branch
 
 ```bash
-python scripts/dataset/repair_alignment_texts.py \
+cd /home/ahmedmas/BGU-Lab/AlignmentProject_clone
+
+git fetch origin
+git checkout dataset_text_repair
+git pull origin dataset_text_repair
+
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate manucripts_align
+```
+
+## 2. Confirm that the bundled Surah files exist
+
+```bash
+find DataSet/ArabicDataset/Surahs -maxdepth 1 -name 'surah_*.json' | head
+```
+
+## 3. Recommended dry run
+
+Audit the complete dataset without changing final text files:
+
+```bash
+python scripts/dataset/repair_alignment_texts_from_surahs.py \
+  --dataset-root DataSet/ArabicDataset
+```
+
+The wrapper creates derived references under:
+
+```text
+DataSet/ArabicDataset/text_repair_references/
+```
+
+The repair audit is written under:
+
+```text
+DataSet/ArabicDataset/text_repair_reports/<timestamp>/
+```
+
+Inspect:
+
+```text
+AUDIT.md
+lines.csv
+lines.jsonl
+summary.json
+preview/
+```
+
+## 4. Apply the complete repair
+
+After checking the dry-run report:
+
+```bash
+python scripts/dataset/repair_alignment_texts_from_surahs.py \
   --dataset-root DataSet/ArabicDataset \
-  --reference-clean /path/to/quran-simple-clean.txt \
-  --reference-tashkeel /path/to/quran-simple.txt \
+  --apply
+```
+
+Existing final text files are backed up before replacement.
+
+## 5. Safer one-pair test
+
+Dry run:
+
+```bash
+python scripts/dataset/repair_alignment_texts_from_surahs.py \
+  --dataset-root DataSet/ArabicDataset \
   --pair pair_000001
 ```
 
-Default minimum confidence:
+Apply only that page pair:
+
+```bash
+python scripts/dataset/repair_alignment_texts_from_surahs.py \
+  --dataset-root DataSet/ArabicDataset \
+  --pair pair_000001 \
+  --apply
+```
+
+## 6. Small dataset-wide smoke test
+
+Process only the first ten page pairs:
+
+```bash
+python scripts/dataset/repair_alignment_texts_from_surahs.py \
+  --dataset-root DataSet/ArabicDataset \
+  --max-pairs 10
+```
+
+Apply only those ten pairs:
+
+```bash
+python scripts/dataset/repair_alignment_texts_from_surahs.py \
+  --dataset-root DataSet/ArabicDataset \
+  --max-pairs 10 \
+  --apply
+```
+
+## 7. Confidence threshold
+
+The default minimum confidence is:
 
 ```text
 0.78
 ```
 
-The command prints the generated report directory, for example:
+Use a stricter value when the OCR or metadata is uncertain:
 
-```text
-DataSet/ArabicDataset/text_repair_reports/20260718_183000
+```bash
+python scripts/dataset/repair_alignment_texts_from_surahs.py \
+  --dataset-root DataSet/ArabicDataset \
+  --min-confidence 0.85 \
+  --apply
 ```
 
-## 2. Inspect the audit
+Low-confidence lines remain unchanged and appear in the audit.
 
-Open:
+## 8. Generate references only
 
-```text
-text_repair_reports/<timestamp>/AUDIT.md
-text_repair_reports/<timestamp>/lines.csv
-text_repair_reports/<timestamp>/lines.jsonl
-text_repair_reports/<timestamp>/summary.json
+This verifies that the bundled Surah JSON structure can be parsed without running the repair:
+
+```bash
+python scripts/dataset/repair_alignment_texts_from_surahs.py \
+  --dataset-root DataSet/ArabicDataset \
+  --references-only
 ```
 
-Inspect proposed repaired files under:
+Expected generated files:
 
 ```text
-text_repair_reports/<timestamp>/preview/DatasetPairs/page_pairs/
+DataSet/ArabicDataset/text_repair_references/quran_from_surahs_clean.txt
+DataSet/ArabicDataset/text_repair_references/quran_from_surahs_tashkeel.txt
+```
+
+When the Surah JSON contains only one Arabic text form, the wrapper removes diacritics to derive the clean version and retains the available form for the tashkeel reference.
+
+## 9. Inspect the newest report
+
+```bash
+latest_report="$(find DataSet/ArabicDataset/text_repair_reports \
+  -mindepth 1 -maxdepth 1 -type d | sort | tail -1)"
+
+cat "$latest_report/AUDIT.md"
+```
+
+Open the detailed CSV:
+
+```bash
+column -s, -t < "$latest_report/lines.csv" | less -S
 ```
 
 Important statuses:
 
 | Status | Meaning |
 |---|---|
-| `proposed` | Dry-run found an accepted change. |
-| `already_correct` | Trusted reference agrees with the existing final files. |
-| `skipped_low_confidence` | Best reference match is below the threshold. |
-| `skipped_no_source` | No usable final/raw/LLM transcript was found. |
-| `skipped_no_reference` | Page metadata could not be connected to the supplied Quran reference. |
-| `applied` | The accepted change was written with `--apply`. |
+| `proposed` | Dry run found an accepted change. |
+| `already_correct` | The bundled Quran reference agrees with the final files. |
+| `skipped_low_confidence` | The match is below the configured threshold. |
+| `skipped_no_source` | No usable final, raw, or LLM transcript was found. |
+| `skipped_no_reference` | Page metadata could not be connected to a Surah reference. |
+| `applied` | The accepted repair was written with `--apply`. |
 
-## 3. Apply one verified page pair
+## 10. How matching works
 
-After checking the preview:
+For each page side, the workflow:
 
-```bash
-python scripts/dataset/repair_alignment_texts.py \
-  --dataset-root DataSet/ArabicDataset \
-  --reference-clean /path/to/quran-simple-clean.txt \
-  --reference-tashkeel /path/to/quran-simple.txt \
-  --pair pair_000001 \
-  --apply
-```
+1. extracts trusted verse text from `Surahs/surah_*.json`;
+2. creates deterministic clean and tashkeel reference files;
+3. reads `page_meta.json` and `pair_meta.json` to infer the Surah and ayah range;
+4. gathers the existing final text, raw OCR, and optional LLM candidates;
+5. searches the Quran reference sequentially so line order is preserved;
+6. scores character agreement, length agreement, and spaced-text agreement;
+7. accepts only matches at or above `--min-confidence`;
+8. rebuilds the line-level and page-level final text files.
 
-Before each existing file is replaced, it is copied to:
+Comparison normalization removes tashkeel and normalizes common Arabic letter variants. The repaired output itself comes from the bundled Surah reference.
 
-```text
-text_repair_reports/<timestamp>/backup/
-```
-
-## 4. Audit several selected pairs
-
-Repeat `--pair`:
-
-```bash
-python scripts/dataset/repair_alignment_texts.py \
-  --dataset-root DataSet/ArabicDataset \
-  --reference-clean /path/to/quran-simple-clean.txt \
-  --reference-tashkeel /path/to/quran-simple.txt \
-  --pair pair_000001 \
-  --pair pair_000017 \
-  --pair pair_000203
-```
-
-## 5. Small dataset-wide smoke test
-
-Process only the first ten page pairs:
-
-```bash
-python scripts/dataset/repair_alignment_texts.py \
-  --dataset-root DataSet/ArabicDataset \
-  --reference-clean /path/to/quran-simple-clean.txt \
-  --reference-tashkeel /path/to/quran-simple.txt \
-  --max-pairs 10
-```
-
-## 6. Full dataset dry run
-
-Omit `--pair` and `--max-pairs`:
-
-```bash
-python scripts/dataset/repair_alignment_texts.py \
-  --dataset-root DataSet/ArabicDataset \
-  --reference-clean /path/to/quran-simple-clean.txt \
-  --reference-tashkeel /path/to/quran-simple.txt
-```
-
-Do not add `--apply` until the audit and previews have been reviewed.
-
-## 7. Full dataset apply
-
-```bash
-python scripts/dataset/repair_alignment_texts.py \
-  --dataset-root DataSet/ArabicDataset \
-  --reference-clean /path/to/quran-simple-clean.txt \
-  --reference-tashkeel /path/to/quran-simple.txt \
-  --apply
-```
-
-## Confidence threshold
-
-Use a stricter threshold when metadata or OCR quality is uncertain:
-
-```bash
---min-confidence 0.85
-```
-
-Use a lower threshold only for manual investigation, not an unattended full apply:
-
-```bash
---min-confidence 0.70
-```
-
-Low-confidence lines remain unchanged and appear in the audit report.
-
-## How matching works
-
-For each page side, the script:
-
-1. reads `page_meta.json` and `pair_meta.json` to infer the surah and ayah range;
-2. loads trusted clean and tashkeel Quran verses;
-3. gathers each line's existing `final/original`, raw OCR, and optional LLM/other transcript candidates;
-4. searches the page reference sequentially so line order is preserved;
-5. scores Arabic character agreement, length agreement, and spaced-text agreement;
-6. accepts only matches at or above `--min-confidence`;
-7. writes clean and tashkeel line previews;
-8. rebuilds the page-level full text from accepted or preserved line text.
-
-Matching normalization removes tashkeel and normalizes common Arabic letter variants only for comparison. The output itself always comes from the trusted reference file.
-
-## Validate after applying
-
-Check that all manifest paths still resolve:
+## 11. Validate after applying
 
 ```bash
 DATASET_TYPE=real \
@@ -230,9 +248,15 @@ PY
 
 The repaired content is picked up automatically through the existing manifest paths.
 
-## Restore a file from backup
+## 12. Restore from backup
 
-Copy its matching backup file back into the dataset tree. Example:
+Every apply run stores original files under:
+
+```text
+DataSet/ArabicDataset/text_repair_reports/<timestamp>/backup/
+```
+
+Example restoration:
 
 ```bash
 cp \
@@ -241,3 +265,17 @@ cp \
 ```
 
 Keep the report directory until the repaired dataset has been inspected and validated.
+
+## Optional external-reference mode
+
+The lower-level script still supports explicitly supplied Quran reference files:
+
+```bash
+python scripts/dataset/repair_alignment_texts.py \
+  --dataset-root DataSet/ArabicDataset \
+  --reference-clean /path/to/quran-clean.txt \
+  --reference-tashkeel /path/to/quran-tashkeel.txt \
+  --apply
+```
+
+This mode is optional and is not required when `DataSet/ArabicDataset/Surahs/` is available.
