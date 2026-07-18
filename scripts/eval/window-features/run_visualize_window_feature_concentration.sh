@@ -39,6 +39,10 @@ CONCENTRATION_TOP_K="${CONCENTRATION_TOP_K:-8}"
 FEATURE_NORMALIZE="${FEATURE_NORMALIZE:-per_window}"
 CSV_TOP_FEATURES="${CSV_TOP_FEATURES:-8}"
 
+TEXT_ENCODER_TYPE="${TEXT_ENCODER_TYPE:-}"
+ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_NAME:-}"
+MAX_SPAN_CHARS="${MAX_SPAN_CHARS:-}"
+MAX_TOKEN_CHARS="${MAX_TOKEN_CHARS:-}"
 MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-4}"
 TEMPERATURE="${TEMPERATURE:-0.07}"
 WINDOW_COUNT_PENALTY="${WINDOW_COUNT_PENALTY:-0.01}"
@@ -94,6 +98,18 @@ run_one() {
   if [[ "${NO_BILSTM}" == "1" || "${NO_BILSTM}" == "true" ]]; then
     extra_args+=(--no-bilstm)
   fi
+  if [[ -n "${TEXT_ENCODER_TYPE}" ]]; then
+    extra_args+=(--text-encoder-type "${TEXT_ENCODER_TYPE}")
+  fi
+  if [[ -n "${ARABIC_TEXT_MODEL_NAME}" ]]; then
+    extra_args+=(--arabic-text-model-name "${ARABIC_TEXT_MODEL_NAME}")
+  fi
+  if [[ -n "${MAX_SPAN_CHARS}" ]]; then
+    extra_args+=(--max-span-chars "${MAX_SPAN_CHARS}")
+  fi
+  if [[ -n "${MAX_TOKEN_CHARS}" ]]; then
+    extra_args+=(--max-token-chars "${MAX_TOKEN_CHARS}")
+  fi
   if [[ "${SAVE_PER_WINDOW_IMAGES}" == "1" || "${SAVE_PER_WINDOW_IMAGES}" == "true" ]]; then
     extra_args+=(
       --save-per-window-images
@@ -125,6 +141,9 @@ run_one() {
   echo "  alignment-space      = ${ALIGNMENT_SPACE}"
   echo "  concentration-metric = ${CONCENTRATION_METRIC}"
   echo "  early-fusion-alpha   = ${EARLY_FUSION_ALPHA}"
+  if [[ -n "${ARABIC_TEXT_MODEL_NAME}" ]]; then
+    echo "  text-model           = ${ARABIC_TEXT_MODEL_NAME}"
+  fi
   echo "===================================================="
 
   python "${SCRIPT}" \
