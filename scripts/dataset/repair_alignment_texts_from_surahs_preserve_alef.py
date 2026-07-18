@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Run the Surahs-based dataset repair while preserving Quranic alef marks.
+"""Run Surahs-based repair using standard Imlaei spelling when available.
 
-The original Surahs wrapper removes U+0670 ARABIC LETTER SUPERSCRIPT ALEF
-(dagger alef) together with ordinary tashkeel. In Uthmani text, that character
-can carry a long /a/ where no full-size alef exists, so deleting it can produce
-clean forms with a missing alef.
+A Quranic dagger alef cannot safely be converted to a normal alef everywhere:
+``بَعَثْنَٰكُمْ`` needs the modern form ``بعثناكم``, while words such as
+``هَٰذَا`` and ``الرَّحْمَٰن`` must remain ``هذا`` and ``الرحمن``. Therefore
+this wrapper does not guess from Uthmani marks. It gives priority to local
+``text_imlaei_simple`` / ``text_imlaei`` fields (and common aliases) in the
+Surah JSON, which encode modern Arabic spelling, then delegates to the normal
+repair pipeline.
 
-This compatibility wrapper converts dagger alef and alef wasla to a normal
-Arabic alef *before* the remaining diacritics are removed, then delegates to
-``repair_alignment_texts_from_surahs.py``. It accepts exactly the same command
-line options.
+It accepts the same command-line arguments as
+``repair_alignment_texts_from_surahs.py``.
 """
 from __future__ import annotations
 
@@ -17,11 +18,30 @@ import importlib.util
 import sys
 import unicodedata
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
-DAGGER_ALEF = "\u0670"
 ALEF_WASLA = "\u0671"
 PLAIN_ALEF = "\u0627"
+
+IMLAEI_SIMPLE_KEYS = (
+    "text_imlaei_simple",
+    "imlaei_simple",
+    "text_imlai_simple",
+    "imlai_simple",
+    "text_modern_simple",
+    "modern_simple",
+)
+
+IMLAEI_TASHKEEL_KEYS = (
+    "text_imlaei",
+    "imlaei_text",
+    "imlaei",
+    "text_imlai",
+    "imlai_text",
+    "imlai",
+    "text_modern",
+    "modern_text",
+)
 
 
 def _load_base_module():
@@ -40,33 +60,93 @@ def _load_base_module():
     return module
 
 
-def clean_text_preserving_alef(text: str, base_module) -> str:
-    """Remove tashkeel without deleting Quranic alef information."""
+def _strip_imlaei_marks(text: str, base_module) -> str:
+    """Remove tashkeel from Imlaei text without inventing missing letters."""
     normalized = unicodedata.normalize("NFKC", str(text))
-
-    # U+0670 is included in the base module's diacritic regex. Convert it first
-    # so long-a information is not silently deleted. U+0671 is a full alef
-    # letter with a wasla sign; normalize it to the plain alef used by the
-    # character-level alignment text.
-    normalized = normalized.replace(DAGGER_ALEF, PLAIN_ALEF)
     normalized = normalized.replace(ALEF_WASLA, PLAIN_ALEF)
+    normalized = base_module.ARABIC_DIACRITICS_RE.sub("", normalized)
+    return base_module.collapse_spaces(normalized.replace("ـ", ""))
 
-    return base_module.ARABIC_DIACRITICS_RE.sub("", normalized).replace("ـ", "")
+
+def _find_text(node: Mapping[str, Any], keys, base_module) -> str:
+    return base_module.find_text(node, keys)
+
+
+def _mark_source(verse, priority: int, source: str):
+    if verse is not None:
+        setattr(verse, "_spelling_priority", int(priority))
+        setattr(verse, "_spelling_source", source)
+    return verse
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     base_module = _load_base_module()
+    original_choose_texts = base_module.choose_texts
+    original_verse_quality = base_module.verse_quality
+    original_load_surahs = base_module.load_surahs
 
-    # choose_texts() and collect_verses() resolve this function dynamically from
-    # the module globals, so replacing it fixes every clean-reference path:
-    # explicit clean fields, generic text fields, and numeric verse maps.
-    base_module.strip_diacritics = (
-        lambda text: clean_text_preserving_alef(text, base_module)
-    )
+    def choose_texts_preferring_imlaei(node: Mapping[str, Any]):
+        imlaei_simple = _find_text(node, IMLAEI_SIMPLE_KEYS, base_module)
+        imlaei_vocalized = _find_text(node, IMLAEI_TASHKEEL_KEYS, base_module)
+
+        if imlaei_simple or imlaei_vocalized:
+            clean_source = imlaei_simple or imlaei_vocalized
+            clean = _strip_imlaei_marks(clean_source, base_module)
+            tashkeel = base_module.collapse_spaces(imlaei_vocalized or imlaei_simple)
+            if clean and tashkeel:
+                priority = 3 if imlaei_simple else 2
+                source = "imlaei_simple" if imlaei_simple else "imlaei"
+                return _mark_source(
+                    base_module.VerseText(clean=clean, tashkeel=tashkeel),
+                    priority,
+                    source,
+                )
+
+        # Keep the original local clean field as the fallback. Do not convert
+        # every dagger alef: that would create false forms such as هاذا/الرحمان.
+        return _mark_source(original_choose_texts(node), 0, "fallback")
+
+    def verse_quality_preferring_imlaei(verse):
+        return (
+            int(getattr(verse, "_spelling_priority", 0)),
+            *original_verse_quality(verse),
+        )
+
+    def load_surahs_with_diagnostic(surahs_dir: Path):
+        verses = original_load_surahs(surahs_dir)
+        imlaei_count = sum(
+            int(getattr(verse, "_spelling_priority", 0)) > 0
+            for verse in verses.values()
+        )
+        fallback_count = len(verses) - imlaei_count
+        print(
+            "Standard-spelling references: "
+            f"imlaei={imlaei_count} fallback={fallback_count}",
+            flush=True,
+        )
+        if imlaei_count == 0:
+            raise ValueError(
+                "No Imlaei Quran fields were found in Surahs/surah_*.json. "
+                "Uthmani dagger alef alone cannot safely determine whether the "
+                "modern spelling needs a full alef (for example بعثناكم) or must "
+                "omit it (for example هذا and الرحمن). Add text_imlaei_simple or "
+                "text_imlaei fields to the Surah JSON before applying repairs."
+            )
+        if fallback_count:
+            print(
+                "warning: some verses lack Imlaei fields and will retain their "
+                "existing local clean spelling; inspect skipped/proposed rows.",
+                file=sys.stderr,
+            )
+        return verses
+
+    base_module.choose_texts = choose_texts_preferring_imlaei
+    base_module.verse_quality = verse_quality_preferring_imlaei
+    base_module.load_surahs = load_surahs_with_diagnostic
 
     print(
-        "Alef-preserving mode: dagger alef (U+0670) and alef wasla "
-        "(U+0671) are converted to plain alef in clean references.",
+        "Standard Imlaei mode: modern spelling is preferred over Uthmani "
+        "dagger-alef guessing (for example بعثناكم, not بعثنكم).",
         flush=True,
     )
     return int(base_module.main(argv))
