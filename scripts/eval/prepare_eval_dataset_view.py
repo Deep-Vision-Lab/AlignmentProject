@@ -10,8 +10,10 @@ Existing improve_neg visualizers expect this 1-based layout::
       texts/text2_1.txt
 
 Synthetic_Arabic already has that layout and is returned unchanged. For the real
-ArabicDataset manifest, this utility creates a lightweight symlink/copy view with
-sequential evaluation indices and writes ``view_manifest.jsonl`` for traceability.
+ArabicDataset manifest, this utility creates a sequential evaluation view and,
+by default, saves the images after applying the exact real-data training
+preprocessing: resize, autocontrast, Otsu/fixed binarization, and polarity fix.
+``view_manifest.jsonl`` preserves the mapping to the original real pairs.
 """
 from __future__ import annotations
 
@@ -32,7 +34,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("Results/Evaluation/dataset_views/real"),
+        default=Path("Results/Evaluation/dataset_views/real_binarized"),
         help="Generated view directory for real data.",
     )
     parser.add_argument("--manifest-name", default="dataset_manifest.jsonl")
@@ -48,7 +50,51 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--link-mode",
         choices=("auto", "symlink", "copy"),
         default="auto",
+        help="Used for text files. Real images are saved as processed PNG files.",
     )
+    parser.add_argument(
+        "--binarize-real",
+        dest="binarize_real",
+        action="store_true",
+        help="Save real images after the same binarization used during training.",
+    )
+    parser.add_argument(
+        "--no-binarize-real",
+        dest="binarize_real",
+        action="store_false",
+        help="Save resized grayscale real images without thresholding.",
+    )
+    parser.set_defaults(binarize_real=True)
+    parser.add_argument(
+        "--binarize-method",
+        choices=("otsu", "fixed"),
+        default="otsu",
+    )
+    parser.add_argument("--binarize-threshold", type=int, default=180)
+    parser.add_argument(
+        "--binarize-autocontrast",
+        dest="binarize_autocontrast",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--no-binarize-autocontrast",
+        dest="binarize_autocontrast",
+        action="store_false",
+    )
+    parser.set_defaults(binarize_autocontrast=True)
+    parser.add_argument(
+        "--binarize-auto-invert",
+        dest="binarize_auto_invert",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--no-binarize-auto-invert",
+        dest="binarize_auto_invert",
+        action="store_false",
+    )
+    parser.set_defaults(binarize_auto_invert=True)
+    parser.add_argument("--height", type=int, default=128)
+    parser.add_argument("--width", type=int, default=1024)
     return parser.parse_args(argv)
 
 
@@ -178,9 +224,10 @@ def reset_view(output_dir: Path) -> tuple[Path, Path]:
         if directory.exists():
             shutil.rmtree(directory)
         directory.mkdir(parents=True, exist_ok=True)
-    manifest = output_dir / "view_manifest.jsonl"
-    if manifest.exists():
-        manifest.unlink()
+    for name in ("view_manifest.jsonl", "view_metadata.json"):
+        path = output_dir / name
+        if path.exists():
+            path.unlink()
     return images_dir, texts_dir
 
 
@@ -200,6 +247,28 @@ def link_or_copy(source: Path, destination: Path, mode: str) -> str:
     return "copy"
 
 
+def build_real_preprocessor(args: argparse.Namespace):
+    # Reuse the exact implementation used by the improve_neg real-data loader.
+    from DataLoader import ResizeAndBinarize
+
+    return ResizeAndBinarize(
+        size=(args.height, args.width),
+        enabled=args.binarize_real,
+        method=args.binarize_method,
+        fixed_threshold=args.binarize_threshold,
+        auto_invert=args.binarize_auto_invert,
+        autocontrast=args.binarize_autocontrast,
+    )
+
+
+def save_processed_image(source: Path, destination: Path, preprocessor) -> None:
+    from PIL import Image
+
+    with Image.open(source) as image:
+        processed = preprocessor(image.convert("RGB"))
+        processed.save(destination, format="PNG", optimize=True)
+
+
 def materialize_real(args: argparse.Namespace) -> Path:
     manifest, dataset_root = manifest_path(args.data_dir, args.manifest_name)
     labels = parse_labels(args.labels)
@@ -213,7 +282,8 @@ def materialize_real(args: argparse.Namespace) -> Path:
     images_dir, texts_dir = reset_view(args.output_dir)
     output_dir = images_dir.parent
     records: list[dict] = []
-    modes: set[str] = set()
+    text_modes: set[str] = set()
+    preprocessor = build_real_preprocessor(args)
 
     for eval_index, row in enumerate(rows, start=1):
         sides = {}
@@ -221,20 +291,15 @@ def materialize_real(args: argparse.Namespace) -> Path:
             side = row[side_name]
             image_source = resolve_manifest_path(dataset_root, side["line_image_path"])
             text_source = resolve_manifest_path(dataset_root, side[args.text_key])
-            image_suffix = image_source.suffix.lower() or ".png"
-            expected_image_dest = images_dir / f"img{side_number}_{eval_index}.png"
-            if image_suffix == ".png":
-                modes.add(link_or_copy(image_source, expected_image_dest, args.link_mode))
-            else:
-                from PIL import Image
 
-                with Image.open(image_source) as image:
-                    image.convert("RGB").save(expected_image_dest)
-                modes.add("convert")
+            image_dest = images_dir / f"img{side_number}_{eval_index}.png"
+            save_processed_image(image_source, image_dest, preprocessor)
+
             text_dest = texts_dir / f"text{side_number}_{eval_index}.txt"
-            modes.add(link_or_copy(text_source, text_dest, args.link_mode))
+            text_modes.add(link_or_copy(text_source, text_dest, args.link_mode))
             sides[side_name] = {
                 "image_source": str(image_source),
+                "image_evaluation": str(image_dest),
                 "text_source": str(text_source),
                 "line_idx": side.get("line_idx"),
             }
@@ -247,6 +312,8 @@ def materialize_real(args: argparse.Namespace) -> Path:
                 "label_type": str(row.get("label_type", "")),
                 "text_score": float(scores.get("text_score", 0.0)),
                 "manifest_line": int(row["_manifest_line"]),
+                "binarized": bool(args.binarize_real),
+                "binarize_method": args.binarize_method if args.binarize_real else None,
                 "A": sides["A"],
                 "B": sides["B"],
             }
@@ -264,14 +331,27 @@ def materialize_real(args: argparse.Namespace) -> Path:
         "labels": "all" if labels is None else sorted(labels),
         "min_text_score": args.min_text_score,
         "samples": len(records),
-        "materialization_modes": sorted(modes),
+        "image_preprocessing": {
+            "resize": [args.height, args.width],
+            "binarized": bool(args.binarize_real),
+            "method": args.binarize_method if args.binarize_real else None,
+            "fixed_threshold": args.binarize_threshold,
+            "autocontrast": bool(args.binarize_autocontrast),
+            "auto_invert": bool(args.binarize_auto_invert),
+            "saved_mode": "RGB PNG",
+        },
+        "text_materialization_modes": sorted(text_modes),
     }
     (output_dir / "view_metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    mode_name = (
+        f"binarized/{args.binarize_method}" if args.binarize_real else "resized_grayscale"
+    )
     print(
-        f"Prepared real evaluation view: samples={len(records)} path={output_dir}",
+        f"Prepared real evaluation view: samples={len(records)} "
+        f"preprocessing={mode_name} path={output_dir}",
         file=sys.stderr,
     )
     print(f"Index mapping: {view_manifest}", file=sys.stderr)
