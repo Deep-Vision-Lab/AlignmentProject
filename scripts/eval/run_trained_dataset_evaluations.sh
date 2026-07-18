@@ -8,4 +8,16 @@ cd "${PROJECT_DIR}"
 export DATASET_TYPE=synthetic
 export DATA_DIR="${DATA_DIR:-${PROJECT_DIR}/DataSet/Synthetic_Arabic}"
 export WEIGHTS="${WEIGHTS:-${PROJECT_DIR}/Weights/improve_model_win32_fastpair/model_latest.pth}"
+
+# Resolve the frozen text backbone from the current checkout, the sibling
+# AlignmentProject_clone cache, or ~/.cache/huggingface. Passing the concrete
+# snapshot path prevents Transformers from attempting an online lookup.
+if [[ -z "${ARABIC_TEXT_MODEL_NAME:-}" ]]; then
+  export ARABIC_TEXT_MODEL_NAME="$(
+    python scripts/eval/resolve_cached_text_model.py \
+      --weights "${WEIGHTS}" \
+      --project-dir "${PROJECT_DIR}"
+  )"
+fi
+
 exec bash scripts/eval/run_all_span2_evaluations.sh
