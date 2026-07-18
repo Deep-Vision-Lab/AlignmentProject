@@ -21,4 +21,13 @@ export REAL_BINARIZE_AUTO_INVERT="${REAL_BINARIZE_AUTO_INVERT:-1}"
 export REAL_EVAL_HEIGHT="${REAL_EVAL_HEIGHT:-128}"
 export REAL_EVAL_WIDTH="${REAL_EVAL_WIDTH:-1024}"
 
+# Resolve the frozen text backbone from local caches before offline evaluation.
+if [[ -z "${ARABIC_TEXT_MODEL_NAME:-}" ]]; then
+  export ARABIC_TEXT_MODEL_NAME="$(
+    python scripts/eval/resolve_cached_text_model.py \
+      --weights "${WEIGHTS}" \
+      --project-dir "${PROJECT_DIR}"
+  )"
+fi
+
 exec bash scripts/eval/run_all_span2_evaluations.sh
