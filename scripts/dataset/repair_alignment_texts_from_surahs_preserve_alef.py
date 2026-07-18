@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Run Surahs-based repair using standard Imlaei spelling when available.
+"""Repair ArabicDataset text with a verified standard-Imlaei Quran reference.
 
-A Quranic dagger alef cannot safely be converted to a normal alef everywhere:
-``بَعَثْنَٰكُمْ`` needs the modern form ``بعثناكم``, while words such as
-``هَٰذَا`` and ``الرَّحْمَٰن`` must remain ``هذا`` and ``الرحمن``. Therefore
-this wrapper does not guess from Uthmani marks. It gives priority to local
-``text_imlaei_simple`` / ``text_imlaei`` fields (and common aliases) in the
-Surah JSON, which encode modern Arabic spelling, then delegates to the normal
-repair pipeline.
+The local ``Surahs/surah_*.json`` files may contain only Uthmani text. Uthmani
+superscript/dagger alef cannot be converted mechanically into modern spelling:
+``بَعَثْنَـٰكُمْ`` must become ``بعثناكم``, while ``هَٰذَا`` must remain ``هذا``.
+
+This wrapper therefore downloads Tanzil's verified ``simple-clean`` (Imlaei)
+Quran text once, caches it under ``DATASET_ROOT/text_repair_references/``, and
+uses it as the clean reference. The local Surah JSON remains the source for the
+vocalized/tashkeel reference. Subsequent runs use the cached Tanzil file.
 
 It accepts the same command-line arguments as
 ``repair_alignment_texts_from_surahs.py``.
@@ -15,33 +16,37 @@ It accepts the same command-line arguments as
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
-import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Mapping, Sequence
 
-ALEF_WASLA = "\u0671"
-PLAIN_ALEF = "\u0627"
-
-IMLAEI_SIMPLE_KEYS = (
-    "text_imlaei_simple",
-    "imlaei_simple",
-    "text_imlai_simple",
-    "imlai_simple",
-    "text_modern_simple",
-    "modern_simple",
+EXPECTED_VERSE_COUNT = 6236
+TANZIL_DOWNLOAD_URLS = (
+    "https://tanzil.net/pub/download/download.php",
+    "http://tanzil.net/pub/download/download.php",
 )
+CACHE_FILENAME = "tanzil_quran_simple_clean.txt"
+NOTICE_FILENAME = "TANZIL_SOURCE_AND_LICENSE.txt"
 
-IMLAEI_TASHKEEL_KEYS = (
-    "text_imlaei",
-    "imlaei_text",
-    "imlaei",
-    "text_imlai",
-    "imlai_text",
-    "imlai",
-    "text_modern",
-    "modern_text",
-)
+TANZIL_NOTICE = """Tanzil Quran Text source and license notice
+
+Source: https://tanzil.net/
+Download page: https://tanzil.net/download/
+Text type: Simple Clean (Imlaei, without diacritics or symbols)
+
+This Quran text is distributed under the Creative Commons Attribution 3.0
+License. Permission is granted to copy and distribute verbatim copies of the
+text, but changing the downloaded reference text is not allowed. When this text
+is used in an application or dataset, Tanzil.net must be identified as the
+source and linked so users can track text updates.
+
+The cached file in this directory is retained verbatim. It is used as a
+reference to repair line-level dataset transcripts; it is not rewritten.
+"""
 
 
 def _load_base_module():
@@ -60,93 +65,180 @@ def _load_base_module():
     return module
 
 
-def _strip_imlaei_marks(text: str, base_module) -> str:
-    """Remove tashkeel from Imlaei text without inventing missing letters."""
-    normalized = unicodedata.normalize("NFKC", str(text))
-    normalized = normalized.replace(ALEF_WASLA, PLAIN_ALEF)
-    normalized = base_module.ARABIC_DIACRITICS_RE.sub("", normalized)
-    return base_module.collapse_spaces(normalized.replace("ـ", ""))
+def _parse_tanzil_simple_clean(text: str) -> dict[tuple[int, int], str]:
+    verses: dict[tuple[int, int], str] = {}
+    for line_number, raw_line in enumerate(text.lstrip("\ufeff").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        parts = line.split("|", 2)
+        if len(parts) != 3:
+            continue
+        surah_raw, ayah_raw, verse_text = parts
+        try:
+            surah = int(surah_raw.strip())
+            ayah = int(ayah_raw.strip())
+        except ValueError:
+            continue
+
+        verse_text = " ".join(verse_text.split())
+        if not verse_text:
+            raise ValueError(
+                f"Empty Tanzil verse at downloaded line {line_number}: {surah}:{ayah}"
+            )
+        verses[(surah, ayah)] = verse_text
+
+    if len(verses) != EXPECTED_VERSE_COUNT:
+        raise ValueError(
+            "Invalid Tanzil Simple Clean reference: expected "
+            f"{EXPECTED_VERSE_COUNT} verses, found {len(verses)}."
+        )
+
+    expected_samples = {
+        (1, 1): "بسم الله الرحمن الرحيم",
+        (2, 56): "بعثناكم",
+    }
+    for key, expected_fragment in expected_samples.items():
+        actual = verses.get(key, "")
+        if expected_fragment not in actual:
+            raise ValueError(
+                "Tanzil reference validation failed for "
+                f"{key[0]}:{key[1]}; expected to find {expected_fragment!r}, "
+                f"got {actual!r}."
+            )
+    return verses
 
 
-def _find_text(node: Mapping[str, Any], keys, base_module) -> str:
-    return base_module.find_text(node, keys)
+def _download_tanzil_text() -> str:
+    # These parameters match Tanzil's official download form. False optional
+    # switches are omitted so pause/rub/sajdah marks are not requested.
+    payload = urllib.parse.urlencode(
+        {
+            "quranType": "simple-clean",
+            "outType": "txt-2",
+            "agree": "true",
+        }
+    ).encode("ascii")
+
+    errors: list[str] = []
+    for url in TANZIL_DOWNLOAD_URLS:
+        request = urllib.request.Request(
+            url,
+            data=payload,
+            method="POST",
+            headers={
+                "User-Agent": "AlignmentProject-ArabicDataset-TextRepair/1.0",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                content = response.read()
+            text = content.decode("utf-8-sig")
+            _parse_tanzil_simple_clean(text)
+            return text
+        except (
+            OSError,
+            UnicodeDecodeError,
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+            ValueError,
+        ) as exc:
+            errors.append(f"{url}: {exc}")
+
+    raise RuntimeError(
+        "Could not download the Tanzil Simple Clean Quran reference. "
+        "Check that this machine has outbound internet access. Attempts:\n  - "
+        + "\n  - ".join(errors)
+    )
 
 
-def _mark_source(verse, priority: int, source: str):
-    if verse is not None:
-        setattr(verse, "_spelling_priority", int(priority))
-        setattr(verse, "_spelling_source", source)
-    return verse
+def _atomic_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(text, encoding="utf-8")
+    temporary.replace(path)
+
+
+def _load_verified_imlaei(dataset_root: Path) -> dict[tuple[int, int], str]:
+    reference_dir = dataset_root / "text_repair_references"
+    cache_path = reference_dir / CACHE_FILENAME
+    notice_path = reference_dir / NOTICE_FILENAME
+    refresh = os.environ.get("REFRESH_TANZIL_QURAN", "0").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    if cache_path.is_file() and not refresh:
+        try:
+            verses = _parse_tanzil_simple_clean(
+                cache_path.read_text(encoding="utf-8")
+            )
+            print(f"Using cached Tanzil Imlaei reference: {cache_path}", flush=True)
+            if not notice_path.is_file():
+                _atomic_write(notice_path, TANZIL_NOTICE)
+            return verses
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            print(
+                f"warning: cached Tanzil reference is invalid and will be refreshed: {exc}",
+                file=sys.stderr,
+            )
+
+    print(
+        "Downloading Tanzil Simple Clean Quran text for standard Imlaei spelling...",
+        flush=True,
+    )
+    downloaded = _download_tanzil_text()
+    verses = _parse_tanzil_simple_clean(downloaded)
+    _atomic_write(cache_path, downloaded)
+    _atomic_write(notice_path, TANZIL_NOTICE)
+    print(f"Cached Tanzil Imlaei reference: {cache_path}", flush=True)
+    return verses
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     base_module = _load_base_module()
-    original_choose_texts = base_module.choose_texts
-    original_verse_quality = base_module.verse_quality
     original_load_surahs = base_module.load_surahs
 
-    def choose_texts_preferring_imlaei(node: Mapping[str, Any]):
-        imlaei_simple = _find_text(node, IMLAEI_SIMPLE_KEYS, base_module)
-        imlaei_vocalized = _find_text(node, IMLAEI_TASHKEEL_KEYS, base_module)
+    def load_surahs_with_verified_imlaei(surahs_dir: Path):
+        local_verses = original_load_surahs(surahs_dir)
+        dataset_root = surahs_dir.resolve().parent
+        imlaei = _load_verified_imlaei(dataset_root)
 
-        if imlaei_simple or imlaei_vocalized:
-            clean_source = imlaei_simple or imlaei_vocalized
-            clean = _strip_imlaei_marks(clean_source, base_module)
-            tashkeel = base_module.collapse_spaces(imlaei_vocalized or imlaei_simple)
-            if clean and tashkeel:
-                priority = 3 if imlaei_simple else 2
-                source = "imlaei_simple" if imlaei_simple else "imlaei"
-                return _mark_source(
-                    base_module.VerseText(clean=clean, tashkeel=tashkeel),
-                    priority,
-                    source,
-                )
+        missing = sorted(set(local_verses) - set(imlaei))
+        if missing:
+            rendered = ", ".join(f"{surah}:{ayah}" for surah, ayah in missing[:20])
+            raise ValueError(
+                "The local Surah data contains verse keys missing from the Tanzil "
+                f"reference ({len(missing)} missing; first keys: {rendered})."
+            )
 
-        # Keep the original local clean field as the fallback. Do not convert
-        # every dagger alef: that would create false forms such as هاذا/الرحمان.
-        return _mark_source(original_choose_texts(node), 0, "fallback")
+        for key, verse in local_verses.items():
+            verse.clean = imlaei[key]
+            setattr(verse, "_spelling_source", "tanzil_simple_clean")
 
-    def verse_quality_preferring_imlaei(verse):
-        return (
-            int(getattr(verse, "_spelling_priority", 0)),
-            *original_verse_quality(verse),
-        )
+        sample = local_verses.get((2, 56))
+        if sample is None or "بعثناكم" not in sample.clean:
+            raise ValueError(
+                "Final Imlaei validation failed: verse 2:56 does not contain بعثناكم."
+            )
 
-    def load_surahs_with_diagnostic(surahs_dir: Path):
-        verses = original_load_surahs(surahs_dir)
-        imlaei_count = sum(
-            int(getattr(verse, "_spelling_priority", 0)) > 0
-            for verse in verses.values()
-        )
-        fallback_count = len(verses) - imlaei_count
         print(
             "Standard-spelling references: "
-            f"imlaei={imlaei_count} fallback={fallback_count}",
+            f"tanzil_imlaei={len(local_verses)} local_tashkeel={len(local_verses)}",
             flush=True,
         )
-        if imlaei_count == 0:
-            raise ValueError(
-                "No Imlaei Quran fields were found in Surahs/surah_*.json. "
-                "Uthmani dagger alef alone cannot safely determine whether the "
-                "modern spelling needs a full alef (for example بعثناكم) or must "
-                "omit it (for example هذا and الرحمن). Add text_imlaei_simple or "
-                "text_imlaei fields to the Surah JSON before applying repairs."
-            )
-        if fallback_count:
-            print(
-                "warning: some verses lack Imlaei fields and will retain their "
-                "existing local clean spelling; inspect skipped/proposed rows.",
-                file=sys.stderr,
-            )
-        return verses
+        print(f"Validation 2:56: {sample.clean}", flush=True)
+        return local_verses
 
-    base_module.choose_texts = choose_texts_preferring_imlaei
-    base_module.verse_quality = verse_quality_preferring_imlaei
-    base_module.load_surahs = load_surahs_with_diagnostic
+    base_module.load_surahs = load_surahs_with_verified_imlaei
 
     print(
-        "Standard Imlaei mode: modern spelling is preferred over Uthmani "
-        "dagger-alef guessing (for example بعثناكم, not بعثنكم).",
+        "Verified Imlaei mode: clean spelling comes from Tanzil Simple Clean; "
+        "vocalized text comes from the local Surah JSON.",
         flush=True,
     )
     return int(base_module.main(argv))
