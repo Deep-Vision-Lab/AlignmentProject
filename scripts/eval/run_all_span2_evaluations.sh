@@ -4,7 +4,7 @@
 # Trained-on synthetic dataset (default):
 #   bash scripts/eval/run_all_span2_evaluations.sh
 #
-# Real manifest dataset:
+# Binarized real manifest dataset:
 #   DATASET_TYPE=real bash scripts/eval/run_all_span2_evaluations.sh
 #
 # Common overrides:
@@ -20,6 +20,13 @@ export HF_HOME="${HF_HOME:-${PROJECT_DIR}/.hf_cache}"
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 unset TRANSFORMERS_CACHE
+
+is_true() {
+  case "${1,,}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 DATASET_TYPE="${DATASET_TYPE:-synthetic}"
 case "${DATASET_TYPE}" in
@@ -49,13 +56,32 @@ MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-4}"
 WINDOW_COUNT_PENALTY="${WINDOW_COUNT_PENALTY:-0.05}"
 GROUP_POOLING="${GROUP_POOLING:-mean}"
 
-# Real-data filters match the branch's real training launcher by default.
+# Real-data filters and image preprocessing match improve_neg training defaults.
 REAL_MANIFEST_NAME="${REAL_MANIFEST_NAME:-dataset_manifest.jsonl}"
 REAL_DATASET_LABELS="${REAL_DATASET_LABELS:-high_match,medium_match}"
 REAL_MIN_TEXT_SCORE="${REAL_MIN_TEXT_SCORE:-0.0}"
 REAL_TEXT_KEY="${REAL_TEXT_KEY:-text_original_path}"
-REAL_EVAL_VIEW_DIR="${REAL_EVAL_VIEW_DIR:-${PROJECT_DIR}/Results/Evaluation/dataset_views/real}"
+REAL_BINARIZE="${REAL_BINARIZE:-1}"
+REAL_BINARIZE_METHOD="${REAL_BINARIZE_METHOD:-otsu}"
+REAL_BINARIZE_THRESHOLD="${REAL_BINARIZE_THRESHOLD:-180}"
+REAL_BINARIZE_AUTOCONTRAST="${REAL_BINARIZE_AUTOCONTRAST:-1}"
+REAL_BINARIZE_AUTO_INVERT="${REAL_BINARIZE_AUTO_INVERT:-1}"
+REAL_EVAL_HEIGHT="${REAL_EVAL_HEIGHT:-128}"
+REAL_EVAL_WIDTH="${REAL_EVAL_WIDTH:-1024}"
 REAL_LINK_MODE="${REAL_LINK_MODE:-auto}"
+
+if [[ "${DATASET_TYPE}" == "real" ]]; then
+  if is_true "${REAL_BINARIZE}"; then
+    REAL_OUTPUT_TAG="real_binarized_${REAL_BINARIZE_METHOD}"
+  else
+    REAL_OUTPUT_TAG="real_resized_grayscale"
+  fi
+else
+  REAL_OUTPUT_TAG="synthetic"
+fi
+
+REAL_EVAL_VIEW_DIR="${REAL_EVAL_VIEW_DIR:-${PROJECT_DIR}/Results/Evaluation/dataset_views/${REAL_OUTPUT_TAG}}"
+RESULTS_ROOT="${RESULTS_ROOT:-${PROJECT_DIR}/Results/Evaluation/${REAL_OUTPUT_TAG}}"
 
 MAX_REQUESTED_INDEX="${END_INDEX}"
 if (( INDEX > MAX_REQUESTED_INDEX )); then
@@ -75,11 +101,29 @@ if [[ "${DATASET_TYPE}" == "real" ]]; then
     --min-text-score "${REAL_MIN_TEXT_SCORE}"
     --text-key "${REAL_TEXT_KEY}"
     --link-mode "${REAL_LINK_MODE}"
+    --binarize-method "${REAL_BINARIZE_METHOD}"
+    --binarize-threshold "${REAL_BINARIZE_THRESHOLD}"
+    --height "${REAL_EVAL_HEIGHT}"
+    --width "${REAL_EVAL_WIDTH}"
   )
+  if is_true "${REAL_BINARIZE}"; then
+    PREPARE_ARGS+=(--binarize-real)
+  else
+    PREPARE_ARGS+=(--no-binarize-real)
+  fi
+  if is_true "${REAL_BINARIZE_AUTOCONTRAST}"; then
+    PREPARE_ARGS+=(--binarize-autocontrast)
+  else
+    PREPARE_ARGS+=(--no-binarize-autocontrast)
+  fi
+  if is_true "${REAL_BINARIZE_AUTO_INVERT}"; then
+    PREPARE_ARGS+=(--binarize-auto-invert)
+  else
+    PREPARE_ARGS+=(--no-binarize-auto-invert)
+  fi
 fi
 
 RESOLVED_DATA_DIR="$(python scripts/eval/prepare_eval_dataset_view.py "${PREPARE_ARGS[@]}")"
-RESULTS_ROOT="${RESULTS_ROOT:-${PROJECT_DIR}/Results/Evaluation/${DATASET_TYPE}}"
 mkdir -p "${RESULTS_ROOT}"
 
 if [[ ! -f "${WEIGHTS}" ]]; then
@@ -120,6 +164,12 @@ if [[ "${DATASET_TYPE}" == "real" ]]; then
   echo "  REAL_LABELS         = ${REAL_DATASET_LABELS}"
   echo "  REAL_TEXT_KEY       = ${REAL_TEXT_KEY}"
   echo "  REAL_MIN_TEXT_SCORE = ${REAL_MIN_TEXT_SCORE}"
+  echo "  REAL_BINARIZE       = ${REAL_BINARIZE}"
+  echo "  REAL_BIN_METHOD     = ${REAL_BINARIZE_METHOD}"
+  echo "  REAL_BIN_THRESHOLD  = ${REAL_BINARIZE_THRESHOLD}"
+  echo "  REAL_AUTOCONTRAST   = ${REAL_BINARIZE_AUTOCONTRAST}"
+  echo "  REAL_AUTO_INVERT    = ${REAL_BINARIZE_AUTO_INVERT}"
+  echo "  REAL_IMAGE_SIZE     = ${REAL_EVAL_HEIGHT}x${REAL_EVAL_WIDTH}"
 fi
 echo "===================================================="
 
@@ -231,5 +281,7 @@ bash scripts/eval/window-similarity/run_line_pair_window_cosine.sh
 echo ""
 echo "Done. Evaluation outputs: ${RESULTS_ROOT}"
 if [[ "${DATASET_TYPE}" == "real" ]]; then
+  echo "Processed real images: ${RESOLVED_DATA_DIR}/images"
+  echo "Real preprocessing metadata: ${RESOLVED_DATA_DIR}/view_metadata.json"
   echo "Real sample-to-pair mapping: ${RESOLVED_DATA_DIR}/view_manifest.jsonl"
 fi
