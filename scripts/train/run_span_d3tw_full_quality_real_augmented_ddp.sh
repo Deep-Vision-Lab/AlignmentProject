@@ -50,6 +50,13 @@ export HF_HOME="$(
 export NUM_GPUS
 export INK_CONTRAST_THRESHOLD="${INK_CONTRAST_THRESHOLD:-0.15}"
 
+# Some BGU RTX 4090 GPU pairs are placed behind PCIe topology where CUDA peer
+# access is unavailable. Disable NCCL's direct GPU-to-GPU P2P transport and keep
+# shared-memory fallback enabled. Both settings remain overrideable for nodes
+# where P2P is supported.
+export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
+export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
+
 GLOBAL_BATCH_NOTE="BATCH_SIZE is per GPU; global batch = BATCH_SIZE x ${NUM_GPUS}."
 echo "Submitting full-quality DDP training"
 echo "  project            = ${PROJECT_DIR}"
@@ -61,6 +68,8 @@ echo "  time limit         = ${TIME_LIMIT}"
 echo "  text model         = ${ARABIC_TEXT_MODEL_NAME}"
 echo "  Hugging Face cache = ${HF_HOME}"
 echo "  ink threshold      = ${INK_CONTRAST_THRESHOLD}"
+echo "  NCCL P2P disabled  = ${NCCL_P2P_DISABLE}"
+echo "  NCCL SHM disabled  = ${NCCL_SHM_DISABLE}"
 echo "  ${GLOBAL_BATCH_NOTE}"
 
 sbatch \
@@ -69,5 +78,5 @@ sbatch \
   --cpus-per-task="${CPUS_PER_TASK}" \
   --mem="${MEMORY}" \
   --time="${TIME_LIMIT}" \
-  --export=ALL,PROJECT_DIR="${PROJECT_DIR}",NUM_GPUS="${NUM_GPUS}",HF_HOME="${HF_HOME}",ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_NAME}",INK_CONTRAST_THRESHOLD="${INK_CONTRAST_THRESHOLD}" \
+  --export=ALL,PROJECT_DIR="${PROJECT_DIR}",NUM_GPUS="${NUM_GPUS}",HF_HOME="${HF_HOME}",ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_NAME}",INK_CONTRAST_THRESHOLD="${INK_CONTRAST_THRESHOLD}",NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE}",NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE}" \
   "${SCRIPT_DIR}/sbatch_span_d3tw_full_quality_real_augmented_ddp.sbatch"
