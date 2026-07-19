@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 
+from torch.utils.data import Dataset
 from torchvision import transforms
 
 import DataLoader as base_loader
@@ -16,6 +17,28 @@ from RealDataAugmentation import (
     BinaryInkAugment,
     RealLinePairAugmentor,
 )
+
+
+class RepeatToLengthDataset(Dataset):
+    """Repeat a dataset to a requested number of samples per training epoch.
+
+    The real manifest contains fewer unique pairs than a large synthetic dataset.
+    Repeating the training subset is useful here because ``AugmentedRealSubset``
+    applies fresh random appearance/stitching perturbations every time an item is
+    fetched. Validation and test datasets are never wrapped by this class.
+    """
+
+    def __init__(self, dataset: Dataset, target_length: int):
+        if len(dataset) <= 0:
+            raise ValueError("Cannot repeat an empty training dataset.")
+        self.dataset = dataset
+        self.target_length = max(len(dataset), int(target_length))
+
+    def __len__(self):
+        return self.target_length
+
+    def __getitem__(self, index):
+        return self.dataset[int(index) % len(self.dataset)]
 
 
 def _train_real_transform():
@@ -70,9 +93,15 @@ def build_dataloaders(data_dir=None):
     else:
         train_dataset = train_subset
 
+    base_train_samples = len(train_dataset)
+    target_train_samples = int(os.environ.get("REAL_TRAIN_SAMPLES_PER_EPOCH", "0"))
+    if target_train_samples > base_train_samples:
+        train_dataset = RepeatToLengthDataset(train_dataset, target_train_samples)
+
     print(
         "Loaded augmented real Arabic dataset: "
-        f"samples={len(full_dataset)} train={len(train_dataset)} "
+        f"samples={len(full_dataset)} base_train={base_train_samples} "
+        f"train_per_epoch={len(train_dataset)} "
         f"valid={len(valid_subset)} test={len(test_subset)} "
         f"augment={augmentor.enabled} "
         f"stitch_prob={augmentor.stitch_probability:.3f} "
