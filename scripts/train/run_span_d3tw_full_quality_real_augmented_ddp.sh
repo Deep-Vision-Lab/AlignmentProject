@@ -35,6 +35,16 @@ if ! [[ "${NUM_GPUS}" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
+# Resolve the frozen Arabic backbone before submitting the job. This searches the
+# current checkout, the sibling AlignmentProject_clone checkout, the user's
+# standard Hugging Face cache, and any explicitly supplied HF_HOME.
+export ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_NAME:-aubmindlab/bert-base-arabertv02}"
+export HF_HOME="$(
+  bash "${SCRIPT_DIR}/resolve_hf_cache_home.sh" \
+    "${PROJECT_DIR}" \
+    "${ARABIC_TEXT_MODEL_NAME}"
+)"
+
 # The corrected foreground mask measures contrast from the local background and
 # is therefore valid for both black-on-white and white-on-black line images.
 export NUM_GPUS
@@ -48,6 +58,8 @@ echo "  GPU request        = ${GPU_RESOURCE}:${NUM_GPUS}"
 echo "  CPUs               = ${CPUS_PER_TASK}"
 echo "  memory             = ${MEMORY}"
 echo "  time limit         = ${TIME_LIMIT}"
+echo "  text model         = ${ARABIC_TEXT_MODEL_NAME}"
+echo "  Hugging Face cache = ${HF_HOME}"
 echo "  ink threshold      = ${INK_CONTRAST_THRESHOLD}"
 echo "  ${GLOBAL_BATCH_NOTE}"
 
@@ -57,5 +69,5 @@ sbatch \
   --cpus-per-task="${CPUS_PER_TASK}" \
   --mem="${MEMORY}" \
   --time="${TIME_LIMIT}" \
-  --export=ALL,PROJECT_DIR="${PROJECT_DIR}",NUM_GPUS="${NUM_GPUS}",INK_CONTRAST_THRESHOLD="${INK_CONTRAST_THRESHOLD}" \
+  --export=ALL,PROJECT_DIR="${PROJECT_DIR}",NUM_GPUS="${NUM_GPUS}",HF_HOME="${HF_HOME}",ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_NAME}",INK_CONTRAST_THRESHOLD="${INK_CONTRAST_THRESHOLD}" \
   "${SCRIPT_DIR}/sbatch_span_d3tw_full_quality_real_augmented_ddp.sbatch"
