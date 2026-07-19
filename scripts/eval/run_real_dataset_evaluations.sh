@@ -5,8 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${PROJECT_DIR}"
 
-# Evaluation helpers live under scripts/eval but import project modules such as
-# DataLoader.py from the repository root.
+# Evaluation helpers live under scripts/eval but import project modules from the
+# repository root. Keeping PYTHONPATH set is harmless even though the real-image
+# preprocessor is now self-contained.
 export PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 
 export DATASET_TYPE=real
@@ -16,12 +17,15 @@ export REAL_DATASET_LABELS="${REAL_DATASET_LABELS:-high_match,medium_match}"
 export REAL_TEXT_KEY="${REAL_TEXT_KEY:-text_original_path}"
 export REAL_MIN_TEXT_SCORE="${REAL_MIN_TEXT_SCORE:-0.0}"
 
-# Match the real-data preprocessing used during improve_neg training.
+# Real evaluation preprocessing.
 export REAL_BINARIZE="${REAL_BINARIZE:-1}"
 export REAL_BINARIZE_METHOD="${REAL_BINARIZE_METHOD:-otsu}"
 export REAL_BINARIZE_THRESHOLD="${REAL_BINARIZE_THRESHOLD:-180}"
 export REAL_BINARIZE_AUTOCONTRAST="${REAL_BINARIZE_AUTOCONTRAST:-1}"
+# Normalize arbitrary scan polarity before applying the final requested inversion.
 export REAL_BINARIZE_AUTO_INVERT="${REAL_BINARIZE_AUTO_INVERT:-1}"
+# Final saved polarity: black background and white text.
+export REAL_INVERT_COLORS="${REAL_INVERT_COLORS:-1}"
 export REAL_EVAL_HEIGHT="${REAL_EVAL_HEIGHT:-128}"
 export REAL_EVAL_WIDTH="${REAL_EVAL_WIDTH:-1024}"
 
