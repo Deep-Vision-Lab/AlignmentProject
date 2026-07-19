@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
-# Generic full-quality training launcher.
-#
-# This is the only shell entry point for training. It supports:
-#   DATASET_TYPE=synthetic  -> DataSet/Synthetic_Arabic_10000 (10,000 samples)
-#   DATASET_TYPE=real       -> DataSet/ArabicDataset (optional augmentation)
-#   NUM_GPUS=1              -> python train.py
-#   NUM_GPUS>1              -> torchrun train.py with DDP
+# Generic full-quality training launcher for synthetic or real Arabic data.
+# This is the only shell training entry point.
 #
 # Examples:
-#   DATASET_TYPE=synthetic NUM_GPUS=2 bash scripts/train/run_span_d3tw_full_quality.sh
-#   DATASET_TYPE=real REAL_AUGMENT=1 REAL_TRAIN_SAMPLES_PER_EPOCH=10000 NUM_GPUS=2 bash scripts/train/run_span_d3tw_full_quality.sh
+#   DATASET_TYPE=synthetic NUM_SAMPLES=10000 NUM_GPUS=2 \
+#     bash scripts/train/run_span_d3tw_full_quality.sh
+#
+#   DATASET_TYPE=real REAL_AUGMENT=1 REAL_TRAIN_SAMPLES_PER_EPOCH=10000 \
+#     NUM_GPUS=2 bash scripts/train/run_span_d3tw_full_quality.sh
 
 set -euo pipefail
 
@@ -19,17 +17,29 @@ if [[ "$#" -ne 0 ]]; then
   exit 2
 fi
 
+# sbatch copies this script into Slurm's protected spool directory. During the
+# submitted run, always trust the PROJECT_DIR exported by the submitting process
+# instead of deriving the repository from BASH_SOURCE[0].
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
-SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
-PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-cd "${PROJECT_DIR}"
-mkdir -p out logs
+if [[ -n "${PROJECT_DIR:-}" ]]; then
+  PROJECT_DIR="$(readlink -f "${PROJECT_DIR}")"
+else
+  SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
+  PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
 
-# Export every resolved setting to Slurm and torchrun children.
+[[ -d "${PROJECT_DIR}" ]] || {
+  echo "ERROR: PROJECT_DIR does not exist: ${PROJECT_DIR}" >&2
+  exit 1
+}
+cd "${PROJECT_DIR}"
+mkdir -p "${PROJECT_DIR}/out" "${PROJECT_DIR}/logs"
+
+# Export every resolved setting to the Slurm job and torchrun ranks.
 set -a
 
 # ---------------------------------------------------------------------------
-# Execution and Slurm resources
+# Slurm and runtime
 # ---------------------------------------------------------------------------
 CONDA_ENV="${CONDA_ENV:-manucripts_align}"
 NUM_GPUS="${NUM_GPUS:-2}"
@@ -39,6 +49,7 @@ CPUS_PER_TASK="${CPUS_PER_TASK:-$((8 * NUM_GPUS))}"
 MEMORY="${MEMORY:-96G}"
 TIME_LIMIT="${TIME_LIMIT:-03-00:00:00}"
 SLURM_JOB_NAME="${SLURM_JOB_NAME:-align_full}"
+MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"
 
 if ! [[ "${NUM_GPUS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "ERROR: NUM_GPUS must be a positive integer, got ${NUM_GPUS}" >&2
@@ -78,7 +89,7 @@ LANGUAGE="${LANGUAGE:-Arabic}"
 DATASET_SPLIT_SEED="${DATASET_SPLIT_SEED:-42}"
 TRAIN_SEED="${TRAIN_SEED:-42}"
 
-# Real manifest filtering/preprocessing. These are ignored for synthetic data.
+# Real manifest and preprocessing. Ignored for synthetic data.
 REAL_MANIFEST_NAME="${REAL_MANIFEST_NAME:-dataset_manifest.jsonl}"
 REAL_DATASET_LABELS="${REAL_DATASET_LABELS:-high_match,medium_match}"
 REAL_MIN_TEXT_SCORE="${REAL_MIN_TEXT_SCORE:-0.0}"
@@ -91,7 +102,7 @@ REAL_BINARIZE_THRESHOLD="${REAL_BINARIZE_THRESHOLD:-180}"
 REAL_BINARIZE_AUTOCONTRAST="${REAL_BINARIZE_AUTOCONTRAST:-1}"
 REAL_BINARIZE_AUTO_INVERT="${REAL_BINARIZE_AUTO_INVERT:-1}"
 
-# Training-only real-data augmentation. Ignored for synthetic data.
+# Real-data training augmentation. Ignored for synthetic data.
 REAL_AUG_STITCH_PROB="${REAL_AUG_STITCH_PROB:-0.25}"
 REAL_AUG_STITCH_POOL_SIZE="${REAL_AUG_STITCH_POOL_SIZE:-32}"
 REAL_AUG_STITCH_MAX_TEXT_CHARS="${REAL_AUG_STITCH_MAX_TEXT_CHARS:-120}"
@@ -113,7 +124,7 @@ REAL_AUG_SPECKLE_PROB="${REAL_AUG_SPECKLE_PROB:-0.12}"
 REAL_AUG_SPECKLE_FRACTION="${REAL_AUG_SPECKLE_FRACTION:-0.0006}"
 
 # ---------------------------------------------------------------------------
-# Model and full-quality losses
+# Model and full-quality objectives
 # ---------------------------------------------------------------------------
 TEXT_ENCODER_TYPE="${TEXT_ENCODER_TYPE:-arabic_span}"
 ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_NAME:-aubmindlab/bert-base-arabertv02}"
@@ -164,7 +175,6 @@ IMAGE_PAIR_EVERY_N_BATCHES="${IMAGE_PAIR_EVERY_N_BATCHES:-1}"
 IMAGE_PAIR_MAX_SAMPLES_PER_BATCH="${IMAGE_PAIR_MAX_SAMPLES_PER_BATCH:-8}"
 PAIR_COMPOSITION_MAX_REGIONS="${PAIR_COMPOSITION_MAX_REGIONS:-2}"
 PAIR_COMPOSITION_MAX_CHARS="${PAIR_COMPOSITION_MAX_CHARS:-3}"
-
 SEQUENCE_CONSISTENCY_LOSS_WEIGHT="${SEQUENCE_CONSISTENCY_LOSS_WEIGHT:-0.05}"
 ORDER_TEMPERATURE="${ORDER_TEMPERATURE:-0.07}"
 ORDER_MONOTONIC_MARGIN="${ORDER_MONOTONIC_MARGIN:-0.02}"
@@ -174,7 +184,7 @@ IMAGE_VARIANCE_LOSS_WEIGHT="${IMAGE_VARIANCE_LOSS_WEIGHT:-0.01}"
 IMAGE_VARIANCE_TARGET_STD="${IMAGE_VARIANCE_TARGET_STD:-0.05}"
 
 # ---------------------------------------------------------------------------
-# Runtime, validation, and output
+# Training runtime and output
 # ---------------------------------------------------------------------------
 EPOCHS="${EPOCHS:-180}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
@@ -199,7 +209,7 @@ PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
 NCCL_ASYNC_ERROR_HANDLING="${NCCL_ASYNC_ERROR_HANDLING:-1}"
 NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
-# RTX 4090 pairs on some BGU nodes do not support CUDA peer access.
+# Some BGU RTX 4090 pairs cannot use direct CUDA peer access.
 NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
 NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
 HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
@@ -208,7 +218,7 @@ TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 set +a
 
 # ---------------------------------------------------------------------------
-# Resolve the local frozen text-model cache without another helper script.
+# Resolve a local Hugging Face cache containing the frozen Arabic model.
 # ---------------------------------------------------------------------------
 resolve_hf_home() {
   local model_slug="models--${ARABIC_TEXT_MODEL_NAME//\//--}"
@@ -245,7 +255,8 @@ resolve_hf_home() {
       done < <(find "${snapshots}" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
     done
   done
-  echo "ERROR: ${ARABIC_TEXT_MODEL_NAME} was not found in the local Hugging Face caches." >&2
+
+  echo "ERROR: ${ARABIC_TEXT_MODEL_NAME} was not found in a local Hugging Face cache." >&2
   echo "Checked ${PROJECT_DIR}/.hf_cache, ${PROJECT_DIR}_clone/.hf_cache, and ~/.cache/huggingface." >&2
   return 1
 }
@@ -255,7 +266,7 @@ unset TRANSFORMERS_CACHE
 mkdir -p "${HF_HOME}"
 
 # ---------------------------------------------------------------------------
-# Validate the selected dataset before consuming a GPU allocation.
+# Validate the dataset before requesting GPUs.
 # ---------------------------------------------------------------------------
 if [[ "${DATASET_TYPE}" == "synthetic" ]]; then
   [[ -d "${DATA_DIR}/images" && -d "${DATA_DIR}/texts" ]] || {
@@ -280,10 +291,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Submit this same script to Slurm. Inside the allocation, continue below.
+# Submit this same script. --chdir and an absolute --output path prevent the
+# copied Slurm script from running relative to Slurm's spool directory.
 # ---------------------------------------------------------------------------
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   echo "Submitting generic full-quality training"
+  echo "  project              = ${PROJECT_DIR}"
   echo "  dataset              = ${DATASET_TYPE}"
   echo "  data directory       = ${DATA_DIR}"
   echo "  samples              = ${NUM_SAMPLES}"
@@ -297,7 +310,8 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
 
   sbatch \
     --job-name="${SLURM_JOB_NAME}" \
-    --output="out/%x_%J.out" \
+    --output="${PROJECT_DIR}/out/%x_%J.out" \
+    --chdir="${PROJECT_DIR}" \
     --partition="${PARTITION}" \
     --gpus="${GPU_RESOURCE}:${NUM_GPUS}" \
     --tasks=1 \
@@ -305,15 +319,18 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
     --mem="${MEMORY}" \
     --time="${TIME_LIMIT}" \
     --mail-type=ALL \
-    --mail-user="${MAIL_USER:-ahmedmas@post.bgu.ac.il}" \
+    --mail-user="${MAIL_USER}" \
     --export=ALL,PROJECT_DIR="${PROJECT_DIR}" \
     "${SCRIPT_PATH}"
   exit 0
 fi
 
 # ---------------------------------------------------------------------------
-# Run inside the allocated Slurm node.
+# Run inside the allocated node.
 # ---------------------------------------------------------------------------
+cd "${PROJECT_DIR}"
+mkdir -p "${PROJECT_DIR}/out" "${PROJECT_DIR}/logs"
+
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 
@@ -370,6 +387,8 @@ TRAIN_ARGS=(
 )
 
 echo "Starting generic full-quality training"
+echo "  project              = ${PROJECT_DIR}"
+echo "  working directory    = $(pwd)"
 echo "  dataset              = ${DATASET_TYPE}"
 echo "  data directory       = ${DATA_DIR}"
 echo "  real augmentation    = ${REAL_AUGMENT}"
