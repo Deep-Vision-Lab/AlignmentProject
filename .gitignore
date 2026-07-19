@@ -1,11 +1,3 @@
-# Evaluation Results 
-
-
-
-# Training Results 
-TrainResults/*/*/*/*
-
-
 # DataSet
 DataSet
 
@@ -17,9 +9,6 @@ Weights
 # Settings Caches
 wandb
 __pycache__
-
-
-
 
 # log files
 *.log
@@ -35,10 +24,10 @@ out/
 
 #*.txt files
 *.txt
-TestResults/*.txt
 
 
-#ablations
-Experiments/Phase1_Ablation/out/*.out
-paper_figures/outputs/*
-OfflineTrainScripts/out/*.out
+#Results
+Results/Evaluation/dataset_views
+Results/Evaluation/real_binarized_otsu_black_bg_white_text
+
+TrainResults/
