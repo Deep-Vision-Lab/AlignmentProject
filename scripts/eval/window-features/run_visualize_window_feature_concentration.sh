@@ -2,15 +2,15 @@
 #
 # Run feature-concentration visualization for one or more Arabic line samples.
 #
-# Default behavior now creates one PNG per model window:
-#   original window image + feature concentration image + early-fusion overlay
+# Default behavior creates one PNG per model window:
+#   original window image + Grad-CAM concentration + early-fusion overlay
 #
 # Default usage:
 #   bash scripts/eval/window-features/run_visualize_window_feature_concentration.sh
 #
 # Override with environment variables, for example:
 #   INDEX=5 WHICH_LINE=2 bash scripts/eval/window-features/run_visualize_window_feature_concentration.sh
-#   START_INDEX=1 END_INDEX=10 WHICH_LINE=1 bash scripts/eval/window-features/run_visualize_window_feature_concentration.sh
+#   GRADCAM_LAYER=cnn_encoder.backbone.7 GRADCAM_TARGET=energy ...
 #
 
 set -euo pipefail
@@ -39,10 +39,19 @@ CONCENTRATION_TOP_K="${CONCENTRATION_TOP_K:-8}"
 FEATURE_NORMALIZE="${FEATURE_NORMALIZE:-per_window}"
 CSV_TOP_FEATURES="${CSV_TOP_FEATURES:-8}"
 
+TEXT_ENCODER_TYPE="${TEXT_ENCODER_TYPE:-}"
+ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_NAME:-}"
+MAX_SPAN_CHARS="${MAX_SPAN_CHARS:-}"
+MAX_TOKEN_CHARS="${MAX_TOKEN_CHARS:-}"
 MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-4}"
 TEMPERATURE="${TEMPERATURE:-0.07}"
 WINDOW_COUNT_PENALTY="${WINDOW_COUNT_PENALTY:-0.01}"
 
+# backbone.7 is the final ResNet block and is only about 4x4 for a 128x32
+# window. backbone.4 keeps substantially more spatial detail, so thin Arabic
+# strokes are less likely to be shown as one broad block after interpolation.
+GRADCAM_LAYER="${GRADCAM_LAYER:-cnn_encoder.backbone.4}"
+GRADCAM_TARGET="${GRADCAM_TARGET:-token}"
 TOKEN_FONTSIZE="${TOKEN_FONTSIZE:-6.0}"
 DPI="${DPI:-180}"
 CMAP="${CMAP:-viridis}"
@@ -94,6 +103,18 @@ run_one() {
   if [[ "${NO_BILSTM}" == "1" || "${NO_BILSTM}" == "true" ]]; then
     extra_args+=(--no-bilstm)
   fi
+  if [[ -n "${TEXT_ENCODER_TYPE}" ]]; then
+    extra_args+=(--text-encoder-type "${TEXT_ENCODER_TYPE}")
+  fi
+  if [[ -n "${ARABIC_TEXT_MODEL_NAME}" ]]; then
+    extra_args+=(--arabic-text-model-name "${ARABIC_TEXT_MODEL_NAME}")
+  fi
+  if [[ -n "${MAX_SPAN_CHARS}" ]]; then
+    extra_args+=(--max-span-chars "${MAX_SPAN_CHARS}")
+  fi
+  if [[ -n "${MAX_TOKEN_CHARS}" ]]; then
+    extra_args+=(--max-token-chars "${MAX_TOKEN_CHARS}")
+  fi
   if [[ "${SAVE_PER_WINDOW_IMAGES}" == "1" || "${SAVE_PER_WINDOW_IMAGES}" == "true" ]]; then
     extra_args+=(
       --save-per-window-images
@@ -123,8 +144,13 @@ run_one() {
   echo "  save-csv             = ${SAVE_CSV} (${out_csv})"
   echo "  feature-space        = ${FEATURE_SPACE}"
   echo "  alignment-space      = ${ALIGNMENT_SPACE}"
+  echo "  gradcam-layer        = ${GRADCAM_LAYER}"
+  echo "  gradcam-target       = ${GRADCAM_TARGET}"
   echo "  concentration-metric = ${CONCENTRATION_METRIC}"
   echo "  early-fusion-alpha   = ${EARLY_FUSION_ALPHA}"
+  if [[ -n "${ARABIC_TEXT_MODEL_NAME}" ]]; then
+    echo "  text-model           = ${ARABIC_TEXT_MODEL_NAME}"
+  fi
   echo "===================================================="
 
   python "${SCRIPT}" \
@@ -146,6 +172,8 @@ run_one() {
     --max-windows-per-span "${MAX_WINDOWS_PER_SPAN}" \
     --temperature "${TEMPERATURE}" \
     --window-count-penalty "${WINDOW_COUNT_PENALTY}" \
+    --gradcam-layer "${GRADCAM_LAYER}" \
+    --gradcam-target "${GRADCAM_TARGET}" \
     --token-fontsize "${TOKEN_FONTSIZE}" \
     --dpi "${DPI}" \
     --cmap "${CMAP}" \
