@@ -4,7 +4,7 @@
 # Trained-on synthetic dataset (default):
 #   bash scripts/eval/run_all_span2_evaluations.sh
 #
-# Binarized real manifest dataset:
+# Binarized real manifest dataset with black background / white text:
 #   DATASET_TYPE=real bash scripts/eval/run_all_span2_evaluations.sh
 #
 # Common overrides:
@@ -56,7 +56,7 @@ MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-4}"
 WINDOW_COUNT_PENALTY="${WINDOW_COUNT_PENALTY:-0.05}"
 GROUP_POOLING="${GROUP_POOLING:-mean}"
 
-# Real-data filters and image preprocessing match improve_neg training defaults.
+# Real-data filters and image preprocessing.
 REAL_MANIFEST_NAME="${REAL_MANIFEST_NAME:-dataset_manifest.jsonl}"
 REAL_DATASET_LABELS="${REAL_DATASET_LABELS:-high_match,medium_match}"
 REAL_MIN_TEXT_SCORE="${REAL_MIN_TEXT_SCORE:-0.0}"
@@ -66,6 +66,8 @@ REAL_BINARIZE_METHOD="${REAL_BINARIZE_METHOD:-otsu}"
 REAL_BINARIZE_THRESHOLD="${REAL_BINARIZE_THRESHOLD:-180}"
 REAL_BINARIZE_AUTOCONTRAST="${REAL_BINARIZE_AUTOCONTRAST:-1}"
 REAL_BINARIZE_AUTO_INVERT="${REAL_BINARIZE_AUTO_INVERT:-1}"
+# Final requested polarity after binarization: black background, white text.
+REAL_INVERT_COLORS="${REAL_INVERT_COLORS:-1}"
 REAL_EVAL_HEIGHT="${REAL_EVAL_HEIGHT:-128}"
 REAL_EVAL_WIDTH="${REAL_EVAL_WIDTH:-1024}"
 REAL_LINK_MODE="${REAL_LINK_MODE:-auto}"
@@ -75,6 +77,12 @@ if [[ "${DATASET_TYPE}" == "real" ]]; then
     REAL_OUTPUT_TAG="real_binarized_${REAL_BINARIZE_METHOD}"
   else
     REAL_OUTPUT_TAG="real_resized_grayscale"
+  fi
+
+  if is_true "${REAL_INVERT_COLORS}"; then
+    REAL_OUTPUT_TAG+="_black_bg_white_text"
+  else
+    REAL_OUTPUT_TAG+="_white_bg_black_text"
   fi
 else
   REAL_OUTPUT_TAG="synthetic"
@@ -120,6 +128,11 @@ if [[ "${DATASET_TYPE}" == "real" ]]; then
     PREPARE_ARGS+=(--binarize-auto-invert)
   else
     PREPARE_ARGS+=(--no-binarize-auto-invert)
+  fi
+  if is_true "${REAL_INVERT_COLORS}"; then
+    PREPARE_ARGS+=(--invert-real-colors)
+  else
+    PREPARE_ARGS+=(--no-invert-real-colors)
   fi
 fi
 
@@ -169,6 +182,12 @@ if [[ "${DATASET_TYPE}" == "real" ]]; then
   echo "  REAL_BIN_THRESHOLD  = ${REAL_BINARIZE_THRESHOLD}"
   echo "  REAL_AUTOCONTRAST   = ${REAL_BINARIZE_AUTOCONTRAST}"
   echo "  REAL_AUTO_INVERT    = ${REAL_BINARIZE_AUTO_INVERT}"
+  echo "  REAL_INVERT_COLORS  = ${REAL_INVERT_COLORS}"
+  if is_true "${REAL_INVERT_COLORS}"; then
+    echo "  REAL_FINAL_POLARITY = black background / white text"
+  else
+    echo "  REAL_FINAL_POLARITY = white background / black text"
+  fi
   echo "  REAL_IMAGE_SIZE     = ${REAL_EVAL_HEIGHT}x${REAL_EVAL_WIDTH}"
 fi
 echo "===================================================="
