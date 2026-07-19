@@ -11,9 +11,10 @@ Existing improve_neg visualizers expect this 1-based layout::
 
 Synthetic_Arabic already has that layout and is returned unchanged. For the real
 ArabicDataset manifest, this utility creates a sequential evaluation view and,
-by default, saves the images after applying the exact real-data training
-preprocessing: resize, autocontrast, Otsu/fixed binarization, and polarity fix.
-``view_manifest.jsonl`` preserves the mapping to the original real pairs.
+by default, applies resize, autocontrast, Otsu/fixed binarization, polarity
+normalization, then a final color inversion so the saved evaluation images have
+a black background and white text. ``view_manifest.jsonl`` preserves the mapping
+to the original real pairs.
 """
 from __future__ import annotations
 
@@ -23,6 +24,14 @@ import shutil
 import sys
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
+
+import numpy as np
+from PIL import Image, ImageOps
+
+try:
+    _RESAMPLE_BILINEAR = Image.Resampling.BILINEAR
+except AttributeError:  # Pillow < 9
+    _RESAMPLE_BILINEAR = Image.BILINEAR
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -34,7 +43,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("Results/Evaluation/dataset_views/real_binarized"),
+        default=Path(
+            "Results/Evaluation/dataset_views/"
+            "real_binarized_black_bg_white_text"
+        ),
         help="Generated view directory for real data.",
     )
     parser.add_argument("--manifest-name", default="dataset_manifest.jsonl")
@@ -56,7 +68,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--binarize-real",
         dest="binarize_real",
         action="store_true",
-        help="Save real images after the same binarization used during training.",
+        help="Save real images after binarization.",
     )
     parser.add_argument(
         "--no-binarize-real",
@@ -86,6 +98,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--binarize-auto-invert",
         dest="binarize_auto_invert",
         action="store_true",
+        help=(
+            "Normalize scan polarity before the final requested output inversion. "
+            "This first makes the page background white."
+        ),
     )
     parser.add_argument(
         "--no-binarize-auto-invert",
@@ -93,6 +109,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_false",
     )
     parser.set_defaults(binarize_auto_invert=True)
+    parser.add_argument(
+        "--invert-real-colors",
+        dest="invert_real_colors",
+        action="store_true",
+        help="After preprocessing, invert to black background and white text.",
+    )
+    parser.add_argument(
+        "--no-invert-real-colors",
+        dest="invert_real_colors",
+        action="store_false",
+        help="Keep the normalized white background and black text.",
+    )
+    parser.set_defaults(invert_real_colors=True)
     parser.add_argument("--height", type=int, default=128)
     parser.add_argument("--width", type=int, default=1024)
     return parser.parse_args(argv)
@@ -247,25 +276,100 @@ def link_or_copy(source: Path, destination: Path, mode: str) -> str:
     return "copy"
 
 
-def build_real_preprocessor(args: argparse.Namespace):
-    # Reuse the exact implementation used by the improve_neg real-data loader.
-    from DataLoader import ResizeAndBinarize
+def otsu_threshold(gray_array: np.ndarray) -> int:
+    """Return an Otsu threshold for an uint8 grayscale image."""
+    values = np.asarray(gray_array, dtype=np.uint8)
+    histogram = np.bincount(values.reshape(-1), minlength=256).astype(np.float64)
+    total = float(values.size)
+    if total <= 0:
+        return 127
 
-    return ResizeAndBinarize(
-        size=(args.height, args.width),
-        enabled=args.binarize_real,
-        method=args.binarize_method,
-        fixed_threshold=args.binarize_threshold,
-        auto_invert=args.binarize_auto_invert,
-        autocontrast=args.binarize_autocontrast,
+    levels = np.arange(256, dtype=np.float64)
+    total_sum = float(np.dot(levels, histogram))
+    background_weight = 0.0
+    background_sum = 0.0
+    best_variance = -1.0
+    best_threshold = 127
+
+    for threshold in range(256):
+        background_weight += histogram[threshold]
+        if background_weight <= 0:
+            continue
+        foreground_weight = total - background_weight
+        if foreground_weight <= 0:
+            break
+
+        background_sum += threshold * histogram[threshold]
+        background_mean = background_sum / background_weight
+        foreground_mean = (total_sum - background_sum) / foreground_weight
+        between_variance = (
+            background_weight
+            * foreground_weight
+            * (background_mean - foreground_mean) ** 2
+        )
+        if between_variance > best_variance:
+            best_variance = between_variance
+            best_threshold = threshold
+
+    return int(best_threshold)
+
+
+def border_mean(binary: np.ndarray) -> float:
+    height, width = binary.shape
+    border_h = max(1, int(round(height * 0.05)))
+    border_w = max(1, int(round(width * 0.01)))
+    border = np.concatenate(
+        [
+            binary[:border_h, :].reshape(-1),
+            binary[-border_h:, :].reshape(-1),
+            binary[:, :border_w].reshape(-1),
+            binary[:, -border_w:].reshape(-1),
+        ]
+    )
+    return float(border.mean()) if border.size else 255.0
+
+
+def preprocess_real_image(image: Image.Image, args: argparse.Namespace) -> Image.Image:
+    """Resize and normalize polarity, then optionally invert final output colors."""
+    processed = image.convert("L").resize(
+        (int(args.width), int(args.height)),
+        _RESAMPLE_BILINEAR,
     )
 
+    if args.binarize_real:
+        if args.binarize_autocontrast:
+            processed = ImageOps.autocontrast(processed)
 
-def save_processed_image(source: Path, destination: Path, preprocessor) -> None:
-    from PIL import Image
+        gray = np.asarray(processed, dtype=np.uint8)
+        threshold = (
+            otsu_threshold(gray)
+            if args.binarize_method == "otsu"
+            else max(0, min(255, int(args.binarize_threshold)))
+        )
+        binary = np.where(gray > threshold, 255, 0).astype(np.uint8)
 
+        # First normalize to white page background and black text. This removes
+        # uncertainty caused by scans whose original polarity is already inverted.
+        if args.binarize_auto_invert and border_mean(binary) < 127.5:
+            binary = 255 - binary
+        processed = Image.fromarray(binary, mode="L")
+
+    processed = processed.convert("RGB")
+
+    # Requested final representation: black background and white text.
+    if args.invert_real_colors:
+        processed = ImageOps.invert(processed)
+
+    return processed
+
+
+def save_processed_image(
+    source: Path,
+    destination: Path,
+    args: argparse.Namespace,
+) -> None:
     with Image.open(source) as image:
-        processed = preprocessor(image.convert("RGB"))
+        processed = preprocess_real_image(image, args)
         processed.save(destination, format="PNG", optimize=True)
 
 
@@ -283,7 +387,6 @@ def materialize_real(args: argparse.Namespace) -> Path:
     output_dir = images_dir.parent
     records: list[dict] = []
     text_modes: set[str] = set()
-    preprocessor = build_real_preprocessor(args)
 
     for eval_index, row in enumerate(rows, start=1):
         sides = {}
@@ -293,7 +396,7 @@ def materialize_real(args: argparse.Namespace) -> Path:
             text_source = resolve_manifest_path(dataset_root, side[args.text_key])
 
             image_dest = images_dir / f"img{side_number}_{eval_index}.png"
-            save_processed_image(image_source, image_dest, preprocessor)
+            save_processed_image(image_source, image_dest, args)
 
             text_dest = texts_dir / f"text{side_number}_{eval_index}.txt"
             text_modes.add(link_or_copy(text_source, text_dest, args.link_mode))
@@ -313,7 +416,16 @@ def materialize_real(args: argparse.Namespace) -> Path:
                 "text_score": float(scores.get("text_score", 0.0)),
                 "manifest_line": int(row["_manifest_line"]),
                 "binarized": bool(args.binarize_real),
-                "binarize_method": args.binarize_method if args.binarize_real else None,
+                "binarize_method": (
+                    args.binarize_method if args.binarize_real else None
+                ),
+                "colors_inverted_after_preprocessing": bool(
+                    args.invert_real_colors
+                ),
+                "final_background": (
+                    "black" if args.invert_real_colors else "white"
+                ),
+                "final_text": "white" if args.invert_real_colors else "black",
                 "A": sides["A"],
                 "B": sides["B"],
             }
@@ -337,7 +449,12 @@ def materialize_real(args: argparse.Namespace) -> Path:
             "method": args.binarize_method if args.binarize_real else None,
             "fixed_threshold": args.binarize_threshold,
             "autocontrast": bool(args.binarize_autocontrast),
-            "auto_invert": bool(args.binarize_auto_invert),
+            "normalize_scan_polarity": bool(args.binarize_auto_invert),
+            "invert_after_preprocessing": bool(args.invert_real_colors),
+            "final_background": (
+                "black" if args.invert_real_colors else "white"
+            ),
+            "final_text": "white" if args.invert_real_colors else "black",
             "saved_mode": "RGB PNG",
         },
         "text_materialization_modes": sorted(text_modes),
@@ -346,9 +463,15 @@ def materialize_real(args: argparse.Namespace) -> Path:
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+
     mode_name = (
-        f"binarized/{args.binarize_method}" if args.binarize_real else "resized_grayscale"
+        f"binarized/{args.binarize_method}"
+        if args.binarize_real
+        else "resized_grayscale"
     )
+    if args.invert_real_colors:
+        mode_name += "/black_background_white_text"
+
     print(
         f"Prepared real evaluation view: samples={len(records)} "
         f"preprocessing={mode_name} path={output_dir}",
