@@ -146,6 +146,18 @@ if [[ ! -f "${WEIGHTS}" ]]; then
   exit 1
 fi
 
+# The evaluation suite runs offline, but the line-to-part, feature-concentration,
+# and span-group scripts need the frozen text backbone. Resolve a complete local
+# snapshot from the checkpoint and common cache locations, then pass that exact
+# directory to every child evaluation script.
+if [[ -z "${ARABIC_TEXT_MODEL_NAME:-}" ]]; then
+  export ARABIC_TEXT_MODEL_NAME="$(
+    python scripts/eval/resolve_cached_text_model.py \
+      --weights "${WEIGHTS}" \
+      --project-dir "${PROJECT_DIR}"
+  )"
+fi
+
 for numeric_name in INDEX START_INDEX END_INDEX; do
   value="${!numeric_name}"
   if ! [[ "${value}" =~ ^[0-9]+$ ]] || (( value < 1 )); then
@@ -164,6 +176,7 @@ echo "  DATASET_TYPE        = ${DATASET_TYPE}"
 echo "  SOURCE_DATA_DIR     = ${SOURCE_DATA_DIR}"
 echo "  RESOLVED_DATA_DIR   = ${RESOLVED_DATA_DIR}"
 echo "  WEIGHTS             = ${WEIGHTS}"
+echo "  TEXT_MODEL          = ${ARABIC_TEXT_MODEL_NAME:-checkpoint-char-encoder}"
 echo "  INDEX               = ${INDEX}"
 echo "  START_INDEX         = ${START_INDEX}"
 echo "  END_INDEX           = ${END_INDEX}"
