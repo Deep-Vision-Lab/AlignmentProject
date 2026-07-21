@@ -9,6 +9,13 @@ _IMAGENET_MEAN = (0.485, 0.456, 0.406)
 _IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
+def _env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def sliding_window(image, window_size, stride):
     patches = image.unfold(dimension=3, size=window_size, step=stride)
     return patches.permute(0, 3, 1, 2, 4).contiguous()
@@ -52,23 +59,15 @@ def _patch_background_level(gray):
 def window_ink_ratio_from_patches(patches, contrast_threshold=None):
     """Estimate foreground-stroke coverage independent of image polarity.
 
-    The model receives ImageNet-normalized RGB tensors.  Earlier code used
-    ``1 - gray`` and therefore treated dark pixels as ink.  That reverses the
-    mask for the project's black-background/white-text images and also operates
-    on normalized values rather than true pixel intensities.
+    The model receives ImageNet-normalized RGB tensors. Earlier code used
+    ``1 - gray`` and therefore treated dark pixels as ink. That reverses the
+    mask for black-background/white-text images and operates on normalized
+    values instead of true pixel intensities.
 
-    This implementation first restores RGB values to [0, 1], estimates the
-    local background from each patch border, and counts pixels whose contrast
-    from that background is large enough.  Consequently both black-on-white and
-    white-on-black lines produce the same ink ratio.
-
-    Args:
-        patches: Tensor [B, S, 3, H, W] after ImageNet normalization.
-        contrast_threshold: Minimum absolute foreground/background contrast.
-            Defaults to INK_CONTRAST_THRESHOLD or 0.15.
-
-    Returns:
-        Tensor [B, S], where higher values mean more visible strokes.
+    This implementation restores RGB values to [0, 1], estimates the local
+    background from each patch border, and counts pixels whose absolute
+    foreground/background contrast is large enough. Both polarities therefore
+    produce comparable ink ratios.
     """
     if contrast_threshold is None:
         contrast_threshold = float(os.environ.get("INK_CONTRAST_THRESHOLD", "0.15"))
@@ -86,6 +85,36 @@ def window_ink_ratio_from_patches(patches, contrast_threshold=None):
         foreground_contrast = (gray - background).abs()
         ink = foreground_contrast.ge(contrast_threshold).float()
         return ink.mean(dim=(2, 3))
+
+
+class LocalWindowGrouping(nn.Module):
+    """Fuse each CNN window with its immediate overlapping neighbours.
+
+    A zero-initialized residual Conv1d makes the module an exact identity at
+    initialization. It can therefore be inserted before the BiLSTM without
+    destroying pretrained local features, while training can learn to combine
+    the left/current/right windows into a more complete character body.
+    """
+
+    def __init__(self, embed_dim, group_size=3):
+        super().__init__()
+        group_size = int(group_size)
+        if group_size != 3:
+            raise ValueError("LOCAL_GROUP_SIZE currently supports exactly 3 windows")
+        self.group_size = group_size
+        self.conv = nn.Conv1d(
+            embed_dim,
+            embed_dim,
+            kernel_size=group_size,
+            padding=group_size // 2,
+            bias=False,
+        )
+        self.mix_logit = nn.Parameter(torch.tensor(0.0))
+        nn.init.zeros_(self.conv.weight)
+
+    def forward(self, x):
+        grouped = self.conv(x.transpose(1, 2)).transpose(1, 2)
+        return x + torch.sigmoid(self.mix_logit) * grouped
 
 
 class BiLSTMEncoder(nn.Module):
@@ -161,6 +190,8 @@ class EmbeddingModel(nn.Module):
         use_bilstm=True,
         bilstm_layers=1,
         bilstm_hidden_dim=None,
+        use_local_grouping=None,
+        local_group_size=3,
     ):
         super().__init__()
         self.device = device
@@ -169,6 +200,17 @@ class EmbeddingModel(nn.Module):
         self.vector_size = vector_size
         self.use_flip = use_flip
         self.use_bilstm = use_bilstm
+
+        if use_local_grouping is None:
+            use_local_grouping = _env_flag("USE_LOCAL_WINDOW_GROUPING", True)
+        self.register_buffer(
+            "_use_local_grouping_state",
+            torch.tensor(1 if use_local_grouping else 0, dtype=torch.uint8),
+        )
+        self.local_group_encoder = LocalWindowGrouping(
+            embed_dim=vector_size,
+            group_size=local_group_size,
+        ).to(device)
 
         self.cnn_encoder = ModifiedOCRResNet34(vector_size=vector_size).to(device)
         self.sequence_encoder = None
@@ -179,6 +221,48 @@ class EmbeddingModel(nn.Module):
                 lstm_layers=bilstm_layers,
             ).to(device)
         self.vision_norm = nn.LayerNorm(vector_size).to(device)
+
+    @property
+    def use_local_grouping(self):
+        return bool(int(self._use_local_grouping_state.item()))
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        """Keep old checkpoints backward compatible.
+
+        Old checkpoints do not contain the grouping state or Conv1d weights. In
+        that case grouping is disabled unless FORCE_LOCAL_WINDOW_GROUPING=1 is
+        explicitly set. New checkpoints save the state buffer and automatically
+        restore the architecture during evaluation.
+        """
+        state_key = prefix + "_use_local_grouping_state"
+        force_grouping = _env_flag("FORCE_LOCAL_WINDOW_GROUPING", False)
+        if state_key not in state_dict:
+            self._use_local_grouping_state.fill_(1 if force_grouping else 0)
+            state_dict[state_key] = self._use_local_grouping_state.detach().clone()
+
+        for name, value in self.local_group_encoder.state_dict().items():
+            key = prefix + "local_group_encoder." + name
+            if key not in state_dict:
+                state_dict[key] = value.detach().clone()
+
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
 
     def _process_patches(self, patches):
         batch_size, windows_num, channels, height, width = patches.shape
@@ -193,29 +277,47 @@ class EmbeddingModel(nn.Module):
         encoded = torch.cat(chunks, dim=0)
         return encoded.view(batch_size, windows_num, self.vector_size)
 
-    def forward(self, image, show_dims=False, return_local=False, return_ink=False):
+    def forward(
+        self,
+        image,
+        show_dims=False,
+        return_local=False,
+        return_ink=False,
+        return_grouped=False,
+    ):
         patches = sliding_window(image, self.window_size, self.stride)
         if self.use_flip:
             patches = torch.flip(patches, dims=[1])
 
         ink_ratio = window_ink_ratio_from_patches(patches) if return_ink else None
 
-        # Raw CNN window features are kept as the local visual representation.
-        # They are returned before the BiLSTM so local contrastive losses can
-        # learn stroke/window discrimination without sequence-context smoothing.
+        # Preserve exact per-window CNN features for local concentration losses.
         local_features_raw = self._process_patches(patches)
 
-        contextual_features = local_features_raw
+        # Before the BiLSTM, explicitly combine each window with its two
+        # overlapping neighbours. The residual grouping starts as an identity.
+        grouped_features = local_features_raw
+        if self.use_local_grouping:
+            grouped_features = self.local_group_encoder(grouped_features)
+
+        contextual_features = grouped_features
         if self.sequence_encoder is not None:
             contextual_features = self.sequence_encoder(contextual_features)
         contextual_features = self.vision_norm(contextual_features)
 
         if show_dims:
-            print(f"image embeddings: {contextual_features.shape}", flush=True)
+            print(
+                "image embeddings: "
+                f"contextual={tuple(contextual_features.shape)} "
+                f"local_grouping={self.use_local_grouping}",
+                flush=True,
+            )
 
         outputs = [contextual_features]
         if return_local:
             outputs.append(self.vision_norm(local_features_raw))
+        if return_grouped:
+            outputs.append(self.vision_norm(grouped_features))
         if return_ink:
             outputs.append(ink_ratio)
 
