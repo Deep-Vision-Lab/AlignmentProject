@@ -1,4 +1,50 @@
 {
     "python-envs.defaultEnvManager": "ms-python.python:conda",
-    "python-envs.defaultPackageManager": "ms-python.python:conda"
+    "python-envs.defaultPackageManager": "ms-python.python:conda",
+    "python.analysis.useLibraryCodeForTypes": false,
+    "python.analysis.languageServerMode": "light",
+    "python.analysis.indexing": false,
+    "python.analysis.diagnosticMode": "openFilesOnly",
+    "python.analysis.useLibraryCodeForTypes": false,
+    "python.analysis.exclude": [
+        "**/.git/**",
+        "**/.conda/**",
+        "**/.venv/**",
+        "**/venv/**",
+        "**/__pycache__/**",
+        "**/.pytest_cache/**",
+        "**/node_modules/**",
+        "**/build/**",
+        "**/dist/**",
+        "Results/**",
+        "TrainResults/**",
+        "Weights/**",
+        "wandb/**",
+        "out/**",
+        "data/**",
+        "datasets/**"
+    ],
+    "files.watcherExclude": {
+        "**/.git/objects/**": true,
+        "**/.git/subtree-cache/**": true,
+        "**/__pycache__/**": true,
+        "**/.pytest_cache/**": true,
+        "**/wandb/**": true,
+        "**/Results/**": true,
+        "**/TrainResults/**": true,
+        "**/Weights/**": true,
+        "**/out/**": true,
+        "**/data/**": true,
+        "**/datasets/**": true
+    },
+    "search.exclude": {
+        "**/wandb": true,
+        "**/Results": true,
+        "**/TrainResults": true,
+        "**/Weights": true,
+        "**/out": true,
+        "**/data": true,
+        "**/datasets": true
+
+    }
 }

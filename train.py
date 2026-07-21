@@ -6,7 +6,7 @@ This is the only Python training entry point. It supports:
 - optional real-data augmentation and per-epoch oversampling;
 - single GPU and torchrun DistributedDataParallel;
 - JAX Span-DTW with one isolated CUDA device per process;
-- full image-text supervision on one or both paired lines;
+- full image-text supervision on ones or both paired lines;
 - local hard negatives, compositional image-image matching, contextual order loss,
   and anti-collapse variance regularization;
 - pretrained initialization and full checkpoint resume.

@@ -31,3 +31,4 @@ Results/Evaluation/dataset_views
 Results/Evaluation/real_binarized_otsu_black_bg_white_text
 
 TrainResults/
+Results/Evaluation/*
