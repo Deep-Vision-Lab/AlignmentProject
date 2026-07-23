@@ -80,12 +80,12 @@ class ArabicSpanTextEncoder(_legacy.ArabicSpanTextEncoder):
         )
 
         output_dim = int(self.projection.out_features)
-        self.blank_embedding = torch.nn.Parameter(torch.empty(output_dim))
-        with torch.no_grad():
-            if hasattr(self, "space_embedding"):
-                self.blank_embedding.copy_(self.space_embedding.detach())
-            else:
-                torch.nn.init.normal_(self.blank_embedding, mean=0.0, std=0.02)
+        if hasattr(self, "space_embedding"):
+            initial_blank = self.space_embedding.detach().clone()
+        else:
+            initial_blank = self.projection.weight.new_empty(output_dim)
+            torch.nn.init.normal_(initial_blank, mean=0.0, std=0.02)
+        self.blank_embedding = torch.nn.Parameter(initial_blank)
 
     @property
     def boundary_context_max_core_chars(self):
@@ -97,9 +97,6 @@ class ArabicSpanTextEncoder(_legacy.ArabicSpanTextEncoder):
 
     @property
     def max_visible_core_chars(self):
-        # The cap is deliberately independent of max_span_chars stored in an old
-        # checkpoint or exported by an old launcher. Set 0 to disable the cap for
-        # an explicit ablation.
         cap = _env_int("SPAN_MAX_CORE_CHARS_CAP", 2)
         if cap <= 0:
             return int(self.max_span_chars)
