@@ -1,216 +1,384 @@
 #!/usr/bin/env python3
-"""Visualize local Arabic window evidence without confusing it with region context.
-
-Each output reports two labels:
-- local/core: the best visible core span for this individual window;
-- region/core: the core span selected globally by hard Span-DTW for the region.
-
-Grad-CAM is always targeted with the local core embedding. Context-only look-ahead
-characters and spaces are never presented as if they were visible in the crop.
-"""
+"""Truthful per-window Grad-CAM labels for Arabic span alignment."""
 from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import Image
-from torchvision import transforms
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from arabic_span_text_encoder import ArabicSpanTextEncoder  # noqa: E402
-from arabic_token_text_encoder import ArabicTokenTextEncoder  # noqa: E402
+import visualize_window_feature_concentration_legacy as legacy  # noqa: E402
 from embeddingModel import EmbeddingModel  # noqa: E402
 from span_alignment_loss import hard_span_dtw_path  # noqa: E402
-from textEmbedding import TextEmbedding  # noqa: E402
-
-try:
-    import arabic_reshaper
-    from bidi.algorithm import get_display
-except Exception:
-    arabic_reshaper = None
-    get_display = None
-
-IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD = [0.229, 0.224, 0.225]
 
 
-def _env_flag(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return bool(default)
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.environ.get(name, default))
-    except (TypeError, ValueError):
-        return int(default)
-
-
-def display_text(text: str) -> str:
-    text = "" if text is None else str(text)
-    if arabic_reshaper is not None and get_display is not None:
-        try:
-            return get_display(arabic_reshaper.reshape(text))
-        except Exception:
-            pass
-    return text
-
-
-def safe_token(text: str, max_len: int = 24) -> str:
-    text = str(text or "empty").strip() or "empty"
-    text = text.replace("<BLANK>", "BLANK").replace("<SPACE>", "SPACE")
-    text = re.sub(r"\s+", "_", text)
-    text = re.sub(r"[^\w\-\u0600-\u06FF]+", "", text)
-    return text[:max_len] or "token"
-
-
-def read_text(path: Optional[str], text: Optional[str]) -> str:
-    if text is not None:
-        return text
-    if path is None:
-        raise ValueError(
-            "Provide --text/--text-path with --line, or use --data-dir + --index."
-        )
-    with open(path, "r", encoding="utf-8") as handle:
-        return handle.read().strip()
-
-
-def infer_paths(args) -> Tuple[str, str]:
-    if args.line:
-        if args.text_path is None and args.text is None:
-            raise ValueError(
-                "When using --line, also provide --text or --text-path."
-            )
-        return args.line, args.text_path
-    if args.data_dir is None or args.index is None:
-        raise ValueError(
-            "Provide --line + --text/--text-path, or --data-dir + --index."
-        )
-    image_path = os.path.join(
-        args.data_dir, "images", f"img{args.which_line}_{args.index}.png"
+def build_model(args, config, device):
+    default_flip = bool(
+        config.get("use_flip", str(config.get("lang", "")).lower() == "arabic")
     )
-    text_path = os.path.join(
-        args.data_dir, "texts", f"text{args.which_line}_{args.index}.txt"
-    )
-    return image_path, text_path
-
-
-def load_image(path: str, height: int, width: int) -> Tuple[Image.Image, torch.Tensor]:
-    pil = Image.open(path).convert("RGB").resize(
-        (int(width), int(height)), Image.BILINEAR
-    )
-    transform = transforms.Compose(
-        [
-            transforms.ToTensor(),
-            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-        ]
-    )
-    return pil, transform(pil).unsqueeze(0)
-
-
-def checkpoint_config(loaded) -> dict:
-    return dict(loaded.get("model_config") or {}) if isinstance(loaded, dict) else {}
-
-
-def image_state(loaded):
-    if isinstance(loaded, dict):
-        return (
-            loaded.get("image_model_state_dict")
-            or loaded.get("model_state_dict")
-            or loaded
-        )
-    return loaded
-
-
-def build_image_model(args, cfg: dict, device: str) -> EmbeddingModel:
-    cfg_flip = bool(cfg.get("use_flip", str(cfg.get("lang", "")).lower() == "arabic"))
-    requested_flip = cfg_flip if args.use_flip is None else bool(args.use_flip)
+    requested_flip = default_flip if args.use_flip is None else bool(args.use_flip)
     model = EmbeddingModel(
-        window_size=int(args.window_size or cfg.get("window_size", 32)),
-        stride=int(args.stride or cfg.get("stride", 16)),
-        vector_size=int(args.vector_size or cfg.get("vector_size", 128)),
+        window_size=int(args.window_size or config.get("window_size", 32)),
+        stride=int(args.stride or config.get("stride", 16)),
+        vector_size=int(args.vector_size or config.get("vector_size", 128)),
         device=device,
         use_flip=requested_flip,
-        use_bilstm=bool(cfg.get("use_bilstm", True)) and not args.no_bilstm,
-        bilstm_layers=int(cfg.get("bilstm_layers", 1)),
+        use_bilstm=bool(config.get("use_bilstm", True)) and not args.no_bilstm,
+        bilstm_layers=int(config.get("bilstm_layers", 1)),
         bilstm_hidden_dim=int(
-            cfg.get(
+            config.get(
                 "bilstm_hidden_dim",
-                args.vector_size or cfg.get("vector_size", 128),
+                args.vector_size or config.get("vector_size", 128),
             )
         ),
-        use_local_grouping=bool(cfg.get("use_local_window_grouping", True)),
-        local_group_size=int(cfg.get("local_group_size", 3)),
+        use_local_grouping=bool(
+            config.get("use_local_window_grouping", True)
+        ),
+        local_group_size=int(config.get("local_group_size", 3)),
     ).to(device)
     return model
 
 
-def build_text_encoder(args, cfg: dict, loaded, device: str):
-    encoder_type = str(
-        args.text_encoder_type or cfg.get("text_encoder_type", "arabic_span")
-    ).lower()
-    dim = int(args.vector_size or cfg.get("vector_size", 128))
-    model_name = args.arabic_text_model_name or cfg.get(
-        "arabic_text_model_name", "aubmindlab/bert-base-arabertv02"
+def line_embeddings(model, image_tensor, device):
+    model.eval()
+    with torch.no_grad():
+        contextual, local, grouped, ink = model(
+            image_tensor.to(device),
+            return_local=True,
+            return_grouped=True,
+            return_ink=True,
+        )
+    return contextual[0].float(), local[0].float(), grouped[0].float(), ink[0].float()
+
+
+def aligned_regions(text_encoder, text, features, args):
+    encoding = text_encoder(text, use_cache=True)
+    path = hard_span_dtw_path(
+        encoding,
+        F.normalize(features.float(), p=2, dim=-1),
+        temperature=float(args.temperature),
+        max_windows=int(args.max_windows_per_span),
+        window_count_penalty=float(args.window_count_penalty),
     )
-    if encoder_type == "arabic_span":
-        encoder = ArabicSpanTextEncoder(
-            model_name=model_name,
-            output_dim=dim,
-            max_span_chars=int(
-                args.max_span_chars or cfg.get("max_text_span_chars", 3)
-            ),
-            freeze_backbone=True,
-            device=device,
-            strip_text_edges=bool(cfg.get("strip_span_text_edges", True)),
-            cache_size=int(cfg.get("span_feature_cache_size", 2048)),
-            cache_dtype=str(cfg.get("span_feature_cache_dtype", "float16")),
-            boundary_context_chars=_env_int("SPAN_BOUNDARY_CONTEXT_CHARS", 1),
-            include_space_context=_env_flag("SPAN_INCLUDE_SPACE_CONTEXT", False),
-            boundary_context_max_core_chars=_env_int(
-                "SPAN_BOUNDARY_CONTEXT_MAX_CORE_CHARS", 1
-            ),
-            allow_character_space_surfaces=_env_flag(
-                "SPAN_ALLOW_CHARACTER_SPACE_SURFACES", False
-            ),
-        )
-    elif encoder_type == "arabic_token":
-        encoder = ArabicTokenTextEncoder(
-            model_name=model_name,
-            output_dim=dim,
-            max_token_chars=int(
-                args.max_token_chars or cfg.get("max_text_token_chars", 3)
-            ),
-            freeze_backbone=True,
-            device=device,
-        )
-    elif encoder_type == "char":
-        encoder = TextEmbedding(embedding_dim=dim).to(device)
-        for parameter in encoder.parameters():
-            parameter.requires_grad_(False)
-    else:
-        raise ValueError(f"Unknown text encoder type: {encoder_type}")
+    labels = ["?"] * int(features.shape[0])
+    indices = [-1] * int(features.shape[0])
+    for step in path:
+        span_index = int(step["span_idx"])
+        for window in range(int(step["window_start"]), int(step["window_end"])):
+            labels[window] = str(step["text"])
+            indices[window] = span_index
+    return labels, indices, path, encoding
 
-    if isinstance(loaded, dict):
-        state = loaded.get("text_encoder_state_dict") or loaded.get(
-            "text_embedder_state_dict"
-        )
-        if state:
-            encoder.load_state_dict(state, strict=False)
 
-    # Evaluation defaults are intentionally strict: no implicit character+space
-    # s²È="24€€€¤(€€€€€€€€¤(€€€€€€€•¹Ñ•È€ô€À¸Ô€¨€¡àÀ€¬àÄ¤(€€€€€€€…á¥Ì¹Ñ•áĞ (€€€€€€€€€€€•¹Ñ•È°(€€€€€€€€€€€¡•¥¡Ğ€¬€Ü°(€€€€€€€€€€€‘¥ÍÁ±…å}Ñ•áĞ¡±½…±}±…‰•°¤°(€€€€€€€€€€€¡„ô‰•¹Ñ•Èˆ°(€€€€€€€€€€€Ù„ô‰Ñ½Àˆ°(€€€€€€€€€€€™½¹ÑÍ¥é”õ…ÉÌ¹Ñ½­•¹}™½¹ÑÍ¥é”°(€€€€€€€€€€€É½Ñ…Ñ¥½¸ôäÀ¥˜…ÉÌ¹É½Ñ…Ñ•}Ñ½­•¹Ì•±Í”€À°(€€€€€€€€¤(€€€€€€€…á¥Ì¹Ñ•áĞ (€€€€€€€€€€€•¹Ñ•È°(€€€€€€€€€€€¡•¥¡Ğ€¬€ÌÀ°(€€€€€€€€€€€‘¥ÍÁ±…å}Ñ•áĞ¡É•¥½¹}±…‰•±Ím¥¹‘•át¤°(€€€€€€€€€€€¡„ô‰•¹Ñ•Èˆ°(€€€€€€€€€€€Ù„ô‰Ñ½Àˆ°(€€€€€€€€€€€™½¹ÑÍ¥é”õµ…à Ğ¸À°…ÉÌ¹Ñ½­•¹}™½¹ÑÍ¥é”€´€Ä¸À¤°(€€€€€€€€€€€É½Ñ…Ñ¥½¸ôäÀ¥˜…ÉÌ¹É½Ñ…Ñ•}Ñ½­•¹Ì•±Í”€À°(€€€€€€€€€€€…±Á¡„ôÀ¸Ô°(€€€€€€€€¤(€€€€€€€¥˜™±½…Ğ¡¥¹­}É…Ñ¥½m¥¹‘•át¤€ğ™±½…Ğ¡…ÉÌ¹‰±…¹­}¥¹­}Ñ¡É•Í¡½±¤è(€€€€€€€€€€€…á¥Ì¹…‘‘}Á…Ñ  (€€€€€€€€€€€€€€€Á±Ğ¹I•Ñ…¹±” (€€€€€€€€€€€€€€€€€€€€¡àÀ°€À¤°(€€€€€€€€€€€€€€€€€€€µ…à Ä°àÄ€´àÀ¤°(€€€€€€€€€€€€€€€€€€€¡•¥¡Ğ°(€€€€€€€€€€€€€€€€€€€™¥±°õQÉÕ”°(€€€€€€€€€€€€€€€€€€€…±Á¡„ôÀ¸Àà°(€€€€€€€€€€€€€€€€¤(€€€€€€€€€€€€¤(€€€™¥ÕÉ”¹Í…Ù•™¥œ¡½ÕÑ}Á…Ñ °‘Á¤õ…ÉÌ¹‘Á¤°‰‰½á}¥¹¡•Ìô‰Ñ¥¡Ğˆ¤(€€€Á±Ğ¹±½Í”¡™¥ÕÉ”¤(()‘•˜Á…ÉÍ•}…ÉÌ ¤è(€€€Á…ÉÍ•È€ô…ÉÁ…ÉÍ”¹ÉÕµ•¹ÑA…ÉÍ•È (€€€€€€€‘•ÍÉ¥ÁÑ¥½¸ô‰É•…Ñ”ÑÉÕÑ¡™Õ°Á•Èµİ¥¹‘½ÜÉ…µ4…¹½É”µÍÁ…¸±…‰•±Ì¸ˆ(€€€€¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µİ•¥¡ÑÌˆ°É•ÅÕ¥É•õQÉÕ”¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ±¥¹”ˆ°‘•™…Õ±Ğõ9½¹”¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µÑ•áĞˆ°‘•™…Õ±Ğõ9½¹”¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µÑ•áĞµÁ…Ñ ˆ°‘•™…Õ±Ğõ9½¹”¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ‘…Ñ„µ‘¥Èˆ°‘•™…Õ±Ğõ9½¹”¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ¥¹‘•àˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±Ğõ9½¹”¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µİ¡¥ µ±¥¹”ˆ°ÑåÁ”õ¥¹Ğ°¡½¥•ÌõlÄ°€Ét°‘•™…Õ±ĞôÄ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ½ÕÑÁÕĞˆ°É•ÅÕ¥É•õQÉÕ”¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ¹¼µÍÕµµ…Éäµ¥µ…”ˆ°…Ñ¥½¸ô‰ÍÑ½É•}ÑÉÕ”ˆ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µÍ…Ù”µÁ•Èµİ¥¹‘½Üµ¥µ…•Ìˆ°…Ñ¥½¸ô‰ÍÑ½É•}ÑÉÕ”ˆ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µÁ•Èµİ¥¹‘½Üµ½ÕÑÁÕĞµ‘¥Èˆ°‘•™…Õ±Ğõ9½¹”¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ•…É±äµ™ÕÍ¥½¸µ…±Á¡„ˆ°ÑåÁ”õ™±½…Ğ°‘•™…Õ±ĞôÀ¸ÔÔ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µÁ•Èµİ¥¹‘½Üµ¥µ…”µİ¥‘Ñ ˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±ĞôÈÔØ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µÁ•Èµİ¥¹‘½Üµ¥µ…”µ¡•¥¡Ğˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±ĞôÈÔØ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µÁ•Èµİ¥¹‘½ÜµÍ…±”ˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±Ğôà¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µÁ•Èµİ¥¹‘½Üµ‘Á¤ˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±ĞôÄØÀ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ (€€€€€€€€ˆ´µ‘•Ù¥”ˆ°‘•™…Õ±Ğô‰Õ‘„ˆ¥˜Ñ½É ¹Õ‘„¹¥Í}…Ù…¥±…‰±” ¤•±Í”€‰ÁÔˆ(€€€€¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ¡•¥¡Ğˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±ĞôÄÈà¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µİ¥‘Ñ ˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±ĞôÄÀÈĞ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µİ¥¹‘½ÜµÍ¥é”ˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±Ğõ9½¹”¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µÍÑÉ¥‘”ˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±Ğõ9½¹”¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µÙ•Ñ½ÈµÍ¥é”ˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±Ğõ9½¹”¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ (€€€€€€€€ˆ´µÕÍ”µ™±¥Àˆ°…Ñ¥½¸õ…ÉÁ…ÉÍ”¹	½½±•…¹=ÁÑ¥½¹…±Ñ¥½¸°‘•™…Õ±Ğõ9½¹”(€€€€¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ¹¼µ‰¥±ÍÑ´ˆ°…Ñ¥½¸ô‰ÍÑ½É•}ÑÉÕ”ˆ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ (€€€€€€€€ˆ´µ™•…ÑÕÉ”µÍÁ…”ˆ°(€€€€€€€¡½¥•Ìõl‰±½…°ˆ°€‰É½ÕÁ•ˆ°€‰½¹Ñ•áÑÕ…°‰t°(€€€€€€€‘•™…Õ±Ğô‰±½…°ˆ°(€€€€¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ (€€€€€€€€ˆ´µ…±¥¹µ•¹ĞµÍÁ…”ˆ°(€€€€€€€¡½¥•Ìõl‰±½…°ˆ°€‰É½ÕÁ•ˆ°€‰½¹Ñ•áÑÕ…°‰t°(€€€€€€€‘•™…Õ±Ğô‰½¹Ñ•áÑÕ…°ˆ°(€€€€¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ (€€€€€€€€ˆ´µÑ•áĞµ•¹½‘•ÈµÑåÁ”ˆ°(€€€€€€€¡½¥•Ìõl‰…É…‰¥}ÍÁ…¸ˆ°€‰…É…‰¥}Ñ½­•¸ˆ°€‰¡…È‰t°(€€€€€€€‘•™…Õ±Ğõ9½¹”°(€€€€¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ…É…‰¥ŒµÑ•áĞµµ½‘•°µ¹…µ”ˆ°‘•™…Õ±Ğõ9½¹”¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µµ…àµÍÁ…¸µ¡…ÉÌˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±Ğõ9½¹”¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µµ…àµÑ½­•¸µ¡…ÉÌˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±Ğõ9½¹”¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µµ…àµİ¥¹‘½İÌµÁ•ÈµÍÁ…¸ˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±ĞôĞ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µÑ•µÁ•É…ÑÕÉ”ˆ°ÑåÁ”õ™±½…Ğ°‘•™…Õ±ĞôÀ¸ÀÜ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µİ¥¹‘½Üµ½Õ¹ĞµÁ•¹…±Ñäˆ°ÑåÁ”õ™±½…Ğ°‘•™…Õ±ĞôÀ¸ÀÔ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ±½…°µ±…‰•°µµ…àµ¡…ÉÌˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±ĞôÈ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ±½…°µ±…‰•°µ±•¹Ñ µÁ•¹…±Ñäˆ°ÑåÁ”õ™±½…Ğ°‘•™…Õ±ĞôÀ¸ÀÔ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ‰±…¹¬µ¥¹¬µÑ¡É•Í¡½±ˆ°ÑåÁ”õ™±½…Ğ°‘•™…Õ±ĞôÀ¸ÀÀÔ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µÉ…‘…´µ±…å•Èˆ°‘•™…Õ±Ğô‰¹¹}•¹½‘•È¹‰…­‰½¹”¸Üˆ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ (€€€€€€€€ˆ´µÉ…‘…´µÑ…É•Ğˆ°(€€€€€€€¡½¥•Ìõl‰Ñ½­•¸ˆ°€‰•¹•Éäˆ°€‰Ñ½Á}™•…ÑÕÉ”‰t°(€€€€€€€‘•™…Õ±Ğô‰Ñ½­•¸ˆ°(€€€€¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µµ…Àˆ°‘•™…Õ±Ğô‰Ù¥É¥‘¥Ìˆ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µÑ½­•¸µ™½¹ÑÍ¥é”ˆ°ÑåÁ”õ™±½…Ğ°‘•™…Õ±ĞôØ¸À¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µÉ½Ñ…Ñ”µÑ½­•¹Ìˆ°…Ñ¥½¸ô‰ÍÑ½É•}ÑÉÕ”ˆ°‘•™…Õ±ĞõQÉÕ”¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ‘Á¤ˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±ĞôÄàÀ¤(€€€€Œ½µÁ…Ñ¥‰¥±¥Ñä…ÉÕµ•¹ÑÌÉ•Ñ…¥¹•™½È•á¥ÍÑ¥¹œ±…Õ¹¡•ÉÌ¸(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µÍØµ½ÕÑÁÕĞˆ°‘•™…Õ±Ğõ9½¹”¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ¹¼µÍØˆ°…Ñ¥½¸ô‰ÍÑ½É•}ÑÉÕ”ˆ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ½¹•¹ÑÉ…Ñ¥½¸µµ•ÑÉ¥Œˆ°‘•™…Õ±Ğô‰Ñ½Á­}µ…ÍÌˆ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ½¹•¹ÑÉ…Ñ¥½¸µÑ½Àµ¬ˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±Ğôà¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µ™•…ÑÕÉ”µ¹½Éµ…±¥é”ˆ°‘•™…Õ±Ğô‰Á•É}İ¥¹‘½Üˆ¤(€€€Á…ÉÍ•È¹…‘‘}…ÉÕµ•¹Ğ ˆ´µÍØµÑ½Àµ™•…ÑÕÉ•Ìˆ°ÑåÁ”õ¥¹Ğ°‘•™…Õ±Ğôà¤(€€€É•ÑÕÉ¸Á…ÉÍ•È¹Á…ÉÍ•}…ÉÌ ¤(()‘•˜µ…¥¸ ¤è(€€€…ÉÌ€ôÁ…ÉÍ•}…ÉÌ ¤(€€€¥µ…•}Á…Ñ °Ñ•áÑ}Á…Ñ €ô¥¹™•É}Á…Ñ¡Ì¡…ÉÌ¤(€€€Ñ•áĞ€ôÉ•…‘}Ñ•áĞ¡Ñ•áÑ}Á…Ñ °…ÉÌ¹Ñ•áĞ¤(€€€±½…‘•€ôÑ½É ¹±½…¡…ÉÌ¹İ•¥¡ÑÌ°µ…Á}±½…Ñ¥½¸õ…ÉÌ¹‘•Ù¥”¤(€€€½¹™¥œ€ô¡•­Á½¥¹Ñ}½¹™¥œ¡±½…‘•¤(€€€…ÉÌ¹İ¥¹‘½İ}Í¥é”€ô¥¹Ğ¡…ÉÌ¹İ¥¹‘½İ}Í¥é”½È½¹™¥œ¹•Ğ ‰İ¥¹‘½İ}Í¥é”ˆ°€ÌÈ¤¤(€€€…ÉÌ¹ÍÑÉ¥‘”€ô¥¹Ğ (€€€€€€€…ÉÌ¹ÍÑÉ¥‘”½È½¹™¥œ¹•Ğ ‰ÍÑÉ¥‘”ˆ°µ…à Ä°…ÉÌ¹İ¥¹‘½İ}Í¥é”€¼¼€È¤¤(€€€€¤(€€€…ÉÌ¹Ù•Ñ½É}Í¥é”€ô¥¹Ğ¡…ÉÌ¹Ù•Ñ½É}Í¥é”½È½¹™¥œ¹•Ğ ‰Ù•Ñ½É}Í¥é”ˆ°€ÄÈà¤¤(€€€…ÉÌ¹µ…á}ÍÁ…¹}¡…ÉÌ€ô¥¹Ğ (€€€€€€€…ÉÌ¹µ…á}ÍÁ…¹}¡…ÉÌ½È½¹™¥œ¹•Ğ ‰µ…á}Ñ•áÑ}ÍÁ…¹}¡…ÉÌˆ°€Ì¤(€€€€¤(€€€…ÉÌ¹µ…á}Ñ½­•¹}¡…ÉÌ€ô¥¹Ğ (€€€€€€€…ÉÌ¹µ…á}Ñ½­•¹}¡…ÉÌ½È½¹™¥œ¹•Ğ ‰µ…á}Ñ•áÑ}Ñ½­•¹}¡…ÉÌˆ°€Ì¤(€€€€¤(€€€¥˜€‰½¹ÑÉ…ÍÑ¥Ù•}Ñ•µÁ•É…ÑÕÉ”ˆ¥¸½¹™¥œ…¹…ÉÌ¹Ñ•µÁ•É…ÑÕÉ”€ôô€À¸ÀÜè(€€€€€€€…ÉÌ¹Ñ•µÁ•É…ÑÕÉ”€ô™±½…Ğ¡½¹™¥œ¹•Ğ ‰½¹ÑÉ…ÍÑ¥Ù•}Ñ•µÁ•É…ÑÕÉ”ˆ°€À¸ÀÜ¤¤((€€€µ½‘•°€ô‰Õ¥±‘}¥µ…•}µ½‘•°¡…ÉÌ°½¹™¥œ°…ÉÌ¹‘•Ù¥”¤(€€€µ½‘•°¹±½…‘}ÍÑ…Ñ•}‘¥Ğ¡¥µ…•}ÍÑ…Ñ”¡±½…‘•¤°ÍÑÉ¥Ğõ…±Í”¤(€€€µ½‘•°¹•Ù…° ¤(€€€…ÉÌ¹É•Í½±Ù•‘}ÕÍ•}™±¥À€ô‰½½°¡µ½‘•°¹ÕÍ•}™±¥À¤(€€€Ñ•áÑ}•¹½‘•È€ô‰Õ¥±‘}Ñ•áÑ}•¹½‘•È¡…ÉÌ°½¹™¥œ°±½…‘•°…ÉÌ¹‘•Ù¥”¤((€€€Á¥±}¥µ…”°¥µ…•}Ñ•¹Í½È€ô±½…‘}¥µ…” (€€€€€€€¥µ…•}Á…Ñ °…ÉÌ¹¡•¥¡Ğ°…ÉÌ¹İ¥‘Ñ (€€€€¤(€€€½¹Ñ•áÑÕ…°°±½…°°É½ÕÁ•°¥¹­}É…Ñ¥¼€ô•Ñ}±¥¹•}•µ‰•‘‘¥¹Ì (€€€€€€€µ½‘•°°¥µ…•}Ñ•¹Í½È°…ÉÌ¹‘•Ù¥”(€€€€¤(€€€™•…ÑÕÉ•}ÍÁ…•Ì€ôì(€€€€€€€€‰±½…°ˆè±½…°°(€€€€€€€€‰É½ÕÁ•ˆèÉ½ÕÁ•°(€€€€€€€€‰½¹Ñ•áÑÕ…°ˆè½¹Ñ•áÑÕ…°°(€€€ô(€€€…±¥¹µ•¹Ñ}™•…ÑÕÉ•Ì€ô™•…ÑÕÉ•}ÍÁ…•Ím…ÉÌ¹…±¥¹µ•¹Ñ}ÍÁ…•t(€€€±½…±}™•…ÑÕÉ•Ì€ô™•…ÑÕÉ•}ÍÁ…•Ím…ÉÌ¹™•…ÑÕÉ•}ÍÁ…•t(€€€É•¥½¹}±…‰•±Ì°}É•¥½¹}¥¹‘¥•Ì°Á…Ñ °•¹½‘¥¹œ€ô…±¥¹•‘}É•¥½¹Ì (€€€€€€€Ñ•áÑ}•¹½‘•È°Ñ•áĞ°…±¥¹µ•¹Ñ}™•…ÑÕÉ•Ì°…ÉÌ(€€€€¤(€€€±½…±}±…‰•±Ì°±½…±}¥¹‘¥•Ì°±½…±}Í½É•Ì€ô±½…±}½É•}±…‰•±Ì (€€€€€€€•¹½‘¥¹œ°(€€€€€€€Á…Ñ °(€€€€€€€±½…±}™•…ÑÕÉ•Ì°(€€€€€€€¥¹­}É…Ñ¥¼°(€€€€€€€…ÉÌ°(€€€€¤(€€€Á…Ñ¡•Ì€ôµ½‘•±}Á…Ñ¡•Ì¡¥µ…•}Ñ•¹Í½È°…ÉÌ°…ÉÌ¹‘•Ù¥”¤((€€€¥˜¹½Ğ…ÉÌ¹¹½}ÍÕµµ…Éå}¥µ…”è(€€€€€€€Í…Ù•}ÍÕµµ…Éä (€€€€€€€€€€€Á¥±}¥µ…”°(€€€€€€€€€€€±½…±}±…‰•±Ì°(€€€€€€€€€€€É•¥½¹}±…‰•±Ì°(€€€€€€€€€€€¥¹­}É…Ñ¥¼°(€€€€€€€€€€€…ÉÌ°(€€€€€€€€€€€…ÉÌ¹½ÕÑÁÕĞ°(€€€€€€€€¤(€€€€€€€ÁÉ¥¹Ğ¡˜‰Í…Ù•ÍÕµµ…Éä™¥ÕÉ”èí…ÉÌ¹½ÕÑÁÕÑôˆ¤((€€€¥˜…ÉÌ¹Í…Ù•}Á•É}İ¥¹‘½İ}¥µ…•Ìè(€€€€€€€½ÕÑÁÕÑ}‘¥È€ô…ÉÌ¹Á•É}İ¥¹‘½İ}½ÕÑÁÕÑ}‘¥È½È€ (€€€€€€€€€€€ÍÑÈ¡A…Ñ ¡…ÉÌ¹½ÕÑÁÕĞ¤¹İ¥Ñ¡}ÍÕ™™¥à ˆˆ¤¤€¬€‰}É…‘…µ}İ¥¹‘½İÌˆ(€€€€€€€€¤(€€€€€€€Í…Ù•}Á•É}İ¥¹‘½İ}É…‘…µÌ (€€€€€€€€€€€Á¥±}¥µ…”°(€€€€€€€€€€€±½…±}±…‰•±Ì°(€€€€€€€€€€€±½…±}¥¹‘¥•Ì°(€€€€€€€€€€€±½…±}Í½É•Ì°(€€€€€€€€€€€É•¥½¹}±…‰•±Ì°(€€€€€€€€€€€•¹½‘¥¹œ°(€€€€€€€€€€€Á…Ñ¡•Ì°(€€€€€€€€€€€µ½‘•°°(€€€€€€€€€€€¥¹­}É…Ñ¥¼°(€€€€€€€€€€€…ÉÌ°(€€€€€€€€€€€½ÕÑÁÕÑ}‘¥È°(€€€€€€€€¤(€€€€€€€ÁÉ¥¹Ğ¡˜‰Í…Ù•Á•Èµİ¥¹‘½ÜÉ…µ4¥µ…•Ìèí½ÕÑÁÕÑ}‘¥Éôˆ¤(()¥˜}}¹…µ•}|€ôô€‰}}µ…¥¹}|ˆè(€€€µ…¥¸ ¤(
+def candidate_indices(encoding, step, max_chars):
+    candidates = []
+    spaces = getattr(encoding, "is_space", None)
+    for index, (start, length) in enumerate(
+        zip(encoding.starts, encoding.lengths)
+    ):
+        end = int(start) + int(length)
+        if int(start) < int(step["text_start"]) or end > int(step["text_end"]):
+            continue
+        if int(length) > int(max_chars):
+            continue
+        if spaces is not None and bool(spaces[index]):
+            continue
+        candidates.append(index)
+    if not candidates:
+        candidates.append(int(step["span_idx"]))
+    return candidates
+
+
+def local_core_labels(encoding, path, local_features, ink_ratio, args):
+    count = int(local_features.shape[0])
+    labels = ["?"] * count
+    indices = [-1] * count
+    scores = [float("nan")] * count
+    core = F.normalize(encoding.embeddings.float(), p=2, dim=-1)
+    local = F.normalize(local_features.float(), p=2, dim=-1)
+
+    for step in path:
+        candidates = candidate_indices(
+            encoding, step, args.local_label_max_chars
+        )
+        candidate_tensor = torch.as_tensor(candidates, device=local.device)
+        candidate_vectors = core.index_select(0, candidate_tensor)
+        lengths = local.new_tensor(
+            [encoding.lengths[index] for index in candidates]
+        )
+        for window in range(int(step["window_start"]), int(step["window_end"])):
+            if float(ink_ratio[window]) < float(args.blank_ink_threshold):
+                labels[window] = "<BLANK>"
+                continue
+            similarities = torch.mv(candidate_vectors, local[window])
+            adjusted = similarities - float(args.local_label_length_penalty) * (
+                lengths - 1.0
+            )
+            best = int(torch.argmax(adjusted).item())
+            span_index = candidates[best]
+            labels[window] = str(encoding.texts[span_index])
+            indices[window] = span_index
+            scores[window] = float(similarities[best].item())
+    return labels, indices, scores
+
+
+def save_windows(
+    pil_image,
+    local_labels,
+    local_indices,
+    local_scores,
+    region_labels,
+    encoding,
+    patches,
+    model,
+    ink_ratio,
+    args,
+    output_dir,
+):
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    layer = legacy.resolve_layer(model, args.gradcam_layer)
+    core_embeddings = getattr(encoding, "embeddings", None)
+    for index, local_label in enumerate(local_labels):
+        span_index = int(local_indices[index])
+        target = None
+        if (
+            args.gradcam_target == "token"
+            and core_embeddings is not None
+            and span_index >= 0
+        ):
+            target = core_embeddings[span_index]
+        cam, gradcam_score, target_name = legacy.gradcam_for_patch(
+            model,
+            patches[index],
+            layer,
+            target,
+            args.gradcam_target,
+        )
+        crop, x0, x1 = legacy.crop_window(
+            pil_image, index, len(local_labels), args
+        )
+        width = max(
+            int(args.per_window_image_width),
+            crop.width * int(args.per_window_scale),
+        )
+        height = int(args.per_window_image_height)
+        crop = crop.resize((width, height))
+        heat = legacy.colorize(cam, width, height, args.cmap)
+        fused = legacy.blend(crop, heat, args.early_fusion_alpha)
+        figure, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
+        for axis, image, title in zip(
+            axes,
+            (crop, heat, fused),
+            (
+                "window image",
+                f"Grad-CAM ({target_name})",
+                f"fusion alpha={args.early_fusion_alpha:.2f}",
+            ),
+        ):
+            axis.imshow(image)
+            axis.set_title(title, fontsize=10)
+            axis.axis("off")
+        local_score = local_scores[index]
+        figure.suptitle(
+            f"window {index:03d} | x={x0}:{x1} | "
+            f"local/core={legacy.display_text(local_label)} | "
+            f"region/core={legacy.display_text(region_labels[index])} | "
+            f"ink={float(ink_ratio[index]):.4f} | "
+            f"local_sim={local_score:.4f} | gradcam={gradcam_score:.4f}",
+            fontsize=10,
+        )
+        filename = (
+            f"window_{index:03d}_x{x0:04d}_{x1:04d}_"
+            f"{legacy.safe_token(local_label)}_gradcam.png"
+        )
+        figure.savefig(
+            str(Path(output_dir) / filename),
+            dpi=args.per_window_dpi,
+            bbox_inches="tight",
+        )
+        plt.close(figure)
+
+
+def save_summary(pil_image, local_labels, region_labels, ink_ratio, args):
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    count = len(local_labels)
+    width, height = pil_image.width, pil_image.height
+    figure, axis = plt.subplots(figsize=(max(16, count * 0.36), 4.0))
+    axis.imshow(np.asarray(pil_image))
+    axis.set_xlim(0, width)
+    axis.set_ylim(height + 52, -12)
+    axis.axis("off")
+    axis.set_title("Local/core label (dark) and global region/core label (light)")
+    for index, local_label in enumerate(local_labels):
+        x0, x1 = legacy.window_pixel_range(index, count, args, width)
+        axis.add_patch(
+            plt.Rectangle((x0, 0), max(1, x1 - x0), height, fill=False, linewidth=1)
+        )
+        center = 0.5 * (x0 + x1)
+        axis.text(
+            center,
+            height + 7,
+            legacy.display_text(local_label),
+            ha="center",
+            va="top",
+            fontsize=args.token_fontsize,
+            rotation=90,
+        )
+        axis.text(
+            center,
+            height + 32,
+            legacy.display_text(region_labels[index]),
+            ha="center",
+            va="top",
+            fontsize=max(4, args.token_fontsize - 1),
+            rotation=90,
+            alpha=0.5,
+        )
+        if float(ink_ratio[index]) < float(args.blank_ink_threshold):
+            axis.add_patch(
+                plt.Rectangle(
+                    (x0, 0), max(1, x1 - x0), height, fill=True, alpha=0.08
+                )
+            )
+    figure.savefig(args.output, dpi=args.dpi, bbox_inches="tight")
+    plt.close(figure)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--weights", required=True)
+    parser.add_argument("--line")
+    parser.add_argument("--text")
+    parser.add_argument("--text-path")
+    parser.add_argument("--data-dir")
+    parser.add_argument("--index", type=int)
+    parser.add_argument("--which-line", type=int, choices=[1, 2], default=1)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--no-summary-image", action="store_true")
+    parser.add_argument("--save-per-window-images", action="store_true")
+    parser.add_argument("--per-window-output-dir")
+    parser.add_argument("--early-fusion-alpha", type=float, default=0.55)
+    parser.add_argument("--per-window-image-width", type=int, default=256)
+    parser.add_argument("--per-window-image-height", type=int, default=256)
+    parser.add_argument("--per-window-scale", type=int, default=8)
+    parser.add_argument("--per-window-dpi", type=int, default=160)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--height", type=int, default=128)
+    parser.add_argument("--width", type=int, default=1024)
+    parser.add_argument("--window-size", type=int)
+    parser.add_argument("--stride", type=int)
+    parser.add_argument("--vector-size", type=int)
+    parser.add_argument(
+        "--use-flip", action=argparse.BooleanOptionalAction, default=None
+    )
+    parser.add_argument("--no-bilstm", action="store_true")
+    parser.add_argument(
+        "--feature-space",
+        choices=["local", "grouped", "contextual"],
+        default="local",
+    )
+    parser.add_argument(
+        "--alignment-space",
+        choices=["local", "grouped", "contextual"],
+        default="contextual",
+    )
+    parser.add_argument("--text-encoder-type")
+    parser.add_argument("--arabic-text-model-name")
+    parser.add_argument("--max-span-chars", type=int)
+    parser.add_argument("--max-token-chars", type=int)
+    parser.add_argument("--max-windows-per-span", type=int, default=4)
+    parser.add_argument("--temperature", type=float, default=0.07)
+    parser.add_argument("--window-count-penalty", type=float, default=0.05)
+    parser.add_argument("--local-label-max-chars", type=int, default=2)
+    parser.add_argument("--local-label-length-penalty", type=float, default=0.05)
+    parser.add_argument("--blank-ink-threshold", type=float, default=0.005)
+    parser.add_argument("--gradcam-layer", default="cnn_encoder.backbone.4")
+    parser.add_argument("--gradcam-target", default="token")
+    parser.add_argument("--cmap", default="viridis")
+    parser.add_argument("--token-fontsize", type=float, default=6)
+    parser.add_argument("--dpi", type=int, default=180)
+    parser.add_argument("--rotate-tokens", action="store_true", default=True)
+    parser.add_argument("--csv-output")
+    parser.add_argument("--no-csv", action="store_true")
+    parser.add_argument("--concentration-metric")
+    parser.add_argument("--concentration-top-k", type=int)
+    parser.add_argument("--feature-normalize")
+    parser.add_argument("--csv-top-features", type=int)
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    image_path, text_path = legacy.infer_paths(args)
+    text = legacy.read_text(text_path, args.text)
+    loaded = torch.load(args.weights, map_location=args.device)
+    config = legacy.checkpoint_config(loaded)
+    args.window_size = int(args.window_size or config.get("window_size", 32))
+    args.stride = int(
+        args.stride or config.get("stride", max(1, args.window_size // 2))
+    )
+    args.vector_size = int(args.vector_size or config.get("vector_size", 128))
+    args.max_span_chars = int(
+        args.max_span_chars or config.get("max_text_span_chars", 3)
+    )
+    args.max_token_chars = int(
+        args.max_token_chars or config.get("max_text_token_chars", 3)
+    )
+
+    model = build_model(args, config, args.device)
+    model.load_state_dict(legacy.image_state(loaded), strict=False)
+    model.eval()
+    args.resolved_use_flip = bool(model.use_flip)
+    text_encoder = legacy.build_text_encoder(
+        args, config, loaded, args.device
+    )
+    image, tensor = legacy.load_image(
+        image_path, args.height, args.width
+    )
+    contextual, local, grouped, ink = line_embeddings(
+        model, tensor, args.device
+    )
+    spaces = {"local": local, "grouped": grouped, "contextual": contextual}
+    region_labels, _, path, encoding = aligned_regions(
+        text_encoder, text, spaces[args.alignment_space], args
+    )
+    local_labels, local_indices, local_scores = local_core_labels(
+        encoding, path, spaces[args.feature_space], ink, args
+    )
+    patches = legacy.model_patches(tensor, args, args.device)
+
+    if not args.no_summary_image:
+        save_summary(image, local_labels, region_labels, ink, args)
+        print(f"saved summary figure: {args.output}")
+    if args.save_per_window_images:
+        output_dir = args.per_window_output_dir or (
+            str(Path(args.output).with_suffix("")) + "_gradcam_windows"
+        )
+        save_windows(
+            image,
+            local_labels,
+            local_indices,
+            local_scores,
+            region_labels,
+            encoding,
+            patches,
+            model,
+            ink,
+            args,
+            output_dir,
+        )
+        print(f"saved per-window Grad-CAM images: {output_dir}")
+
+
+if __name__ == "__main__":
+    main()
