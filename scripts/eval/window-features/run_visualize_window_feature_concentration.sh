@@ -23,15 +23,19 @@ FEATURE_SPACE="${FEATURE_SPACE:-local}"
 ALIGNMENT_SPACE="${ALIGNMENT_SPACE:-contextual}"
 TEXT_ENCODER_TYPE="${TEXT_ENCODER_TYPE:-}"
 ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_NAME:-}"
-MAX_SPAN_CHARS="${MAX_SPAN_CHARS:-}"
-MAX_TOKEN_CHARS="${MAX_TOKEN_CHARS:-}"
-MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-4}"
+# Force two-character visible cores for truthful window labels, even when an old
+# checkpoint stored the earlier three-character setting.
+MAX_SPAN_CHARS="${MAX_SPAN_CHARS:-2}"
+MAX_TOKEN_CHARS="${MAX_TOKEN_CHARS:-2}"
+MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-3}"
 TEMPERATURE="${TEMPERATURE:-0.07}"
 WINDOW_COUNT_PENALTY="${WINDOW_COUNT_PENALTY:-0.05}"
 
 LOCAL_LABEL_MAX_CHARS="${LOCAL_LABEL_MAX_CHARS:-2}"
 LOCAL_LABEL_LENGTH_PENALTY="${LOCAL_LABEL_LENGTH_PENALTY:-0.05}"
-BLANK_INK_THRESHOLD="${BLANK_INK_THRESHOLD:-0.005}"
+# Match the training minimum-ink rule so antialiasing/background texture is not
+# mistaken for a visible character or literal text space.
+BLANK_INK_THRESHOLD="${BLANK_INK_THRESHOLD:-0.01}"
 
 # Make evaluation semantics explicit even when an older checkpoint stored the
 # previous character+space behavior.
@@ -40,6 +44,8 @@ export SPAN_BOUNDARY_CONTEXT_CHARS="${SPAN_BOUNDARY_CONTEXT_CHARS:-1}"
 export SPAN_BOUNDARY_CONTEXT_MAX_CORE_CHARS="${SPAN_BOUNDARY_CONTEXT_MAX_CORE_CHARS:-1}"
 export SPAN_INCLUDE_SPACE_CONTEXT="${SPAN_INCLUDE_SPACE_CONTEXT:-0}"
 export SPAN_ALLOW_CHARACTER_SPACE_SURFACES="${SPAN_ALLOW_CHARACTER_SPACE_SURFACES:-0}"
+export SPAN_SPACE_MAX_WINDOWS="${SPAN_SPACE_MAX_WINDOWS:-2}"
+export SPAN_EXTRA_WINDOWS_PER_CORE="${SPAN_EXTRA_WINDOWS_PER_CORE:-1}"
 
 GRADCAM_LAYER="${GRADCAM_LAYER:-cnn_encoder.backbone.4}"
 GRADCAM_TARGET="${GRADCAM_TARGET:-token}"
@@ -132,6 +138,8 @@ run_one() {
   echo "  per-window-dir         = ${per_window_dir}"
   echo "  feature-space          = ${FEATURE_SPACE}"
   echo "  alignment-space        = ${ALIGNMENT_SPACE}"
+  echo "  max-span-chars         = ${MAX_SPAN_CHARS}"
+  echo "  max-windows-per-span   = ${MAX_WINDOWS_PER_SPAN}"
   echo "  local-label-max-chars  = ${LOCAL_LABEL_MAX_CHARS}"
   echo "  blank-ink-threshold    = ${BLANK_INK_THRESHOLD}"
   echo "  span-space-context     = ${SPAN_INCLUDE_SPACE_CONTEXT}"
