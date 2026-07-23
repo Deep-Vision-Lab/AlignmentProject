@@ -33,10 +33,18 @@ class SpanEncoding:
     raw_texts: list[str] | None = None
     raw_surface_texts: list[str] | None = None
     is_space: list[bool] | None = None
+    is_blank: list[bool] | None = None
+    blank_index: int | None = None
 
 
 class ArabicSpanTextEncoder(_legacy.ArabicSpanTextEncoder):
-    """Keep visible core spans separate from overlap-only context."""
+    """Keep visible core spans separate from overlap-only and blank context.
+
+    ``<SPACE>`` remains a real transcript position. ``<BLANK>`` is a learned
+    visual background prototype appended as a zero-length pseudo span. Span-DTW
+    may consume an image window with that prototype without advancing through
+    the transcript.
+    """
 
     def __init__(
         self,
@@ -70,6 +78,14 @@ class ArabicSpanTextEncoder(_legacy.ArabicSpanTextEncoder):
                 1 if allow_character_space_surfaces else 0, dtype=torch.uint8
             ),
         )
+
+        output_dim = int(self.projection.out_features)
+        self.blank_embedding = torch.nn.Parameter(torch.empty(output_dim))
+        with torch.no_grad():
+            if hasattr(self, "space_embedding"):
+                self.blank_embedding.copy_(self.space_embedding.detach())
+            else:
+                torch.nn.init.normal_(self.blank_embedding, mean=0.0, std=0.02)
 
     @property
     def boundary_context_max_core_chars(self):
@@ -135,6 +151,13 @@ class ArabicSpanTextEncoder(_legacy.ArabicSpanTextEncoder):
         for key, value in defaults.items():
             if key not in state_dict:
                 state_dict[key] = value
+
+        blank_key = prefix + "blank_embedding"
+        if blank_key not in state_dict:
+            space_key = prefix + "space_embedding"
+            source = state_dict.get(space_key, self.blank_embedding.detach())
+            state_dict[blank_key] = source.detach().clone()
+
         super()._load_from_state_dict(
             state_dict,
             prefix,
@@ -227,6 +250,7 @@ class ArabicSpanTextEncoder(_legacy.ArabicSpanTextEncoder):
         )
 
     def forward(self, text, use_cache=None):
+        del use_cache
         text = self._prepare_text(text)
         (
             starts,
@@ -240,6 +264,20 @@ class ArabicSpanTextEncoder(_legacy.ArabicSpanTextEncoder):
         no_grad = bool(self.freeze_backbone)
         core_embeddings = self._encode_surfaces(raw_cores, no_grad=no_grad)
         context_embeddings = self._encode_surfaces(raw_surfaces, no_grad=no_grad)
+
+        blank_vector = self.norm(self.blank_embedding.view(1, -1))
+        blank_index = len(core_texts)
+        core_embeddings = torch.cat([core_embeddings, blank_vector], dim=0)
+        context_embeddings = torch.cat([context_embeddings, blank_vector], dim=0)
+        starts.append(-1)
+        lengths.append(0)
+        core_texts.append("<BLANK>")
+        surface_texts.append("<BLANK>")
+        raw_cores.append("<BLANK>")
+        raw_surfaces.append("<BLANK>")
+        is_space.append(False)
+        is_blank = [False] * blank_index + [True]
+
         return SpanEncoding(
             embeddings=core_embeddings,
             context_embeddings=context_embeddings,
@@ -250,6 +288,8 @@ class ArabicSpanTextEncoder(_legacy.ArabicSpanTextEncoder):
             raw_texts=raw_cores,
             raw_surface_texts=raw_surfaces,
             is_space=is_space,
+            is_blank=is_blank,
+            blank_index=blank_index,
             text_length=len(text),
-            max_span_chars=max_core_chars,
+            max_span_chars=self.max_visible_core_chars,
         )
