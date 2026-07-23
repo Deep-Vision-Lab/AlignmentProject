@@ -121,11 +121,7 @@ class ArabicSpanTextEncoder(nn.Module):
                 "Install it or use TEXT_ENCODER_TYPE=char."
             )
 
-        cache_dir = (
-            os.environ.get("HF_HOME")
-            or os.environ.get("TRANSFORMERS_CACHE")
-            or None
-        )
+        cache_dir = os.environ.get("HF_HOME") or os.environ.get("TRANSFORMERS_CACHE") or None
         local_files_only = (
             _env_flag("HF_HUB_OFFLINE", False)
             or _env_flag("TRANSFORMERS_OFFLINE", False)
@@ -256,9 +252,7 @@ class ArabicSpanTextEncoder(nn.Module):
                 boundary_context_chars=_env_int(
                     "SPAN_BOUNDARY_CONTEXT_CHARS", self.boundary_context_chars
                 ),
-                include_space_context=_env_flag(
-                    "SPAN_INCLUDE_SPACE_CONTEXT", False
-                ),
+                include_space_context=_env_flag("SPAN_INCLUDE_SPACE_CONTEXT", False),
                 boundary_context_max_core_chars=_env_int(
                     "SPAN_BOUNDARY_CONTEXT_MAX_CORE_CHARS",
                     self.boundary_context_max_core_chars,
@@ -368,9 +362,7 @@ class ArabicSpanTextEncoder(nn.Module):
     def _pool_non_special_tokens(self, hidden, encoded):
         attention_mask = encoded["attention_mask"].unsqueeze(-1).float()
         if "special_tokens_mask" in encoded:
-            non_special = (
-                1 - encoded["special_tokens_mask"]
-            ).unsqueeze(-1).float()
+            non_special = (1 - encoded["special_tokens_mask"]).unsqueeze(-1).float()
             pool_mask = attention_mask * non_special
             empty_rows = pool_mask.sum(dim=1, keepdim=True) == 0
             pool_mask = torch.where(empty_rows, attention_mask, pool_mask)
@@ -410,14 +402,10 @@ class ArabicSpanTextEncoder(nn.Module):
             device=self.device,
             dtype=self.projection.weight.dtype,
         )
-        visible_counts = [
-            sum(not ch.isspace() for ch in value) for value in strings
-        ]
+        visible_counts = [sum(not ch.isspace() for ch in value) for value in strings]
         space_counts = [sum(ch.isspace() for ch in value) for value in strings]
 
-        visible_values = [
-            "".join(ch for ch in value if not ch.isspace()) for value in strings
-        ]
+        visible_values = ["".join(ch for ch in value if not ch.isspace()) for value in strings]
         unique_visible = []
         unique_index = {}
         scatter = []
@@ -439,7 +427,7 @@ class ArabicSpanTextEncoder(nn.Module):
             }
             if no_grad:
                 with torch.no_grad():
-                    outputs = self.backbone(**backbone_inputs)
+                    outputs = self.backbon(**backbone_inputs)
             else:
                 outputs = self.backbone(**backbone_inputs)
             unique_pooled = self._pool_non_special_tokens(
@@ -471,9 +459,7 @@ class ArabicSpanTextEncoder(nn.Module):
         if not use_cache or self.cache_size <= 0:
             return
         stored = tuple(
-            tensor.detach().to(
-                device="cpu", dtype=self._cache_storage_dtype()
-            )
+            tensor.detach().to(device="cpu", dtype=self._cache_storage_dtype())
             for tensor in tensors
         )
         self._span_feature_cache[key] = (metadata, stored)
