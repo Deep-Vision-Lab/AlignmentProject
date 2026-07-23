@@ -79,6 +79,16 @@ class ArabicSpanTextEncoder(_legacy.ArabicSpanTextEncoder):
     def allow_character_space_surfaces(self):
         return bool(int(self._allow_character_space_surfaces_state.item()))
 
+    @property
+    def max_visible_core_chars(self):
+        # The cap is deliberately independent of max_span_chars stored in an old
+        # checkpoint or exported by an old launcher. Set 0 to disable the cap for
+        # an explicit ablation.
+        cap = _env_int("SPAN_MAX_CORE_CHARS_CAP", 2)
+        if cap <= 0:
+            return int(self.max_span_chars)
+        return min(int(self.max_span_chars), cap)
+
     def configure_context(
         self,
         boundary_context_chars=None,
@@ -174,6 +184,7 @@ class ArabicSpanTextEncoder(_legacy.ArabicSpanTextEncoder):
         starts, lengths = [], []
         core_texts, surface_texts = [], []
         raw_cores, raw_surfaces, is_space = [], [], []
+        max_core_chars = self.max_visible_core_chars
         for start, character in enumerate(text):
             if character.isspace():
                 core_lengths = [1]
@@ -181,7 +192,7 @@ class ArabicSpanTextEncoder(_legacy.ArabicSpanTextEncoder):
                 core_lengths = []
                 for end in range(
                     start + 1,
-                    min(len(text), start + self.max_span_chars) + 1,
+                    min(len(text), start + max_core_chars) + 1,
                 ):
                     core = text[start:end]
                     if any(ch.isspace() for ch in core):
@@ -240,5 +251,5 @@ class ArabicSpanTextEncoder(_legacy.ArabicSpanTextEncoder):
             raw_surface_texts=raw_surfaces,
             is_space=is_space,
             text_length=len(text),
-            max_span_chars=self.max_span_chars,
+            max_span_chars=max_core_chars,
         )
