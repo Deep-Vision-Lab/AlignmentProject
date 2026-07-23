@@ -26,13 +26,13 @@ arabic_text_model_name = os.environ.get(
     "aubmindlab/bert-base-arabertv02",
 )
 
-# Span semantics. Core embeddings describe only characters consumed by the
-# transition. One following character may be retained separately for global
-# overlap-aware DTW, but only for one-character cores. Textual spaces are never
-# appended to character cores unless explicitly enabled as an ablation.
-max_text_token_chars = int(os.environ.get("MAX_TEXT_TOKEN_CHARS", 3))
-max_text_span_chars = int(os.environ.get("MAX_TEXT_SPAN_CHARS", 3))
-max_windows_per_span = int(os.environ.get("MAX_WINDOWS_PER_SPAN", 4))
+# Span semantics. A core span is limited to two visible characters. One following
+# character may be retained separately as overlap context, but only for a
+# one-character core. This prevents a two-character window from being trained or
+# displayed as an unrelated three-character core.
+max_text_token_chars = int(os.environ.get("MAX_TEXT_TOKEN_CHARS", 2))
+max_text_span_chars = int(os.environ.get("MAX_TEXT_SPAN_CHARS", 2))
+max_windows_per_span = int(os.environ.get("MAX_WINDOWS_PER_SPAN", 3))
 span_boundary_context_chars = int(os.environ.get("SPAN_BOUNDARY_CONTEXT_CHARS", 1))
 span_boundary_context_max_core_chars = int(
     os.environ.get("SPAN_BOUNDARY_CONTEXT_MAX_CORE_CHARS", 1)
@@ -77,6 +77,8 @@ contrastive_soft_dtw_gamma = float(os.environ.get("CONTRASTIVE_SOFT_DTW_GAMMA", 
 contrastive_margin = float(os.environ.get("CONTRASTIVE_MARGIN", 10.0))
 contrastive_temperature = float(os.environ.get("CONTRASTIVE_TEMPERATURE", 0.07))
 span_window_count_penalty = float(os.environ.get("SPAN_WINDOW_COUNT_PENALTY", 0.05))
+span_space_max_windows = int(os.environ.get("SPAN_SPACE_MAX_WINDOWS", 2))
+span_extra_windows_per_core = int(os.environ.get("SPAN_EXTRA_WINDOWS_PER_CORE", 1))
 span_dtw_backend = os.environ.get("SPAN_DTW_BACKEND", "jax").lower()
 span_dtw_bucket_text_lengths = os.environ.get("SPAN_DTW_BUCKET_TEXT_LENGTHS", "1").lower() in {
     "1", "true", "yes", "on"
