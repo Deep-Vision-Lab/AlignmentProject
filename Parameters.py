@@ -25,16 +25,24 @@ arabic_text_model_name = os.environ.get(
     "ARABIC_TEXT_MODEL_NAME",
     "aubmindlab/bert-base-arabertv02",
 )
-# Core spans still consume text monotonically, while their encoded surface can
-# include one following boundary character. This lets overlapping image windows
-# receive labels such as "با" then "ات" without changing the JAX/Torch DP grid.
+
+# Span semantics. Core embeddings describe only characters consumed by the
+# transition. One following character may be retained separately for global
+# overlap-aware DTW, but only for one-character cores. Textual spaces are never
+# appended to character cores unless explicitly enabled as an ablation.
 max_text_token_chars = int(os.environ.get("MAX_TEXT_TOKEN_CHARS", 3))
 max_text_span_chars = int(os.environ.get("MAX_TEXT_SPAN_CHARS", 3))
 max_windows_per_span = int(os.environ.get("MAX_WINDOWS_PER_SPAN", 4))
 span_boundary_context_chars = int(os.environ.get("SPAN_BOUNDARY_CONTEXT_CHARS", 1))
-span_include_space_context = os.environ.get("SPAN_INCLUDE_SPACE_CONTEXT", "1").lower() in {
+span_boundary_context_max_core_chars = int(
+    os.environ.get("SPAN_BOUNDARY_CONTEXT_MAX_CORE_CHARS", 1)
+)
+span_include_space_context = os.environ.get("SPAN_INCLUDE_SPACE_CONTEXT", "0").lower() in {
     "1", "true", "yes", "on"
 }
+span_allow_character_space_surfaces = os.environ.get(
+    "SPAN_ALLOW_CHARACTER_SPACE_SURFACES", "0"
+).lower() in {"1", "true", "yes", "on"}
 span_space_token = os.environ.get("SPAN_SPACE_TOKEN", "<SPACE>")
 strip_span_text_edges = os.environ.get("STRIP_SPAN_TEXT_EDGES", "1").lower() in {
     "1", "true", "yes", "on"
@@ -58,9 +66,7 @@ finetune_epochs = 30
 use_bilstm = os.environ.get("USE_BILSTM", "1").lower() in {"1", "true", "yes", "on"}
 bilstm_layers = int(os.environ.get("BILSTM_LAYERS", 2))
 bilstm_hidden_dim = vector_size
-# A zero-initialized residual Conv1d joins each window with its immediate two
-# overlapping neighbours before the BiLSTM. Old checkpoints disable it
-# automatically when their saved state does not contain the grouping flag.
+# Three-window fusion is gated per window and feature before the BiLSTM.
 use_local_window_grouping = os.environ.get("USE_LOCAL_WINDOW_GROUPING", "1").lower() in {
     "1", "true", "yes", "on"
 }
@@ -70,6 +76,7 @@ local_group_size = int(os.environ.get("LOCAL_GROUP_SIZE", 3))
 contrastive_soft_dtw_gamma = float(os.environ.get("CONTRASTIVE_SOFT_DTW_GAMMA", 0.1))
 contrastive_margin = float(os.environ.get("CONTRASTIVE_MARGIN", 10.0))
 contrastive_temperature = float(os.environ.get("CONTRASTIVE_TEMPERATURE", 0.07))
+span_window_count_penalty = float(os.environ.get("SPAN_WINDOW_COUNT_PENALTY", 0.05))
 span_dtw_backend = os.environ.get("SPAN_DTW_BACKEND", "jax").lower()
 span_dtw_bucket_text_lengths = os.environ.get("SPAN_DTW_BUCKET_TEXT_LENGTHS", "1").lower() in {
     "1", "true", "yes", "on"
@@ -86,8 +93,7 @@ local_hard_negative_weight = float(os.environ.get("LOCAL_HARD_NEGATIVE_WEIGHT", 
 local_hard_negative_margin = float(os.environ.get("LOCAL_HARD_NEGATIVE_MARGIN", 0.35))
 local_hard_negative_top_k = int(os.environ.get("LOCAL_HARD_NEGATIVE_TOP_K", 12))
 local_hard_negative_exclude_radius = int(os.environ.get("LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS", 3))
-# Keep the pixel contrast threshold at 0.15, but admit sparse dot/stroke windows
-# when only one percent of their area contains foreground ink.
+# Keep pixel contrast at 0.15, but admit sparse dot/stroke windows at one percent ink.
 local_hard_negative_min_ink = float(os.environ.get("LOCAL_HARD_NEGATIVE_MIN_INK", 0.01))
 local_hard_negative_every_n_batches = int(os.environ.get("LOCAL_HARD_NEGATIVE_EVERY_N_BATCHES", 2))
 local_hard_negative_max_samples_per_batch = int(os.environ.get("LOCAL_HARD_NEGATIVE_MAX_SAMPLES_PER_BATCH", 8))
