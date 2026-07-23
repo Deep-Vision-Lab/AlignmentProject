@@ -46,6 +46,10 @@ export SPAN_INCLUDE_SPACE_CONTEXT="${SPAN_INCLUDE_SPACE_CONTEXT:-0}"
 export SPAN_ALLOW_CHARACTER_SPACE_SURFACES="${SPAN_ALLOW_CHARACTER_SPACE_SURFACES:-0}"
 export SPAN_SPACE_MAX_WINDOWS="${SPAN_SPACE_MAX_WINDOWS:-2}"
 export SPAN_EXTRA_WINDOWS_PER_CORE="${SPAN_EXTRA_WINDOWS_PER_CORE:-1}"
+# Decode and display image-only blank transitions separately from real spaces.
+export SPAN_USE_BLANK_TRANSITIONS="${SPAN_USE_BLANK_TRANSITIONS:-1}"
+export SPAN_BLANK_PENALTY="${SPAN_BLANK_PENALTY:-0.35}"
+export SPAN_RETURN_BLANK_STEPS="${SPAN_RETURN_BLANK_STEPS:-1}"
 
 GRADCAM_LAYER="${GRADCAM_LAYER:-cnn_encoder.backbone.4}"
 GRADCAM_TARGET="${GRADCAM_TARGET:-token}"
@@ -142,6 +146,7 @@ run_one() {
   echo "  max-windows-per-span   = ${MAX_WINDOWS_PER_SPAN}"
   echo "  local-label-max-chars  = ${LOCAL_LABEL_MAX_CHARS}"
   echo "  blank-ink-threshold    = ${BLANK_INK_THRESHOLD}"
+  echo "  blank-DTW              = ${SPAN_USE_BLANK_TRANSITIONS} penalty=${SPAN_BLANK_PENALTY}"
   echo "  span-space-context     = ${SPAN_INCLUDE_SPACE_CONTEXT}"
   echo "  sequence flip          = ${USE_FLIP}"
   echo "===================================================="
