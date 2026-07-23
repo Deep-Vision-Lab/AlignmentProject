@@ -308,6 +308,7 @@ def parse_args():
     parser.add_argument("--token-fontsize", type=float, default=6)
     parser.add_argument("--dpi", type=int, default=180)
     parser.add_argument("--rotate-tokens", action="store_true", default=True)
+    # Launcher compatibility arguments.
     parser.add_argument("--csv-output")
     parser.add_argument("--no-csv", action="store_true")
     parser.add_argument("--concentration-metric")
@@ -339,6 +340,9 @@ def main():
     model.load_state_dict(legacy.image_state(loaded), strict=False)
     model.eval()
     args.resolved_use_flip = bool(model.use_flip)
+    # Keep crop coordinates and isolated Grad-CAM patches in the same sequence
+    # direction as the embeddings restored from the checkpoint.
+    args.use_flip = args.resolved_use_flip
     text_encoder = legacy.build_text_encoder(
         args, config, loaded, args.device
     )
