@@ -14,9 +14,46 @@ def _env_float(name, default):
         return float(default)
 
 
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return int(default)
+
+
 def _alignment_embeddings(span_encoding):
     value = getattr(span_encoding, "context_embeddings", None)
     return value if value is not None else span_encoding.embeddings
+
+
+def _per_span_window_limits(span_encoding, global_max, device):
+    """Return a realistic maximum window count for every text span.
+
+    A global maximum alone allowed one whitespace token or one short character
+    span to absorb four neighboring windows. With 32-pixel windows and stride 16,
+    that creates broad repeated SPACE/three-character labels. A non-space core of
+    length L may use L plus one overlap window; a literal text space has its own
+    smaller cap.
+    """
+    lengths = torch.as_tensor(
+        getattr(span_encoding, "lengths", []), dtype=torch.long, device=device
+    )
+    if lengths.numel() == 0:
+        return None
+    extra = max(0, _env_int("SPAN_EXTRA_WINDOWS_PER_CORE", 1))
+    limits = (lengths + extra).clamp(min=1, max=max(1, int(global_max)))
+    spaces = getattr(span_encoding, "is_space", None)
+    if spaces is not None:
+        space_mask = torch.as_tensor(spaces, dtype=torch.bool, device=device)
+        space_cap = max(
+            1,
+            min(
+                int(global_max),
+                _env_int("SPAN_SPACE_MAX_WINDOWS", 2),
+            ),
+        )
+        limits = torch.where(space_mask, torch.full_like(limits, space_cap), limits)
+    return limits
 
 
 def _precompute_transition_costs(
@@ -47,10 +84,18 @@ def _precompute_transition_costs(
         ],
         dim=1,
     )
+    limits = _per_span_window_limits(
+        span_encoding, max_windows, window_costs.device
+    )
     result = {}
     for count in range(1, max_windows + 1):
         means = (prefix[:, count:] - prefix[:, :-count]) / count
-        result[count] = means + window_count_penalty * (count - 1)
+        costs = means + window_count_penalty * (count - 1)
+        if limits is not None:
+            invalid = limits < count
+            if invalid.any():
+                costs = costs.masked_fill(invalid.unsqueeze(1), float("inf"))
+        result[count] = costs
     return result
 
 
