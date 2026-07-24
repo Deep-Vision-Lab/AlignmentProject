@@ -1,9 +1,18 @@
+import os
 import warnings
 
 import torch
 
 
 _warned_dlpack_fallback = False
+_BRIDGE_STATS = {
+    "torch_to_jax_calls": 0,
+    "jax_to_torch_calls": 0,
+    "dlpack_fallbacks": 0,
+    "single_calls": 0,
+    "batched_calls": 0,
+    "batched_items": 0,
+}
 
 
 def _import_jax():
@@ -29,6 +38,36 @@ def _require_jax():
             "Use SPAN_DTW_BACKEND=torch or install the JAX packages from requirements.txt."
         ) from _JAX_IMPORT_ERROR
     return jax, jnp
+
+
+def _configure_compilation_cache():
+    if not is_jax_available():
+        return
+    cache_dir = os.environ.get("JAX_COMPILATION_CACHE_DIR", "").strip()
+    if not cache_dir:
+        return
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        from jax.experimental.compilation_cache import compilation_cache
+
+        compilation_cache.set_cache_dir(cache_dir)
+    except Exception as exc:
+        warnings.warn(
+            f"Could not enable persistent JAX compilation cache at {cache_dir}: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+
+_configure_compilation_cache()
+
+
+def bridge_stats(reset=False):
+    result = dict(_BRIDGE_STATS)
+    if reset:
+        for key in _BRIDGE_STATS:
+            _BRIDGE_STATS[key] = 0
+    return result
 
 
 def _masked_softmin(candidates, gamma):
@@ -61,14 +100,7 @@ def jax_soft_span_dtw_cost(
     actual_image_steps,
     gamma,
 ):
-    """Soft Span-DTW with optional zero-text, one-window blank transitions.
-
-    Text transitions use ``span_len >= 1``. A finite value at
-    ``transition_costs_dense[0, 1, i, j]`` consumes image window ``j`` while
-    keeping the transcript position ``i`` unchanged. Because that introduces a
-    same-row dependency, image columns are filled sequentially within each text
-    row.
-    """
+    """Soft Span-DTW with zero-text, one-window blank transitions."""
     _require_jax()
     max_span_len = transition_costs_dense.shape[0] - 1
     max_window_count = transition_costs_dense.shape[1] - 1
@@ -83,7 +115,6 @@ def jax_soft_span_dtw_cost(
     def fill_row(i, dp_in):
         def fill_column(j, dp_state):
             candidates = []
-
             for span_len in range(1, max_span_len + 1):
                 for window_count in range(1, max_window_count + 1):
                     prev_i = i - span_len
@@ -111,7 +142,6 @@ def jax_soft_span_dtw_cost(
                     )
                     candidates.append(jnp.where(valid_value, value, inf))
 
-            # Blank: consume exactly one image window and keep text position i.
             prev_j = j - 1
             safe_prev_j = jnp.maximum(prev_j, 0)
             blank_prev = dp_state[i, safe_prev_j]
@@ -149,17 +179,51 @@ def jax_soft_span_dtw_cost(
     )[0, 0]
 
 
+def jax_batched_soft_span_dtw_cost(
+    transition_costs_dense,
+    actual_text_lengths,
+    actual_image_steps,
+    gamma,
+):
+    """Vectorize equal-shaped Span-DTW problems in one JAX execution."""
+    _require_jax()
+    return jax.vmap(
+        jax_soft_span_dtw_cost,
+        in_axes=(0, 0, 0, None),
+        out_axes=0,
+    )(
+        transition_costs_dense,
+        actual_text_lengths,
+        actual_image_steps,
+        gamma,
+    )
+
+
+def _batched_cost_sum(dense, text_lengths, image_steps, gamma):
+    return jax_batched_soft_span_dtw_cost(
+        dense, text_lengths, image_steps, gamma
+    ).sum()
+
+
 if is_jax_available():
     jax_soft_span_dtw_cost = jax.jit(jax_soft_span_dtw_cost)
     _jax_value_and_grad = jax.jit(
         jax.value_and_grad(jax_soft_span_dtw_cost, argnums=0)
     )
+    jax_batched_soft_span_dtw_cost = jax.jit(
+        jax_batched_soft_span_dtw_cost
+    )
+    _jax_batched_value_and_grad = jax.jit(
+        jax.value_and_grad(_batched_cost_sum, argnums=0)
+    )
 else:
     _jax_value_and_grad = None
+    _jax_batched_value_and_grad = None
 
 
 def _warn_dlpack_fallback(reason):
     global _warned_dlpack_fallback
+    _BRIDGE_STATS["dlpack_fallbacks"] += 1
     if not _warned_dlpack_fallback:
         warnings.warn(
             "Falling back to CPU/NumPy copies for JAX span-DTW bridge; this may be slow. "
@@ -172,6 +236,7 @@ def _warn_dlpack_fallback(reason):
 
 def _torch_to_jax(tensor):
     _require_jax()
+    _BRIDGE_STATS["torch_to_jax_calls"] += 1
     try:
         from torch.utils import dlpack as torch_dlpack
 
@@ -185,6 +250,7 @@ def _torch_to_jax(tensor):
 
 def _jax_to_torch(array, device, dtype):
     _require_jax()
+    _BRIDGE_STATS["jax_to_torch_calls"] += 1
     try:
         from torch.utils import dlpack as torch_dlpack
 
@@ -208,6 +274,7 @@ class JaxSpanDTWFunction(torch.autograd.Function):
         needs_gradient=True,
     ):
         _require_jax()
+        _BRIDGE_STATS["single_calls"] += 1
         jax_transition_costs = _torch_to_jax(transition_costs_dense)
         jax_actual_text_length = jnp.asarray(
             int(actual_text_length), dtype=jnp.int32
@@ -260,3 +327,76 @@ class JaxSpanDTWFunction(torch.autograd.Function):
             None,
             None,
         )
+
+
+class JaxBatchedSpanDTWFunction(torch.autograd.Function):
+    """One Torch↔JAX bridge call for a bucket of equal-shaped DP tensors."""
+
+    @staticmethod
+    def forward(
+        ctx,
+        transition_costs_dense,
+        actual_text_lengths,
+        actual_image_steps,
+        gamma,
+        needs_gradient=True,
+    ):
+        _require_jax()
+        batch_size = int(transition_costs_dense.shape[0])
+        _BRIDGE_STATS["batched_calls"] += 1
+        _BRIDGE_STATS["batched_items"] += batch_size
+
+        jax_dense = _torch_to_jax(transition_costs_dense)
+        jax_text_lengths = _torch_to_jax(
+            actual_text_lengths.to(dtype=torch.int32)
+        )
+        jax_image_steps = _torch_to_jax(
+            actual_image_steps.to(dtype=torch.int32)
+        )
+
+        if bool(needs_gradient):
+            _sum_cost, grad = _jax_batched_value_and_grad(
+                jax_dense,
+                jax_text_lengths,
+                jax_image_steps,
+                float(gamma),
+            )
+            costs = jax_batched_soft_span_dtw_cost(
+                jax_dense,
+                jax_text_lengths,
+                jax_image_steps,
+                float(gamma),
+            )
+            grad_torch = _jax_to_torch(
+                grad,
+                device=transition_costs_dense.device,
+                dtype=transition_costs_dense.dtype,
+            )
+        else:
+            costs = jax_batched_soft_span_dtw_cost(
+                jax_dense,
+                jax_text_lengths,
+                jax_image_steps,
+                float(gamma),
+            )
+            grad_torch = None
+
+        costs_torch = _jax_to_torch(
+            costs,
+            device=transition_costs_dense.device,
+            dtype=transition_costs_dense.dtype,
+        ).reshape(batch_size)
+        ctx.needs_gradient = bool(needs_gradient)
+        if grad_torch is not None:
+            ctx.save_for_backward(grad_torch)
+        return costs_torch
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        if not ctx.needs_gradient:
+            return None, None, None, None, None
+        (grad_dense,) = ctx.saved_tensors
+        scale = grad_output.to(grad_dense.dtype).view(
+            grad_output.shape[0], *([1] * (grad_dense.ndim - 1))
+        )
+        return scale * grad_dense, None, None, None, None
