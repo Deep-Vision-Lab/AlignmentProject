@@ -9,6 +9,7 @@ on:
       - "jax_batch_bucketing.py"
       - "fast_hard_alignment.py"
       - "runtime_device_setup.py"
+      - "ddp_runtime_policy.py"
       - "training_optimizations.py"
       - "scripts/train/**"
       - "scripts/benchmark/**"
@@ -18,6 +19,7 @@ on:
       - "tests/test_gradient_accumulation.py"
       - "tests/test_fast_hard_alignment.py"
       - "tests/test_runtime_device_setup.py"
+      - "tests/test_ddp_runtime_policy.py"
       - ".github/workflows/optimization-checks.yml"
   workflow_dispatch:
 
@@ -40,6 +42,7 @@ jobs:
             jax_batch_bucketing.py \
             fast_hard_alignment.py \
             runtime_device_setup.py \
+            ddp_runtime_policy.py \
             training_optimizations.py \
             scripts/train/train_optimized.py \
             scripts/benchmark/summarize_training_speed.py
@@ -86,6 +89,7 @@ jobs:
             fi
           }
           run_suite device_setup tests/test_runtime_device_setup.py
+          run_suite ddp_policy tests/test_ddp_runtime_policy.py
           run_suite blank tests/test_blank_span_dtw.py
           run_suite fast_hard tests/test_fast_hard_alignment.py
           run_suite batched_dtw tests/test_batched_span_dtw.py
