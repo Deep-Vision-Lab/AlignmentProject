@@ -1,4 +1,6 @@
 import os
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -39,3 +41,48 @@ def test_invalid_rank_fails_before_cuda_import(monkeypatch):
 
     with pytest.raises(RuntimeError, match="LOCAL_RANK=2"):
         isolate_local_rank_cuda_device()
+
+
+@pytest.mark.parametrize(
+    ("visible_name", "visible_value", "local_rank", "expected"),
+    [
+        ("CUDA_VISIBLE_DEVICES", "0,2", "0", "0"),
+        ("CUDA_VISIBLE_DEVICES", "0,2", "1", "2"),
+        ("SLURM_GPU_INDEX", "1-2", "0", "1"),
+        ("SLURM_GPU_INDEX", "1-2", "1", "2"),
+    ],
+)
+def test_shell_rank_wrapper_selects_one_device(
+    visible_name, visible_value, local_rank, expected
+):
+    project_root = Path(__file__).resolve().parents[1]
+    wrapper = project_root / "scripts" / "train" / "run_rank_isolated.sh"
+    env = os.environ.copy()
+    for name in (
+        "CUDA_VISIBLE_DEVICES",
+        "SLURM_STEP_GPUS",
+        "SLURM_JOB_GPUS",
+        "SLURM_GPU_INDEX",
+    ):
+        env.pop(name, None)
+    env.update(
+        {
+            visible_name: visible_value,
+            "LOCAL_RANK": local_rank,
+            "LOCAL_WORLD_SIZE": "2",
+            "WORLD_SIZE": "2",
+            "RANK_WRAPPER_DRY_RUN": "1",
+        }
+    )
+
+    completed = subprocess.run(
+        ["bash", str(wrapper)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert f"selected={expected}" in completed.stderr
+    assert f"process_visible={expected}" in completed.stderr
