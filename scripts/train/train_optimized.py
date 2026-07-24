@@ -67,8 +67,6 @@ def _resolve_hf_home() -> None:
             return
 
     if explicit:
-        # Preserve an explicitly supplied path so Transformers can produce the
-        # most relevant error message.
         os.environ["HF_HOME"] = explicit
         return
     raise RuntimeError(
@@ -85,15 +83,29 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import span_alignment_loss
 import train as base
 from fast_hard_alignment import hard_span_dtw_path_fast
+from jax_batch_bucketing import install_jax_batch_padding
 from training_optimizations import install, prepare_raw_model
 
 
-# Patch both references used by the trainer. The decoder computes costs on the
-# GPU, performs one bulk transfer, and then runs the discrete DP on CPU rather
-# than synchronizing CUDA once per candidate transition.
+# Patch the discrete path decoder and stabilize JAX batch dimensions before any
+# criterion is built.
 span_alignment_loss.hard_span_dtw_path = hard_span_dtw_path_fast
 base.hard_span_dtw_path = hard_span_dtw_path_fast
+install_jax_batch_padding()
 install(base)
+
+
+def _spawn_rebuild_single_gpu_loaders(train_loader, valid_loader, test_loader):
+    """Use the same spawn/prefetch loader settings outside DDP as inside DDP."""
+    if base.CTX.enabled:
+        return train_loader, valid_loader, test_loader
+    if train_loader.num_workers <= 0:
+        return train_loader, valid_loader, test_loader
+    return (
+        base._rebuild_loader(train_loader, train_loader.sampler),
+        base._rebuild_loader(valid_loader, valid_loader.sampler),
+        base._rebuild_loader(test_loader, test_loader.sampler),
+    )
 
 
 def main():
@@ -111,8 +123,13 @@ def main():
             base.P.stride_ratio,
             base.P.window_overlap_mode,
         )
-        train_loader, valid_loader, _test_loader, train_sampler = (
+        train_loader, valid_loader, test_loader, train_sampler = (
             base.select_dataloaders(args)
+        )
+        train_loader, valid_loader, test_loader = (
+            _spawn_rebuild_single_gpu_loaders(
+                train_loader, valid_loader, test_loader
+            )
         )
         text_encoder = base.build_text_encoder()
         raw_model = base.build_image_embedding(stride).to(base.P.device)
@@ -147,6 +164,9 @@ def main():
         criterion = base.build_criterion()
         config = base.model_config(stride, args)
         config["hf_home"] = os.environ.get("HF_HOME", "")
+        config["span_dtw_batch_bucket_size"] = int(
+            os.environ.get("SPAN_DTW_BATCH_BUCKET_SIZE", "8")
+        )
         if base.CTX.is_main:
             print("resolved optimized configuration:", flush=True)
             for key in sorted(config):
