@@ -26,7 +26,10 @@ def _encoding():
 
 def _image_windows(requires_grad=False):
     # visible a, empty/background, visible b
-    return torch.eye(3, dtype=torch.float32).requires_grad_(requires_grad)
+    basis = torch.eye(3, dtype=torch.float32)
+    return torch.stack([basis[0], basis[2], basis[1]]).requires_grad_(
+        requires_grad
+    )
 
 
 def _configure_blank(monkeypatch):
