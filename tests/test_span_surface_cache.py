@@ -39,6 +39,10 @@ class DummySpanEncoder(ArabicSpanTextEncoder):
         self.backbone_calls = 0
 
     def _encode_missing_visible(self, visible_texts):
+        # Production returns before invoking AraBERT when every surface was a
+        # cache hit. Keep the test double's call counter semantically identical.
+        if not visible_texts:
+            return {}
         self.backbone_calls += 1
         result = {}
         for text in visible_texts:
