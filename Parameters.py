@@ -12,6 +12,7 @@ learning_rate = float(os.environ.get("LEARNING_RATE", 1e-4))
 valid_every_n_epochs = int(os.environ.get("VALID_EVERY_N_EPOCHS", 2))
 valid_max_batches = int(os.environ.get("VALID_MAX_BATCHES", 20))
 log_memory_every_n_batches = int(os.environ.get("LOG_MEMORY_EVERY_N_BATCHES", 25))
+gradient_accumulation_steps = int(os.environ.get("GRADIENT_ACCUMULATION_STEPS", 1))
 
 # Data
 window_size = int(os.environ.get("WINDOW_SIZE", 32))
@@ -26,10 +27,9 @@ arabic_text_model_name = os.environ.get(
     "aubmindlab/bert-base-arabertv02",
 )
 
-# Span semantics. A core span is limited to two visible characters. One following
-# character may be retained separately as overlap context, but only for a
-# one-character core. This prevents a two-character window from being trained or
-# displayed as an unrelated three-character core.
+# Span semantics. Core text describes only visible characters. Boundary context
+# is retained separately for one-character cores; spaces are standalone transcript
+# positions and blank image windows consume no text.
 max_text_token_chars = int(os.environ.get("MAX_TEXT_TOKEN_CHARS", 2))
 max_text_span_chars = int(os.environ.get("MAX_TEXT_SPAN_CHARS", 2))
 max_windows_per_span = int(os.environ.get("MAX_WINDOWS_PER_SPAN", 3))
@@ -47,11 +47,16 @@ span_space_token = os.environ.get("SPAN_SPACE_TOKEN", "<SPACE>")
 strip_span_text_edges = os.environ.get("STRIP_SPAN_TEXT_EDGES", "1").lower() in {
     "1", "true", "yes", "on"
 }
+span_use_blank_transitions = os.environ.get("SPAN_USE_BLANK_TRANSITIONS", "1").lower() in {
+    "1", "true", "yes", "on"
+}
+span_blank_penalty = float(os.environ.get("SPAN_BLANK_PENALTY", 0.35))
 
 # Frozen span feature cache.
-span_feature_cache_size = int(os.environ.get("SPAN_FEATURE_CACHE_SIZE", 2048))
+span_feature_cache_size = int(os.environ.get("SPAN_FEATURE_CACHE_SIZE", 8192))
 span_feature_cache_dtype = os.environ.get("SPAN_FEATURE_CACHE_DTYPE", "float16").lower()
-clear_span_cache_each_epoch = os.environ.get("CLEAR_SPAN_CACHE_EACH_EPOCH", "1").lower() in {
+span_backbone_batch_size = int(os.environ.get("SPAN_BACKBONE_BATCH_SIZE", 512))
+clear_span_cache_each_epoch = os.environ.get("CLEAR_SPAN_CACHE_EACH_EPOCH", "0").lower() in {
     "1", "true", "yes", "on"
 }
 
@@ -66,7 +71,6 @@ finetune_epochs = 30
 use_bilstm = os.environ.get("USE_BILSTM", "1").lower() in {"1", "true", "yes", "on"}
 bilstm_layers = int(os.environ.get("BILSTM_LAYERS", 2))
 bilstm_hidden_dim = vector_size
-# Three-window fusion is gated per window and feature before the BiLSTM.
 use_local_window_grouping = os.environ.get("USE_LOCAL_WINDOW_GROUPING", "1").lower() in {
     "1", "true", "yes", "on"
 }
@@ -95,7 +99,6 @@ local_hard_negative_weight = float(os.environ.get("LOCAL_HARD_NEGATIVE_WEIGHT", 
 local_hard_negative_margin = float(os.environ.get("LOCAL_HARD_NEGATIVE_MARGIN", 0.35))
 local_hard_negative_top_k = int(os.environ.get("LOCAL_HARD_NEGATIVE_TOP_K", 12))
 local_hard_negative_exclude_radius = int(os.environ.get("LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS", 3))
-# Keep pixel contrast at 0.15, but admit sparse dot/stroke windows at one percent ink.
 local_hard_negative_min_ink = float(os.environ.get("LOCAL_HARD_NEGATIVE_MIN_INK", 0.01))
 local_hard_negative_every_n_batches = int(os.environ.get("LOCAL_HARD_NEGATIVE_EVERY_N_BATCHES", 2))
 local_hard_negative_max_samples_per_batch = int(os.environ.get("LOCAL_HARD_NEGATIVE_MAX_SAMPLES_PER_BATCH", 8))
