@@ -8,6 +8,7 @@ on:
       - "jax_span_dtw.py"
       - "jax_batch_bucketing.py"
       - "fast_hard_alignment.py"
+      - "runtime_device_setup.py"
       - "training_optimizations.py"
       - "scripts/train/**"
       - "scripts/benchmark/**"
@@ -16,6 +17,7 @@ on:
       - "tests/test_span_surface_cache.py"
       - "tests/test_gradient_accumulation.py"
       - "tests/test_fast_hard_alignment.py"
+      - "tests/test_runtime_device_setup.py"
       - ".github/workflows/optimization-checks.yml"
   workflow_dispatch:
 
@@ -37,6 +39,7 @@ jobs:
             jax_span_dtw.py \
             jax_batch_bucketing.py \
             fast_hard_alignment.py \
+            runtime_device_setup.py \
             training_optimizations.py \
             scripts/train/train_optimized.py \
             scripts/benchmark/summarize_training_speed.py
@@ -81,6 +84,7 @@ jobs:
               failed=1
             fi
           }
+          run_suite device_setup tests/test_runtime_device_setup.py
           run_suite blank tests/test_blank_span_dtw.py
           run_suite fast_hard tests/test_fast_hard_alignment.py
           run_suite batched_dtw tests/test_batched_span_dtw.py
