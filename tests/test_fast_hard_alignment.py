@@ -24,6 +24,11 @@ def _encoding():
     )
 
 
+def _image_windows():
+    basis = torch.eye(3, dtype=torch.float32)
+    return torch.stack([basis[0], basis[2], basis[1]])
+
+
 def _signature(path):
     return [
         (
@@ -43,7 +48,7 @@ def test_fast_decoder_matches_reference_with_blank(monkeypatch):
     monkeypatch.setenv("SPAN_USE_BLANK_TRANSITIONS", "1")
     monkeypatch.setenv("SPAN_BLANK_PENALTY", "0.10")
     monkeypatch.setenv("SPAN_EXTRA_WINDOWS_PER_CORE", "0")
-    images = torch.eye(3, dtype=torch.float32)
+    images = _image_windows()
     kwargs = dict(
         temperature=0.1,
         max_windows=1,
@@ -61,7 +66,7 @@ def test_fast_decoder_filters_blank_for_training(monkeypatch):
     monkeypatch.setenv("SPAN_EXTRA_WINDOWS_PER_CORE", "0")
     path = hard_span_dtw_path_fast(
         _encoding(),
-        torch.eye(3, dtype=torch.float32),
+        _image_windows(),
         temperature=0.1,
         max_windows=1,
         window_count_penalty=0.0,
