@@ -43,7 +43,6 @@ if [[ -z "${DATA_DIR:-}" ]]; then
   fi
 fi
 
-# Authoritative span semantics.
 TEXT_ENCODER_TYPE="${TEXT_ENCODER_TYPE:-arabic_span}"
 ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_NAME:-aubmindlab/bert-base-arabertv02}"
 WINDOW_SIZE="${WINDOW_SIZE:-32}"
@@ -69,11 +68,11 @@ SPAN_USE_BLANK_TRANSITIONS="${SPAN_USE_BLANK_TRANSITIONS:-1}"
 SPAN_BLANK_PENALTY="${SPAN_BLANK_PENALTY:-0.35}"
 STRIP_SPAN_TEXT_EDGES="${STRIP_SPAN_TEXT_EDGES:-1}"
 
-# Batched text/JAX path.
 SPAN_DTW_BACKEND="${SPAN_DTW_BACKEND:-jax}"
 SPAN_DTW_BUCKET_TEXT_LENGTHS="${SPAN_DTW_BUCKET_TEXT_LENGTHS:-1}"
 SPAN_DTW_TEXT_BUCKET_SIZE="${SPAN_DTW_TEXT_BUCKET_SIZE:-16}"
 SPAN_DTW_MAX_TEXT_BUCKET="${SPAN_DTW_MAX_TEXT_BUCKET:-256}"
+SPAN_DTW_BATCH_BUCKET_SIZE="${SPAN_DTW_BATCH_BUCKET_SIZE:-8}"
 SPAN_FEATURE_CACHE_SIZE="${SPAN_FEATURE_CACHE_SIZE:-8192}"
 SPAN_FEATURE_CACHE_DTYPE="${SPAN_FEATURE_CACHE_DTYPE:-float16}"
 SPAN_BACKBONE_BATCH_SIZE="${SPAN_BACKBONE_BATCH_SIZE:-512}"
@@ -82,7 +81,6 @@ CLEAR_FROZEN_SPAN_CACHE="${CLEAR_FROZEN_SPAN_CACHE:-0}"
 JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-${PROJECT_DIR}/.jax_cache}"
 XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
 
-# Batch and objectives.
 BATCH_SIZE="${BATCH_SIZE:-32}"
 GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-2}"
 NUM_NEGATIVES="${NUM_NEGATIVES:-4}"
@@ -94,7 +92,6 @@ CONTRASTIVE_MARGIN="${CONTRASTIVE_MARGIN:-10.0}"
 CONTRASTIVE_TEMPERATURE="${CONTRASTIVE_TEMPERATURE:-0.07}"
 SPAN_WINDOW_COUNT_PENALTY="${SPAN_WINDOW_COUNT_PENALTY:-0.05}"
 IMAGE_TEXT_LOSS_ON_BOTH_LINES="${IMAGE_TEXT_LOSS_ON_BOTH_LINES:-1}"
-
 INK_CONTRAST_THRESHOLD="${INK_CONTRAST_THRESHOLD:-0.15}"
 USE_LOCAL_HARD_NEGATIVES="${USE_LOCAL_HARD_NEGATIVES:-1}"
 LOCAL_HARD_NEGATIVE_WEIGHT="${LOCAL_HARD_NEGATIVE_WEIGHT:-0.25}"
@@ -104,7 +101,6 @@ LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS="${LOCAL_HARD_NEGATIVE_EXCLUDE_RADIUS:-3}"
 LOCAL_HARD_NEGATIVE_MIN_INK="${LOCAL_HARD_NEGATIVE_MIN_INK:-0.01}"
 LOCAL_HARD_NEGATIVE_EVERY_N_BATCHES="${LOCAL_HARD_NEGATIVE_EVERY_N_BATCHES:-2}"
 LOCAL_HARD_NEGATIVE_MAX_SAMPLES_PER_BATCH="${LOCAL_HARD_NEGATIVE_MAX_SAMPLES_PER_BATCH:-8}"
-
 USE_IMAGE_PAIR_CONTRASTIVE="${USE_IMAGE_PAIR_CONTRASTIVE:-1}"
 IMAGE_PAIR_LOSS_WEIGHT="${IMAGE_PAIR_LOSS_WEIGHT:-0.40}"
 IMAGE_PAIR_MARGIN="${IMAGE_PAIR_MARGIN:-0.40}"
@@ -117,7 +113,6 @@ SEQUENCE_CONSISTENCY_LOSS_WEIGHT="${SEQUENCE_CONSISTENCY_LOSS_WEIGHT:-0.05}"
 IMAGE_VARIANCE_LOSS_WEIGHT="${IMAGE_VARIANCE_LOSS_WEIGHT:-0.01}"
 IMAGE_VARIANCE_TARGET_STD="${IMAGE_VARIANCE_TARGET_STD:-0.05}"
 
-# Runtime optimizations.
 OPTIMIZATION_MODE="${OPTIMIZATION_MODE:-quality}"
 CNN_CHUNK_SIZE="${CNN_CHUNK_SIZE:-1024}"
 USE_CHANNELS_LAST="${USE_CHANNELS_LAST:-1}"
@@ -135,7 +130,6 @@ DATALOADER_MP_CONTEXT="${DATALOADER_MP_CONTEXT:-spawn}"
 PRELOAD_TRANSCRIPTS="${PRELOAD_TRANSCRIPTS:-1}"
 STAGE_DATASET_TO_SCRATCH="${STAGE_DATASET_TO_SCRATCH:-1}"
 
-# Schedule/output.
 EPOCHS="${EPOCHS:-35}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
 VALID_EVERY_N_EPOCHS="${VALID_EVERY_N_EPOCHS:-2}"
@@ -162,11 +156,12 @@ NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
 NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
 HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+OPTIMIZED_LAUNCHER_VERSION="20260724-rank-wrapper-v2"
 set +a
 
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
-  echo "Submitting optimized training"
-  echo "  branch checkout must contain scripts/train/train_optimized.py"
+  echo "Submitting optimized training (${OPTIMIZED_LAUNCHER_VERSION})"
+  echo "  git_head=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
   echo "  dataset=${DATA_DIR} samples=${NUM_SAMPLES}"
   echo "  GPUs=${NUM_GPUS} microbatch/GPU=${BATCH_SIZE} accumulation=${GRADIENT_ACCUMULATION_STEPS}"
   echo "  effective global batch=$((BATCH_SIZE * NUM_GPUS * GRADIENT_ACCUMULATION_STEPS))"
@@ -190,6 +185,12 @@ fi
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 mkdir -p "${JAX_COMPILATION_CACHE_DIR}"
+
+RANK_WRAPPER="${PROJECT_DIR}/scripts/train/run_rank_isolated.sh"
+TRAIN_ENTRYPOINT="${PROJECT_DIR}/scripts/train/train_optimized.py"
+[[ -f "${RANK_WRAPPER}" ]] || { echo "ERROR: missing rank wrapper ${RANK_WRAPPER}; pull the latest optimization branch" >&2; exit 90; }
+[[ -f "${TRAIN_ENTRYPOINT}" ]] || { echo "ERROR: missing optimized entrypoint ${TRAIN_ENTRYPOINT}" >&2; exit 91; }
+grep -q "runtime_device_setup" "${TRAIN_ENTRYPOINT}" || { echo "ERROR: stale train_optimized.py detected; pull the latest optimization branch" >&2; exit 92; }
 
 if [[ "${STAGE_DATASET_TO_SCRATCH}" == "1" && -n "${SLURM_SCRATCH_DIR:-}" ]]; then
   STAGED_DATA_DIR="${SLURM_SCRATCH_DIR}/$(basename "${DATA_DIR}")"
@@ -218,7 +219,7 @@ elif [[ -n "${RESUME}" ]]; then
 fi
 
 TRAIN_ARGS=(
-  scripts/train/train_optimized.py
+  "${TRAIN_ENTRYPOINT}"
   --job_id "${JOB_ID}"
   --dataset_type "${DATASET_TYPE}"
   --data_dir "${DATA_DIR}"
@@ -236,6 +237,10 @@ else
 fi
 
 echo "Starting optimized training on $(hostname)"
+echo "  launcher_version=${OPTIMIZED_LAUNCHER_VERSION}"
+echo "  git_head=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+echo "  slurm_gpu_index=${SLURM_GPU_INDEX:-<unset>}"
+echo "  cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-<unset>}"
 echo "  data=${DATA_DIR}"
 echo "  microbatch/GPU=${BATCH_SIZE}"
 echo "  effective global batch=$((BATCH_SIZE * NUM_GPUS * GRADIENT_ACCUMULATION_STEPS))"
@@ -248,7 +253,8 @@ if (( NUM_GPUS > 1 )); then
     --nnodes=1 \
     --nproc_per_node="${NUM_GPUS}" \
     --max_restarts=0 \
-    "${TRAIN_ARGS[@]}"
+    --no_python \
+    /usr/bin/env bash "${RANK_WRAPPER}" "${TRAIN_ARGS[@]}"
 else
-  exec python "${TRAIN_ARGS[@]}"
+  exec /usr/bin/env bash "${RANK_WRAPPER}" "${TRAIN_ARGS[@]}"
 fi
