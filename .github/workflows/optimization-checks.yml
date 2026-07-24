@@ -62,27 +62,45 @@ jobs:
             torch==2.0.1 torchvision==0.15.2
           python -m pip install pytest "jax[cpu]==0.4.35"
           python -m pip install "numpy<2"
-      - name: Blank transition tests
+      - name: Run all focused tests and capture logs
         env:
           SPAN_DTW_BACKEND: torch
-        run: pytest -vv tests/test_blank_span_dtw.py
-      - name: Fast hard decoder tests
-        env:
-          SPAN_DTW_BACKEND: torch
-        run: pytest -vv tests/test_fast_hard_alignment.py
-      - name: Batched DTW tests
-        env:
-          SPAN_DTW_BACKEND: torch
-        run: pytest -vv tests/test_batched_span_dtw.py
-      - name: Frozen surface cache tests
-        env:
-          SPAN_DTW_BACKEND: torch
-        run: pytest -vv tests/test_span_surface_cache.py
-      - name: Configuration tests
-        env:
-          SPAN_DTW_BACKEND: torch
-        run: pytest -vv tests/test_optimized_training_config.py
-      - name: Gradient accumulation tests
-        env:
-          SPAN_DTW_BACKEND: torch
-        run: pytest -vv tests/test_gradient_accumulation.py
+        run: |
+          mkdir -p test-logs
+          failed=0
+          run_suite() {
+            local name="$1"
+            local path="$2"
+            set +e
+            pytest -vv "$path" 2>&1 | tee "test-logs/${name}.log"
+            local status=${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "test-logs/${name}.status"
+            if [[ "$status" -ne 0 ]]; then
+              failed=1
+            fi
+          }
+          run_suite blank tests/test_blank_span_dtw.py
+          run_suite fast_hard tests/test_fast_hard_alignment.py
+          run_suite batched_dtw tests/test_batched_span_dtw.py
+          run_suite surface_cache tests/test_span_surface_cache.py
+          run_suite config tests/test_optimized_training_config.py
+          run_suite accumulation tests/test_gradient_accumulation.py
+          echo "$failed" > test-logs/failed.status
+      - name: Upload focused test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: optimization-test-logs
+          path: test-logs/
+      - name: Fail when a focused suite failed
+        if: always()
+        run: |
+          if [[ ! -f test-logs/failed.status ]]; then
+            echo "Focused tests did not run" >&2
+            exit 1
+          fi
+          if [[ "$(cat test-logs/failed.status)" != "0" ]]; then
+            echo "One or more focused test suites failed. See optimization-test-logs." >&2
+            exit 1
+          fi
