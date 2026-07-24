@@ -6,6 +6,7 @@ on:
       - "arabic_span_text_encoder.py"
       - "span_alignment_loss.py"
       - "jax_span_dtw.py"
+      - "jax_batch_bucketing.py"
       - "fast_hard_alignment.py"
       - "training_optimizations.py"
       - "scripts/train/**"
@@ -34,6 +35,7 @@ jobs:
             arabic_span_text_encoder.py \
             span_alignment_loss.py \
             jax_span_dtw.py \
+            jax_batch_bucketing.py \
             fast_hard_alignment.py \
             training_optimizations.py \
             scripts/train/train_optimized.py \
