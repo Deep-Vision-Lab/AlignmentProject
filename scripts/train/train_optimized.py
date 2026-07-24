@@ -17,6 +17,68 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
+
+def _contains_cached_model(cache_root: Path, model_name: str) -> bool:
+    slug = "models--" + model_name.replace("/", "--")
+    for layout in (cache_root, cache_root / "hub"):
+        snapshots = layout / slug / "snapshots"
+        if not snapshots.is_dir():
+            continue
+        for snapshot in snapshots.iterdir():
+            if not snapshot.is_dir() or not (snapshot / "config.json").is_file():
+                continue
+            if any(snapshot.glob("model*.safetensors")) or any(
+                snapshot.glob("pytorch_model*.bin")
+            ):
+                return True
+    return False
+
+
+def _resolve_hf_home() -> None:
+    """Resolve the offline AraBERT cache before importing Transformers modules."""
+    explicit = os.environ.get("HF_HOME", "").strip()
+    model_name = os.environ.get(
+        "ARABIC_TEXT_MODEL_NAME", "aubmindlab/bert-base-arabertv02"
+    )
+    candidates = []
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    candidates.extend(
+        [
+            PROJECT_DIR / ".hf_cache",
+            Path(str(PROJECT_DIR) + "_clone") / ".hf_cache",
+            Path.home() / ".cache" / "huggingface",
+        ]
+    )
+    transformers_cache = os.environ.get("TRANSFORMERS_CACHE", "").strip()
+    if transformers_cache:
+        candidates.append(Path(transformers_cache).expanduser())
+
+    seen = set()
+    for candidate in candidates:
+        resolved = candidate.resolve() if candidate.exists() else candidate
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.is_dir() and _contains_cached_model(candidate, model_name):
+            os.environ["HF_HOME"] = str(candidate)
+            os.environ.pop("TRANSFORMERS_CACHE", None)
+            return
+
+    if explicit:
+        # Preserve an explicitly supplied path so Transformers can produce the
+        # most relevant error message.
+        os.environ["HF_HOME"] = explicit
+        return
+    raise RuntimeError(
+        f"Could not find an offline cache for {model_name}. Checked: "
+        + ", ".join(str(path) for path in candidates)
+    )
+
+
+_resolve_hf_home()
+
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -26,7 +88,7 @@ from fast_hard_alignment import hard_span_dtw_path_fast
 from training_optimizations import install, prepare_raw_model
 
 
-# Patch both references used by the trainer.  The decoder computes costs on the
+# Patch both references used by the trainer. The decoder computes costs on the
 # GPU, performs one bulk transfer, and then runs the discrete DP on CPU rather
 # than synchronizing CUDA once per candidate transition.
 span_alignment_loss.hard_span_dtw_path = hard_span_dtw_path_fast
@@ -69,8 +131,6 @@ def main():
                 "find_unused_parameters": False,
                 "gradient_as_bucket_view": True,
             }
-            # PyTorch 2.0 accepts static_graph in DDP. Fall back cleanly on older
-            # installations rather than preventing a run.
             if os.environ.get("DDP_STATIC_GRAPH", "1").lower() in {
                 "1",
                 "true",
@@ -86,6 +146,7 @@ def main():
 
         criterion = base.build_criterion()
         config = base.model_config(stride, args)
+        config["hf_home"] = os.environ.get("HF_HOME", "")
         if base.CTX.is_main:
             print("resolved optimized configuration:", flush=True)
             for key in sorted(config):
