@@ -35,9 +35,11 @@ def _encoding(offset=0.0):
 
 
 def _images(requires_grad=False):
+    basis = torch.eye(3, dtype=torch.float32)
     images = torch.stack(
         [
-            torch.eye(3, dtype=torch.float32),
+            # visible a, blank, visible b
+            torch.stack([basis[0], basis[2], basis[1]]),
             torch.tensor(
                 [
                     [0.95, 0.05, 0.0],
