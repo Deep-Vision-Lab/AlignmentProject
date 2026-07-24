@@ -46,6 +46,7 @@ jobs:
       - name: Shell syntax
         run: |
           bash -n scripts/train/run_span_d3tw_optimized.sh
+          bash -n scripts/train/run_rank_isolated.sh
           bash -n scripts/benchmark/submit_training_speed_comparison.sh
 
   unit:
