@@ -6,6 +6,7 @@ on:
       - "arabic_span_text_encoder.py"
       - "span_alignment_loss.py"
       - "jax_span_dtw.py"
+      - "fast_hard_alignment.py"
       - "training_optimizations.py"
       - "scripts/train/**"
       - "scripts/benchmark/**"
@@ -13,6 +14,7 @@ on:
       - "tests/test_batched_span_dtw.py"
       - "tests/test_span_surface_cache.py"
       - "tests/test_gradient_accumulation.py"
+      - "tests/test_fast_hard_alignment.py"
       - ".github/workflows/optimization-checks.yml"
   workflow_dispatch:
 
@@ -32,6 +34,7 @@ jobs:
             arabic_span_text_encoder.py \
             span_alignment_loss.py \
             jax_span_dtw.py \
+            fast_hard_alignment.py \
             training_optimizations.py \
             scripts/train/train_optimized.py \
             scripts/benchmark/summarize_training_speed.py
@@ -51,27 +54,33 @@ jobs:
       - name: Install CPU test dependencies
         run: |
           python -m pip install --upgrade pip
+          python -m pip install "numpy<2"
           python -m pip install \
             --index-url https://download.pytorch.org/whl/cpu \
             torch==2.0.1 torchvision==0.15.2
           python -m pip install pytest "jax[cpu]==0.4.35"
+          python -m pip install "numpy<2"
       - name: Blank transition tests
         env:
           SPAN_DTW_BACKEND: torch
-        run: pytest -q tests/test_blank_span_dtw.py
+        run: pytest -vv tests/test_blank_span_dtw.py
+      - name: Fast hard decoder tests
+        env:
+          SPAN_DTW_BACKEND: torch
+        run: pytest -vv tests/test_fast_hard_alignment.py
       - name: Batched DTW tests
         env:
           SPAN_DTW_BACKEND: torch
-        run: pytest -q tests/test_batched_span_dtw.py
+        run: pytest -vv tests/test_batched_span_dtw.py
       - name: Frozen surface cache tests
         env:
           SPAN_DTW_BACKEND: torch
-        run: pytest -q tests/test_span_surface_cache.py
+        run: pytest -vv tests/test_span_surface_cache.py
       - name: Configuration tests
         env:
           SPAN_DTW_BACKEND: torch
-        run: pytest -q tests/test_optimized_training_config.py
+        run: pytest -vv tests/test_optimized_training_config.py
       - name: Gradient accumulation tests
         env:
           SPAN_DTW_BACKEND: torch
-        run: pytest -q tests/test_gradient_accumulation.py
+        run: pytest -vv tests/test_gradient_accumulation.py
