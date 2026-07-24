@@ -95,6 +95,7 @@ import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 import span_alignment_loss
+from ddp_runtime_policy import resolve_ddp_static_graph
 from fast_hard_alignment import hard_span_dtw_path_fast
 from jax_batch_bucketing import install_jax_batch_padding
 from training_optimizations import install, prepare_raw_model
@@ -139,6 +140,17 @@ def main():
         if args.resume and args.pretrained_weights:
             raise SystemExit("Use either --resume or --pretrained_weights, not both.")
 
+        static_graph_decision = resolve_ddp_static_graph()
+        if base.CTX.is_main:
+            print(
+                "ddp_static_graph "
+                f"requested={int(static_graph_decision.requested)} "
+                f"enabled={int(static_graph_decision.enabled)} "
+                f"forced={int(static_graph_decision.forced)} "
+                f"reason={static_graph_decision.description}",
+                flush=True,
+            )
+
         stride = base.compute_stride(
             base.P.window_size,
             base.P.stride_ratio,
@@ -169,12 +181,7 @@ def main():
                 "find_unused_parameters": False,
                 "gradient_as_bucket_view": True,
             }
-            if os.environ.get("DDP_STATIC_GRAPH", "1").lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }:
+            if static_graph_decision.enabled:
                 ddp_kwargs["static_graph"] = True
             try:
                 model = DDP(raw_model, **ddp_kwargs)
@@ -192,6 +199,9 @@ def main():
             RANK_DEVICE.original_visible_devices
         )
         config["selected_cuda_device"] = RANK_DEVICE.selected_device
+        config["ddp_static_graph"] = static_graph_decision.enabled
+        config["ddp_static_graph_requested"] = static_graph_decision.requested
+        config["ddp_static_graph_reason"] = static_graph_decision.description
         if base.CTX.is_main:
             print("resolved optimized configuration:", flush=True)
             for key in sorted(config):
