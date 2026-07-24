@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from dataclasses import dataclass
 import os
 
@@ -38,12 +39,13 @@ class SpanEncoding:
 
 
 class ArabicSpanTextEncoder(_legacy.ArabicSpanTextEncoder):
-    """Keep visible core spans separate from overlap-only and blank context.
+    """Arabic span encoder with persistent frozen-backbone surface caching.
 
-    ``<SPACE>`` remains a real transcript position. ``<BLANK>`` is a learned
-    visual background prototype appended as a zero-length pseudo span. Span-DTW
-    may consume an image window with that prototype without advancing through
-    the transcript.
+    The AraBERT backbone is frozen, so its pooled output for a visible surface is
+    immutable.  Cache those pooled features by unique visible surface and apply
+    the trainable projection, ``<SPACE>`` and ``<BLANK>`` embeddings after cache
+    retrieval.  This keeps gradients correct while removing repeated transformer
+    calls across cores, context surfaces, positive texts and negative texts.
     """
 
     def __init__(
@@ -80,12 +82,22 @@ class ArabicSpanTextEncoder(_legacy.ArabicSpanTextEncoder):
         )
 
         output_dim = int(self.projection.out_features)
-        if hasattr(self, "space_embedding"):
-            initial_blank = self.space_embedding.detach().clone()
-        else:
-            initial_blank = self.projection.weight.new_empty(output_dim)
-            torch.nn.init.normal_(initial_blank, mean=0.0, std=0.02)
-        self.blank_embedding = torch.nn.Parameter(initial_blank)
+        self.blank_embedding = torch.nn.Parameter(
+            torch.empty(
+                output_dim,
+                device=self.space_embedding.device,
+                dtype=self.space_embedding.dtype,
+            )
+        )
+        with torch.no_grad():
+            self.blank_embedding.copy_(self.space_embedding.detach())
+
+        # The legacy cache is transcript-level and disabled while training.  The
+        # optimized cache is surface-level and remains valid in training because
+        # it stores only frozen backbone outputs on CPU.
+        self._surface_feature_cache = OrderedDict()
+        self._surface_cache_hits = 0
+        self._surface_cache_misses = 0
 
     @property
     def boundary_context_max_core_chars(self):
@@ -125,7 +137,7 @@ class ArabicSpanTextEncoder(_legacy.ArabicSpanTextEncoder):
             self._allow_character_space_surfaces_state.fill_(
                 1 if bool(allow_character_space_surfaces) else 0
             )
-        self.clear_cache()
+        self.clear_cache(force=True)
 
     def _load_from_state_dict(
         self,
@@ -238,55 +250,202 @@ class ArabicSpanTextEncoder(_legacy.ArabicSpanTextEncoder):
             is_space,
         )
 
-    def _encode_surfaces(self, surfaces, no_grad):
-        pooled, visible_counts, space_counts = self._surface_backbone_features(
-            surfaces, no_grad=no_grad
+    def _cache_storage_dtype(self):
+        if self.cache_dtype in {"float16", "fp16", "half"}:
+            return torch.float16
+        if self.cache_dtype in {"bfloat16", "bf16"}:
+            return torch.bfloat16
+        return torch.float32
+
+    def clear_cache(self, force=False):
+        # Epoch-level calls should not erase immutable AraBERT features.  Force a
+        # clear when span semantics change or when explicitly requested.
+        if force or _env_flag("CLEAR_FROZEN_SPAN_CACHE", False):
+            self._surface_feature_cache.clear()
+            self._surface_cache_hits = 0
+            self._surface_cache_misses = 0
+            try:
+                super().clear_cache()
+            except AttributeError:
+                pass
+
+    def cache_size_current(self):
+        return len(self._surface_feature_cache)
+
+    def cache_stats(self):
+        total = self._surface_cache_hits + self._surface_cache_misses
+        return {
+            "surface_cache_size": float(len(self._surface_feature_cache)),
+            "surface_cache_hits": float(self._surface_cache_hits),
+            "surface_cache_misses": float(self._surface_cache_misses),
+            "surface_cache_hit_rate": (
+                float(self._surface_cache_hits) / total if total else 0.0
+            ),
+        }
+
+    @staticmethod
+    def _visible_surface(surface):
+        return "".join(character for character in surface if not character.isspace())
+
+    def _cache_get_surface(self, visible):
+        if self.cache_size <= 0:
+            return None
+        value = self._surface_feature_cache.get(visible)
+        if value is None:
+            self._surface_cache_misses += 1
+            return None
+        self._surface_cache_hits += 1
+        self._surface_feature_cache.move_to_end(visible)
+        return value.to(
+            device=self.device,
+            dtype=self.projection.weight.dtype,
+            non_blocking=True,
+        )
+
+    def _cache_put_surface(self, visible, pooled):
+        if self.cache_size <= 0:
+            return
+        self._surface_feature_cache[visible] = pooled.detach().to(
+            device="cpu", dtype=self._cache_storage_dtype()
+        )
+        self._surface_feature_cache.move_to_end(visible)
+        while len(self._surface_feature_cache) > self.cache_size:
+            self._surface_feature_cache.popitem(last=False)
+
+    def _encode_missing_visible(self, visible_texts):
+        if not visible_texts:
+            return {}
+        results = {}
+        batch_size = max(1, _env_int("SPAN_BACKBONE_BATCH_SIZE", 512))
+        for start in range(0, len(visible_texts), batch_size):
+            chunk = visible_texts[start : start + batch_size]
+            encoded = self._encoded_inputs(chunk)
+            backbone_inputs = {
+                key: value
+                for key, value in encoded.items()
+                if key != "special_tokens_mask"
+            }
+            with torch.no_grad():
+                output = self.backbone(**backbone_inputs)
+            pooled = self._pool_non_special_tokens(
+                output.last_hidden_state, encoded
+            ).to(dtype=self.projection.weight.dtype)
+            for text, vector in zip(chunk, pooled):
+                results[text] = vector
+                self._cache_put_surface(text, vector)
+        return results
+
+    def _surface_backbone_features_cached(self, surfaces):
+        hidden_size = int(self.projection.in_features)
+        visible_counts = [
+            sum(not character.isspace() for character in surface)
+            for surface in surfaces
+        ]
+        space_counts = [
+            sum(character.isspace() for character in surface)
+            for surface in surfaces
+        ]
+        visible_keys = [self._visible_surface(surface) for surface in surfaces]
+
+        vectors = {}
+        missing = []
+        seen_missing = set()
+        for visible in visible_keys:
+            if not visible:
+                continue
+            cached = self._cache_get_surface(visible)
+            if cached is not None:
+                vectors[visible] = cached
+            elif visible not in seen_missing:
+                seen_missing.add(visible)
+                missing.append(visible)
+        vectors.update(self._encode_missing_visible(missing))
+
+        zero = torch.zeros(
+            hidden_size,
+            device=self.device,
+            dtype=self.projection.weight.dtype,
+        )
+        if surfaces:
+            pooled = torch.stack(
+                [vectors.get(visible, zero) if visible else zero for visible in visible_keys],
+                dim=0,
+            )
+        else:
+            pooled = zero.new_empty((0, hidden_size))
+        return pooled, visible_counts, space_counts
+
+    def _project_surfaces(self, surfaces):
+        pooled, visible_counts, space_counts = (
+            self._surface_backbone_features_cached(surfaces)
         )
         return self.norm(
             self._compose_projected(pooled, visible_counts, space_counts)
         )
 
-    def forward(self, text, use_cache=None):
+    def encode_many(self, texts, use_cache=None):
         del use_cache
-        text = self._prepare_text(text)
-        (
-            starts,
-            lengths,
-            core_texts,
-            surface_texts,
-            raw_cores,
-            raw_surfaces,
-            is_space,
-        ) = self.enumerate_spans(text)
-        no_grad = bool(self.freeze_backbone)
-        core_embeddings = self._encode_surfaces(raw_cores, no_grad=no_grad)
-        context_embeddings = self._encode_surfaces(raw_surfaces, no_grad=no_grad)
+        prepared = [self._prepare_text(text) for text in texts]
+        metadata = []
+        all_surfaces = []
+        for text in prepared:
+            enumerated = self.enumerate_spans(text)
+            metadata.append(enumerated)
+            all_surfaces.extend(enumerated[4])
+            all_surfaces.extend(enumerated[5])
+
+        # Populate the unique surface cache once for the whole batch.  Projection
+        # remains outside the cache and therefore receives gradients.
+        if all_surfaces:
+            self._surface_backbone_features_cached(all_surfaces)
 
         blank_vector = self.norm(self.blank_embedding.view(1, -1))
-        blank_index = len(core_texts)
-        core_embeddings = torch.cat([core_embeddings, blank_vector], dim=0)
-        context_embeddings = torch.cat([context_embeddings, blank_vector], dim=0)
-        starts.append(-1)
-        lengths.append(0)
-        core_texts.append("<BLANK>")
-        surface_texts.append("<BLANK>")
-        raw_cores.append("<BLANK>")
-        raw_surfaces.append("<BLANK>")
-        is_space.append(False)
-        is_blank = [False] * blank_index + [True]
+        encodings = []
+        for text, enumerated in zip(prepared, metadata):
+            (
+                starts,
+                lengths,
+                core_texts,
+                surface_texts,
+                raw_cores,
+                raw_surfaces,
+                is_space,
+            ) = enumerated
+            core_embeddings = self._project_surfaces(raw_cores)
+            context_embeddings = self._project_surfaces(raw_surfaces)
 
-        return SpanEncoding(
-            embeddings=core_embeddings,
-            context_embeddings=context_embeddings,
-            starts=starts,
-            lengths=lengths,
-            texts=core_texts,
-            surface_texts=surface_texts,
-            raw_texts=raw_cores,
-            raw_surface_texts=raw_surfaces,
-            is_space=is_space,
-            is_blank=is_blank,
-            blank_index=blank_index,
-            text_length=len(text),
-            max_span_chars=self.max_visible_core_chars,
-        )
+            blank_index = len(core_texts)
+            core_embeddings = torch.cat([core_embeddings, blank_vector], dim=0)
+            context_embeddings = torch.cat(
+                [context_embeddings, blank_vector], dim=0
+            )
+            starts = list(starts) + [-1]
+            lengths = list(lengths) + [0]
+            core_texts = list(core_texts) + ["<BLANK>"]
+            surface_texts = list(surface_texts) + ["<BLANK>"]
+            raw_cores = list(raw_cores) + ["<BLANK>"]
+            raw_surfaces = list(raw_surfaces) + ["<BLANK>"]
+            is_space = list(is_space) + [False]
+            is_blank = [False] * blank_index + [True]
+
+            encodings.append(
+                SpanEncoding(
+                    embeddings=core_embeddings,
+                    context_embeddings=context_embeddings,
+                    starts=starts,
+                    lengths=lengths,
+                    texts=core_texts,
+                    surface_texts=surface_texts,
+                    raw_texts=raw_cores,
+                    raw_surface_texts=raw_surfaces,
+                    is_space=is_space,
+                    is_blank=is_blank,
+                    blank_index=blank_index,
+                    text_length=len(text),
+                    max_span_chars=self.max_visible_core_chars,
+                )
+            )
+        return encodings
+
+    def forward(self, text, use_cache=None):
+        return self.encode_many([text], use_cache=use_cache)[0]
