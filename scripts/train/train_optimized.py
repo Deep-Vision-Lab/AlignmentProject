@@ -17,6 +17,15 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
+# This must happen before importing Torch, JAX, Transformers, train.py, or any
+# project module that imports them. On the BGU cluster Slurm may expose GPUs as
+# CUDA_VISIBLE_DEVICES=0,2. Rank 0 must see only physical GPU 0 and rank 1 only
+# physical GPU 2; both then address their isolated device as cuda:0.
+from runtime_device_setup import isolate_local_rank_cuda_device
+
+
+RANK_DEVICE = isolate_local_rank_cuda_device()
+
 
 def _contains_cached_model(cache_root: Path, model_name: str) -> bool:
     slug = "models--" + model_name.replace("/", "--")
@@ -77,11 +86,15 @@ def _resolve_hf_home() -> None:
 
 _resolve_hf_home()
 
+# Import train.py first. It contains a second defensive isolation check, but by
+# this point each process already has a single visible physical GPU and no CUDA
+# runtime has yet been initialized.
+import train as base
+
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 import span_alignment_loss
-import train as base
 from fast_hard_alignment import hard_span_dtw_path_fast
 from jax_batch_bucketing import install_jax_batch_padding
 from training_optimizations import install, prepare_raw_model
@@ -111,6 +124,14 @@ def _spawn_rebuild_single_gpu_loaders(train_loader, valid_loader, test_loader):
 def main():
     base.CTX.initialize()
     try:
+        print(
+            f"rank_device rank={base.CTX.rank} local_rank={base.CTX.local_rank} "
+            f"original_visible={RANK_DEVICE.original_visible_devices or '<unset>'} "
+            f"selected_physical={RANK_DEVICE.selected_device or '<default>'} "
+            f"process_visible={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')} "
+            f"torch_device={base.CTX.device}",
+            flush=True,
+        )
         base._seed_everything(base._env_int("TRAIN_SEED", 42), base.CTX.rank)
         base._strip_torchrun_rank_arguments()
         args = base.parse_args()
@@ -167,6 +188,10 @@ def main():
         config["span_dtw_batch_bucket_size"] = int(
             os.environ.get("SPAN_DTW_BATCH_BUCKET_SIZE", "8")
         )
+        config["original_cuda_visible_devices"] = (
+            RANK_DEVICE.original_visible_devices
+        )
+        config["selected_cuda_device"] = RANK_DEVICE.selected_device
         if base.CTX.is_main:
             print("resolved optimized configuration:", flush=True)
             for key in sorted(config):
