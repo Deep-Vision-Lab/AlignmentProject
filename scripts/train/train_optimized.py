@@ -20,10 +20,17 @@ if str(PROJECT_DIR) not in sys.path:
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+import span_alignment_loss
 import train as base
+from fast_hard_alignment import hard_span_dtw_path_fast
 from training_optimizations import install, prepare_raw_model
 
 
+# Patch both references used by the trainer.  The decoder computes costs on the
+# GPU, performs one bulk transfer, and then runs the discrete DP on CPU rather
+# than synchronizing CUDA once per candidate transition.
+span_alignment_loss.hard_span_dtw_path = hard_span_dtw_path_fast
+base.hard_span_dtw_path = hard_span_dtw_path_fast
 install(base)
 
 
