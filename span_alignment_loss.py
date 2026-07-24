@@ -1,4 +1,5 @@
 import os
+from collections import defaultdict
 
 import torch
 import torch.nn.functional as F
@@ -43,7 +44,6 @@ def _blank_available(span_encoding):
 
 
 def _blank_transition_costs(span_encoding, image_embeddings, temperature):
-    """Cost for consuming one image window without consuming transcript text."""
     if not _blank_available(span_encoding):
         return None
     blank_index = int(span_encoding.blank_index)
@@ -58,7 +58,6 @@ def _blank_transition_costs(span_encoding, image_embeddings, temperature):
 
 
 def _per_span_window_limits(span_encoding, global_max, device):
-    """Return a realistic maximum window count for every text span."""
     lengths = torch.as_tensor(
         getattr(span_encoding, "lengths", []), dtype=torch.long, device=device
     )
@@ -77,6 +76,10 @@ def _per_span_window_limits(span_encoding, global_max, device):
             ),
         )
         limits = torch.where(space_mask, torch.full_like(limits, space_cap), limits)
+    blanks = getattr(span_encoding, "is_blank", None)
+    if blanks is not None:
+        blank_mask = torch.as_tensor(blanks, dtype=torch.bool, device=device)
+        limits = torch.where(blank_mask, torch.ones_like(limits), limits)
     return limits
 
 
@@ -160,30 +163,43 @@ def _dense_transition_costs(
         float("inf"),
     )
 
-    for span_idx, (start, span_len) in enumerate(
-        zip(span_encoding.starts, span_encoding.lengths)
-    ):
-        start = int(start)
-        span_len = int(span_len)
-        if span_len <= 0 or start < 0:
-            continue
-        if span_len > max_span_chars or start + span_len > actual_text_steps:
-            continue
+    starts = torch.as_tensor(
+        span_encoding.starts, dtype=torch.long, device=image_embeddings.device
+    )
+    lengths = torch.as_tensor(
+        span_encoding.lengths, dtype=torch.long, device=image_embeddings.device
+    )
+    valid = (
+        (starts >= 0)
+        & (lengths > 0)
+        & (lengths <= max_span_chars)
+        & (starts + lengths <= actual_text_steps)
+    )
+    valid_indices = torch.nonzero(valid, as_tuple=False).flatten()
+    if valid_indices.numel() > 0:
+        valid_starts = starts.index_select(0, valid_indices)
+        valid_lengths = lengths.index_select(0, valid_indices)
         for window_count, costs in transition_costs.items():
-            if costs.shape[1] == 0:
+            width = int(costs.shape[1])
+            if width <= 0:
                 continue
-            dense[span_len, window_count, start, : costs.shape[1]] = costs[span_idx]
+            dense[
+                valid_lengths,
+                int(window_count),
+                valid_starts,
+                :width,
+            ] = costs.index_select(0, valid_indices)
 
     blank_costs = _blank_transition_costs(
         span_encoding, image_embeddings, temperature
     )
     if blank_costs is not None and max_windows_per_span >= 1:
-        for text_position in range(actual_text_steps + 1):
-            dense[0, 1, text_position, :image_steps] = blank_costs
+        dense[0, 1, : actual_text_steps + 1, :image_steps] = (
+            blank_costs.view(1, image_steps).expand(actual_text_steps + 1, image_steps)
+        )
     return dense
 
 
-# Methods defined in the legacy module resolve these globals dynamically.
 _legacy._precompute_transition_costs = _precompute_transition_costs
 _legacy._dense_transition_costs = _dense_transition_costs
 
@@ -250,7 +266,6 @@ def hard_span_dtw_path(
         for j in range(image_steps + 1):
             if not torch.isfinite(dp[i, j]):
                 continue
-
             if blank_costs is not None and j < image_steps:
                 candidate = dp[i, j] + blank_costs[j].detach().cpu()
                 if candidate < dp[i, j + 1]:
@@ -349,6 +364,7 @@ class SpanContrastiveSoftDTW(_legacy.SpanContrastiveSoftDTW):
             negative_grad_mode=negative_grad_mode,
             backend=backend,
         )
+        self.last_positive_encodings = None
 
     def _check_path_feasible(self, span_encoding, image_steps):
         min_required = _legacy._min_required_spans(span_encoding)
@@ -398,13 +414,11 @@ class SpanContrastiveSoftDTW(_legacy.SpanContrastiveSoftDTW):
         zero = torch.zeros((), device=device, dtype=image_embeddings.dtype)
         dp = [[None for _ in range(image_steps + 1)] for _ in range(text_steps + 1)]
         dp[0][0] = zero
-
         for i in range(text_steps + 1):
             for j in range(image_steps + 1):
                 current = dp[i][j]
                 if current is None:
                     continue
-
                 if blank_costs is not None and j < image_steps:
                     candidate = current + blank_costs[j]
                     previous = dp[i][j + 1]
@@ -415,7 +429,6 @@ class SpanContrastiveSoftDTW(_legacy.SpanContrastiveSoftDTW):
                             torch.stack((previous, candidate)), self.gamma
                         )
                     )
-
                 for span_len in range(1, text_steps - i + 1):
                     span_idx = span_lookup.get((i, span_len))
                     if span_idx is None:
@@ -438,7 +451,6 @@ class SpanContrastiveSoftDTW(_legacy.SpanContrastiveSoftDTW):
                                 torch.stack((previous, candidate)), self.gamma
                             )
                         )
-
         if dp[text_steps][image_steps] is None:
             raise ValueError(
                 _legacy._span_no_path_message(
@@ -450,3 +462,271 @@ class SpanContrastiveSoftDTW(_legacy.SpanContrastiveSoftDTW):
                 )
             )
         return dp[text_steps][image_steps]
+
+    def _dense_bucket_key(self, span_encoding, image_embeddings):
+        padded_text = _legacy._bucket_length(
+            int(span_encoding.text_length),
+            span_dtw_text_bucket_size,
+            span_dtw_max_text_bucket,
+            enabled=span_dtw_bucket_text_lengths,
+        )
+        return (
+            int(getattr(span_encoding, "max_span_chars", 0)) + 1,
+            int(self.max_windows_per_span) + 1,
+            int(padded_text) + 1,
+            int(image_embeddings.shape[0]) + 1,
+        )
+
+    def _span_dtw_costs_jax(self, encodings, image_embeddings):
+        from jax_span_dtw import JaxBatchedSpanDTWFunction
+
+        if not encodings:
+            return image_embeddings.new_empty((0,))
+        buckets = defaultdict(list)
+        for index, (encoding, image) in enumerate(zip(encodings, image_embeddings)):
+            self._check_path_feasible(encoding, int(image.shape[0]))
+            buckets[self._dense_bucket_key(encoding, image)].append(index)
+
+        result = [None] * len(encodings)
+        for _shape, indices in buckets.items():
+            dense_items = []
+            text_lengths = []
+            image_steps = []
+            for index in indices:
+                encoding = encodings[index]
+                image = image_embeddings[index]
+                padded_text = _legacy._bucket_length(
+                    int(encoding.text_length),
+                    span_dtw_text_bucket_size,
+                    span_dtw_max_text_bucket,
+                    enabled=span_dtw_bucket_text_lengths,
+                )
+                dense_items.append(
+                    _dense_transition_costs(
+                        encoding,
+                        image,
+                        self.temperature,
+                        self.max_windows_per_span,
+                        self.window_count_penalty,
+                        text_steps_padded=padded_text,
+                    )
+                )
+                text_lengths.append(int(encoding.text_length))
+                image_steps.append(int(image.shape[0]))
+            dense_batch = torch.stack(dense_items, dim=0)
+            text_lengths_tensor = torch.as_tensor(
+                text_lengths, device=dense_batch.device, dtype=torch.int32
+            )
+            image_steps_tensor = torch.as_tensor(
+                image_steps, device=dense_batch.device, dtype=torch.int32
+            )
+            needs_gradient = (
+                torch.is_grad_enabled() and dense_batch.requires_grad
+            )
+            costs = JaxBatchedSpanDTWFunction.apply(
+                dense_batch,
+                text_lengths_tensor,
+                image_steps_tensor,
+                self.gamma,
+                needs_gradient,
+            )
+            for local_index, original_index in enumerate(indices):
+                result[original_index] = costs[local_index]
+        return torch.stack(result)
+
+    def _span_dtw_costs(self, encodings, image_embeddings):
+        if self.backend == "jax":
+            return self._span_dtw_costs_jax(encodings, image_embeddings)
+        return torch.stack(
+            [
+                self._span_dtw_cost_torch(encoding, image)
+                for encoding, image in zip(encodings, image_embeddings)
+            ]
+        )
+
+    def _span_dtw_cost_jax(self, span_encoding, image_embeddings):
+        return self._span_dtw_costs_jax(
+            [span_encoding], image_embeddings.unsqueeze(0)
+        )[0]
+
+    @staticmethod
+    def _encode_many(text_encoder, texts, use_cache=True):
+        if hasattr(text_encoder, "encode_many"):
+            return text_encoder.encode_many(texts, use_cache=use_cache)
+        return [
+            text_encoder(
+                text,
+                use_cache=use_cache if hasattr(text_encoder, "clear_cache") else None,
+            )
+            for text in texts
+        ]
+
+    def _costs_allowing_infeasible(self, encodings, images):
+        valid_indices = []
+        result = [None] * len(encodings)
+        for index, (encoding, image) in enumerate(zip(encodings, images)):
+            try:
+                self._check_path_feasible(encoding, int(image.shape[0]))
+                valid_indices.append(index)
+            except ValueError:
+                result[index] = _legacy._infeasible_negative_cost(
+                    image, encoding.text_length, self.temperature
+                )
+        if valid_indices:
+            index_tensor = torch.as_tensor(
+                valid_indices, device=images.device, dtype=torch.long
+            )
+            valid_images = images.index_select(0, index_tensor)
+            valid_encodings = [encodings[index] for index in valid_indices]
+            valid_costs = self._span_dtw_costs(valid_encodings, valid_images)
+            for local_index, original_index in enumerate(valid_indices):
+                result[original_index] = valid_costs[local_index]
+        return torch.stack(result)
+
+    def forward_varlen(self, text_encoder, norm_img, pos_texts, neg_texts):
+        pos_texts = list(pos_texts)
+        pos_encodings = self._encode_many(text_encoder, pos_texts, use_cache=True)
+        self.last_positive_encodings = pos_encodings
+        pos_costs = self._span_dtw_costs(pos_encodings, norm_img)
+        image_steps = int(norm_img.shape[1])
+        pos_denoms = pos_costs.new_tensor(
+            [max(int(enc.text_length), image_steps) for enc in pos_encodings]
+        )
+        norm_pos = pos_costs / pos_denoms
+
+        flat_neg_texts = []
+        owners = []
+        owner_slices = []
+        cursor = 0
+        for sample_index, sample_negatives in enumerate(neg_texts):
+            sample_negatives = list(sample_negatives)
+            if not sample_negatives:
+                raise ValueError(
+                    "SpanContrastiveSoftDTW requires at least one negative text per sample."
+                )
+            flat_neg_texts.extend(sample_negatives)
+            owners.extend([sample_index] * len(sample_negatives))
+            owner_slices.append(slice(cursor, cursor + len(sample_negatives)))
+            cursor += len(sample_negatives)
+        owner_tensor = torch.as_tensor(
+            owners, device=norm_img.device, dtype=torch.long
+        )
+        flat_images = norm_img.index_select(0, owner_tensor)
+
+        if self.negative_grad_mode == "all":
+            neg_encodings = self._encode_many(
+                text_encoder, flat_neg_texts, use_cache=True
+            )
+            scored_costs = self._costs_allowing_infeasible(
+                neg_encodings, flat_images
+            )
+            grad_costs = scored_costs
+            grad_encodings = neg_encodings
+            selected_flat_indices = None
+        else:
+            with torch.no_grad():
+                scored_encodings = self._encode_many(
+                    text_encoder, flat_neg_texts, use_cache=True
+                )
+                scored_costs = self._costs_allowing_infeasible(
+                    scored_encodings, flat_images
+                ).detach()
+            selected_flat_indices = []
+            for sample_index, sample_slice in enumerate(owner_slices):
+                local_costs = scored_costs[sample_slice]
+                local_encodings = scored_encodings[sample_slice]
+                local_denoms = local_costs.new_tensor(
+                    [
+                        max(int(enc.text_length), image_steps)
+                        for enc in local_encodings
+                    ]
+                )
+                selected_flat_indices.append(
+                    sample_slice.start
+                    + int(torch.argmin(local_costs / local_denoms).item())
+                )
+            if self.negative_grad_mode == "hardest":
+                selected_texts = [
+                    flat_neg_texts[index] for index in selected_flat_indices
+                ]
+                grad_encodings = self._encode_many(
+                    text_encoder, selected_texts, use_cache=True
+                )
+                selected_owner_tensor = torch.arange(
+                    len(pos_texts), device=norm_img.device, dtype=torch.long
+                )
+                grad_images = norm_img.index_select(0, selected_owner_tensor)
+                grad_costs = self._costs_allowing_infeasible(
+                    grad_encodings, grad_images
+                )
+            else:
+                grad_encodings = [
+                    scored_encodings[index] for index in selected_flat_indices
+                ]
+                grad_costs = torch.stack(
+                    [scored_costs[index] for index in selected_flat_indices]
+                )
+
+        scored_norms = []
+        for cost, encoding in zip(
+            scored_costs,
+            neg_encodings if self.negative_grad_mode == "all" else scored_encodings,
+        ):
+            scored_norms.append(
+                cost / max(int(encoding.text_length), image_steps)
+            )
+        scored_norms = torch.stack(scored_norms)
+
+        losses = []
+        norm_neg_for_loss = []
+        for sample_index, sample_slice in enumerate(owner_slices):
+            if self.negative_grad_mode == "all":
+                sample_costs = grad_costs[sample_slice]
+                sample_encodings = grad_encodings[sample_slice]
+                sample_norms = torch.stack(
+                    [
+                        cost / max(int(enc.text_length), image_steps)
+                        for cost, enc in zip(sample_costs, sample_encodings)
+                    ]
+                )
+            else:
+                cost = grad_costs[sample_index]
+                encoding = grad_encodings[sample_index]
+                sample_norms = (
+                    cost / max(int(encoding.text_length), image_steps)
+                ).view(1)
+            norm_neg_for_loss.append(sample_norms.mean())
+            losses.append(
+                torch.clamp(
+                    norm_pos[sample_index] - sample_norms + self.margin,
+                    min=0.0,
+                ).mean()
+            )
+
+        pos_probabilities = []
+        mean_scored_norms = []
+        mean_scored_costs = []
+        for sample_index, sample_slice in enumerate(owner_slices):
+            sample_norms = scored_norms[sample_slice]
+            sample_costs = scored_costs[sample_slice]
+            all_costs = torch.cat(
+                [norm_pos[sample_index].detach().view(1), sample_norms.detach()]
+            )
+            pos_probabilities.append(torch.softmax(-all_costs, dim=0)[0])
+            mean_scored_norms.append(sample_norms.mean().detach())
+            mean_scored_costs.append(sample_costs.mean().detach())
+
+        loss = torch.stack(losses).mean()
+        mean_scored_norms_tensor = torch.stack(mean_scored_norms)
+        return loss, {
+            "cost_pos": float(pos_costs.detach().mean().item()),
+            "cost_neg": float(torch.stack(mean_scored_costs).mean().item()),
+            "pos_prob": float(torch.stack(pos_probabilities).mean().item()),
+            "gap": float(
+                (norm_pos.detach() - mean_scored_norms_tensor).mean().item()
+            ),
+            "norm_pos": float(norm_pos.detach().mean().item()),
+            "norm_neg": float(mean_scored_norms_tensor.mean().item()),
+            "contrastive": float(loss.detach().item()),
+            "dtw_batch_items": float(len(pos_encodings) + len(flat_neg_texts)),
+        }
