@@ -55,13 +55,23 @@ jobs:
             --index-url https://download.pytorch.org/whl/cpu \
             torch==2.0.1 torchvision==0.15.2
           python -m pip install pytest "jax[cpu]==0.4.35"
-      - name: Run focused tests
+      - name: Blank transition tests
         env:
           SPAN_DTW_BACKEND: torch
-        run: |
-          pytest -q \
-            tests/test_blank_span_dtw.py \
-            tests/test_batched_span_dtw.py \
-            tests/test_span_surface_cache.py \
-            tests/test_optimized_training_config.py \
-            tests/test_gradient_accumulation.py
+        run: pytest -q tests/test_blank_span_dtw.py
+      - name: Batched DTW tests
+        env:
+          SPAN_DTW_BACKEND: torch
+        run: pytest -q tests/test_batched_span_dtw.py
+      - name: Frozen surface cache tests
+        env:
+          SPAN_DTW_BACKEND: torch
+        run: pytest -q tests/test_span_surface_cache.py
+      - name: Configuration tests
+        env:
+          SPAN_DTW_BACKEND: torch
+        run: pytest -q tests/test_optimized_training_config.py
+      - name: Gradient accumulation tests
+        env:
+          SPAN_DTW_BACKEND: torch
+        run: pytest -q tests/test_gradient_accumulation.py
