@@ -199,10 +199,11 @@ def jax_batched_soft_span_dtw_cost(
     )
 
 
-def _batched_cost_sum(dense, text_lengths, image_steps, gamma):
-    return jax_batched_soft_span_dtw_cost(
+def _batched_cost_sum_with_aux(dense, text_lengths, image_steps, gamma):
+    costs = jax_batched_soft_span_dtw_cost(
         dense, text_lengths, image_steps, gamma
-    ).sum()
+    )
+    return costs.sum(), costs
 
 
 if is_jax_available():
@@ -214,7 +215,11 @@ if is_jax_available():
         jax_batched_soft_span_dtw_cost
     )
     _jax_batched_value_and_grad = jax.jit(
-        jax.value_and_grad(_batched_cost_sum, argnums=0)
+        jax.value_and_grad(
+            _batched_cost_sum_with_aux,
+            argnums=0,
+            has_aux=True,
+        )
     )
 else:
     _jax_value_and_grad = None
@@ -355,13 +360,7 @@ class JaxBatchedSpanDTWFunction(torch.autograd.Function):
         )
 
         if bool(needs_gradient):
-            _sum_cost, grad = _jax_batched_value_and_grad(
-                jax_dense,
-                jax_text_lengths,
-                jax_image_steps,
-                float(gamma),
-            )
-            costs = jax_batched_soft_span_dtw_cost(
+            (_sum_cost, costs), grad = _jax_batched_value_and_grad(
                 jax_dense,
                 jax_text_lengths,
                 jax_image_steps,
