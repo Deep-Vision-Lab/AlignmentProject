@@ -47,6 +47,9 @@ jobs:
 
   unit:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      SPAN_DTW_BACKEND: torch
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -63,8 +66,6 @@ jobs:
           python -m pip install pytest "jax[cpu]==0.4.35"
           python -m pip install "numpy<2"
       - name: Run all focused tests and capture logs
-        env:
-          SPAN_DTW_BACKEND: torch
         run: |
           mkdir -p test-logs
           failed=0
