@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Backward-compatible entrypoint for image-to-image word alignment.
+"""Backward-compatible entrypoint for window-level image alignment.
 
-The old evaluator used proportional transcript-to-patch ranges. It now delegates
-to the checkpoint-compatible Needleman-Wunsch evaluator, which obtains word
-regions from the trained Span-DTW model and masks paired words on both lines.
+The canonical implementation is ``Evaluation/eval_needleman_wunsch_windows.py``.
+Needleman-Wunsch consumes the full window-to-window visual similarity matrix.
 """
 from pathlib import Path
 import sys
@@ -12,7 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from Evaluation.eval_needleman_wunsch_words import main
+from Evaluation.eval_needleman_wunsch_windows import main
+
 
 if __name__ == "__main__":
     main()
