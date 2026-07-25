@@ -1,0 +1,27 @@
+# DataSet
+DataSet
+
+# Weights
+Weights
+
+# Settings caches
+wandb
+__pycache__
+.jax_cache/
+
+# Log and generated performance files
+*.log
+out/
+logs/performance/
+*.pdf
+*.tar.gz
+.*/*
+
+# .pth files
+*.pth
+
+# *.txt files
+*.txt
+
+
+TrainResults/
