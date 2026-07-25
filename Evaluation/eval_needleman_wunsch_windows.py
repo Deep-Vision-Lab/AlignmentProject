@@ -18,7 +18,6 @@ import sys
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
 import numpy as np
 from PIL import Image
@@ -28,7 +27,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from Evaluation._eval_utils import (
-    PairPaths,
     align_text_to_windows,
     compute_similarity,
     get_image_features,
@@ -43,6 +41,7 @@ from Evaluation._eval_utils import (
 from Evaluation.window_alignment import (
     alignment_score_matrix,
     attach_raw_similarities,
+    consecutive_match_segments,
     window_alignment_metrics,
     window_token_labels,
 )
@@ -58,6 +57,18 @@ def _window_pixels(index, n_windows, image_width, config, flipped):
     end = min(model_width, start + window)
     scale = float(image_width) / max(1, model_width)
     return start * scale, end * scale
+
+
+def _segment_pixels(segment, side, n_windows, image_width, config, flipped):
+    indices = [
+        int(step.index1 if side == 1 else step.index2)
+        for step in segment
+    ]
+    bounds = [
+        _window_pixels(index, n_windows, image_width, config, flipped)
+        for index in indices
+    ]
+    return min(start for start, _end in bounds), max(end for _start, end in bounds)
 
 
 def _labels_for_line(models, text_path, features):
@@ -124,20 +135,16 @@ def evaluate_pair(
     }
 
 
-def _matched_steps(result, min_similarity, max_drawn_pairs):
-    steps = [
-        step
-        for step in result.steps
-        if step.index1 is not None
-        and step.index2 is not None
-        and step.similarity is not None
-        and float(step.similarity) >= float(min_similarity)
-    ]
-    limit = int(max_drawn_pairs)
-    if limit <= 0 or len(steps) <= limit:
-        return steps
-    positions = np.linspace(0, len(steps) - 1, limit).round().astype(int)
-    return [steps[int(position)] for position in positions]
+def _visible_segments(alignment, min_similarity, max_drawn_segments):
+    segments = consecutive_match_segments(
+        alignment,
+        min_similarity=float(min_similarity),
+    )
+    limit = int(max_drawn_segments)
+    if limit <= 0 or len(segments) <= limit:
+        return segments
+    positions = np.linspace(0, len(segments) - 1, limit).round().astype(int)
+    return [segments[int(position)] for position in positions]
 
 
 def _full_traceback_coordinates(alignment):
@@ -160,7 +167,7 @@ def save_visualization(
     result,
     output,
     min_similarity=-1.0,
-    max_drawn_pairs=64,
+    max_drawn_segments=0,
     show_heatmap=True,
 ):
     pair = result["pair"]
@@ -168,33 +175,50 @@ def save_visualization(
         image1 = np.asarray(opened.convert("RGB"))
     with Image.open(pair.image2) as opened:
         image2 = np.asarray(opened.convert("RGB"))
+
     n1 = len(result["features1"].contextual)
     n2 = len(result["features2"].contextual)
     flipped = bool(result.get("flipped", True))
-    steps = _matched_steps(result["alignment"], min_similarity, max_drawn_pairs)
-    cmap = plt.get_cmap("turbo", max(2, len(steps)))
+    segments = _visible_segments(
+        result["alignment"],
+        min_similarity,
+        max_drawn_segments,
+    )
+    cmap = plt.get_cmap("turbo", max(2, len(segments)))
 
-    rows = 4 if show_heatmap else 3
-    ratios = [2.2, 0.7, 2.2, 4.2] if show_heatmap else [2.2, 0.7, 2.2]
-    fig = plt.figure(figsize=(18, 11 if show_heatmap else 7))
-    grid = fig.add_gridspec(rows, 1, height_ratios=ratios, hspace=0.14)
+    rows = 3 if show_heatmap else 2
+    ratios = [2.2, 2.2, 4.2] if show_heatmap else [2.2, 2.2]
+    fig = plt.figure(figsize=(18, 10 if show_heatmap else 5.5))
+    grid = fig.add_gridspec(rows, 1, height_ratios=ratios, hspace=0.16)
     ax1 = fig.add_subplot(grid[0])
-    axc = fig.add_subplot(grid[1])
-    ax2 = fig.add_subplot(grid[2])
+    ax2 = fig.add_subplot(grid[1])
+
     for ax, image, label in ((ax1, image1, "line 1"), (ax2, image2, "line 2")):
         ax.imshow(image, aspect="auto")
         ax.set_xticks([])
         ax.set_yticks([])
         ax.set_ylabel(label, rotation=0, labelpad=32, va="center")
-    axc.set_xlim(0, 1)
-    axc.set_ylim(0, 1)
-    axc.axis("off")
 
-    for order, step in enumerate(steps):
-        color = cmap(order)
-        i, j = int(step.index1), int(step.index2)
-        x01, x11 = _window_pixels(i, n1, image1.shape[1], result["models_config"], flipped)
-        x02, x12 = _window_pixels(j, n2, image2.shape[1], result["models_config"], flipped)
+    # One color and one continuous rectangle per strict consecutive diagonal block.
+    # No arrows/connectors are drawn between the two lines.
+    for segment_index, segment in enumerate(segments):
+        color = cmap(segment_index)
+        x01, x11 = _segment_pixels(
+            segment,
+            side=1,
+            n_windows=n1,
+            image_width=image1.shape[1],
+            config=result["models_config"],
+            flipped=flipped,
+        )
+        x02, x12 = _segment_pixels(
+            segment,
+            side=2,
+            n_windows=n2,
+            image_width=image2.shape[1],
+            config=result["models_config"],
+            flipped=flipped,
+        )
         for ax, image, x0, x1 in (
             (ax1, image1, x01, x11),
             (ax2, image2, x02, x12),
@@ -206,26 +230,17 @@ def save_visualization(
                     max(2.0, image.shape[0] - 2),
                     facecolor=color,
                     edgecolor=color,
-                    alpha=0.20,
-                    linewidth=1.2,
+                    alpha=0.22,
+                    linewidth=1.4,
                 )
             )
-        axc.add_line(
-            Line2D(
-                [((x01 + x11) / 2) / image1.shape[1], ((x02 + x12) / 2) / image2.shape[1]],
-                [1.0, 0.0],
-                transform=axc.transAxes,
-                color=color,
-                alpha=0.55,
-                linewidth=1.0,
-            )
-        )
 
     metrics = result["metrics"]
     fig.suptitle(
         "Window-level Needleman–Wunsch alignment\n"
         f"pair={pair.index}  score_mode={metrics['score_mode']}  "
         f"matched={metrics['matched_window_pairs']}  "
+        f"segments={metrics['consecutive_segments']}  "
         f"mean cosine={metrics['mean_matched_cosine']:.3f}  "
         f"token agreement={metrics['token_agreement']:.3f}",
         fontsize=11,
@@ -233,7 +248,7 @@ def save_visualization(
     )
 
     if show_heatmap:
-        heat_grid = grid[3].subgridspec(1, 2, wspace=0.22)
+        heat_grid = grid[2].subgridspec(1, 2, wspace=0.22)
         ax_raw = fig.add_subplot(heat_grid[0, 0])
         ax_score = fig.add_subplot(heat_grid[0, 1])
 
@@ -247,26 +262,22 @@ def save_visualization(
             cmap="coolwarm",
             interpolation="nearest",
         )
-        matched = [
-            step
-            for step in result["alignment"].steps
-            if step.index1 is not None and step.index2 is not None
-        ]
-        if matched:
+        for segment_index, segment in enumerate(segments):
+            color = cmap(segment_index)
             ax_raw.scatter(
-                [int(step.index2) for step in matched],
-                [int(step.index1) for step in matched],
-                s=13,
+                [int(step.index2) for step in segment],
+                [int(step.index1) for step in segment],
+                s=18,
                 facecolors="none",
-                edgecolors="black",
-                linewidths=0.65,
-                label="NW matched cells",
+                edgecolors=[color],
+                linewidths=0.9,
             )
-        ax_raw.set_title("Raw cosine similarity + selected match cells", fontsize=9)
+        ax_raw.set_title(
+            "Raw cosine similarity + colored consecutive match blocks",
+            fontsize=9,
+        )
         ax_raw.set_xlabel("line 2 logical windows (0 = rightmost)")
         ax_raw.set_ylabel("line 1 logical windows (0 = rightmost)")
-        if matched:
-            ax_raw.legend(loc="upper left", fontsize=7)
         fig.colorbar(
             raw_image,
             ax=ax_raw,
@@ -362,7 +373,18 @@ def parse_args():
         help="Absolute clipping bound for mutual-z scores; <=0 disables clipping.",
     )
     parser.add_argument("--min-similarity", type=float, default=-1.0)
-    parser.add_argument("--max-drawn-pairs", type=int, default=64)
+    parser.add_argument(
+        "--max-drawn-segments",
+        type=int,
+        default=0,
+        help="Maximum colored consecutive blocks to draw; <=0 draws every block.",
+    )
+    parser.add_argument(
+        "--max-drawn-pairs",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--index", type=int, default=1)
     parser.add_argument("--start-index", type=int, default=1)
     parser.add_argument("--n-samples", type=int, default=100)
@@ -377,7 +399,10 @@ def main():
     args = parse_args()
     models = load_evaluation_models(args.weights, args.device, load_text_model=True)
     if args.dataset_type != "synthetic":
-        raise SystemExit("Batch pair discovery currently supports synthetic layout; use a manifest adapter for real data.")
+        raise SystemExit(
+            "Batch pair discovery currently supports synthetic layout; "
+            "use a manifest adapter for real data."
+        )
     pairs = (
         list(iter_synthetic_pairs(args.data_dir, args.start_index, args.n_samples))
         if args.batch
@@ -385,6 +410,11 @@ def main():
     )
     rows = []
     output_dir = Path(args.output_dir)
+    max_drawn_segments = (
+        args.max_drawn_segments
+        if args.max_drawn_pairs is None
+        else args.max_drawn_pairs
+    )
     for pair in pairs:
         result = evaluate_pair(
             models,
@@ -404,7 +434,7 @@ def main():
             result,
             output,
             min_similarity=args.min_similarity,
-            max_drawn_pairs=args.max_drawn_pairs,
+            max_drawn_segments=max_drawn_segments,
             show_heatmap=not args.no_heatmap,
         )
         print(json.dumps(json_ready(result["metrics"]), ensure_ascii=False), flush=True)
