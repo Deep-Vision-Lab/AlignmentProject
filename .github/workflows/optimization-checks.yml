@@ -22,6 +22,7 @@ on:
       - "tests/test_runtime_device_setup.py"
       - "tests/test_ddp_runtime_policy.py"
       - "tests/test_needleman_wunsch_evaluation.py"
+      - "tests/test_sw_real_evaluation.py"
       - ".github/workflows/optimization-checks.yml"
   workflow_dispatch:
 
@@ -51,6 +52,7 @@ jobs:
             Evaluation/__init__.py \
             Evaluation/_eval_utils.py \
             Evaluation/window_alignment.py \
+            Evaluation/phrase_alignment.py \
             Evaluation/eval_needleman_wunsch_windows.py \
             Evaluation/eval_needleman_wunsch_words.py \
             Evaluation/eval_image_to_image.py \
@@ -110,6 +112,7 @@ jobs:
           run_suite config tests/test_optimized_training_config.py
           run_suite accumulation tests/test_gradient_accumulation.py
           run_suite needleman_wunsch tests/test_needleman_wunsch_evaluation.py
+          run_suite sw_real tests/test_sw_real_evaluation.py
           echo "$failed" > test-logs/failed.status
       - name: Upload focused test logs
         if: always()
