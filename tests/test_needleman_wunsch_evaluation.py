@@ -7,6 +7,7 @@ from Evaluation.window_alignment import (
     alignment_score_matrix,
     attach_raw_similarities,
     cluster_representatives,
+    consecutive_match_segments,
     cosine_kmeans,
     pca_project_2d,
     summarize_cluster_tokens,
@@ -73,6 +74,33 @@ def test_raw_cosines_are_restored_after_score_based_nw():
     ]
     assert np.allclose(matched_cosines, [0.71, 0.83])
     assert restored.score == scored.score
+
+
+def test_consecutive_match_segments_break_at_nw_gap():
+    similarity = torch.full((4, 5), -2.0, dtype=torch.float32)
+    similarity[0, 0] = 2.0
+    similarity[1, 1] = 2.0
+    similarity[2, 3] = 2.0
+    similarity[3, 4] = 2.0
+
+    result = needleman_wunsch(similarity, gap_penalty=-0.2)
+    segments = consecutive_match_segments(result)
+
+    assert [len(segment) for segment in segments] == [2, 2]
+    assert [(step.index1, step.index2) for step in segments[0]] == [(0, 0), (1, 1)]
+    assert [(step.index1, step.index2) for step in segments[1]] == [(2, 3), (3, 4)]
+
+
+def test_consecutive_match_segments_break_below_display_threshold():
+    match_scores = 3.0 * torch.eye(4) - 1.0
+    raw_similarity = torch.diag(torch.tensor([0.9, 0.8, 0.2, 0.95]))
+    scored = needleman_wunsch(match_scores, gap_penalty=-0.3)
+    restored = attach_raw_similarities(scored, raw_similarity)
+
+    segments = consecutive_match_segments(restored, min_similarity=0.5)
+
+    assert [len(segment) for segment in segments] == [2, 1]
+    assert [(step.index1, step.index2) for step in segments[-1]] == [(3, 3)]
 
 
 def test_arabic_word_normalization_removes_tatweel_and_diacritics():
@@ -142,9 +170,11 @@ def test_pca_projection_returns_one_dot_per_window():
     assert np.isfinite(projected).all()
 
 
-def test_window_metrics_report_token_agreement():
+def test_window_metrics_report_token_agreement_and_segments():
     similarity = torch.eye(3)
     result = needleman_wunsch(similarity, gap_penalty=-0.3)
     metrics = window_alignment_metrics(result, ["ب", "ت", "ج"], ["ب", "ت", "د"])
     assert metrics["matched_window_pairs"] == 3
+    assert metrics["consecutive_segments"] == 1
+    assert metrics["longest_segment_pairs"] == 3
     assert np.isclose(metrics["token_agreement"], 2 / 3)
