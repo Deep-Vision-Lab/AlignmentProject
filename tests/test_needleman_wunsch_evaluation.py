@@ -1,7 +1,8 @@
 import numpy as np
 import torch
 
-from Evaluation._eval_utils import needleman_wunsch, normalize_word
+from Evaluation._eval_utils import NWResult, NWStep, needleman_wunsch, normalize_word
+from Evaluation.phrase_alignment import phrase_alignment_groups, phrase_group_metrics
 from Evaluation.window_alignment import (
     BLANK_TOKEN,
     alignment_score_matrix,
@@ -14,6 +15,15 @@ from Evaluation.window_alignment import (
     window_alignment_metrics,
     window_token_labels,
 )
+
+
+def _result_from_steps(steps):
+    return NWResult(
+        steps=list(steps),
+        score=0.0,
+        normalized_score=0.0,
+        score_matrix=np.zeros((1, 1), dtype=np.float32),
+    )
 
 
 def test_nw_recovers_diagonal_window_alignment():
@@ -101,6 +111,83 @@ def test_consecutive_match_segments_break_below_display_threshold():
 
     assert [len(segment) for segment in segments] == [2, 1]
     assert [(step.index1, step.index2) for step in segments[-1]] == [(3, 3)]
+
+
+def test_phrase_group_merges_weak_match_and_short_gap():
+    result = _result_from_steps(
+        [
+            NWStep(0, 0, "match", 0.91),
+            NWStep(1, 1, "match", 0.12),
+            NWStep(2, None, "gap_in_line2", None),
+            NWStep(3, 2, "match", 0.86),
+        ]
+    )
+    groups = phrase_alignment_groups(
+        result,
+        merge_gap_tolerance_windows=2,
+        merge_max_jump_windows=4,
+        merge_min_similarity=0.30,
+    )
+
+    assert len(groups) == 1
+    group = groups[0]
+    assert group.anchor_pairs == 2
+    assert (group.line1_start, group.line1_end) == (0, 4)
+    assert (group.line2_start, group.line2_end) == (0, 3)
+
+
+def test_phrase_group_splits_after_excessive_bridge_steps():
+    result = _result_from_steps(
+        [
+            NWStep(0, 0, "match", 0.90),
+            NWStep(1, None, "gap_in_line2", None),
+            NWStep(2, None, "gap_in_line2", None),
+            NWStep(3, 1, "match", 0.88),
+        ]
+    )
+    groups = phrase_alignment_groups(
+        result,
+        merge_gap_tolerance_windows=1,
+        merge_max_jump_windows=4,
+        merge_min_similarity=0.30,
+    )
+
+    assert len(groups) == 2
+
+
+def test_phrase_group_splits_after_large_window_jump():
+    result = _result_from_steps(
+        [
+            NWStep(0, 0, "match", 0.90),
+            NWStep(1, 1, "match", 0.10),
+            NWStep(6, 3, "match", 0.89),
+        ]
+    )
+    groups = phrase_alignment_groups(
+        result,
+        merge_gap_tolerance_windows=3,
+        merge_max_jump_windows=4,
+        merge_min_similarity=0.30,
+    )
+
+    assert len(groups) == 2
+
+
+def test_phrase_group_metrics_report_merged_span():
+    result = _result_from_steps(
+        [
+            NWStep(0, 0, "match", 0.90),
+            NWStep(1, 1, "match", 0.20),
+            NWStep(2, 2, "match", 0.85),
+        ]
+    )
+    groups = phrase_alignment_groups(result, 1, 3, 0.30)
+    metrics = phrase_group_metrics(groups)
+
+    assert metrics["phrase_groups"] == 1
+    assert metrics["longest_phrase_group_pairs"] == 2
+    assert metrics["longest_phrase_span_line1"] == 3
+    assert metrics["longest_phrase_span_line2"] == 3
 
 
 def test_arabic_word_normalization_removes_tatweel_and_diacritics():
