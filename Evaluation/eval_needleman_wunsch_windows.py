@@ -2,10 +2,10 @@
 """Run Needleman-Wunsch directly over line-image window embeddings.
 
 The prediction is fully image-to-image: raw cosine similarities are converted to
-mutual row/column-normalized match scores before global Needleman-Wunsch. This
-removes the broad positive cosine background that otherwise pulls the path toward
-a plain diagonal. Transcripts are used only to annotate/evaluate matched windows
-with the token assigned by the trained blank-aware Span-DTW path.
+mutual row/column-normalized match scores before global Needleman-Wunsch. The NW
+path remains window-level. For visualization only, nearby monotonic matches are
+merged into larger phrase/sentence-like regions that share one color in both
+line images. Transcripts are used only to annotate/evaluate matched windows.
 """
 from __future__ import annotations
 
@@ -38,10 +38,13 @@ from Evaluation._eval_utils import (
     synthetic_pair_paths,
     validate_pair_paths,
 )
+from Evaluation.phrase_alignment import (
+    phrase_alignment_groups,
+    phrase_group_metrics,
+)
 from Evaluation.window_alignment import (
     alignment_score_matrix,
     attach_raw_similarities,
-    consecutive_match_segments,
     window_alignment_metrics,
     window_token_labels,
 )
@@ -59,16 +62,16 @@ def _window_pixels(index, n_windows, image_width, config, flipped):
     return start * scale, end * scale
 
 
-def _segment_pixels(segment, side, n_windows, image_width, config, flipped):
-    indices = [
-        int(step.index1 if side == 1 else step.index2)
-        for step in segment
-    ]
+def _group_pixels(group, side, n_windows, image_width, config, flipped):
+    if side == 1:
+        start, end = group.line1_start, group.line1_end
+    else:
+        start, end = group.line2_start, group.line2_end
     bounds = [
         _window_pixels(index, n_windows, image_width, config, flipped)
-        for index in indices
+        for index in range(int(start), int(end))
     ]
-    return min(start for start, _end in bounds), max(end for _start, end in bounds)
+    return min(x0 for x0, _x1 in bounds), max(x1 for _x0, x1 in bounds)
 
 
 def _labels_for_line(models, text_path, features):
@@ -85,6 +88,9 @@ def evaluate_pair(
     similarity_offset,
     score_mode,
     score_clip,
+    merge_gap_tolerance_windows,
+    merge_max_jump_windows,
+    merge_min_similarity,
     dataset_type,
 ):
     validate_pair_paths(pair)
@@ -105,10 +111,17 @@ def evaluate_pair(
         similarity_offset=similarity_offset,
     )
     alignment = attach_raw_similarities(scored_alignment, raw_similarity)
+    groups = phrase_alignment_groups(
+        alignment,
+        merge_gap_tolerance_windows=merge_gap_tolerance_windows,
+        merge_max_jump_windows=merge_max_jump_windows,
+        merge_min_similarity=merge_min_similarity,
+    )
 
     text1, span_path1, labels1 = _labels_for_line(models, pair.text1, features1)
     text2, span_path2, labels2 = _labels_for_line(models, pair.text2, features2)
     metrics = window_alignment_metrics(alignment, labels1, labels2)
+    metrics.update(phrase_group_metrics(groups))
     metrics.update(
         {
             "index": pair.index,
@@ -116,6 +129,9 @@ def evaluate_pair(
             "line2_windows": len(selected2),
             "feature": feature,
             "score_mode": score_mode,
+            "merge_gap_tolerance_windows": int(merge_gap_tolerance_windows),
+            "merge_max_jump_windows": int(merge_max_jump_windows),
+            "merge_min_similarity": float(merge_min_similarity),
             "span_steps_line1": len(span_path1),
             "span_steps_line2": len(span_path2),
         }
@@ -127,6 +143,7 @@ def evaluate_pair(
         "similarity": raw_similarity,
         "alignment_scores": match_scores,
         "alignment": alignment,
+        "groups": groups,
         "labels1": labels1,
         "labels2": labels2,
         "text1": text1,
@@ -135,16 +152,12 @@ def evaluate_pair(
     }
 
 
-def _visible_segments(alignment, min_similarity, max_drawn_segments):
-    segments = consecutive_match_segments(
-        alignment,
-        min_similarity=float(min_similarity),
-    )
-    limit = int(max_drawn_segments)
-    if limit <= 0 or len(segments) <= limit:
-        return segments
-    positions = np.linspace(0, len(segments) - 1, limit).round().astype(int)
-    return [segments[int(position)] for position in positions]
+def _visible_groups(groups, max_drawn_groups):
+    limit = int(max_drawn_groups)
+    if limit <= 0 or len(groups) <= limit:
+        return list(groups)
+    positions = np.linspace(0, len(groups) - 1, limit).round().astype(int)
+    return [groups[int(position)] for position in positions]
 
 
 def _full_traceback_coordinates(alignment):
@@ -166,8 +179,7 @@ def _full_traceback_coordinates(alignment):
 def save_visualization(
     result,
     output,
-    min_similarity=-1.0,
-    max_drawn_segments=0,
+    max_drawn_groups=0,
     show_heatmap=True,
 ):
     pair = result["pair"]
@@ -179,12 +191,8 @@ def save_visualization(
     n1 = len(result["features1"].contextual)
     n2 = len(result["features2"].contextual)
     flipped = bool(result.get("flipped", True))
-    segments = _visible_segments(
-        result["alignment"],
-        min_similarity,
-        max_drawn_segments,
-    )
-    cmap = plt.get_cmap("turbo", max(2, len(segments)))
+    groups = _visible_groups(result["groups"], max_drawn_groups)
+    cmap = plt.get_cmap("turbo", max(2, len(groups)))
 
     rows = 3 if show_heatmap else 2
     ratios = [2.2, 2.2, 4.2] if show_heatmap else [2.2, 2.2]
@@ -199,20 +207,20 @@ def save_visualization(
         ax.set_yticks([])
         ax.set_ylabel(label, rotation=0, labelpad=32, va="center")
 
-    # One color and one continuous rectangle per strict consecutive diagonal block.
-    # No arrows/connectors are drawn between the two lines.
-    for segment_index, segment in enumerate(segments):
-        color = cmap(segment_index)
-        x01, x11 = _segment_pixels(
-            segment,
+    # One color and one continuous rectangle per tolerant phrase-level group.
+    # No arrows or connectors are drawn between the two lines.
+    for group_index, group in enumerate(groups):
+        color = cmap(group_index)
+        x01, x11 = _group_pixels(
+            group,
             side=1,
             n_windows=n1,
             image_width=image1.shape[1],
             config=result["models_config"],
             flipped=flipped,
         )
-        x02, x12 = _segment_pixels(
-            segment,
+        x02, x12 = _group_pixels(
+            group,
             side=2,
             n_windows=n2,
             image_width=image2.shape[1],
@@ -231,16 +239,16 @@ def save_visualization(
                     facecolor=color,
                     edgecolor=color,
                     alpha=0.22,
-                    linewidth=1.4,
+                    linewidth=1.5,
                 )
             )
 
     metrics = result["metrics"]
     fig.suptitle(
-        "Window-level Needleman–Wunsch alignment\n"
+        "Window-level Needleman–Wunsch alignment with phrase-level masks\n"
         f"pair={pair.index}  score_mode={metrics['score_mode']}  "
         f"matched={metrics['matched_window_pairs']}  "
-        f"segments={metrics['consecutive_segments']}  "
+        f"phrase groups={metrics['phrase_groups']}  "
         f"mean cosine={metrics['mean_matched_cosine']:.3f}  "
         f"token agreement={metrics['token_agreement']:.3f}",
         fontsize=11,
@@ -262,18 +270,28 @@ def save_visualization(
             cmap="coolwarm",
             interpolation="nearest",
         )
-        for segment_index, segment in enumerate(segments):
-            color = cmap(segment_index)
+        for group_index, group in enumerate(groups):
+            color = cmap(group_index)
+            ax_raw.add_patch(
+                Rectangle(
+                    (group.line2_start - 0.5, group.line1_start - 0.5),
+                    group.line2_span_windows,
+                    group.line1_span_windows,
+                    fill=False,
+                    edgecolor=color,
+                    linewidth=1.3,
+                )
+            )
             ax_raw.scatter(
-                [int(step.index2) for step in segment],
-                [int(step.index1) for step in segment],
+                [int(step.index2) for step in group.anchors],
+                [int(step.index1) for step in group.anchors],
                 s=18,
                 facecolors="none",
                 edgecolors=[color],
                 linewidths=0.9,
             )
         ax_raw.set_title(
-            "Raw cosine similarity + colored consecutive match blocks",
+            "Raw cosine similarity + tolerant phrase groups",
             fontsize=9,
         )
         ax_raw.set_xlabel("line 2 logical windows (0 = rightmost)")
@@ -300,8 +318,6 @@ def save_visualization(
             interpolation="nearest",
         )
         trace_x, trace_y = _full_traceback_coordinates(result["alignment"])
-        # DP coordinates describe window boundaries. Shift by half a cell to overlay
-        # them on the [S1,S2] match-score matrix while preserving gap moves.
         ax_score.plot(
             trace_x - 0.5,
             trace_y - 0.5,
@@ -372,19 +388,34 @@ def parse_args():
         default=4.0,
         help="Absolute clipping bound for mutual-z scores; <=0 disables clipping.",
     )
-    parser.add_argument("--min-similarity", type=float, default=-1.0)
     parser.add_argument(
-        "--max-drawn-segments",
+        "--merge-gap-tolerance-windows",
+        type=int,
+        default=2,
+        help="Maximum weak/gap traceback steps allowed between strong phrase anchors.",
+    )
+    parser.add_argument(
+        "--merge-max-jump-windows",
+        type=int,
+        default=4,
+        help="Maximum window-index advance in either line between phrase anchors.",
+    )
+    parser.add_argument(
+        "--merge-min-similarity",
+        type=float,
+        default=0.30,
+        help="Minimum raw cosine for a match to act as a phrase-group anchor.",
+    )
+    parser.add_argument(
+        "--max-drawn-groups",
         type=int,
         default=0,
-        help="Maximum colored consecutive blocks to draw; <=0 draws every block.",
+        help="Maximum phrase groups to color; <=0 draws every group.",
     )
-    parser.add_argument(
-        "--max-drawn-pairs",
-        type=int,
-        default=None,
-        help=argparse.SUPPRESS,
-    )
+    # Backward-compatible aliases for commands produced by older evaluator versions.
+    parser.add_argument("--min-similarity", type=float, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--max-drawn-segments", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--max-drawn-pairs", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--index", type=int, default=1)
     parser.add_argument("--start-index", type=int, default=1)
     parser.add_argument("--n-samples", type=int, default=100)
@@ -408,13 +439,19 @@ def main():
         if args.batch
         else [synthetic_pair_paths(args.data_dir, args.index)]
     )
+    merge_min_similarity = (
+        args.merge_min_similarity
+        if args.min_similarity is None
+        else args.min_similarity
+    )
+    max_drawn_groups = args.max_drawn_groups
+    if args.max_drawn_segments is not None:
+        max_drawn_groups = args.max_drawn_segments
+    if args.max_drawn_pairs is not None:
+        max_drawn_groups = args.max_drawn_pairs
+
     rows = []
     output_dir = Path(args.output_dir)
-    max_drawn_segments = (
-        args.max_drawn_segments
-        if args.max_drawn_pairs is None
-        else args.max_drawn_pairs
-    )
     for pair in pairs:
         result = evaluate_pair(
             models,
@@ -424,6 +461,9 @@ def main():
             args.similarity_offset,
             args.score_mode,
             args.score_clip,
+            args.merge_gap_tolerance_windows,
+            args.merge_max_jump_windows,
+            merge_min_similarity,
             args.dataset_type,
         )
         result["models_config"] = models.config
@@ -433,8 +473,7 @@ def main():
         save_visualization(
             result,
             output,
-            min_similarity=args.min_similarity,
-            max_drawn_segments=max_drawn_segments,
+            max_drawn_groups=max_drawn_groups,
             show_heatmap=not args.no_heatmap,
         )
         print(json.dumps(json_ready(result["metrics"]), ensure_ascii=False), flush=True)
