@@ -21,17 +21,23 @@ window-to-window visual matrix:
 2. build an `[S1,S2]` raw cosine matrix;
 3. remove broad per-row and per-column cosine bias with the default `mutual-z` score;
 4. run global Needleman-Wunsch over those discriminative window match scores;
-5. split the traceback into strict consecutive diagonal blocks;
-6. mask each continuous block with one shared color in both lines, without arrows or connectors;
-7. show raw cosine and the actual NW match-score heatmap side by side;
-8. optionally use the trained Span-DTW path only to annotate/evaluate each window token.
+5. keep the prediction and traceback at window resolution;
+6. merge nearby monotonic matches into phrase/sentence-like visualization groups;
+7. draw one continuous mask per merged group with the same color in both lines;
+8. show raw cosine and the actual NW match-score heatmap side by side;
+9. optionally use the trained Span-DTW path only to annotate/evaluate each window token.
 
-A colored block continues only while the traceback follows
-`(i,j) -> (i+1,j+1)`. A gap, skipped window, or match below
-`--min-similarity` starts a new block and therefore a new color.
+The visualization grouping does not modify Needleman-Wunsch. Matches above
+`--merge-min-similarity` act as anchors. Weak matches and short gap transitions
+may remain inside one group when the number of intervening traceback steps is at
+most `--merge-gap-tolerance-windows` and the next anchor advances by no more
+than `--merge-max-jump-windows` in either line. The continuous mask spans all
+windows between the first and last anchor, including the tolerated interruption.
+A new color starts only after a long bridge, a large jump, or a non-monotonic move.
+No arrows or connectors are drawn between the lines.
 
 The NW prediction is image-only. Transcript tokens do not affect the visual
-similarity matrix, normalized score matrix, or NW path.
+similarity matrix, normalized score matrix, NW path, or phrase grouping.
 
 Why normalization is needed: contextual window embeddings can have a broad
 positive cosine background. Running NW directly on raw cosine can reward an
@@ -49,9 +55,11 @@ python Evaluation/eval_needleman_wunsch_windows.py \
   --score-clip 4.0 \
   --gap -0.35 \
   --similarity-offset 0.0 \
-  --min-similarity 0.30 \
-  --max-drawn-segments 0 \
-  --output Results/Evaluation/NW/window_pair_1_segments.png
+  --merge-gap-tolerance-windows 2 \
+  --merge-max-jump-windows 4 \
+  --merge-min-similarity 0.30 \
+  --max-drawn-groups 0 \
+  --output Results/Evaluation/NW/window_pair_1_phrase_groups.png
 ```
 
 Batch evaluation:
@@ -64,6 +72,9 @@ python Evaluation/eval_needleman_wunsch_windows.py \
   --feature contextual \
   --score-mode mutual-z \
   --gap -0.35 \
+  --merge-gap-tolerance-windows 2 \
+  --merge-max-jump-windows 4 \
+  --merge-min-similarity 0.30 \
   --output-dir Results/Evaluation/NW/windows_200
 ```
 
@@ -71,7 +82,8 @@ Outputs include per-pair PNGs, `samples.csv`, and `summary.json` with:
 
 - NW score and normalized score;
 - matched window pairs and gap counts;
-- number, mean length, and longest length of consecutive aligned blocks;
+- strict consecutive-block metrics for low-level diagnostics;
+- phrase-group count, anchor count, span length, and mean group cosine;
 - mean matched raw cosine;
 - line-1 and line-2 window coverage;
 - token agreement for matched windows (annotation metric only).
@@ -174,8 +186,10 @@ python Evaluation/viz_heatmap_dtw.py \
 - `--score-clip`: protects mutual-z scoring from extremely flat rows or columns.
 - `--gap`: NW gap score; it should be negative.
 - `--similarity-offset`: subtracted from the chosen NW match score.
-- `--min-similarity`: starts a new colored block when a matched raw cosine is below this value.
-- `--max-drawn-segments`: limits colored blocks; `0` draws all blocks and does not alter the NW path.
+- `--merge-gap-tolerance-windows`: tolerated weak/gap traceback steps between phrase anchors.
+- `--merge-max-jump-windows`: largest anchor advance allowed in either line before starting a new color.
+- `--merge-min-similarity`: minimum raw cosine for a match to act as a phrase anchor.
+- `--max-drawn-groups`: limits colored phrase groups; `0` draws all and does not alter the NW path.
 - `--clusters`: number of visual K-means clusters.
 - `--min-ink`: removes nearly empty windows before clustering.
 - `--representative-height`: fixed thumbnail height before zoom.
