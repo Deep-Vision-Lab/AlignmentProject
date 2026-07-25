@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Sequence
 
 import numpy as np
@@ -49,6 +49,69 @@ def window_token_labels(
         for index in range(start, max(start, end)):
             labels[index] = token
     return labels
+
+
+def alignment_score_matrix(
+    similarity: torch.Tensor | np.ndarray,
+    mode: str = "mutual_z",
+    clip: float = 4.0,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """Convert raw window cosine values into discriminative NW match scores.
+
+    Raw cosine matrices from contextual encoders often have a large positive
+    background. With a negative gap score, ordinary Needleman-Wunsch then prefers
+    a smooth diagonal even when a brighter off-diagonal ridge is more distinctive.
+
+    ``mutual_z`` removes the per-row and per-column baselines and averages their
+    z-scores. A cell is rewarded when it is unusually strong for both windows,
+    while the order constraint still comes exclusively from Needleman-Wunsch.
+    The raw cosine matrix remains available for reporting and display.
+    """
+    matrix = torch.as_tensor(similarity, dtype=torch.float32)
+    if matrix.ndim != 2:
+        raise ValueError(f"Expected a 2-D similarity matrix, got {tuple(matrix.shape)}")
+    if matrix.numel() == 0:
+        return matrix.clone()
+
+    value = str(mode).strip().lower().replace("-", "_")
+    if value == "raw":
+        return matrix.clone()
+
+    row_centered = matrix - matrix.mean(dim=1, keepdim=True)
+    column_centered = matrix - matrix.mean(dim=0, keepdim=True)
+    if value == "centered":
+        return 0.5 * (row_centered + column_centered)
+    if value != "mutual_z":
+        raise ValueError("score mode must be raw, centered, or mutual-z")
+
+    row_scale = torch.sqrt(row_centered.square().mean(dim=1, keepdim=True) + float(eps))
+    column_scale = torch.sqrt(
+        column_centered.square().mean(dim=0, keepdim=True) + float(eps)
+    )
+    scores = 0.5 * (
+        row_centered / row_scale
+        + column_centered / column_scale
+    )
+    if float(clip) > 0:
+        scores = scores.clamp(min=-float(clip), max=float(clip))
+    return scores
+
+
+def attach_raw_similarities(result, raw_similarity: torch.Tensor | np.ndarray):
+    """Keep a score-derived NW path but report the original cosine per match."""
+    raw = (
+        raw_similarity.detach().cpu().numpy().astype(np.float32)
+        if torch.is_tensor(raw_similarity)
+        else np.asarray(raw_similarity, dtype=np.float32)
+    )
+    steps = []
+    for step in result.steps:
+        similarity = None
+        if step.index1 is not None and step.index2 is not None:
+            similarity = float(raw[int(step.index1), int(step.index2)])
+        steps.append(replace(step, similarity=similarity))
+    return replace(result, steps=steps)
 
 
 def pca_project_2d(features: torch.Tensor | np.ndarray) -> np.ndarray:
