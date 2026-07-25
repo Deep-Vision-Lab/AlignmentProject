@@ -59,6 +59,34 @@ def _exact_window_crop(image, logical_index, n_windows, config, flipped):
     return image[:, x0:x1]
 
 
+def _small_thumbnail(crop: np.ndarray, max_height: int) -> np.ndarray:
+    """Downsample a tall line-window crop to a predictable display footprint."""
+    height = max(1, int(crop.shape[0]))
+    width = max(1, int(crop.shape[1]))
+    target_height = max(12, int(max_height))
+    scale = min(1.0, target_height / float(height))
+    target_width = max(1, int(round(width * scale)))
+    target_height = max(1, int(round(height * scale)))
+    if target_width == width and target_height == height:
+        return crop
+    try:
+        resample = Image.Resampling.LANCZOS
+    except AttributeError:
+        resample = Image.LANCZOS
+    return np.asarray(
+        Image.fromarray(crop).resize((target_width, target_height), resample)
+    )
+
+
+def _thumbnail_corner(rep_x, rep_y, projected):
+    """Place the thumbnail opposite the representative to preserve nearby dots."""
+    center_x = float(np.median(projected[:, 0]))
+    center_y = float(np.median(projected[:, 1]))
+    box_x = 0.16 if rep_x >= center_x else 0.84
+    box_y = 0.16 if rep_y >= center_y else 0.84
+    return box_x, box_y
+
+
 def _line_labels(models, text_path, features):
     text = read_text(text_path, boundary_spaces=False)
     _prepared, _encoding, path = align_text_to_windows(models, text, features, True)
@@ -116,6 +144,7 @@ def save_cluster_figure(
     flipped,
     output,
     representative_zoom,
+    representative_height,
 ):
     projected = pca_project_2d(embeddings)
     representatives = cluster_representatives(embeddings, labels, centers)
@@ -139,31 +168,36 @@ def save_cluster_figure(
         members = np.flatnonzero(np.asarray(labels) == cluster)
         representative = representatives[cluster]
         other_members = members[members != representative]
-        ax.scatter(projected[:, 0], projected[:, 1], s=9, alpha=0.06, color="gray", zorder=1)
+        ax.scatter(
+            projected[:, 0],
+            projected[:, 1],
+            s=8,
+            alpha=0.055,
+            color="gray",
+            zorder=1,
+        )
         if len(other_members):
             ax.scatter(
                 projected[other_members, 0],
                 projected[other_members, 1],
-                s=24,
-                alpha=0.85,
+                s=25,
+                alpha=0.88,
                 color=colors(cluster),
                 edgecolors="none",
                 label=f"other windows ({len(other_members)})",
                 zorder=2,
             )
 
-        # Keep the representative's true PCA location visible as a star. The crop
-        # is deliberately offset from that point so it cannot hide the cluster dots.
         rep_x = float(projected[representative, 0])
         rep_y = float(projected[representative, 1])
         ax.scatter(
             [rep_x],
             [rep_y],
             marker="*",
-            s=90,
+            s=82,
             color=colors(cluster),
             edgecolors="black",
-            linewidths=0.7,
+            linewidths=0.65,
             zorder=4,
             label="representative",
         )
@@ -176,25 +210,28 @@ def save_cluster_figure(
             config,
             flipped,
         )
-        image_box = OffsetImage(crop, zoom=float(representative_zoom))
+        thumbnail = _small_thumbnail(crop, representative_height)
+        box_x, box_y = _thumbnail_corner(rep_x, rep_y, projected)
+        image_box = OffsetImage(thumbnail, zoom=float(representative_zoom))
         annotation = AnnotationBbox(
             image_box,
             (rep_x, rep_y),
-            xybox=(28, 28),
+            xybox=(box_x, box_y),
             xycoords="data",
-            boxcoords="offset points",
+            boxcoords="axes fraction",
+            box_alignment=(0.5, 0.5),
             frameon=True,
             arrowprops=dict(
                 arrowstyle="-",
                 color=colors(cluster),
-                linewidth=1.0,
-                alpha=0.8,
+                linewidth=0.9,
+                alpha=0.72,
             ),
             bboxprops=dict(
                 edgecolor=colors(cluster),
-                linewidth=1.4,
+                linewidth=1.2,
                 facecolor="white",
-                alpha=0.95,
+                alpha=0.96,
             ),
             zorder=5,
         )
@@ -211,12 +248,12 @@ def save_cluster_figure(
         ax.set_xlabel("PCA 1")
         ax.set_ylabel("PCA 2")
         ax.grid(alpha=0.15)
-        ax.margins(0.18)
+        ax.margins(0.14)
 
     for panel in range(len(clusters), rows * columns):
         axes.flat[panel].axis("off")
     fig.suptitle(
-        "Visual window clusters: representative star + small crop, remaining members as dots\n"
+        "Visual window clusters: representative star + corner thumbnail, remaining members as dots\n"
         "Cluster tokens are majority labels from Span-DTW; clustering itself is image-only",
         fontsize=12,
         fontweight="bold",
@@ -241,10 +278,16 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--min-ink", type=float, default=0.01)
     parser.add_argument(
+        "--representative-height",
+        type=int,
+        default=34,
+        help="Maximum representative crop height in display pixels before zoom.",
+    )
+    parser.add_argument(
         "--representative-zoom",
         type=float,
-        default=0.45,
-        help="Thumbnail zoom. Small by default so PCA dots remain visible.",
+        default=1.0,
+        help="Final multiplier applied to the already-small representative thumbnail.",
     )
     parser.add_argument("--output", default="Results/Evaluation/Clusters/window_clusters.png")
     parser.add_argument("--output-dir", default="Results/Evaluation/Clusters")
@@ -279,6 +322,7 @@ def main():
         bool(models.image_model.use_flip),
         args.output,
         args.representative_zoom,
+        args.representative_height,
     )
 
     output_dir = Path(args.output_dir)
