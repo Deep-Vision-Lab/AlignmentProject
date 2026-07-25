@@ -19,13 +19,14 @@ window-to-window visual matrix:
 
 1. encode every window in line 1 and line 2;
 2. build an `[S1,S2]` raw cosine matrix;
-3. remove broad per-row and per-column cosine bias with the default `mutual-z` score;
-4. run global Needleman-Wunsch over those discriminative window match scores;
+3. transform that matrix according to `--score-mode`;
+4. run global Needleman-Wunsch over the selected score matrix;
 5. keep the prediction and traceback at window resolution;
 6. merge nearby monotonic matches into phrase/sentence-like visualization groups;
 7. draw one continuous mask per merged group with the same color in both lines;
-8. show raw cosine and the actual NW match-score heatmap side by side;
-9. optionally use the trained Span-DTW path only to annotate/evaluate each window token.
+8. show one heatmap: the exact score matrix used by Needleman-Wunsch;
+9. write every score value in its heatmap cell and overlay the full traceback;
+10. optionally use the trained Span-DTW path only to annotate/evaluate each window token.
 
 The visualization grouping does not modify Needleman-Wunsch. Matches above
 `--merge-min-similarity` act as anchors. Weak matches and short gap transitions
@@ -37,13 +38,29 @@ A new color starts only after a long bridge, a large jump, or a non-monotonic mo
 No arrows or connectors are drawn between the lines.
 
 The NW prediction is image-only. Transcript tokens do not affect the visual
-similarity matrix, normalized score matrix, NW path, or phrase grouping.
+similarity matrix, selected score matrix, NW path, or phrase grouping.
 
-Why normalization is needed: contextual window embeddings can have a broad
-positive cosine background. Running NW directly on raw cosine can reward an
-ordinary diagonal even when a brighter displaced ridge is more distinctive.
-`mutual-z` rewards a cell only when it is unusually strong for both its line-1
-window and its line-2 window.
+### Score modes
+
+The score mode selects which cell value Needleman-Wunsch uses for a diagonal
+window match. `--similarity-offset` is subtracted afterward.
+
+- `--score-mode raw`: use raw cosine similarity directly. It is easy to interpret,
+  but a broad positive cosine background can pull the global path toward a plain
+  diagonal.
+- `--score-mode centered`: subtract the row and column baselines and average the
+  two centered values. It rewards a cell that is above the usual similarity of
+  either participating window, without variance normalization.
+- `--score-mode mutual-z`: subtract row/column baselines, normalize both by their
+  row/column variation, and average the two standardized values. A positive score
+  means the pair is unusually strong for both windows; this is the recommended
+  default for the contextual encoder. `--score-clip` limits extreme standardized
+  values from very flat rows or columns.
+
+The single heatmap always displays the matrix selected by `--score-mode`, because
+that is the matrix actually optimized by Needleman-Wunsch. Raw cosine values are
+still retained for reporting `mean_matched_cosine` and for phrase-anchor filtering
+with `--merge-min-similarity`.
 
 ```bash
 python Evaluation/eval_needleman_wunsch_windows.py \
@@ -59,8 +76,13 @@ python Evaluation/eval_needleman_wunsch_windows.py \
   --merge-max-jump-windows 4 \
   --merge-min-similarity 0.30 \
   --max-drawn-groups 0 \
+  --heatmap-value-decimals 2 \
+  --heatmap-annotation-fontsize 5 \
   --output Results/Evaluation/NW/window_pair_1_phrase_groups.png
 ```
+
+Every heatmap cell is annotated by default. For very large batch figures, disable
+cell labels with `--no-annotate-heatmap-values`.
 
 Batch evaluation:
 
@@ -75,6 +97,7 @@ python Evaluation/eval_needleman_wunsch_windows.py \
   --merge-gap-tolerance-windows 2 \
   --merge-max-jump-windows 4 \
   --merge-min-similarity 0.30 \
+  --no-annotate-heatmap-values \
   --output-dir Results/Evaluation/NW/windows_200
 ```
 
@@ -180,16 +203,19 @@ python Evaluation/viz_heatmap_dtw.py \
 
 ## Important NW and clustering options
 
-- `--score-mode mutual-z`: recommended NW score; removes row/column cosine bias.
-- `--score-mode raw`: reproduces the old raw-cosine behavior for comparison.
-- `--score-mode centered`: subtracts row/column means without variance scaling.
+- `--score-mode mutual-z`: recommended NW score; row/column standardized mutual distinctiveness.
+- `--score-mode raw`: raw cosine similarity.
+- `--score-mode centered`: row/column centered cosine without variance scaling.
 - `--score-clip`: protects mutual-z scoring from extremely flat rows or columns.
 - `--gap`: NW gap score; it should be negative.
-- `--similarity-offset`: subtracted from the chosen NW match score.
+- `--similarity-offset`: subtracted from each selected score-mode cell before NW compares transitions.
 - `--merge-gap-tolerance-windows`: tolerated weak/gap traceback steps between phrase anchors.
 - `--merge-max-jump-windows`: largest anchor advance allowed in either line before starting a new color.
 - `--merge-min-similarity`: minimum raw cosine for a match to act as a phrase anchor.
 - `--max-drawn-groups`: limits colored phrase groups; `0` draws all and does not alter the NW path.
+- `--heatmap-value-decimals`: decimal precision shown in every heatmap cell.
+- `--heatmap-annotation-fontsize`: font size for cell values.
+- `--no-annotate-heatmap-values`: omit cell values for faster/smaller batch figures.
 - `--clusters`: number of visual K-means clusters.
 - `--min-ink`: removes nearly empty windows before clustering.
 - `--representative-height`: fixed thumbnail height before zoom.
