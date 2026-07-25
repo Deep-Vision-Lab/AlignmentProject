@@ -50,8 +50,11 @@ jobs:
             scripts/benchmark/summarize_training_speed.py \
             Evaluation/__init__.py \
             Evaluation/_eval_utils.py \
+            Evaluation/window_alignment.py \
+            Evaluation/eval_needleman_wunsch_windows.py \
             Evaluation/eval_needleman_wunsch_words.py \
             Evaluation/eval_image_to_image.py \
+            Evaluation/viz_window_clusters.py \
             Evaluation/eval_img_align_sw.py \
             Evaluation/eval_retrieval.py \
             Evaluation/eval_alignment_mae.py \
