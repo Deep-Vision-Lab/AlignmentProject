@@ -12,47 +12,94 @@ These scripts reconstruct the visual architecture and Arabic text encoder from t
 
 Run all commands from the project root.
 
-## Needleman-Wunsch word evaluation and paired masks
+## Window-level Needleman-Wunsch evaluation
 
-The evaluator performs these steps:
+`eval_needleman_wunsch_windows.py` runs Needleman-Wunsch directly on the full
+window-to-window cosine similarity matrix:
 
-1. localize every word independently in each line with the trained blank-aware image-text Span-DTW path;
-2. pool one visual embedding for every localized word;
-3. align the two visual word sequences with Needleman-Wunsch;
-4. compare predicted index pairs with a transcript-derived reference alignment;
-5. draw the same translucent mask color over each predicted word pair in both lines.
+1. encode every window in line 1 and line 2;
+2. build an `[S1,S2]` visual cosine matrix;
+3. run global Needleman-Wunsch over the two window sequences;
+4. mask matched windows with the same colors in both lines;
+5. draw the NW path over the heatmap;
+6. optionally use the trained Span-DTW path only to annotate/evaluate each window token.
 
-The cross-line prediction is image-only. Transcripts provide word boundaries and evaluation labels, not the predicted word similarity matrix.
+The NW prediction is image-only. Transcript tokens do not affect the visual
+similarity matrix or the NW path.
 
 ```bash
-python Evaluation/eval_needleman_wunsch_words.py \
+python Evaluation/eval_needleman_wunsch_windows.py \
   --weights Weights/<run>/model_latest.pth \
   --data-dir DataSet/Synthetic_Arabic \
   --index 1 \
-  --feature local \
-  --output Results/Evaluation/NW/pair_1.png
+  --feature contextual \
+  --gap -0.25 \
+  --similarity-offset 0.0 \
+  --min-similarity 0.30 \
+  --output Results/Evaluation/NW/window_pair_1.png
 ```
 
 Batch evaluation:
 
 ```bash
-python Evaluation/eval_needleman_wunsch_words.py \
+python Evaluation/eval_needleman_wunsch_windows.py \
   --weights Weights/<run>/model_latest.pth \
   --data-dir DataSet/Synthetic_Arabic \
   --batch --start-index 1 --n-samples 200 \
-  --output-dir Results/Evaluation/NW
+  --feature contextual \
+  --output-dir Results/Evaluation/NW/windows_200
 ```
 
 Outputs include per-pair PNGs, `samples.csv`, and `summary.json` with:
 
 - NW score and normalized score;
-- pair precision, recall, and F1;
-- exact-word accuracy;
+- matched window pairs and gap counts;
 - mean matched cosine;
-- line-1 and line-2 word coverage;
-- patch-level NW score.
+- line-1 and line-2 window coverage;
+- token agreement for matched windows (annotation metric only).
 
-`Evaluation/eval_image_to_image.py` remains as a compatibility alias for this evaluator.
+`Evaluation/eval_image_to_image.py` and the deprecated
+`Evaluation/eval_needleman_wunsch_words.py` both delegate to this window-level
+evaluator.
+
+## Visual clustering of windows
+
+`viz_window_clusters.py` combines the windows from both lines and clusters their
+visual embeddings with deterministic cosine K-means. PCA is used only to draw the
+2-D dots.
+
+For every cluster the figure shows:
+
+- one real representative window crop at the medoid position;
+- all other cluster members as dots;
+- the majority aligned token for the cluster;
+- cluster size and token purity;
+- the representative line/window index.
+
+Text does not affect the clustering. The cluster token is assigned after
+clustering from the trained blank-aware Span-DTW labels.
+
+```bash
+python Evaluation/viz_window_clusters.py \
+  --weights Weights/<run>/model_latest.pth \
+  --data-dir DataSet/Synthetic_Arabic \
+  --index 1 \
+  --feature local \
+  --clusters 10 \
+  --min-ink 0.01 \
+  --output Results/Evaluation/Clusters/window_clusters_1.png \
+  --output-dir Results/Evaluation/Clusters
+```
+
+The script also writes `window_clusters_<index>.csv` and
+`window_clusters_<index>.json` with every member, representative flag, token,
+cluster token, purity, ink ratio, and PCA coordinates.
+
+## Feature choices
+
+- `--feature local`: raw CNN window representation; recommended for visual clusters.
+- `--feature grouped`: gated three-window local representation.
+- `--feature contextual`: BiLSTM contextual representation; recommended for window NW sequence alignment.
 
 ## Smith-Waterman local image alignment
 
@@ -93,12 +140,12 @@ python Evaluation/viz_heatmap_dtw.py \
   --output Results/Evaluation/span_dtw_1.png
 ```
 
-## Important options
+## Important NW and clustering options
 
-- `--feature local`: raw CNN window representation, recommended for word masks.
-- `--feature grouped`: gated three-window local representation.
-- `--feature contextual`: BiLSTM contextual sequence representation.
-- `--word-gap`: Needleman-Wunsch gap score; it should be negative.
-- `--similarity-offset`: value subtracted from each cosine match score. Increasing it makes gaps more competitive.
-- `--min-similarity`: do not draw predicted pairs below this cosine value.
-- `--dataset-type real`: applies resize, binarization, polarity correction, and normalization compatible with real-data training.
+- `--gap`: NW gap score; it should be negative.
+- `--similarity-offset`: subtracted from each cosine match score.
+- `--min-similarity`: only draw matched window pairs above this cosine value.
+- `--max-drawn-pairs`: limits connector clutter; it does not alter the NW path.
+- `--clusters`: number of visual K-means clusters.
+- `--min-ink`: removes nearly empty windows before clustering.
+- `--representative-zoom`: controls the displayed representative crop size.
