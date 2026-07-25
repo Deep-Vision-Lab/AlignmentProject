@@ -114,6 +114,51 @@ def attach_raw_similarities(result, raw_similarity: torch.Tensor | np.ndarray):
     return replace(result, steps=steps)
 
 
+def consecutive_match_segments(
+    result,
+    min_similarity: float = -float("inf"),
+) -> list[list]:
+    """Split an NW traceback into strict consecutive diagonal match blocks.
+
+    A block continues only for adjacent diagonal transitions, for example
+    ``(i, j) -> (i+1, j+1)``. Any gap transition, non-adjacent match, or match below
+    ``min_similarity`` closes the current block. This makes one visual mask/color
+    correspond to one continuous aligned window region in both line images.
+    """
+    segments: list[list] = []
+    current: list = []
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            segments.append(current)
+            current = []
+
+    for step in result.steps:
+        is_match = (
+            step.index1 is not None
+            and step.index2 is not None
+            and step.similarity is not None
+            and float(step.similarity) >= float(min_similarity)
+        )
+        if not is_match:
+            flush()
+            continue
+
+        if current:
+            previous = current[-1]
+            adjacent = (
+                int(step.index1) == int(previous.index1) + 1
+                and int(step.index2) == int(previous.index2) + 1
+            )
+            if not adjacent:
+                flush()
+        current.append(step)
+
+    flush()
+    return segments
+
+
 def pca_project_2d(features: torch.Tensor | np.ndarray) -> np.ndarray:
     """Project embeddings to two dimensions with deterministic PCA/SVD."""
     array = (
@@ -241,6 +286,8 @@ def window_alignment_metrics(result, labels1: Sequence[str], labels2: Sequence[s
         for step in result.steps
         if step.index1 is not None and step.index2 is not None
     ]
+    segments = consecutive_match_segments(result)
+    segment_lengths = [len(segment) for segment in segments]
     similarities = [float(step.similarity) for step in matched if step.similarity is not None]
     comparable = []
     ignored = {UNALIGNED_TOKEN, BLANK_TOKEN}
@@ -255,6 +302,9 @@ def window_alignment_metrics(result, labels1: Sequence[str], labels2: Sequence[s
         "nw_score": float(result.score),
         "nw_normalized_score": float(result.normalized_score),
         "matched_window_pairs": len(matched),
+        "consecutive_segments": len(segments),
+        "longest_segment_pairs": max(segment_lengths, default=0),
+        "mean_segment_pairs": float(np.mean(segment_lengths)) if segment_lengths else 0.0,
         "gap_in_line1": sum(step.index1 is None for step in result.steps),
         "gap_in_line2": sum(step.index2 is None for step in result.steps),
         "mean_matched_cosine": float(np.mean(similarities)) if similarities else 0.0,
