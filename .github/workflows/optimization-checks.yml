@@ -13,6 +13,7 @@ on:
       - "training_optimizations.py"
       - "scripts/train/**"
       - "scripts/benchmark/**"
+      - "Evaluation/**"
       - "tests/test_*optimization*.py"
       - "tests/test_batched_span_dtw.py"
       - "tests/test_span_surface_cache.py"
@@ -20,6 +21,7 @@ on:
       - "tests/test_fast_hard_alignment.py"
       - "tests/test_runtime_device_setup.py"
       - "tests/test_ddp_runtime_policy.py"
+      - "tests/test_needleman_wunsch_evaluation.py"
       - ".github/workflows/optimization-checks.yml"
   workflow_dispatch:
 
@@ -45,7 +47,15 @@ jobs:
             ddp_runtime_policy.py \
             training_optimizations.py \
             scripts/train/train_optimized.py \
-            scripts/benchmark/summarize_training_speed.py
+            scripts/benchmark/summarize_training_speed.py \
+            Evaluation/__init__.py \
+            Evaluation/_eval_utils.py \
+            Evaluation/eval_needleman_wunsch_words.py \
+            Evaluation/eval_image_to_image.py \
+            Evaluation/eval_img_align_sw.py \
+            Evaluation/eval_retrieval.py \
+            Evaluation/eval_alignment_mae.py \
+            Evaluation/viz_heatmap_dtw.py
       - name: Shell syntax
         run: |
           bash -n scripts/train/run_span_d3tw_optimized.sh
@@ -96,6 +106,7 @@ jobs:
           run_suite surface_cache tests/test_span_surface_cache.py
           run_suite config tests/test_optimized_training_config.py
           run_suite accumulation tests/test_gradient_accumulation.py
+          run_suite needleman_wunsch tests/test_needleman_wunsch_evaluation.py
           echo "$failed" > test-logs/failed.status
       - name: Upload focused test logs
         if: always()
