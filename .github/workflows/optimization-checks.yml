@@ -85,7 +85,7 @@ jobs:
           python -m pip install \
             --index-url https://download.pytorch.org/whl/cpu \
             torch==2.0.1 torchvision==0.15.2
-          python -m pip install pytest "jax[cpu]==0.4.35"
+          python -m pip install pytest matplotlib "jax[cpu]==0.4.35"
           python -m pip install "numpy<2"
       - name: Run all focused tests and capture logs
         run: |
