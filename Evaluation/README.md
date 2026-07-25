@@ -21,9 +21,14 @@ window-to-window visual matrix:
 2. build an `[S1,S2]` raw cosine matrix;
 3. remove broad per-row and per-column cosine bias with the default `mutual-z` score;
 4. run global Needleman-Wunsch over those discriminative window match scores;
-5. mask matched windows with the same colors in both lines;
-6. show raw cosine and the actual NW match-score heatmap side by side;
-7. optionally use the trained Span-DTW path only to annotate/evaluate each window token.
+5. split the traceback into strict consecutive diagonal blocks;
+6. mask each continuous block with one shared color in both lines, without arrows or connectors;
+7. show raw cosine and the actual NW match-score heatmap side by side;
+8. optionally use the trained Span-DTW path only to annotate/evaluate each window token.
+
+A colored block continues only while the traceback follows
+`(i,j) -> (i+1,j+1)`. A gap, skipped window, or match below
+`--min-similarity` starts a new block and therefore a new color.
 
 The NW prediction is image-only. Transcript tokens do not affect the visual
 similarity matrix, normalized score matrix, or NW path.
@@ -45,7 +50,8 @@ python Evaluation/eval_needleman_wunsch_windows.py \
   --gap -0.35 \
   --similarity-offset 0.0 \
   --min-similarity 0.30 \
-  --output Results/Evaluation/NW/window_pair_1_fixed.png
+  --max-drawn-segments 0 \
+  --output Results/Evaluation/NW/window_pair_1_segments.png
 ```
 
 Batch evaluation:
@@ -65,6 +71,7 @@ Outputs include per-pair PNGs, `samples.csv`, and `summary.json` with:
 
 - NW score and normalized score;
 - matched window pairs and gap counts;
+- number, mean length, and longest length of consecutive aligned blocks;
 - mean matched raw cosine;
 - line-1 and line-2 window coverage;
 - token agreement for matched windows (annotation metric only).
@@ -167,8 +174,8 @@ python Evaluation/viz_heatmap_dtw.py \
 - `--score-clip`: protects mutual-z scoring from extremely flat rows or columns.
 - `--gap`: NW gap score; it should be negative.
 - `--similarity-offset`: subtracted from the chosen NW match score.
-- `--min-similarity`: only draw matched window pairs above this raw cosine value.
-- `--max-drawn-pairs`: limits connector clutter; it does not alter the NW path.
+- `--min-similarity`: starts a new colored block when a matched raw cosine is below this value.
+- `--max-drawn-segments`: limits colored blocks; `0` draws all blocks and does not alter the NW path.
 - `--clusters`: number of visual K-means clusters.
 - `--min-ink`: removes nearly empty windows before clustering.
 - `--representative-height`: fixed thumbnail height before zoom.
