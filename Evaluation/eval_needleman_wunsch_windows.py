@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Run Needleman-Wunsch directly over line-image window embeddings.
 
-The prediction is fully image-to-image: the NW matrix is the cosine similarity
-between every window in line 1 and every window in line 2. Transcripts are used
-only to annotate/evaluate matched windows with the token assigned by the trained
-blank-aware Span-DTW path.
+The prediction is fully image-to-image: raw cosine similarities are converted to
+mutual row/column-normalized match scores before global Needleman-Wunsch. This
+removes the broad positive cosine background that otherwise pulls the path toward
+a plain diagonal. Transcripts are used only to annotate/evaluate matched windows
+with the token assigned by the trained blank-aware Span-DTW path.
 """
 from __future__ import annotations
 
@@ -39,7 +40,12 @@ from Evaluation._eval_utils import (
     synthetic_pair_paths,
     validate_pair_paths,
 )
-from Evaluation.window_alignment import window_alignment_metrics, window_token_labels
+from Evaluation.window_alignment import (
+    alignment_score_matrix,
+    attach_raw_similarities,
+    window_alignment_metrics,
+    window_token_labels,
+)
 
 
 def _window_pixels(index, n_windows, image_width, config, flipped):
@@ -60,14 +66,35 @@ def _labels_for_line(models, text_path, features):
     return text, path, window_token_labels(path, len(features.contextual))
 
 
-def evaluate_pair(models, pair, feature, gap, similarity_offset, dataset_type):
+def evaluate_pair(
+    models,
+    pair,
+    feature,
+    gap,
+    similarity_offset,
+    score_mode,
+    score_clip,
+    dataset_type,
+):
     validate_pair_paths(pair)
     features1 = get_image_features(models, pair.image1, dataset_type)
     features2 = get_image_features(models, pair.image2, dataset_type)
     selected1 = features1.select(feature)
     selected2 = features2.select(feature)
-    similarity = compute_similarity(selected1, selected2)
-    alignment = needleman_wunsch(similarity, gap, similarity_offset)
+
+    raw_similarity = compute_similarity(selected1, selected2)
+    match_scores = alignment_score_matrix(
+        raw_similarity,
+        mode=score_mode,
+        clip=score_clip,
+    )
+    scored_alignment = needleman_wunsch(
+        match_scores,
+        gap_penalty=gap,
+        similarity_offset=similarity_offset,
+    )
+    alignment = attach_raw_similarities(scored_alignment, raw_similarity)
+
     text1, span_path1, labels1 = _labels_for_line(models, pair.text1, features1)
     text2, span_path2, labels2 = _labels_for_line(models, pair.text2, features2)
     metrics = window_alignment_metrics(alignment, labels1, labels2)
@@ -77,6 +104,7 @@ def evaluate_pair(models, pair, feature, gap, similarity_offset, dataset_type):
             "line1_windows": len(selected1),
             "line2_windows": len(selected2),
             "feature": feature,
+            "score_mode": score_mode,
             "span_steps_line1": len(span_path1),
             "span_steps_line2": len(span_path2),
         }
@@ -85,7 +113,8 @@ def evaluate_pair(models, pair, feature, gap, similarity_offset, dataset_type):
         "pair": pair,
         "features1": features1,
         "features2": features2,
-        "similarity": similarity,
+        "similarity": raw_similarity,
+        "alignment_scores": match_scores,
         "alignment": alignment,
         "labels1": labels1,
         "labels2": labels2,
@@ -112,27 +141,28 @@ def _matched_steps(result, min_similarity, max_drawn_pairs):
 
 
 def _full_traceback_coordinates(alignment):
-    """Return the complete NW path in DP-grid coordinates, including gaps.
-
-    The accumulated score matrix has shape [S1+1, S2+1]. Coordinates therefore
-    start at (0, 0) and finish at (S2, S1). A match advances both axes, while a
-    gap advances only the sequence that was consumed.
-    """
+    """Return the complete NW traceback in DP-boundary coordinates."""
     row = 0
     col = 0
-    xs = [0]
-    ys = [0]
+    xs = [0.0]
+    ys = [0.0]
     for step in alignment.steps:
         if step.index1 is not None:
             row += 1
         if step.index2 is not None:
             col += 1
-        xs.append(col)
-        ys.append(row)
+        xs.append(float(col))
+        ys.append(float(row))
     return np.asarray(xs, dtype=np.float32), np.asarray(ys, dtype=np.float32)
 
 
-def save_visualization(result, output, min_similarity=-1.0, max_drawn_pairs=64, show_heatmap=True):
+def save_visualization(
+    result,
+    output,
+    min_similarity=-1.0,
+    max_drawn_pairs=64,
+    show_heatmap=True,
+):
     pair = result["pair"]
     with Image.open(pair.image1) as opened:
         image1 = np.asarray(opened.convert("RGB"))
@@ -194,7 +224,8 @@ def save_visualization(result, output, min_similarity=-1.0, max_drawn_pairs=64, 
     metrics = result["metrics"]
     fig.suptitle(
         "Window-level Needleman–Wunsch alignment\n"
-        f"pair={pair.index}  matched={metrics['matched_window_pairs']}  "
+        f"pair={pair.index}  score_mode={metrics['score_mode']}  "
+        f"matched={metrics['matched_window_pairs']}  "
         f"mean cosine={metrics['mean_matched_cosine']:.3f}  "
         f"token agreement={metrics['token_agreement']:.3f}",
         fontsize=11,
@@ -203,20 +234,17 @@ def save_visualization(result, output, min_similarity=-1.0, max_drawn_pairs=64, 
 
     if show_heatmap:
         heat_grid = grid[3].subgridspec(1, 2, wspace=0.22)
-        ax_sim = fig.add_subplot(heat_grid[0, 0])
-        ax_dp = fig.add_subplot(heat_grid[0, 1])
+        ax_raw = fig.add_subplot(heat_grid[0, 0])
+        ax_score = fig.add_subplot(heat_grid[0, 1])
 
-        # Left: raw pairwise similarity. Only diagonal NW match operations belong
-        # to this matrix; gap operations have no similarity cell and are not joined
-        # into a misleading continuous line.
-        matrix = result["similarity"].detach().cpu().numpy()
-        sim_image = ax_sim.imshow(
-            matrix,
+        raw = result["similarity"].detach().cpu().numpy()
+        raw_image = ax_raw.imshow(
+            raw,
             aspect="auto",
+            origin="upper",
             vmin=-1,
             vmax=1,
             cmap="coolwarm",
-            origin="upper",
             interpolation="nearest",
         )
         matched = [
@@ -225,7 +253,7 @@ def save_visualization(result, output, min_similarity=-1.0, max_drawn_pairs=64, 
             if step.index1 is not None and step.index2 is not None
         ]
         if matched:
-            ax_sim.scatter(
+            ax_raw.scatter(
                 [int(step.index2) for step in matched],
                 [int(step.index1) for step in matched],
                 s=13,
@@ -234,63 +262,60 @@ def save_visualization(result, output, min_similarity=-1.0, max_drawn_pairs=64, 
                 linewidths=0.65,
                 label="NW matched cells",
             )
-        ax_sim.set_title("Raw window cosine similarity + matched cells", fontsize=9)
-        ax_sim.set_xlabel("line 2 logical windows (0 = rightmost)")
-        ax_sim.set_ylabel("line 1 logical windows (0 = rightmost)")
-        ax_sim.legend(loc="upper left", fontsize=7)
+        ax_raw.set_title("Raw cosine similarity + selected match cells", fontsize=9)
+        ax_raw.set_xlabel("line 2 logical windows (0 = rightmost)")
+        ax_raw.set_ylabel("line 1 logical windows (0 = rightmost)")
+        if matched:
+            ax_raw.legend(loc="upper left", fontsize=7)
         fig.colorbar(
-            sim_image,
-            ax=ax_sim,
+            raw_image,
+            ax=ax_raw,
             fraction=0.035,
             pad=0.02,
             label="cosine similarity",
         )
 
-        # Right: the complete global NW traceback belongs to the accumulated score
-        # matrix. Plot all diagonal and gap moves so the line cannot jump across or
-        # appear disconnected from the actual dynamic-programming path.
-        score_matrix = np.asarray(result["alignment"].score_matrix, dtype=np.float32)
-        finite = score_matrix[np.isfinite(score_matrix)]
-        vmin = float(np.percentile(finite, 2)) if finite.size else None
-        vmax = float(np.percentile(finite, 98)) if finite.size else None
-        dp_image = ax_dp.imshow(
-            score_matrix,
+        scores = result["alignment_scores"].detach().cpu().numpy()
+        finite = np.abs(scores[np.isfinite(scores)])
+        score_limit = float(np.percentile(finite, 98)) if finite.size else 1.0
+        score_limit = max(0.5, score_limit)
+        score_image = ax_score.imshow(
+            scores,
             aspect="auto",
-            cmap="magma",
             origin="upper",
+            vmin=-score_limit,
+            vmax=score_limit,
+            cmap="coolwarm",
             interpolation="nearest",
-            vmin=vmin,
-            vmax=vmax,
         )
         trace_x, trace_y = _full_traceback_coordinates(result["alignment"])
-        ax_dp.plot(
-            trace_x,
-            trace_y,
-            color="cyan",
-            linewidth=1.7,
+        # DP coordinates describe window boundaries. Shift by half a cell to overlay
+        # them on the [S1,S2] match-score matrix while preserving gap moves.
+        ax_score.plot(
+            trace_x - 0.5,
+            trace_y - 0.5,
+            color="black",
+            linewidth=1.45,
             marker=".",
-            markersize=2.5,
+            markersize=2.2,
             label="complete NW traceback",
-        )
-        ax_dp.scatter(
-            [0, n2],
-            [0, n1],
-            s=22,
-            color=["lime", "red"],
             zorder=4,
         )
-        ax_dp.set_xlim(-0.5, n2 + 0.5)
-        ax_dp.set_ylim(n1 + 0.5, -0.5)
-        ax_dp.set_title("Accumulated NW score + complete traceback", fontsize=9)
-        ax_dp.set_xlabel("line 2 DP position")
-        ax_dp.set_ylabel("line 1 DP position")
-        ax_dp.legend(loc="upper left", fontsize=7)
+        ax_score.set_xlim(-0.5, n2 - 0.5)
+        ax_score.set_ylim(n1 - 0.5, -0.5)
+        ax_score.set_title(
+            f"{metrics['score_mode']} match score used by NW + traceback",
+            fontsize=9,
+        )
+        ax_score.set_xlabel("line 2 logical windows (0 = rightmost)")
+        ax_score.set_ylabel("line 1 logical windows (0 = rightmost)")
+        ax_score.legend(loc="upper left", fontsize=7)
         fig.colorbar(
-            dp_image,
-            ax=ax_dp,
+            score_image,
+            ax=ax_score,
             fraction=0.035,
             pad=0.02,
-            label="accumulated NW score",
+            label="NW match score",
         )
 
     output = Path(output)
@@ -322,8 +347,20 @@ def parse_args():
     parser.add_argument("--dataset-type", choices=("synthetic", "real"), default="synthetic")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--feature", choices=("contextual", "local", "grouped"), default="contextual")
-    parser.add_argument("--gap", type=float, default=-0.25)
+    parser.add_argument("--gap", type=float, default=-0.35)
     parser.add_argument("--similarity-offset", type=float, default=0.0)
+    parser.add_argument(
+        "--score-mode",
+        choices=("raw", "centered", "mutual-z"),
+        default="mutual-z",
+        help="Matrix used by NW; mutual-z removes broad row/column cosine bias.",
+    )
+    parser.add_argument(
+        "--score-clip",
+        type=float,
+        default=4.0,
+        help="Absolute clipping bound for mutual-z scores; <=0 disables clipping.",
+    )
     parser.add_argument("--min-similarity", type=float, default=-1.0)
     parser.add_argument("--max-drawn-pairs", type=int, default=64)
     parser.add_argument("--index", type=int, default=1)
@@ -355,6 +392,8 @@ def main():
             args.feature,
             args.gap,
             args.similarity_offset,
+            args.score_mode,
+            args.score_clip,
             args.dataset_type,
         )
         result["models_config"] = models.config
