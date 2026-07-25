@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
-"""Checkpoint-compatible Smith-Waterman local image alignment."""
+"""Checkpoint-compatible Smith-Waterman local image alignment.
+
+The evaluator supports both the synthetic ``images/img1_<n>.png`` layout and
+``DataSet/ArabicDataset/dataset_manifest.jsonl``. Real ArabicDataset images are
+binarized with the same configurable preprocessing used by training, and those
+exact binary images are both passed to the model and shown in the result figure.
+"""
 from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
+import os
 from pathlib import Path
+import random
 import sys
+import tempfile
 
 import matplotlib
 matplotlib.use("Agg")
@@ -21,7 +30,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from Evaluation._eval_utils import (
-    ResizeAndBinarize,
     compute_similarity,
     get_image_features,
     load_evaluation_models,
@@ -38,6 +46,11 @@ class ImagePair:
     index: int
     image1: Path
     image2: Path
+    pair_id: str = ""
+    label_type: str = ""
+    text_score: float = 0.0
+    manifest_position: int = -1
+    split: str = ""
 
 
 def smith_waterman(similarity: np.ndarray, threshold=0.45, gap_penalty=-0.30):
@@ -70,6 +83,13 @@ def smith_waterman(similarity: np.ndarray, threshold=0.45, gap_penalty=-0.30):
             break
     path.reverse()
     return path, best_score, score
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _image_root(data_dir: str | Path) -> Path:
@@ -161,25 +181,36 @@ def _resolve_manifest_image(value: str, manifest: Path, data_dir: str | Path) ->
     return candidates[0]
 
 
-def _load_pair_manifest(path: str | Path, data_dir: str | Path) -> list[ImagePair]:
+def _read_manifest_records(path: str | Path) -> list[dict]:
     manifest = Path(path)
     suffix = manifest.suffix.lower()
     if suffix == ".csv":
         with manifest.open("r", newline="", encoding="utf-8-sig") as handle:
-            records = list(csv.DictReader(handle))
-    elif suffix == ".jsonl":
-        records = [
+            return list(csv.DictReader(handle))
+    if suffix == ".jsonl":
+        return [
             json.loads(line)
             for line in manifest.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
-    elif suffix == ".json":
+    if suffix == ".json":
         payload = json.loads(manifest.read_text(encoding="utf-8"))
         records = payload.get("pairs", payload) if isinstance(payload, dict) else payload
         if not isinstance(records, list):
             raise ValueError("JSON manifest must be a list or contain a 'pairs' list")
-    else:
-        raise ValueError("Pair manifest must use .csv, .json, or .jsonl")
+        return records
+    raise ValueError("Pair manifest must use .csv, .json, or .jsonl")
+
+
+def _load_pair_manifest(path: str | Path, data_dir: str | Path) -> list[ImagePair]:
+    """Load a flat generic manifest with image1/image2-style columns."""
+    manifest = Path(path)
+    records = _read_manifest_records(manifest)
+    if records and isinstance(records[0].get("A"), dict):
+        raise ValueError(
+            "Nested ArabicDataset manifests must be loaded through --data-dir "
+            "DataSet/ArabicDataset or --arabic-manifest."
+        )
 
     pairs = []
     for position, record in enumerate(records, start=1):
@@ -193,17 +224,138 @@ def _load_pair_manifest(path: str | Path, data_dir: str | Path) -> list[ImagePai
                 image2=_resolve_manifest_image(
                     _manifest_image_value(record, 2), manifest, data_dir
                 ),
+                pair_id=str(record.get("pair_id", "")),
+                label_type=str(record.get("label_type", "")),
+                manifest_position=position,
             )
         )
     return sorted(pairs, key=lambda item: item.index)
 
 
+def _arabic_manifest_path(args) -> Path:
+    if args.arabic_manifest:
+        return Path(args.arabic_manifest)
+    root = Path(args.data_dir)
+    if root.suffix.lower() == ".jsonl":
+        return root
+    return root / os.environ.get("REAL_MANIFEST_NAME", "dataset_manifest.jsonl")
+
+
+def _parse_real_labels(value: str | None):
+    raw = (
+        str(value).strip()
+        if value is not None
+        else os.environ.get("REAL_DATASET_LABELS", "high_match,medium_match").strip()
+    )
+    if raw.lower() in {"all", "*", "any"}:
+        return None
+    labels = [label.strip() for label in raw.split(",") if label.strip()]
+    if not labels:
+        raise ValueError("--real-labels cannot be empty; use high_match,medium_match or all")
+    return labels
+
+
+def _split_lengths(length: int) -> tuple[int, int, int]:
+    train_size = int(0.6 * length)
+    valid_size = int(0.2 * length)
+    return train_size, valid_size, length - train_size - valid_size
+
+
+def _random_split_pairs(pairs: list[ImagePair], seed: int):
+    indices = list(range(len(pairs)))
+    random.Random(int(seed)).shuffle(indices)
+    train_size, valid_size, _test_size = _split_lengths(len(indices))
+    train = [pairs[index] for index in indices[:train_size]]
+    valid = [pairs[index] for index in indices[train_size : train_size + valid_size]]
+    test = [pairs[index] for index in indices[train_size + valid_size :]]
+    return train, valid, test
+
+
+def _group_split_pairs(pairs: list[ImagePair], seed: int):
+    """Mirror training's pair_id-safe 60/20/20 split."""
+    groups: dict[str, list[ImagePair]] = {}
+    for position, pair in enumerate(pairs):
+        group_id = pair.pair_id or f"sample_{position}"
+        groups.setdefault(group_id, []).append(pair)
+    if len(groups) < 3:
+        return _random_split_pairs(pairs, seed)
+
+    group_ids = list(groups)
+    random.Random(int(seed)).shuffle(group_ids)
+    train_target = int(0.6 * len(pairs))
+    valid_target = int(0.2 * len(pairs))
+    train: list[ImagePair] = []
+    valid: list[ImagePair] = []
+    test: list[ImagePair] = []
+    for group_id in group_ids:
+        members = groups[group_id]
+        if len(train) < train_target:
+            train.extend(members)
+        elif len(valid) < valid_target:
+            valid.extend(members)
+        else:
+            test.extend(members)
+    if not train or not valid or not test:
+        return _random_split_pairs(pairs, seed)
+    return train, valid, test
+
+
+def _load_arabic_dataset_pairs(args) -> list[ImagePair]:
+    """Load the native nested A/B ArabicDataset manifest."""
+    from RealDataSet import ArabicManifestLinePairDataset
+
+    manifest = _arabic_manifest_path(args)
+    labels = _parse_real_labels(args.real_labels)
+    dataset = ArabicManifestLinePairDataset(
+        manifest_path=manifest,
+        transform=None,
+        text_key=args.real_text_key,
+        allowed_labels=labels,
+        max_samples=None,
+        paired=True,
+        min_text_score=float(args.real_min_text_score),
+        validate_paths=bool(args.real_validate_paths),
+    )
+
+    pairs = []
+    for manifest_position, sample in enumerate(dataset.samples, start=1):
+        side_a = sample["A"]
+        side_b = sample["B"]
+        scores = sample.get("scores") or {}
+        pairs.append(
+            ImagePair(
+                index=manifest_position,
+                image1=dataset._resolve(side_a["line_image_path"]),
+                image2=dataset._resolve(side_b["line_image_path"]),
+                pair_id=str(sample.get("pair_id", manifest_position)),
+                label_type=str(sample.get("label_type", "")),
+                text_score=float(scores.get("text_score", 0.0)),
+                manifest_position=manifest_position,
+            )
+        )
+
+    train, valid, test = _group_split_pairs(pairs, args.split_seed)
+    selected = {
+        "all": pairs,
+        "train": train,
+        "valid": valid,
+        "test": test,
+    }[args.real_split]
+    return [
+        replace(pair, index=position, split=args.real_split)
+        for position, pair in enumerate(selected, start=1)
+    ]
+
+
 def _pair_for_index(args, index: int, manifest_pairs: list[ImagePair]) -> ImagePair:
     if manifest_pairs:
-        by_index = {pair.index: pair for pair in manifest_pairs}
-        if int(index) not in by_index:
-            raise KeyError(f"Index {index} is not present in the pair manifest")
-        return by_index[int(index)]
+        position = int(index) - 1
+        if position < 0 or position >= len(manifest_pairs):
+            raise IndexError(
+                f"Requested index {index}, but selected manifest split contains "
+                f"{len(manifest_pairs)} pairs"
+            )
+        return manifest_pairs[position]
     if args.dataset_type == "real":
         return _real_pair_paths(args, index)
     pair = synthetic_pair_paths(args.data_dir, index)
@@ -212,19 +364,33 @@ def _pair_for_index(args, index: int, manifest_pairs: list[ImagePair]) -> ImageP
 
 def _batch_pairs(args, manifest_pairs: list[ImagePair]) -> list[ImagePair]:
     if manifest_pairs:
-        selected = [pair for pair in manifest_pairs if pair.index >= int(args.start_index)]
-        return selected[: int(args.n_samples)]
+        start = max(0, int(args.start_index) - 1)
+        return manifest_pairs[start : start + int(args.n_samples)]
     return [
         _pair_for_index(args, index, manifest_pairs=[])
         for index in range(args.start_index, args.start_index + args.n_samples)
     ]
 
 
+def _real_binarizer():
+    """Use the exact configurable binarizer used by the real training loader."""
+    from DataLoader import ResizeAndBinarize
+
+    return ResizeAndBinarize(
+        size=(128, 1024),
+        enabled=True,
+        method=os.environ.get("REAL_BINARIZE_METHOD", "otsu").lower(),
+        fixed_threshold=int(os.environ.get("REAL_BINARIZE_THRESHOLD", "180")),
+        auto_invert=_env_flag("REAL_BINARIZE_AUTO_INVERT", True),
+        autocontrast=_env_flag("REAL_BINARIZE_AUTOCONTRAST", True),
+    )
+
+
 def _display_image(path: str | Path, dataset_type: str) -> np.ndarray:
     with Image.open(path) as opened:
         image = opened.convert("RGB")
         if str(dataset_type).lower() == "real":
-            image = ResizeAndBinarize((128, 1024), enabled=True)(image)
+            image = _real_binarizer()(image)
         return np.asarray(image.convert("RGB"))
 
 
@@ -253,13 +419,14 @@ def _save_visualization(
     output,
     use_flip,
     binarized,
+    pair: ImagePair,
 ):
     fig, axes = plt.subplots(2, 1, figsize=(15, 5), constrained_layout=True)
     axes[0].imshow(arr1, aspect="auto")
     axes[1].imshow(arr2, aspect="auto")
     suffix = " (binarized)" if binarized else ""
-    axes[0].set_ylabel(f"line 1{suffix}", rotation=0, labelpad=50, va="center")
-    axes[1].set_ylabel(f"line 2{suffix}", rotation=0, labelpad=50, va="center")
+    axes[0].set_ylabel(f"line A{suffix}", rotation=0, labelpad=50, va="center")
+    axes[1].set_ylabel(f"line B{suffix}", rotation=0, labelpad=50, va="center")
     for ax in axes:
         ax.set_xticks([])
         ax.set_yticks([])
@@ -297,8 +464,12 @@ def _save_visualization(
             )
 
     input_label = "binarized real input" if binarized else "synthetic input"
+    metadata = ""
+    if pair.pair_id:
+        metadata = f" | pair_id={pair.pair_id} | label={pair.label_type}"
     fig.suptitle(
-        f"Smith-Waterman local image alignment | score={score:.4f} | {input_label}"
+        f"Smith-Waterman local image alignment | score={score:.4f} | "
+        f"{input_label}{metadata}"
     )
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -308,9 +479,7 @@ def _save_visualization(
 
 def _evaluate_sample(
     models,
-    image1,
-    image2,
-    index,
+    pair: ImagePair,
     dataset_type,
     feature,
     threshold,
@@ -318,45 +487,75 @@ def _evaluate_sample(
     output,
     save_binarized_images,
 ):
-    image1 = Path(image1)
-    image2 = Path(image2)
+    image1 = Path(pair.image1)
+    image2 = Path(pair.image2)
     if not image1.is_file() or not image2.is_file():
         missing = [str(path) for path in (image1, image2) if not path.is_file()]
         raise FileNotFoundError("Missing image pair: " + ", ".join(missing))
 
-    # get_image_features applies ResizeAndBinarize with Otsu thresholding whenever
-    # dataset_type is real, so Smith-Waterman operates on binarized real inputs.
-    features1 = get_image_features(models, image1, dataset_type)
-    features2 = get_image_features(models, image2, dataset_type)
-    similarity = compute_similarity(
-        features1.select(feature),
-        features2.select(feature),
-    ).cpu().numpy()
-    path, score, _score_matrix = smith_waterman(similarity, threshold, gap)
-
-    arr1 = _display_image(image1, dataset_type)
-    arr2 = _display_image(image2, dataset_type)
     binarized = str(dataset_type).lower() == "real"
     binary1 = binary2 = ""
-    if binarized and save_binarized_images:
-        saved1, saved2 = _save_binarized_inputs(arr1, arr2, output, index)
-        binary1, binary2 = str(saved1), str(saved2)
+    temporary_directory = None
+    try:
+        if binarized:
+            # Produce the exact black/white 128x1024 inputs first. The same files
+            # are displayed and passed through the synthetic transform, which only
+            # resizes/normalizes and therefore cannot re-threshold them differently.
+            arr1 = _display_image(image1, "real")
+            arr2 = _display_image(image2, "real")
+            if save_binarized_images:
+                model_image1, model_image2 = _save_binarized_inputs(
+                    arr1, arr2, output, pair.index
+                )
+                binary1, binary2 = str(model_image1), str(model_image2)
+            else:
+                temporary_directory = tempfile.TemporaryDirectory(prefix="sw_real_binary_")
+                temp_root = Path(temporary_directory.name)
+                model_image1 = temp_root / "line1.png"
+                model_image2 = temp_root / "line2.png"
+                Image.fromarray(arr1).save(model_image1)
+                Image.fromarray(arr2).save(model_image2)
+            feature_dataset_type = "synthetic"
+        else:
+            with Image.open(image1) as opened:
+                arr1 = np.asarray(opened.convert("RGB"))
+            with Image.open(image2) as opened:
+                arr2 = np.asarray(opened.convert("RGB"))
+            model_image1, model_image2 = image1, image2
+            feature_dataset_type = "synthetic"
 
-    _save_visualization(
-        arr1,
-        arr2,
-        features1,
-        features2,
-        path,
-        score,
-        output,
-        models.image_model.use_flip,
-        binarized=binarized,
-    )
+        features1 = get_image_features(models, model_image1, feature_dataset_type)
+        features2 = get_image_features(models, model_image2, feature_dataset_type)
+        similarity = compute_similarity(
+            features1.select(feature),
+            features2.select(feature),
+        ).cpu().numpy()
+        path, score, _score_matrix = smith_waterman(similarity, threshold, gap)
+
+        _save_visualization(
+            arr1,
+            arr2,
+            features1,
+            features2,
+            path,
+            score,
+            output,
+            models.image_model.use_flip,
+            binarized=binarized,
+            pair=pair,
+        )
+    finally:
+        if temporary_directory is not None:
+            temporary_directory.cleanup()
 
     path_similarities = [float(similarity[i, j]) for i, j in path]
     row = {
-        "index": int(index),
+        "index": int(pair.index),
+        "manifest_position": int(pair.manifest_position),
+        "pair_id": pair.pair_id,
+        "label_type": pair.label_type,
+        "text_score": float(pair.text_score),
+        "split": pair.split,
         "status": "ok",
         "score": float(score),
         "path_steps": len(path),
@@ -372,7 +571,11 @@ def _evaluate_sample(
         "gap": float(gap),
         "dataset_type": str(dataset_type),
         "binarized": bool(binarized),
-        "binarization": "otsu" if binarized else "none",
+        "binarization": (
+            os.environ.get("REAL_BINARIZE_METHOD", "otsu").lower()
+            if binarized
+            else "none"
+        ),
         "flipped": bool(models.image_model.use_flip),
         "image1": str(image1),
         "image2": str(image2),
@@ -382,7 +585,8 @@ def _evaluate_sample(
         "error": "",
     }
     print(
-        f"[{index}] score={score:.6f} path_steps={len(path)} "
+        f"[{pair.index}] pair_id={pair.pair_id or '-'} label={pair.label_type or '-'} "
+        f"score={score:.6f} path_steps={len(path)} "
         f"mean_cosine={row['mean_path_cosine']:.4f} "
         f"binarized={row['binarized']} saved={output}",
         flush=True,
@@ -412,6 +616,11 @@ def _aggregate(rows):
 def _batch_fieldnames():
     return [
         "index",
+        "manifest_position",
+        "pair_id",
+        "label_type",
+        "text_score",
+        "split",
         "status",
         "score",
         "path_steps",
@@ -443,6 +652,11 @@ def _error_row(args, pair: ImagePair, output: Path, models, exc: Exception) -> d
     row.update(
         {
             "index": int(pair.index),
+            "manifest_position": int(pair.manifest_position),
+            "pair_id": pair.pair_id,
+            "label_type": pair.label_type,
+            "text_score": float(pair.text_score),
+            "split": pair.split,
             "status": "error",
             "score": 0.0,
             "path_steps": 0,
@@ -458,7 +672,11 @@ def _error_row(args, pair: ImagePair, output: Path, models, exc: Exception) -> d
             "gap": float(args.gap),
             "dataset_type": str(args.dataset_type),
             "binarized": args.dataset_type == "real",
-            "binarization": "otsu" if args.dataset_type == "real" else "none",
+            "binarization": (
+                os.environ.get("REAL_BINARIZE_METHOD", "otsu").lower()
+                if args.dataset_type == "real"
+                else "none"
+            ),
             "flipped": bool(models.image_model.use_flip),
             "image1": str(pair.image1),
             "image2": str(pair.image2),
@@ -494,17 +712,47 @@ def parse_args():
     parser.add_argument("--image2")
     parser.add_argument(
         "--pair-manifest",
-        help="Optional CSV/JSON/JSONL with index,image1,image2 for arbitrary real filenames.",
+        help="Optional flat CSV/JSON/JSONL with image1,image2 for generic datasets.",
     )
+    parser.add_argument(
+        "--arabic-manifest",
+        help="Optional native ArabicDataset dataset_manifest.jsonl path.",
+    )
+    parser.add_argument(
+        "--real-labels",
+        default=None,
+        help="ArabicDataset labels to keep; default is REAL_DATASET_LABELS or high_match,medium_match.",
+    )
+    parser.add_argument(
+        "--real-min-text-score",
+        type=float,
+        default=float(os.environ.get("REAL_MIN_TEXT_SCORE", "0.0")),
+    )
+    parser.add_argument(
+        "--real-text-key",
+        default=os.environ.get("REAL_TEXT_KEY", "text_original_path"),
+    )
+    parser.add_argument(
+        "--real-split",
+        choices=("all", "train", "valid", "test"),
+        default="test",
+        help="ArabicDataset pair_id-safe split to evaluate; default: test.",
+    )
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=int(os.environ.get("DATASET_SPLIT_SEED", "42")),
+    )
+    parser.add_argument("--real-validate-paths", action="store_true")
     parser.add_argument(
         "--image1-pattern",
         default="img1_{index}.png",
-        help="Real-data image-1 filename pattern relative to data-dir or data-dir/images.",
+        help="Fallback real-data image-1 pattern when no ArabicDataset manifest exists.",
     )
     parser.add_argument(
         "--image2-pattern",
         default="img2_{index}.png",
-        help="Real-data image-2 filename pattern relative to data-dir or data-dir/images.",
+        help="Fallback real-data image-2 pattern when no ArabicDataset manifest exists.",
     )
     parser.add_argument("--device", default="auto")
     parser.add_argument(
@@ -530,7 +778,7 @@ def parse_args():
     parser.add_argument(
         "--no-save-binarized-images",
         action="store_true",
-        help="For real data, do not save the two standalone binarized line images.",
+        help="For real data, do not retain standalone binary line images.",
     )
     return parser.parse_args()
 
@@ -544,11 +792,20 @@ def main():
     if args.n_samples <= 0:
         raise SystemExit("--n-samples must be greater than zero")
 
-    manifest_pairs = (
-        _load_pair_manifest(args.pair_manifest, args.data_dir)
-        if args.pair_manifest
-        else []
-    )
+    manifest_pairs: list[ImagePair] = []
+    arabic_manifest = _arabic_manifest_path(args)
+    if args.dataset_type == "real" and not args.pair_manifest and arabic_manifest.is_file():
+        manifest_pairs = _load_arabic_dataset_pairs(args)
+        print(
+            "Loaded ArabicDataset manifest for SW evaluation: "
+            f"manifest={arabic_manifest} split={args.real_split} "
+            f"samples={len(manifest_pairs)} labels={args.real_labels or os.environ.get('REAL_DATASET_LABELS', 'high_match,medium_match')} "
+            f"min_text_score={args.real_min_text_score}",
+            flush=True,
+        )
+    elif args.pair_manifest:
+        manifest_pairs = _load_pair_manifest(args.pair_manifest, args.data_dir)
+
     models = load_evaluation_models(args.weights, args.device, load_text_model=False)
     save_binarized_images = not args.no_save_binarized_images
 
@@ -559,9 +816,7 @@ def main():
             pair = _pair_for_index(args, args.index, manifest_pairs)
         _evaluate_sample(
             models,
-            pair.image1,
-            pair.image2,
-            pair.index,
+            pair,
             args.dataset_type,
             args.feature,
             args.threshold,
@@ -573,14 +828,15 @@ def main():
 
     output_dir = Path(args.output_dir)
     rows = []
-    for pair in _batch_pairs(args, manifest_pairs):
+    selected_pairs = _batch_pairs(args, manifest_pairs)
+    if not selected_pairs:
+        raise SystemExit("No image pairs were selected for evaluation")
+    for pair in selected_pairs:
         output = output_dir / f"pair_{pair.index}.png"
         try:
             row = _evaluate_sample(
                 models,
-                pair.image1,
-                pair.image2,
-                pair.index,
+                pair,
                 args.dataset_type,
                 args.feature,
                 args.threshold,
