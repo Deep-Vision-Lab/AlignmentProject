@@ -4,6 +4,8 @@ import torch
 from Evaluation._eval_utils import needleman_wunsch, normalize_word
 from Evaluation.window_alignment import (
     BLANK_TOKEN,
+    alignment_score_matrix,
+    attach_raw_similarities,
     cluster_representatives,
     cosine_kmeans,
     pca_project_2d,
@@ -36,6 +38,41 @@ def test_nw_can_insert_window_gap():
     assert (0, 0) in result.pairs
     assert (1, 2) in result.pairs
     assert any(step.operation.startswith("gap") for step in result.steps)
+
+
+def test_mutual_z_score_removes_row_and_column_cosine_bias():
+    row_bias = torch.tensor([[0.8], [0.6], [0.4]], dtype=torch.float32)
+    column_bias = torch.tensor([[0.3, 0.2, 0.1]], dtype=torch.float32)
+    similarity = row_bias + column_bias + 0.25 * torch.eye(3)
+
+    scores = alignment_score_matrix(similarity, mode="mutual-z")
+    diagonal = scores.diag().mean()
+    off_diagonal = (scores.sum() - scores.diag().sum()) / 6
+
+    assert diagonal > 0
+    assert diagonal > off_diagonal
+    assert torch.isfinite(scores).all()
+
+
+def test_raw_cosines_are_restored_after_score_based_nw():
+    raw_similarity = torch.tensor(
+        [[0.71, 0.20], [0.15, 0.83]],
+        dtype=torch.float32,
+    )
+    match_scores = torch.tensor(
+        [[2.0, -1.0], [-1.0, 2.0]],
+        dtype=torch.float32,
+    )
+    scored = needleman_wunsch(match_scores, gap_penalty=-0.3)
+    restored = attach_raw_similarities(scored, raw_similarity)
+
+    matched_cosines = [
+        step.similarity
+        for step in restored.steps
+        if step.index1 is not None and step.index2 is not None
+    ]
+    assert np.allclose(matched_cosines, [0.71, 0.83])
+    assert restored.score == scored.score
 
 
 def test_arabic_word_normalization_removes_tatweel_and_diacritics():
