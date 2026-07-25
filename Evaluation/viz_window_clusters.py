@@ -129,7 +129,7 @@ def save_cluster_figure(
     fig, axes = plt.subplots(
         rows,
         columns,
-        figsize=(4.5 * columns, 4.2 * rows),
+        figsize=(4.8 * columns, 4.4 * rows),
         squeeze=False,
     )
     colors = plt.get_cmap("tab20", max(2, len(clusters)))
@@ -139,16 +139,35 @@ def save_cluster_figure(
         members = np.flatnonzero(np.asarray(labels) == cluster)
         representative = representatives[cluster]
         other_members = members[members != representative]
-        ax.scatter(projected[:, 0], projected[:, 1], s=10, alpha=0.08, color="gray")
+        ax.scatter(projected[:, 0], projected[:, 1], s=9, alpha=0.06, color="gray", zorder=1)
         if len(other_members):
             ax.scatter(
                 projected[other_members, 0],
                 projected[other_members, 1],
-                s=28,
-                alpha=0.8,
+                s=24,
+                alpha=0.85,
                 color=colors(cluster),
+                edgecolors="none",
                 label=f"other windows ({len(other_members)})",
+                zorder=2,
             )
+
+        # Keep the representative's true PCA location visible as a star. The crop
+        # is deliberately offset from that point so it cannot hide the cluster dots.
+        rep_x = float(projected[representative, 0])
+        rep_y = float(projected[representative, 1])
+        ax.scatter(
+            [rep_x],
+            [rep_y],
+            marker="*",
+            s=90,
+            color=colors(cluster),
+            edgecolors="black",
+            linewidths=0.7,
+            zorder=4,
+            label="representative",
+        )
+
         record = records[representative]
         crop = _exact_window_crop(
             record["image"],
@@ -160,15 +179,27 @@ def save_cluster_figure(
         image_box = OffsetImage(crop, zoom=float(representative_zoom))
         annotation = AnnotationBbox(
             image_box,
-            (projected[representative, 0], projected[representative, 1]),
+            (rep_x, rep_y),
+            xybox=(28, 28),
+            xycoords="data",
+            boxcoords="offset points",
             frameon=True,
+            arrowprops=dict(
+                arrowstyle="-",
+                color=colors(cluster),
+                linewidth=1.0,
+                alpha=0.8,
+            ),
             bboxprops=dict(
                 edgecolor=colors(cluster),
-                linewidth=2,
+                linewidth=1.4,
                 facecolor="white",
+                alpha=0.95,
             ),
+            zorder=5,
         )
         ax.add_artist(annotation)
+
         summary = summaries[cluster]
         ax.set_title(
             f"Cluster {cluster} — token: {summary.token}\n"
@@ -180,11 +211,12 @@ def save_cluster_figure(
         ax.set_xlabel("PCA 1")
         ax.set_ylabel("PCA 2")
         ax.grid(alpha=0.15)
+        ax.margins(0.18)
 
     for panel in range(len(clusters), rows * columns):
         axes.flat[panel].axis("off")
     fig.suptitle(
-        "Visual window clusters: one representative crop, remaining members as dots\n"
+        "Visual window clusters: representative star + small crop, remaining members as dots\n"
         "Cluster tokens are majority labels from Span-DTW; clustering itself is image-only",
         fontsize=12,
         fontweight="bold",
@@ -208,7 +240,12 @@ def parse_args():
     parser.add_argument("--max-iter", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--min-ink", type=float, default=0.01)
-    parser.add_argument("--representative-zoom", type=float, default=2.4)
+    parser.add_argument(
+        "--representative-zoom",
+        type=float,
+        default=0.45,
+        help="Thumbnail zoom. Small by default so PCA dots remain visible.",
+    )
     parser.add_argument("--output", default="Results/Evaluation/Clusters/window_clusters.png")
     parser.add_argument("--output-dir", default="Results/Evaluation/Clusters")
     return parser.parse_args()
