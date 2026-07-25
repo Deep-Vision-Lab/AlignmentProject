@@ -111,6 +111,27 @@ def _matched_steps(result, min_similarity, max_drawn_pairs):
     return [steps[int(position)] for position in positions]
 
 
+def _full_traceback_coordinates(alignment):
+    """Return the complete NW path in DP-grid coordinates, including gaps.
+
+    The accumulated score matrix has shape [S1+1, S2+1]. Coordinates therefore
+    start at (0, 0) and finish at (S2, S1). A match advances both axes, while a
+    gap advances only the sequence that was consumed.
+    """
+    row = 0
+    col = 0
+    xs = [0]
+    ys = [0]
+    for step in alignment.steps:
+        if step.index1 is not None:
+            row += 1
+        if step.index2 is not None:
+            col += 1
+        xs.append(col)
+        ys.append(row)
+    return np.asarray(xs, dtype=np.float32), np.asarray(ys, dtype=np.float32)
+
+
 def save_visualization(result, output, min_similarity=-1.0, max_drawn_pairs=64, show_heatmap=True):
     pair = result["pair"]
     with Image.open(pair.image1) as opened:
@@ -124,9 +145,9 @@ def save_visualization(result, output, min_similarity=-1.0, max_drawn_pairs=64, 
     cmap = plt.get_cmap("turbo", max(2, len(steps)))
 
     rows = 4 if show_heatmap else 3
-    ratios = [2.2, 0.7, 2.2, 3.5] if show_heatmap else [2.2, 0.7, 2.2]
-    fig = plt.figure(figsize=(16, 10 if show_heatmap else 7))
-    grid = fig.add_gridspec(rows, 1, height_ratios=ratios, hspace=0.12)
+    ratios = [2.2, 0.7, 2.2, 4.2] if show_heatmap else [2.2, 0.7, 2.2]
+    fig = plt.figure(figsize=(18, 11 if show_heatmap else 7))
+    grid = fig.add_gridspec(rows, 1, height_ratios=ratios, hspace=0.14)
     ax1 = fig.add_subplot(grid[0])
     axc = fig.add_subplot(grid[1])
     ax2 = fig.add_subplot(grid[2])
@@ -181,25 +202,96 @@ def save_visualization(result, output, min_similarity=-1.0, max_drawn_pairs=64, 
     )
 
     if show_heatmap:
-        axh = fig.add_subplot(grid[3])
+        heat_grid = grid[3].subgridspec(1, 2, wspace=0.22)
+        ax_sim = fig.add_subplot(heat_grid[0, 0])
+        ax_dp = fig.add_subplot(heat_grid[0, 1])
+
+        # Left: raw pairwise similarity. Only diagonal NW match operations belong
+        # to this matrix; gap operations have no similarity cell and are not joined
+        # into a misleading continuous line.
         matrix = result["similarity"].detach().cpu().numpy()
-        image = axh.imshow(matrix, aspect="auto", vmin=-1, vmax=1, cmap="coolwarm")
+        sim_image = ax_sim.imshow(
+            matrix,
+            aspect="auto",
+            vmin=-1,
+            vmax=1,
+            cmap="coolwarm",
+            origin="upper",
+            interpolation="nearest",
+        )
         matched = [
             step
             for step in result["alignment"].steps
             if step.index1 is not None and step.index2 is not None
         ]
-        axh.plot(
-            [int(step.index2) for step in matched],
-            [int(step.index1) for step in matched],
-            color="black",
-            linewidth=1.1,
-            marker=".",
-            markersize=2,
+        if matched:
+            ax_sim.scatter(
+                [int(step.index2) for step in matched],
+                [int(step.index1) for step in matched],
+                s=13,
+                facecolors="none",
+                edgecolors="black",
+                linewidths=0.65,
+                label="NW matched cells",
+            )
+        ax_sim.set_title("Raw window cosine similarity + matched cells", fontsize=9)
+        ax_sim.set_xlabel("line 2 logical windows (0 = rightmost)")
+        ax_sim.set_ylabel("line 1 logical windows (0 = rightmost)")
+        ax_sim.legend(loc="upper left", fontsize=7)
+        fig.colorbar(
+            sim_image,
+            ax=ax_sim,
+            fraction=0.035,
+            pad=0.02,
+            label="cosine similarity",
         )
-        axh.set_xlabel("line 2 windows")
-        axh.set_ylabel("line 1 windows")
-        fig.colorbar(image, ax=axh, fraction=0.025, pad=0.02, label="cosine similarity")
+
+        # Right: the complete global NW traceback belongs to the accumulated score
+        # matrix. Plot all diagonal and gap moves so the line cannot jump across or
+        # appear disconnected from the actual dynamic-programming path.
+        score_matrix = np.asarray(result["alignment"].score_matrix, dtype=np.float32)
+        finite = score_matrix[np.isfinite(score_matrix)]
+        vmin = float(np.percentile(finite, 2)) if finite.size else None
+        vmax = float(np.percentile(finite, 98)) if finite.size else None
+        dp_image = ax_dp.imshow(
+            score_matrix,
+            aspect="auto",
+            cmap="magma",
+            origin="upper",
+            interpolation="nearest",
+            vmin=vmin,
+            vmax=vmax,
+        )
+        trace_x, trace_y = _full_traceback_coordinates(result["alignment"])
+        ax_dp.plot(
+            trace_x,
+            trace_y,
+            color="cyan",
+            linewidth=1.7,
+            marker=".",
+            markersize=2.5,
+            label="complete NW traceback",
+        )
+        ax_dp.scatter(
+            [0, n2],
+            [0, n1],
+            s=22,
+            color=["lime", "red"],
+            zorder=4,
+        )
+        ax_dp.set_xlim(-0.5, n2 + 0.5)
+        ax_dp.set_ylim(n1 + 0.5, -0.5)
+        ax_dp.set_title("Accumulated NW score + complete traceback", fontsize=9)
+        ax_dp.set_xlabel("line 2 DP position")
+        ax_dp.set_ylabel("line 1 DP position")
+        ax_dp.legend(loc="upper left", fontsize=7)
+        fig.colorbar(
+            dp_image,
+            ax=ax_dp,
+            fraction=0.035,
+            pad=0.02,
+            label="accumulated NW score",
+        )
 
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
