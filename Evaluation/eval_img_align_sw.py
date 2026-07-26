@@ -5,6 +5,10 @@ The evaluator supports both the synthetic ``images/img1_<n>.png`` layout and
 ``DataSet/ArabicDataset/dataset_manifest.jsonl``. Real ArabicDataset images are
 binarized with the same configurable preprocessing used by training, and those
 exact binary images are both passed to the model and shown in the result figure.
+
+The result figure also contains one annotated heatmap. By default it displays
+the per-cell Smith-Waterman diagonal reward, ``cosine - threshold``, with the
+complete local traceback and matched diagonal cells overlaid.
 """
 from __future__ import annotations
 
@@ -53,7 +57,13 @@ class ImagePair:
     split: str = ""
 
 
-def smith_waterman(similarity: np.ndarray, threshold=0.45, gap_penalty=-0.30):
+def smith_waterman(
+    similarity: np.ndarray,
+    threshold=0.45,
+    gap_penalty=-0.30,
+    return_traceback=False,
+):
+    """Run local SW and optionally return every DP-boundary traceback point."""
     n, m = similarity.shape
     score = np.zeros((n + 1, m + 1), dtype=np.float32)
     trace = np.zeros((n + 1, m + 1), dtype=np.uint8)
@@ -66,9 +76,11 @@ def smith_waterman(similarity: np.ndarray, threshold=0.45, gap_penalty=-0.30):
             best = int(np.argmax(values))
             score[i, j] = values[best]
             trace[i, j] = best
+
     i, j = map(int, np.unravel_index(np.argmax(score), score.shape))
     best_score = float(score[i, j])
     path = []
+    traceback = [(float(j), float(i))]
     while i > 0 and j > 0 and score[i, j] > 0:
         code = int(trace[i, j])
         if code == 1:
@@ -81,8 +93,57 @@ def smith_waterman(similarity: np.ndarray, threshold=0.45, gap_penalty=-0.30):
             j -= 1
         else:
             break
+        traceback.append((float(j), float(i)))
+
     path.reverse()
+    traceback.reverse()
+    if return_traceback:
+        return path, best_score, score, np.asarray(traceback, dtype=np.float32)
     return path, best_score, score
+
+
+def _format_heatmap_value(value: float, decimals: int) -> str:
+    if not np.isfinite(value):
+        return ""
+    return f"{float(value):.{max(0, int(decimals))}f}"
+
+
+def _annotate_heatmap_values(ax, matrix, image, decimals=2, fontsize=5.0):
+    """Write every heatmap element with contrast-aware black/white text."""
+    for row in range(matrix.shape[0]):
+        for col in range(matrix.shape[1]):
+            value = float(matrix[row, col])
+            if not np.isfinite(value):
+                continue
+            rgba = image.cmap(image.norm(value))
+            luminance = 0.2126 * rgba[0] + 0.7152 * rgba[1] + 0.0722 * rgba[2]
+            text_color = "black" if luminance > 0.58 else "white"
+            ax.text(
+                col,
+                row,
+                _format_heatmap_value(value, decimals),
+                ha="center",
+                va="center",
+                color=text_color,
+                fontsize=float(fontsize),
+                zorder=3,
+                clip_on=True,
+            )
+
+
+def _heatmap_matrix(similarity, threshold, dp_score, source):
+    """Select the single matrix displayed beneath the two line images."""
+    source = str(source).lower()
+    if source == "cosine":
+        return np.asarray(similarity, dtype=np.float32), "raw cosine similarity"
+    if source == "match-score":
+        return (
+            np.asarray(similarity, dtype=np.float32) - float(threshold),
+            "SW diagonal match score (cosine - threshold)",
+        )
+    if source == "dp-score":
+        return np.asarray(dp_score[1:, 1:], dtype=np.float32), "accumulated local SW DP score"
+    raise ValueError("heatmap source must be cosine, match-score, or dp-score")
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -415,13 +476,35 @@ def _save_visualization(
     features1,
     features2,
     path,
+    traceback,
+    heatmap_matrix,
+    heatmap_label,
     score,
     output,
     use_flip,
     binarized,
     pair: ImagePair,
+    show_heatmap=True,
+    annotate_heatmap_values=True,
+    heatmap_value_decimals=2,
+    heatmap_annotation_fontsize=5.0,
 ):
-    fig, axes = plt.subplots(2, 1, figsize=(15, 5), constrained_layout=True)
+    n1, n2 = heatmap_matrix.shape
+    if show_heatmap:
+        heatmap_height = max(8.0, min(24.0, 0.30 * n1))
+        figure_width = max(18.0, min(30.0, 0.34 * n2))
+        figure_height = 5.0 + heatmap_height
+        rows = 3
+        ratios = [2.2, 2.2, heatmap_height]
+    else:
+        figure_width = 18.0
+        figure_height = 5.5
+        rows = 2
+        ratios = [2.2, 2.2]
+
+    fig = plt.figure(figsize=(figure_width, figure_height))
+    grid = fig.add_gridspec(rows, 1, height_ratios=ratios, hspace=0.16)
+    axes = [fig.add_subplot(grid[0]), fig.add_subplot(grid[1])]
     axes[0].imshow(arr1, aspect="auto")
     axes[1].imshow(arr2, aspect="auto")
     suffix = " (binarized)" if binarized else ""
@@ -469,8 +552,91 @@ def _save_visualization(
         metadata = f" | pair_id={pair.pair_id} | label={pair.label_type}"
     fig.suptitle(
         f"Smith-Waterman local image alignment | score={score:.4f} | "
-        f"{input_label}{metadata}"
+        f"{input_label}{metadata}",
+        fontsize=11,
+        fontweight="bold",
     )
+
+    if show_heatmap:
+        ax_heatmap = fig.add_subplot(grid[2])
+        finite_values = heatmap_matrix[np.isfinite(heatmap_matrix)]
+        nonnegative = finite_values.size and float(finite_values.min()) >= 0.0
+        if nonnegative:
+            upper = float(np.percentile(finite_values, 98)) if finite_values.size else 1.0
+            upper = max(1e-6, upper)
+            heatmap_image = ax_heatmap.imshow(
+                heatmap_matrix,
+                aspect="equal",
+                origin="upper",
+                vmin=0.0,
+                vmax=upper,
+                cmap="viridis",
+                interpolation="nearest",
+            )
+        else:
+            absolute = np.abs(finite_values)
+            limit = float(np.percentile(absolute, 98)) if absolute.size else 1.0
+            limit = max(0.5, limit)
+            heatmap_image = ax_heatmap.imshow(
+                heatmap_matrix,
+                aspect="equal",
+                origin="upper",
+                vmin=-limit,
+                vmax=limit,
+                cmap="coolwarm",
+                interpolation="nearest",
+            )
+
+        if annotate_heatmap_values:
+            _annotate_heatmap_values(
+                ax_heatmap,
+                heatmap_matrix,
+                heatmap_image,
+                decimals=heatmap_value_decimals,
+                fontsize=heatmap_annotation_fontsize,
+            )
+
+        if traceback.size:
+            ax_heatmap.plot(
+                traceback[:, 0] - 0.5,
+                traceback[:, 1] - 0.5,
+                color="black",
+                linewidth=1.7,
+                marker=".",
+                markersize=2.8,
+                label="complete local SW traceback",
+                zorder=7,
+            )
+        if path:
+            ax_heatmap.scatter(
+                [col for _row, col in path],
+                [row for row, _col in path],
+                s=30,
+                facecolors="none",
+                edgecolors="yellow",
+                linewidths=1.2,
+                label="matched diagonal cells",
+                zorder=8,
+            )
+
+        ax_heatmap.set_xlim(-0.5, n2 - 0.5)
+        ax_heatmap.set_ylim(n1 - 0.5, -0.5)
+        ax_heatmap.set_title(
+            f"{heatmap_label}: values + complete local traceback",
+            fontsize=10,
+        )
+        logical_note = "logical windows (0 = rightmost)" if use_flip else "logical windows"
+        ax_heatmap.set_xlabel(f"line B {logical_note}")
+        ax_heatmap.set_ylabel(f"line A {logical_note}")
+        ax_heatmap.legend(loc="upper left", fontsize=7)
+        fig.colorbar(
+            heatmap_image,
+            ax=ax_heatmap,
+            fraction=0.025,
+            pad=0.015,
+            label=heatmap_label,
+        )
+
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=180, bbox_inches="tight", facecolor="white")
@@ -486,6 +652,11 @@ def _evaluate_sample(
     gap,
     output,
     save_binarized_images,
+    show_heatmap,
+    heatmap_source,
+    annotate_heatmap_values,
+    heatmap_value_decimals,
+    heatmap_annotation_fontsize,
 ):
     image1 = Path(pair.image1)
     image2 = Path(pair.image2)
@@ -530,7 +701,18 @@ def _evaluate_sample(
             features1.select(feature),
             features2.select(feature),
         ).cpu().numpy()
-        path, score, _score_matrix = smith_waterman(similarity, threshold, gap)
+        path, score, dp_score, traceback = smith_waterman(
+            similarity,
+            threshold,
+            gap,
+            return_traceback=True,
+        )
+        displayed_matrix, displayed_label = _heatmap_matrix(
+            similarity,
+            threshold,
+            dp_score,
+            heatmap_source,
+        )
 
         _save_visualization(
             arr1,
@@ -538,11 +720,18 @@ def _evaluate_sample(
             features1,
             features2,
             path,
+            traceback,
+            displayed_matrix,
+            displayed_label,
             score,
             output,
             models.image_model.use_flip,
             binarized=binarized,
             pair=pair,
+            show_heatmap=show_heatmap,
+            annotate_heatmap_values=annotate_heatmap_values,
+            heatmap_value_decimals=heatmap_value_decimals,
+            heatmap_annotation_fontsize=heatmap_annotation_fontsize,
         )
     finally:
         if temporary_directory is not None:
@@ -559,6 +748,7 @@ def _evaluate_sample(
         "status": "ok",
         "score": float(score),
         "path_steps": len(path),
+        "traceback_steps": max(0, len(traceback) - 1),
         "mean_path_cosine": float(np.mean(path_similarities)) if path_similarities else 0.0,
         "line1_windows": int(similarity.shape[0]),
         "line2_windows": int(similarity.shape[1]),
@@ -569,6 +759,7 @@ def _evaluate_sample(
         "feature": str(feature),
         "threshold": float(threshold),
         "gap": float(gap),
+        "heatmap_source": str(heatmap_source),
         "dataset_type": str(dataset_type),
         "binarized": bool(binarized),
         "binarization": (
@@ -587,8 +778,9 @@ def _evaluate_sample(
     print(
         f"[{pair.index}] pair_id={pair.pair_id or '-'} label={pair.label_type or '-'} "
         f"score={score:.6f} path_steps={len(path)} "
+        f"traceback_steps={row['traceback_steps']} "
         f"mean_cosine={row['mean_path_cosine']:.4f} "
-        f"binarized={row['binarized']} saved={output}",
+        f"heatmap={heatmap_source} binarized={row['binarized']} saved={output}",
         flush=True,
     )
     return row
@@ -599,6 +791,7 @@ def _aggregate(rows):
     failed = [row for row in rows if row.get("status") != "ok"]
     scores = [float(row["score"]) for row in successful]
     path_steps = [float(row["path_steps"]) for row in successful]
+    traceback_steps = [float(row["traceback_steps"]) for row in successful]
     path_cosines = [float(row["mean_path_cosine"]) for row in successful]
     return {
         "samples": len(rows),
@@ -607,6 +800,7 @@ def _aggregate(rows):
         "mean_score": float(np.mean(scores)) if scores else 0.0,
         "std_score": float(np.std(scores)) if scores else 0.0,
         "mean_path_steps": float(np.mean(path_steps)) if path_steps else 0.0,
+        "mean_traceback_steps": float(np.mean(traceback_steps)) if traceback_steps else 0.0,
         "mean_path_cosine": float(np.mean(path_cosines)) if path_cosines else 0.0,
         "binarized_samples": sum(bool(row.get("binarized", False)) for row in successful),
         "failed_indices": [int(row["index"]) for row in failed],
@@ -624,6 +818,7 @@ def _batch_fieldnames():
         "status",
         "score",
         "path_steps",
+        "traceback_steps",
         "mean_path_cosine",
         "line1_windows",
         "line2_windows",
@@ -634,6 +829,7 @@ def _batch_fieldnames():
         "feature",
         "threshold",
         "gap",
+        "heatmap_source",
         "dataset_type",
         "binarized",
         "binarization",
@@ -660,6 +856,7 @@ def _error_row(args, pair: ImagePair, output: Path, models, exc: Exception) -> d
             "status": "error",
             "score": 0.0,
             "path_steps": 0,
+            "traceback_steps": 0,
             "mean_path_cosine": 0.0,
             "line1_windows": 0,
             "line2_windows": 0,
@@ -670,6 +867,7 @@ def _error_row(args, pair: ImagePair, output: Path, models, exc: Exception) -> d
             "feature": str(args.feature),
             "threshold": float(args.threshold),
             "gap": float(args.gap),
+            "heatmap_source": str(args.heatmap_source),
             "dataset_type": str(args.dataset_type),
             "binarized": args.dataset_type == "real",
             "binarization": (
@@ -768,6 +966,34 @@ def parse_args():
     parser.add_argument("--threshold", type=float, default=0.45)
     parser.add_argument("--gap", type=float, default=-0.30)
     parser.add_argument(
+        "--heatmap-source",
+        choices=("match-score", "cosine", "dp-score"),
+        default="match-score",
+        help="Single displayed matrix. match-score is cosine-threshold, the SW diagonal reward.",
+    )
+    parser.add_argument(
+        "--no-heatmap",
+        action="store_true",
+        help="Do not include the SW heatmap beneath the line images.",
+    )
+    parser.add_argument(
+        "--no-annotate-heatmap-values",
+        action="store_true",
+        help="Do not render the numeric value inside every heatmap cell.",
+    )
+    parser.add_argument(
+        "--heatmap-value-decimals",
+        type=int,
+        default=2,
+        help="Decimal places used for every heatmap cell value.",
+    )
+    parser.add_argument(
+        "--heatmap-annotation-fontsize",
+        type=float,
+        default=5.0,
+        help="Font size used for numeric heatmap annotations.",
+    )
+    parser.add_argument(
         "--output",
         default="Results/Evaluation/SW/smith_waterman.png",
     )
@@ -808,6 +1034,8 @@ def main():
 
     models = load_evaluation_models(args.weights, args.device, load_text_model=False)
     save_binarized_images = not args.no_save_binarized_images
+    show_heatmap = not args.no_heatmap
+    annotate_heatmap_values = not args.no_annotate_heatmap_values
 
     if not args.batch:
         if args.image1 and args.image2:
@@ -823,6 +1051,11 @@ def main():
             args.gap,
             Path(args.output),
             save_binarized_images,
+            show_heatmap,
+            args.heatmap_source,
+            annotate_heatmap_values,
+            args.heatmap_value_decimals,
+            args.heatmap_annotation_fontsize,
         )
         return
 
@@ -843,6 +1076,11 @@ def main():
                 args.gap,
                 output,
                 save_binarized_images,
+                show_heatmap,
+                args.heatmap_source,
+                annotate_heatmap_values,
+                args.heatmap_value_decimals,
+                args.heatmap_annotation_fontsize,
             )
         except Exception as exc:
             row = _error_row(args, pair, output, models, exc)
