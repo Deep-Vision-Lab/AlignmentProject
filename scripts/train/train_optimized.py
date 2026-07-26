@@ -99,6 +99,12 @@ from ddp_runtime_policy import resolve_ddp_static_graph
 from fast_hard_alignment import hard_span_dtw_path_fast
 from jax_batch_bucketing import install_jax_batch_padding
 from training_optimizations import install, prepare_raw_model
+from zero_shot_preprocessing import (
+    configure_domain_robust_normalization,
+    install_dataloader_profile,
+    install_embedding_profile,
+    zero_shot_config,
+)
 
 
 # Patch the discrete path decoder and stabilize JAX batch dimensions before any
@@ -107,6 +113,15 @@ span_alignment_loss.hard_span_dtw_path = hard_span_dtw_path_fast
 base.hard_span_dtw_path = hard_span_dtw_path_fast
 install_jax_batch_padding()
 install(base)
+
+
+def _zero_shot_enabled() -> bool:
+    return os.environ.get("ZERO_SHOT_PROFILE", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _spawn_rebuild_single_gpu_loaders(train_loader, valid_loader, test_loader):
@@ -140,6 +155,22 @@ def main():
         if args.resume and args.pretrained_weights:
             raise SystemExit("Use either --resume or --pretrained_weights, not both.")
 
+        zero_shot_enabled = _zero_shot_enabled()
+        if zero_shot_enabled:
+            if args.dataset_type != "synthetic":
+                raise SystemExit(
+                    "ZERO_SHOT_PROFILE is a synthetic-source training profile; "
+                    "use --dataset_type synthetic."
+                )
+            install_dataloader_profile()
+            install_embedding_profile(base)
+            if base.CTX.is_main:
+                print(
+                    "zero_shot_profile enabled: aspect-preserving binary "
+                    "synthetic augmentation + grouped/local supervision",
+                    flush=True,
+                )
+
         static_graph_decision = resolve_ddp_static_graph()
         if base.CTX.is_main:
             print(
@@ -170,6 +201,9 @@ def main():
             args, raw_model, text_encoder
         )
         prepare_raw_model(raw_model)
+        normalization_config = {}
+        if zero_shot_enabled:
+            normalization_config = configure_domain_robust_normalization(raw_model)
         base._broadcast_trainable_text_parameters(text_encoder)
 
         model: nn.Module = raw_model
@@ -202,6 +236,11 @@ def main():
         config["ddp_static_graph"] = static_graph_decision.enabled
         config["ddp_static_graph_requested"] = static_graph_decision.requested
         config["ddp_static_graph_reason"] = static_graph_decision.description
+        if zero_shot_enabled:
+            config.update(zero_shot_config())
+            config.update(normalization_config)
+        else:
+            config["zero_shot_profile"] = False
         if base.CTX.is_main:
             print("resolved optimized configuration:", flush=True)
             for key in sorted(config):
