@@ -11,6 +11,7 @@ on:
       - "runtime_device_setup.py"
       - "ddp_runtime_policy.py"
       - "training_optimizations.py"
+      - "zero_shot_preprocessing.py"
       - "scripts/train/**"
       - "scripts/benchmark/**"
       - "Evaluation/**"
@@ -23,6 +24,7 @@ on:
       - "tests/test_ddp_runtime_policy.py"
       - "tests/test_needleman_wunsch_evaluation.py"
       - "tests/test_sw_real_evaluation.py"
+      - "tests/test_zero_shot_transfer.py"
       - ".github/workflows/optimization-checks.yml"
   workflow_dispatch:
 
@@ -47,6 +49,7 @@ jobs:
             runtime_device_setup.py \
             ddp_runtime_policy.py \
             training_optimizations.py \
+            zero_shot_preprocessing.py \
             scripts/train/train_optimized.py \
             scripts/benchmark/summarize_training_speed.py \
             Evaluation/__init__.py \
@@ -57,6 +60,10 @@ jobs:
             Evaluation/eval_needleman_wunsch_words.py \
             Evaluation/eval_image_to_image.py \
             Evaluation/viz_window_clusters.py \
+            Evaluation/sw_core.py \
+            Evaluation/sw_dataset.py \
+            Evaluation/sw_runner.py \
+            Evaluation/zero_shot_sw.py \
             Evaluation/eval_img_align_sw.py \
             Evaluation/eval_retrieval.py \
             Evaluation/eval_alignment_mae.py \
@@ -64,6 +71,7 @@ jobs:
       - name: Shell syntax
         run: |
           bash -n scripts/train/run_span_d3tw_optimized.sh
+          bash -n scripts/train/run_zero_shot_synthetic_to_real.sh
           bash -n scripts/train/run_rank_isolated.sh
           bash -n scripts/benchmark/submit_training_speed_comparison.sh
 
@@ -113,6 +121,7 @@ jobs:
           run_suite accumulation tests/test_gradient_accumulation.py
           run_suite needleman_wunsch tests/test_needleman_wunsch_evaluation.py
           run_suite sw_real tests/test_sw_real_evaluation.py
+          run_suite zero_shot tests/test_zero_shot_transfer.py
           echo "$failed" > test-logs/failed.status
       - name: Upload focused test logs
         if: always()
