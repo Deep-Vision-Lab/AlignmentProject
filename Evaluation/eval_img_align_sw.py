@@ -21,6 +21,17 @@ from Evaluation.zero_shot_sw import install_dataset_patches
 
 install_dataset_patches()
 
+from Evaluation import sw_dataset as _sw_dataset
+from Evaluation.balanced_sampling import balanced_group_split_pairs as _balanced_split
+
+
+def _diverse_group_split(pairs, seed):
+    return _balanced_split(pairs, seed, _sw_dataset.random_split_pairs)
+
+
+_sw_dataset.group_split_pairs = _diverse_group_split
+_sw_dataset._group_split_pairs = _diverse_group_split
+
 from Evaluation import sw_runner as _implementation
 from Evaluation.zero_shot_sw import install_runner_patches
 
