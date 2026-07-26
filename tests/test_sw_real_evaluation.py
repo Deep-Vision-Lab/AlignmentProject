@@ -7,6 +7,8 @@ from PIL import Image
 
 from Evaluation.eval_img_align_sw import (
     ImagePair,
+    _build_match_scores,
+    _contiguous_runs,
     _display_image,
     _format_heatmap_value,
     _group_split_pairs,
@@ -14,6 +16,7 @@ from Evaluation.eval_img_align_sw import (
     _load_arabic_dataset_pairs,
     _load_pair_manifest,
     _real_pair_paths,
+    _resolve_score_mode,
     smith_waterman,
 )
 
@@ -178,8 +181,9 @@ def test_arabic_dataset_group_split_keeps_pair_ids_together(tmp_path):
     assert len(train) + len(valid) + len(test) == len(pairs)
 
 
-def test_sw_match_score_heatmap_is_cosine_minus_threshold():
+def test_sw_match_score_heatmap_uses_actual_diagonal_rewards():
     similarity = np.asarray([[0.80, 0.20], [0.55, 0.45]], dtype=np.float32)
+    match_scores = similarity - 0.45
     dp_score = np.zeros((3, 3), dtype=np.float32)
 
     matrix, label = _heatmap_matrix(
@@ -187,6 +191,8 @@ def test_sw_match_score_heatmap_is_cosine_minus_threshold():
         threshold=0.45,
         dp_score=dp_score,
         source="match-score",
+        match_scores=match_scores,
+        score_mode="raw",
     )
 
     np.testing.assert_allclose(
@@ -194,11 +200,38 @@ def test_sw_match_score_heatmap_is_cosine_minus_threshold():
         np.asarray([[0.35, -0.25], [0.10, 0.00]], dtype=np.float32),
         atol=1e-6,
     )
-    assert "cosine - threshold" in label
+    assert "raw score - threshold" in label
     assert _format_heatmap_value(matrix[0, 0], 2) == "0.35"
 
 
-def test_sw_complete_traceback_contains_gap_steps():
+def test_sw_traceback_starts_at_interior_dp_maximum_not_terminal_cell():
+    similarity = np.asarray(
+        [
+            [0.10, 0.10, 0.10, 0.10],
+            [0.10, 0.95, 0.10, 0.10],
+            [0.10, 0.10, 0.90, 0.10],
+            [0.10, 0.10, 0.10, 0.10],
+        ],
+        dtype=np.float32,
+    )
+
+    path, score, dp_score, traceback = smith_waterman(
+        similarity,
+        threshold=0.40,
+        gap_penalty=-0.20,
+        return_traceback=True,
+    )
+
+    max_row, max_col = np.unravel_index(np.argmax(dp_score), dp_score.shape)
+    assert score > 0.0
+    assert path == [(1, 1), (2, 2)]
+    assert (max_row, max_col) == (3, 3)
+    np.testing.assert_array_equal(traceback[0], np.asarray([3.0, 3.0]))
+    assert not np.array_equal(traceback[0], np.asarray([4.0, 4.0]))
+    assert dp_score[int(traceback[-1, 1]), int(traceback[-1, 0])] == 0.0
+
+
+def test_sw_complete_traceback_contains_gap_steps_in_backwards_direction():
     similarity = np.asarray(
         [
             [0.95, 0.10, 0.10],
@@ -218,4 +251,24 @@ def test_sw_complete_traceback_contains_gap_steps():
     assert path == [(0, 0), (1, 2)]
     assert len(traceback) - 1 == 3
     steps = np.diff(traceback, axis=0)
-    assert any(np.array_equal(step, np.asarray([1.0, 0.0])) for step in steps)
+    assert any(np.array_equal(step, np.asarray([-1.0, 0.0])) for step in steps)
+
+
+def test_real_auto_score_mode_is_mutual_z_and_suppresses_broad_positive_bias():
+    similarity = np.full((8, 8), 0.70, dtype=np.float32)
+    similarity[2:4, 4:6] = 0.90
+
+    raw_scores = _build_match_scores(
+        similarity, score_mode="raw", score_clip=4.0, threshold=0.45
+    )
+    mutual_z_scores = _build_match_scores(
+        similarity, score_mode="mutual-z", score_clip=4.0, threshold=0.45
+    )
+
+    assert _resolve_score_mode("auto", "real") == "mutual-z"
+    assert _resolve_score_mode("auto", "synthetic") == "raw"
+    assert float((mutual_z_scores > 0).mean()) < float((raw_scores > 0).mean())
+
+
+def test_matched_window_runs_do_not_fill_intervening_gaps():
+    assert _contiguous_runs([1, 2, 5, 6, 9]) == [(1, 3), (5, 7), (9, 10)]
