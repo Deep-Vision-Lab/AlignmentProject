@@ -8,10 +8,13 @@ from PIL import Image
 from Evaluation.eval_img_align_sw import (
     ImagePair,
     _display_image,
+    _format_heatmap_value,
     _group_split_pairs,
+    _heatmap_matrix,
     _load_arabic_dataset_pairs,
     _load_pair_manifest,
     _real_pair_paths,
+    smith_waterman,
 )
 
 
@@ -173,3 +176,46 @@ def test_arabic_dataset_group_split_keeps_pair_ids_together(tmp_path):
     assert train_ids.isdisjoint(test_ids)
     assert valid_ids.isdisjoint(test_ids)
     assert len(train) + len(valid) + len(test) == len(pairs)
+
+
+def test_sw_match_score_heatmap_is_cosine_minus_threshold():
+    similarity = np.asarray([[0.80, 0.20], [0.55, 0.45]], dtype=np.float32)
+    dp_score = np.zeros((3, 3), dtype=np.float32)
+
+    matrix, label = _heatmap_matrix(
+        similarity,
+        threshold=0.45,
+        dp_score=dp_score,
+        source="match-score",
+    )
+
+    np.testing.assert_allclose(
+        matrix,
+        np.asarray([[0.35, -0.25], [0.10, 0.00]], dtype=np.float32),
+        atol=1e-6,
+    )
+    assert "cosine - threshold" in label
+    assert _format_heatmap_value(matrix[0, 0], 2) == "0.35"
+
+
+def test_sw_complete_traceback_contains_gap_steps():
+    similarity = np.asarray(
+        [
+            [0.95, 0.10, 0.10],
+            [0.10, 0.10, 0.95],
+        ],
+        dtype=np.float32,
+    )
+
+    path, score, _dp, traceback = smith_waterman(
+        similarity,
+        threshold=0.40,
+        gap_penalty=-0.10,
+        return_traceback=True,
+    )
+
+    assert score > 0.0
+    assert path == [(0, 0), (1, 2)]
+    assert len(traceback) - 1 == 3
+    steps = np.diff(traceback, axis=0)
+    assert any(np.array_equal(step, np.asarray([1.0, 0.0])) for step in steps)
