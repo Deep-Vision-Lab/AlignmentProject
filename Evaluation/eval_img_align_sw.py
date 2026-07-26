@@ -14,7 +14,17 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Install the shared aspect-preserving real-image preprocessing and balanced
+# ArabicDataset split/sampling before sw_runner imports functions from
+# Evaluation.sw_dataset.
+from Evaluation.zero_shot_sw import install_dataset_patches
+
+install_dataset_patches()
+
 from Evaluation import sw_runner as _implementation
+from Evaluation.zero_shot_sw import install_runner_patches
+
+install_runner_patches(_implementation)
 
 # Re-export public and private helpers for backward-compatible imports/tests.
 globals().update(
