@@ -124,6 +124,44 @@ def _zero_shot_enabled() -> bool:
     }
 
 
+def _install_zero_shot_wandb_metrics() -> None:
+    """Log only the selected per-epoch metrics for zero-shot experiments.
+
+    The removed values are still computed internally when needed for training or
+    validation; they are simply omitted from the W&B history payload.
+    """
+
+    def wandb_log_epoch_metrics(run, epoch, train_loss, val_loss, train_stats):
+        del val_loss
+        if run is None:
+            return
+        base.wandb.log(
+            {
+                "loss": float(train_loss),
+                "pos": float(train_stats.get("norm_pos", float("nan"))),
+                "negative": float(train_stats.get("norm_neg", float("nan"))),
+                "raw_pos_cost": float(train_stats.get("cost_pos", float("nan"))),
+                "raw_negative_cost": float(
+                    train_stats.get("cost_neg", float("nan"))
+                ),
+                "gap": float(train_stats.get("gap", float("nan"))),
+                "local_pos_sim": float(
+                    train_stats.get("local_pos_sim", 0.0)
+                ),
+                "local_neg_sim": float(
+                    train_stats.get("local_neg_sim", 0.0)
+                ),
+                "image_pair_loss": float(
+                    train_stats.get("image_pair_loss", 0.0)
+                ),
+            },
+            step=int(epoch),
+            commit=True,
+        )
+
+    base.wandb_log_epoch_metrics = wandb_log_epoch_metrics
+
+
 def _spawn_rebuild_single_gpu_loaders(train_loader, valid_loader, test_loader):
     """Use the same spawn/prefetch loader settings outside DDP as inside DDP."""
     if base.CTX.enabled:
@@ -164,6 +202,7 @@ def main():
                 )
             install_dataloader_profile()
             install_embedding_profile(base)
+            _install_zero_shot_wandb_metrics()
             if base.CTX.is_main:
                 print(
                     "zero_shot_profile enabled: aspect-preserving binary "
