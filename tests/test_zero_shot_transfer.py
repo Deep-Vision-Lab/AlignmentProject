@@ -4,12 +4,9 @@ from types import SimpleNamespace
 import numpy as np
 from PIL import Image
 
+from Evaluation.balanced_sampling import balanced_group_split_pairs
 from Evaluation.sw_core import ImagePair
-from Evaluation.zero_shot_sw import (
-    balanced_batch_pairs,
-    balanced_group_split_pairs,
-    ink_aware_match_scores,
-)
+from Evaluation.zero_shot_sw import balanced_batch_pairs, ink_aware_match_scores
 from zero_shot_preprocessing import ManuscriptLinePreprocessor, foreground_crop
 
 
@@ -104,7 +101,11 @@ def test_balanced_group_split_keeps_groups_disjoint_and_diverse():
         for _ in range(size):
             pairs.append(_pair(index, f"pair_{group}"))
             index += 1
-    train, valid, test = balanced_group_split_pairs(pairs, seed=42)
+    train, valid, test = balanced_group_split_pairs(
+        pairs,
+        seed=42,
+        fallback=lambda values, _seed: (values, [], []),
+    )
     train_ids = {pair.pair_id for pair in train}
     valid_ids = {pair.pair_id for pair in valid}
     test_ids = {pair.pair_id for pair in test}
