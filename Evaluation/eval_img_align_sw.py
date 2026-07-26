@@ -37,6 +37,21 @@ from Evaluation.zero_shot_sw import install_runner_patches
 
 install_runner_patches(_implementation)
 
+# Real images still need to be binarized before feature extraction, but those
+# intermediate files are now created only inside a temporary directory and are
+# deleted immediately after each sample. No binarization folder is written into
+# the evaluation output directory.
+_patched_evaluate_sample = _implementation.evaluate_sample
+
+
+def _evaluate_without_saved_binarization(*args, **kwargs):
+    kwargs["save_binary"] = False
+    return _patched_evaluate_sample(*args, **kwargs)
+
+
+_implementation.evaluate_sample = _evaluate_without_saved_binarization
+_implementation._evaluate_sample = _evaluate_without_saved_binarization
+
 # Re-export public and private helpers for backward-compatible imports/tests.
 globals().update(
     {
