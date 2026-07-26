@@ -30,6 +30,9 @@ export ZERO_SHOT_GROUPED_BLEND="${ZERO_SHOT_GROUPED_BLEND:-0.50}"
 # Keep ImageNet BatchNorm statistics instead of learning synthetic-only moments.
 export ZERO_SHOT_NORM_MODE="${ZERO_SHOT_NORM_MODE:-frozen-bn}"
 
+# Zero-shot training batch size per GPU.
+export BATCH_SIZE="${BATCH_SIZE:-64}"
+
 # Local discrimination is especially important for transfer.
 export USE_LOCAL_HARD_NEGATIVES="${USE_LOCAL_HARD_NEGATIVES:-1}"
 export LOCAL_HARD_NEGATIVE_WEIGHT="${LOCAL_HARD_NEGATIVE_WEIGHT:-0.35}"
