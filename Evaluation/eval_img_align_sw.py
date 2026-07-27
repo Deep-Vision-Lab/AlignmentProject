@@ -16,9 +16,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Install the shared aspect-preserving real-image preprocessing and balanced
-# ArabicDataset split/sampling before sw_runner imports functions from
-# Evaluation.sw_dataset.
+# Install the same source-compatible line geometry used by zero-shot training
+# before constructing the real-image preprocessor. Long lines keep a stable ink
+# height and are compressed only horizontally when they exceed 1024 pixels.
+from zero_shot_geometry import install_source_compatible_geometry
+
+install_source_compatible_geometry()
+
+# Install shared real-image preprocessing and balanced ArabicDataset
+# split/sampling before sw_runner imports functions from Evaluation.sw_dataset.
 from Evaluation.zero_shot_sw import install_dataset_patches
 
 install_dataset_patches()
