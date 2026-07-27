@@ -1,5 +1,6 @@
 import torch
 
+from Evaluation.vit_evaluation import install_vit_evaluation_loader
 from vit_embedding_model import ViTEmbeddingModel
 
 
@@ -72,3 +73,42 @@ def test_vit_heads_must_divide_embedding_dimension():
         assert "must divide" in str(exc)
     else:
         raise AssertionError("Expected invalid ViT head configuration to fail")
+
+
+def test_evaluation_reconstructs_vit_from_checkpoint_config(tmp_path):
+    model = _model(use_flip=True)
+    checkpoint_path = tmp_path / "vit.pth"
+    torch.save(
+        {
+            "image_model_state_dict": model.state_dict(),
+            "model_config": {
+                "visual_encoder_type": "vit",
+                "window_size": 32,
+                "stride": 16,
+                "vector_size": 64,
+                "lang": "Arabic",
+                "use_bilstm": False,
+                "use_local_window_grouping": False,
+                "vit_input_height": 128,
+                "vit_layers": 2,
+                "vit_heads": 4,
+                "vit_mlp_dim": 128,
+                "vit_dropout": 0.0,
+                "vit_max_tokens": 128,
+            },
+        },
+        checkpoint_path,
+    )
+
+    install_vit_evaluation_loader()
+    from Evaluation import _eval_utils
+
+    loaded = _eval_utils.load_evaluation_models(
+        checkpoint_path,
+        device="cpu",
+        load_text_model=False,
+    )
+
+    assert isinstance(loaded.image_model, ViTEmbeddingModel)
+    assert loaded.image_model.use_flip is True
+    assert loaded.config["visual_encoder_type"] == "vit"
