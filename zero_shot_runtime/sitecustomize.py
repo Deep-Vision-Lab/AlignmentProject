@@ -13,7 +13,17 @@ def _enabled(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-if _enabled("ZERO_SHOT_PROFILE") and _enabled("ZERO_SHOT_SOURCE_GEOMETRY", True):
+def _is_training_process() -> bool:
+    return any(Path(argument).name == "train_optimized.py" for argument in sys.argv)
+
+
+# PYTHONPATH is inherited by launcher helper commands such as `conda info`.
+# Install heavy project patches only inside the actual training Python process.
+if (
+    _is_training_process()
+    and _enabled("ZERO_SHOT_PROFILE")
+    and _enabled("ZERO_SHOT_SOURCE_GEOMETRY", True)
+):
     project_root = Path(__file__).resolve().parents[1]
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
