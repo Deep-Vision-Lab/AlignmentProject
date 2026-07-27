@@ -12,6 +12,10 @@ on:
       - "ddp_runtime_policy.py"
       - "training_optimizations.py"
       - "zero_shot_preprocessing.py"
+      - "zero_shot_geometry.py"
+      - "zero_shot_runtime/**"
+      - "vit_embedding_model.py"
+      - "vit_training_runtime.py"
       - "scripts/train/**"
       - "scripts/benchmark/**"
       - "Evaluation/**"
@@ -25,6 +29,8 @@ on:
       - "tests/test_needleman_wunsch_evaluation.py"
       - "tests/test_sw_real_evaluation.py"
       - "tests/test_zero_shot_transfer.py"
+      - "tests/test_zero_shot_geometry.py"
+      - "tests/test_vit_embedding_model.py"
       - ".github/workflows/optimization-checks.yml"
   workflow_dispatch:
 
@@ -50,6 +56,10 @@ jobs:
             ddp_runtime_policy.py \
             training_optimizations.py \
             zero_shot_preprocessing.py \
+            zero_shot_geometry.py \
+            zero_shot_runtime/sitecustomize.py \
+            vit_embedding_model.py \
+            vit_training_runtime.py \
             scripts/train/train_optimized.py \
             scripts/benchmark/summarize_training_speed.py \
             Evaluation/__init__.py \
@@ -64,6 +74,7 @@ jobs:
             Evaluation/sw_dataset.py \
             Evaluation/sw_runner.py \
             Evaluation/zero_shot_sw.py \
+            Evaluation/vit_evaluation.py \
             Evaluation/eval_img_align_sw.py \
             Evaluation/eval_retrieval.py \
             Evaluation/eval_alignment_mae.py \
@@ -72,6 +83,7 @@ jobs:
         run: |
           bash -n scripts/train/run_span_d3tw_optimized.sh
           bash -n scripts/train/run_zero_shot_synthetic_to_real.sh
+          bash -n scripts/train/run_zero_shot_vit.sh
           bash -n scripts/train/run_rank_isolated.sh
           bash -n scripts/benchmark/submit_training_speed_comparison.sh
 
@@ -122,6 +134,8 @@ jobs:
           run_suite needleman_wunsch tests/test_needleman_wunsch_evaluation.py
           run_suite sw_real tests/test_sw_real_evaluation.py
           run_suite zero_shot tests/test_zero_shot_transfer.py
+          run_suite zero_shot_geometry tests/test_zero_shot_geometry.py
+          run_suite vit tests/test_vit_embedding_model.py
           echo "$failed" > test-logs/failed.status
       - name: Upload focused test logs
         if: always()
