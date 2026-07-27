@@ -1,7 +1,12 @@
 """Runtime wiring for the dedicated zero-shot ViT training branch."""
 from __future__ import annotations
 
+import builtins
 import os
+import sys
+
+
+_ORIGINAL_IMPORT = None
 
 
 def _env_int(name: str, default: int) -> int:
@@ -18,17 +23,11 @@ def _env_float(name: str, default: float) -> float:
         return float(default)
 
 
-def install_vit_training_runtime() -> bool:
-    """Replace only visual model construction and visual preparation."""
-    if os.environ.get("VISUAL_ENCODER_TYPE", "cnn_bilstm").strip().lower() != "vit":
-        return False
-
-    import train as base
-    import training_optimizations
-    from vit_embedding_model import build_vit_from_environment, prepare_vit_model
-
+def _patch_train_module(base) -> None:
     if getattr(base, "_vit_training_runtime_installed", False):
-        return True
+        return
+
+    from vit_embedding_model import build_vit_from_environment
 
     def build_image_embedding(stride):
         return build_vit_from_environment(
@@ -62,6 +61,39 @@ def install_vit_training_runtime() -> bool:
 
     base.build_image_embedding = build_image_embedding
     base.model_config = model_config
-    training_optimizations.prepare_raw_model = prepare_vit_model
     base._vit_training_runtime_installed = True
+
+
+def _patch_training_optimizations(module) -> None:
+    if getattr(module, "_vit_prepare_model_installed", False):
+        return
+    from vit_embedding_model import prepare_vit_model
+
+    module.prepare_raw_model = prepare_vit_model
+    module._vit_prepare_model_installed = True
+
+
+def install_vit_training_runtime() -> bool:
+    """Install a lightweight post-import hook without importing train early."""
+    global _ORIGINAL_IMPORT
+    if os.environ.get("VISUAL_ENCODER_TYPE", "cnn_bilstm").strip().lower() != "vit":
+        return False
+    if _ORIGINAL_IMPORT is not None:
+        return True
+
+    _ORIGINAL_IMPORT = builtins.__import__
+
+    def hooked_import(name, globals=None, locals=None, fromlist=(), level=0):
+        module = _ORIGINAL_IMPORT(name, globals, locals, fromlist, level)
+        if level == 0 and name == "train":
+            target = sys.modules.get("train")
+            if target is not None:
+                _patch_train_module(target)
+        elif level == 0 and name == "training_optimizations":
+            target = sys.modules.get("training_optimizations")
+            if target is not None:
+                _patch_training_optimizations(target)
+        return module
+
+    builtins.__import__ = hooked_import
     return True
