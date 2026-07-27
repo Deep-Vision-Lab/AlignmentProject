@@ -54,7 +54,8 @@ def test_source_geometry_normalizes_dark_page_background_before_padding():
 
 def test_runtime_install_replaces_width_limited_geometry(monkeypatch):
     monkeypatch.setenv("ZERO_SHOT_SOURCE_GEOMETRY", "1")
-    original = preprocessing.aspect_preserving_pad
+    original_geometry = preprocessing.aspect_preserving_pad
+    original_config = preprocessing.zero_shot_config
     try:
         preprocessing._source_compatible_geometry_installed = False
         assert install_source_compatible_geometry()
@@ -63,5 +64,6 @@ def test_runtime_install_replaces_width_limited_geometry(monkeypatch):
         assert config["zero_shot_geometry_mode"] == "source-compatible-height"
         assert config["zero_shot_source_geometry"] is True
     finally:
-        preprocessing.aspect_preserving_pad = original
+        preprocessing.aspect_preserving_pad = original_geometry
+        preprocessing.zero_shot_config = original_config
         preprocessing._source_compatible_geometry_installed = False
