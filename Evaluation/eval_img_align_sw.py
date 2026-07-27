@@ -23,6 +23,12 @@ from zero_shot_geometry import install_source_compatible_geometry
 
 install_source_compatible_geometry()
 
+# Reconstruct either the legacy CNN+BiLSTM or the new ViT from checkpoint config.
+# This must be installed before sw_runner imports load_evaluation_models.
+from Evaluation.vit_evaluation import install_vit_evaluation_loader
+
+install_vit_evaluation_loader()
+
 # Install shared real-image preprocessing and balanced ArabicDataset
 # split/sampling before sw_runner imports functions from Evaluation.sw_dataset.
 from Evaluation.zero_shot_sw import install_dataset_patches
