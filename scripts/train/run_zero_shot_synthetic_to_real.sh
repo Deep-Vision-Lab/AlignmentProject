@@ -9,11 +9,19 @@ export PROJECT_DIR
 export DATASET_TYPE="synthetic"
 export ZERO_SHOT_PROFILE="${ZERO_SHOT_PROFILE:-1}"
 
-# Shared synthetic/real geometry.
+# Shared synthetic/real geometry. The runtime patch keeps actual ink at a fixed
+# height and compresses only the horizontal axis when a line is wider than 1024.
+# This avoids the tiny-line failure caused by fitting both dimensions jointly.
 export ZERO_SHOT_PREPROCESS="${ZERO_SHOT_PREPROCESS:-1}"
 export ZERO_SHOT_PRESERVE_ASPECT="${ZERO_SHOT_PRESERVE_ASPECT:-1}"
 export ZERO_SHOT_FOREGROUND_CROP="${ZERO_SHOT_FOREGROUND_CROP:-1}"
 export ZERO_SHOT_TARGET_INK_HEIGHT_RATIO="${ZERO_SHOT_TARGET_INK_HEIGHT_RATIO:-0.72}"
+export ZERO_SHOT_SOURCE_GEOMETRY="${ZERO_SHOT_SOURCE_GEOMETRY:-1}"
+
+# sitecustomize is imported by every torchrun Python rank before train_optimized,
+# ensuring all GPUs use exactly the same corrected preprocessing implementation.
+ZERO_SHOT_RUNTIME_DIR="${PROJECT_DIR}/zero_shot_runtime"
+export PYTHONPATH="${ZERO_SHOT_RUNTIME_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 
 # Synthetic manuscript domain randomization.
 export SYNTHETIC_MANUSCRIPT_AUGMENT="${SYNTHETIC_MANUSCRIPT_AUGMENT:-1}"
