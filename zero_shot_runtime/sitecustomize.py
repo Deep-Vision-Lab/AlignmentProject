@@ -19,21 +19,29 @@ def _is_training_process() -> bool:
 
 # PYTHONPATH is inherited by launcher helper commands such as `conda info`.
 # Install heavy project patches only inside the actual training Python process.
-if (
-    _is_training_process()
-    and _enabled("ZERO_SHOT_PROFILE")
-    and _enabled("ZERO_SHOT_SOURCE_GEOMETRY", True)
-):
+if _is_training_process() and _enabled("ZERO_SHOT_PROFILE"):
     project_root = Path(__file__).resolve().parents[1]
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-    from zero_shot_geometry import install_source_compatible_geometry
+    if _enabled("ZERO_SHOT_SOURCE_GEOMETRY", True):
+        from zero_shot_geometry import install_source_compatible_geometry
 
-    installed = install_source_compatible_geometry()
-    if installed and int(os.environ.get("LOCAL_RANK", "0")) == 0:
-        print(
-            "zero_shot_geometry enabled: fixed ink height + horizontal-only "
-            "compression for long lines",
-            flush=True,
-        )
+        geometry_installed = install_source_compatible_geometry()
+        if geometry_installed and int(os.environ.get("LOCAL_RANK", "0")) == 0:
+            print(
+                "zero_shot_geometry enabled: fixed ink height + horizontal-only "
+                "compression for long lines",
+                flush=True,
+            )
+
+    if os.environ.get("VISUAL_ENCODER_TYPE", "cnn_bilstm").strip().lower() == "vit":
+        from vit_training_runtime import install_vit_training_runtime
+
+        vit_installed = install_vit_training_runtime()
+        if vit_installed and int(os.environ.get("LOCAL_RANK", "0")) == 0:
+            print(
+                "visual_encoder enabled: full-height window patch projection + ViT; "
+                "CNN and BiLSTM disabled",
+                flush=True,
+            )
