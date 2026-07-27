@@ -1,0 +1,15 @@
+{
+  "samples": 10,
+  "successful": 10,
+  "failed": 0,
+  "mean_score": 26.423983001708983,
+  "std_score": 6.97070262272479,
+  "mean_path_steps": 30.1,
+  "mean_traceback_steps": 41.5,
+  "mean_path_cosine": 0.6576296165931165,
+  "mean_line1_matched_fraction": 0.47777777777777775,
+  "mean_line2_matched_fraction": 0.47777777777777775,
+  "terminal_dp_maxima": 0,
+  "binarized_samples": 10,
+  "failed_indices": []
+}
