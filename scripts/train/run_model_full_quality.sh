@@ -37,6 +37,16 @@ export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
 export DDP_STATIC_GRAPH="${DDP_STATIC_GRAPH:-1}"
 
+# Validated span semantics used by training_optimizations.py. Keep these defaults
+# here so the older generic launcher cannot reintroduce its obsolete unsafe
+# values. Explicit smaller values remain supported; unsafe ablations must opt in
+# with ALLOW_UNSAFE_SPAN_CONFIG=1.
+export MAX_TEXT_TOKEN_CHARS="${MAX_TEXT_TOKEN_CHARS:-2}"
+export MAX_TEXT_SPAN_CHARS="${MAX_TEXT_SPAN_CHARS:-2}"
+export MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-3}"
+export SPAN_INCLUDE_SPACE_CONTEXT="${SPAN_INCLUDE_SPACE_CONTEXT:-0}"
+export SPAN_ALLOW_CHARACTER_SPACE_SURFACES="${SPAN_ALLOW_CHARACTER_SPACE_SURFACES:-0}"
+
 # One geometry for synthetic/real train, validation, test, and evaluation.
 # TARGET_INK_HEIGHT_RATIO=0.72 means roughly 92 ink pixels on a 128-pixel line.
 export LINE_HEIGHT="${LINE_HEIGHT:-128}"
