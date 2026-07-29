@@ -40,8 +40,8 @@ RANK_WRAPPER="${PROJECT_DIR}/scripts/train/run_rank_isolated.sh"
   echo "ERROR: model backend not found: ${PROJECT_DIR}/model_backend.py" >&2
   exit 1
 }
-[[ -x "${RANK_WRAPPER}" ]] || {
-  echo "ERROR: rank GPU wrapper is missing or not executable: ${RANK_WRAPPER}" >&2
+[[ -f "${RANK_WRAPPER}" ]] || {
+  echo "ERROR: rank GPU wrapper is missing: ${RANK_WRAPPER}" >&2
   exit 1
 }
 
@@ -112,6 +112,7 @@ new_torchrun = (
     "    --nproc_per_node=\"${NUM_GPUS}\" \\\n"
     "    --max_restarts=0 \\\n"
     "    --no_python \\\n"
+    "    bash \\\n"
     "    \"${PROJECT_DIR}/scripts/train/run_rank_isolated.sh\" \\\n"
     "    \"${TRAIN_ARGS[@]}\"\n"
 )
