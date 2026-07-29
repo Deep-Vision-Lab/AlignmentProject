@@ -14,9 +14,19 @@ if [[ "$#" -ne 0 ]]; then
   exit 2
 fi
 
+# This wrapper must be run with bash from the login node. It then submits the
+# generated launcher with the requested Slurm resources. Calling sbatch directly
+# on this wrapper skips that submission layer and can start two ranks on one GPU.
+if [[ -n "${SLURM_JOB_ID:-}" && "${ALIGNMENT_CANONICAL_SUBMISSION:-0}" != "1" ]]; then
+  echo "ERROR: do not run 'sbatch scripts/train/run_model_full_quality.sh'." >&2
+  echo "Run it with bash from the login node; the launcher submits itself offline." >&2
+  exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${PROJECT_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 BASE_LAUNCHER="${PROJECT_DIR}/scripts/train/run_span_d3tw_full_quality.sh"
+RANK_WRAPPER="${PROJECT_DIR}/scripts/train/run_rank_isolated.sh"
 
 [[ -f "${BASE_LAUNCHER}" ]] || {
   echo "ERROR: base launcher not found: ${BASE_LAUNCHER}" >&2
@@ -30,8 +40,13 @@ BASE_LAUNCHER="${PROJECT_DIR}/scripts/train/run_span_d3tw_full_quality.sh"
   echo "ERROR: model backend not found: ${PROJECT_DIR}/model_backend.py" >&2
   exit 1
 }
+[[ -x "${RANK_WRAPPER}" ]] || {
+  echo "ERROR: rank GPU wrapper is missing or not executable: ${RANK_WRAPPER}" >&2
+  exit 1
+}
 
 export PROJECT_DIR
+export ALIGNMENT_CANONICAL_SUBMISSION=1
 export NUM_GPUS="${NUM_GPUS:-2}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
@@ -74,13 +89,35 @@ import sys
 source = Path(sys.argv[1])
 target = Path(sys.argv[2])
 text = source.read_text(encoding="utf-8")
-needle = "  train.py\n"
-count = text.count(needle)
-if count != 1:
+
+entry_needle = "  train.py\n"
+if text.count(entry_needle) != 1:
     raise SystemExit(
-        f"Expected exactly one TRAIN_ARGS entry {needle!r} in {source}, found {count}."
+        f"Expected exactly one TRAIN_ARGS entry {entry_needle!r} in {source}."
     )
-text = text.replace(needle, "  scripts/train/train_model.py\n", 1)
+text = text.replace(entry_needle, "  scripts/train/train_model.py\n", 1)
+
+old_torchrun = (
+    "  exec torchrun \\\n"
+    "    --standalone \\\n"
+    "    --nnodes=1 \\\n"
+    "    --nproc_per_node=\"${NUM_GPUS}\" \\\n"
+    "    --max_restarts=0 \\\n"
+    "    \"${TRAIN_ARGS[@]}\"\n"
+)
+new_torchrun = (
+    "  exec torchrun \\\n"
+    "    --standalone \\\n"
+    "    --nnodes=1 \\\n"
+    "    --nproc_per_node=\"${NUM_GPUS}\" \\\n"
+    "    --max_restarts=0 \\\n"
+    "    --no_python \\\n"
+    "    \"${PROJECT_DIR}/scripts/train/run_rank_isolated.sh\" \\\n"
+    "    \"${TRAIN_ARGS[@]}\"\n"
+)
+if text.count(old_torchrun) != 1:
+    raise SystemExit(f"Expected exactly one canonical torchrun block in {source}.")
+text = text.replace(old_torchrun, new_torchrun, 1)
 text = text.replace(
     "Generic full-quality training launcher",
     "Canonical branch-model full-quality training launcher",
