@@ -16,12 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Install the same source-compatible line geometry used by zero-shot training
-# before constructing the real-image preprocessor. Long lines keep a stable ink
-# height and are compressed only horizontally when they exceed 1024 pixels.
-from zero_shot_geometry import install_source_compatible_geometry
+# Install exactly the same canvas and measured-ink-height normalization used by
+# synthetic and real training before evaluation preprocessing modules import it.
+from unified_line_geometry import install_evaluation_geometry
 
-install_source_compatible_geometry()
+_EVALUATION_GEOMETRY = install_evaluation_geometry()
 
 # Reconstruct either the legacy CNN+BiLSTM or the new ViT from checkpoint config.
 # This must be installed before sw_runner imports load_evaluation_models.
