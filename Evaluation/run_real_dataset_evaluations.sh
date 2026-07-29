@@ -39,13 +39,14 @@ fi
 [[ -d "$REAL_DATA_DIR" ]] || { echo "Real dataset root not found: $REAL_DATA_DIR" >&2; exit 2; }
 [[ -f "$ARABIC_MANIFEST" ]] || { echo "ArabicDataset manifest not found: $ARABIC_MANIFEST" >&2; exit 2; }
 
-# Match the real manuscript line geometry to the synthetic training geometry.
-# The line foreground is cropped, scaled without changing aspect ratio, centered
-# on a 128x1024 canvas, binarized, and kept as dark ink on a white background.
+# Match evaluation geometry exactly to canonical synthetic/real training.
+export LINE_HEIGHT="${LINE_HEIGHT:-128}"
+export LINE_WIDTH="${LINE_WIDTH:-1024}"
+export TARGET_INK_HEIGHT_RATIO="${TARGET_INK_HEIGHT_RATIO:-0.72}"
 export ZERO_SHOT_PREPROCESS="${ZERO_SHOT_PREPROCESS:-1}"
 export ZERO_SHOT_PRESERVE_ASPECT="${ZERO_SHOT_PRESERVE_ASPECT:-1}"
 export ZERO_SHOT_FOREGROUND_CROP="${ZERO_SHOT_FOREGROUND_CROP:-1}"
-export ZERO_SHOT_TARGET_INK_HEIGHT_RATIO="${ZERO_SHOT_TARGET_INK_HEIGHT_RATIO:-0.72}"
+export ZERO_SHOT_SOURCE_GEOMETRY="${ZERO_SHOT_SOURCE_GEOMETRY:-1}"
 export REAL_BINARIZE="${REAL_BINARIZE:-1}"
 export REAL_BINARIZE_METHOD="${REAL_BINARIZE_METHOD:-otsu}"
 export REAL_BINARIZE_AUTO_INVERT="${REAL_BINARIZE_AUTO_INVERT:-1}"
@@ -68,7 +69,8 @@ printf '%s\n' \
   "  samples    : $START_INDEX..$((START_INDEX + N_SAMPLES - 1))" \
   "  feature    : $FEATURE" \
   "  output     : $RESULTS_DIR" \
-  "  ink ratio  : $ZERO_SHOT_TARGET_INK_HEIGHT_RATIO"
+  "  canvas     : ${LINE_WIDTH}x${LINE_HEIGHT}" \
+  "  ink ratio  : $TARGET_INK_HEIGHT_RATIO"
 
 python -m Evaluation.eval_img_align_sw \
   --weights "$WEIGHTS" \
