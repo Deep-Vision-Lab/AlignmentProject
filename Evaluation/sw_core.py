@@ -9,6 +9,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import numpy as np
+from PIL import Image
 
 from Evaluation._eval_utils import patch_range_to_pixels
 from Evaluation.window_alignment import alignment_score_matrix
@@ -24,6 +25,37 @@ class ImagePair:
     text_score: float = 0.0
     manifest_position: int = -1
     split: str = ""
+
+
+@dataclass(frozen=True)
+class DenseAlignmentRegion:
+    """Dense line regions implied by a sparse local-alignment traceback.
+
+    Smith-Waterman horizontal/vertical transitions are warps inside the local
+    correspondence, not evidence that the consumed image window is outside the
+    shared phrase. The line-level region therefore spans every window between
+    the first and last diagonal correspondence on each line.
+    """
+
+    line1_start: int = -1
+    line1_end: int = -1
+    line2_start: int = -1
+    line2_end: int = -1
+    path_steps: int = 0
+    traceback_steps: int = 0
+    warp_steps: int = 0
+
+    @property
+    def empty(self) -> bool:
+        return self.path_steps <= 0
+
+    @property
+    def line1_span_windows(self) -> int:
+        return 0 if self.empty else self.line1_end - self.line1_start + 1
+
+    @property
+    def line2_span_windows(self) -> int:
+        return 0 if self.empty else self.line2_end - self.line2_start + 1
 
 
 def smith_waterman(
@@ -92,6 +124,165 @@ def smith_waterman(
     path = list(reversed(matched_backwards))
     traceback = np.asarray(traceback_max_to_zero, dtype=np.float32)
     return (path, best_score, score, traceback) if return_traceback else (path, best_score, score)
+
+
+def dense_alignment_region(path, traceback=None) -> DenseAlignmentRegion:
+    """Convert a sparse SW correspondence path into two dense line intervals."""
+    pairs = [(int(row), int(col)) for row, col in path]
+    traceback_steps = (
+        max(0, len(traceback) - 1)
+        if traceback is not None
+        else len(pairs)
+    )
+    if not pairs:
+        return DenseAlignmentRegion(
+            path_steps=0,
+            traceback_steps=traceback_steps,
+            warp_steps=traceback_steps,
+        )
+
+    rows = [row for row, _ in pairs]
+    cols = [col for _, col in pairs]
+    path_steps = len(pairs)
+    return DenseAlignmentRegion(
+        line1_start=min(rows),
+        line1_end=max(rows),
+        line2_start=min(cols),
+        line2_end=max(cols),
+        path_steps=path_steps,
+        traceback_steps=traceback_steps,
+        warp_steps=max(0, traceback_steps - path_steps),
+    )
+
+
+def alignment_region_metrics(path, traceback, similarity_shape) -> dict:
+    """Report sparse correspondence and dense aligned-region statistics."""
+    if len(similarity_shape) != 2:
+        raise ValueError(f"Expected a two-dimensional similarity shape, got {similarity_shape}")
+    n1, n2 = map(int, similarity_shape)
+    region = dense_alignment_region(path, traceback)
+    sparse_rows = {int(row) for row, _ in path}
+    sparse_cols = {int(col) for _, col in path}
+    return {
+        "path_steps": int(region.path_steps),
+        "traceback_steps": int(region.traceback_steps),
+        "warp_steps": int(region.warp_steps),
+        "line1_path_windows": len(sparse_rows),
+        "line2_path_windows": len(sparse_cols),
+        "line1_span_windows": int(region.line1_span_windows),
+        "line2_span_windows": int(region.line2_span_windows),
+        "line1_path_fraction": len(sparse_rows) / max(1, n1),
+        "line2_path_fraction": len(sparse_cols) / max(1, n2),
+        # Backward-compatible names now represent the dense region shown in red.
+        "line1_matched_fraction": region.line1_span_windows / max(1, n1),
+        "line2_matched_fraction": region.line2_span_windows / max(1, n2),
+        "line1_path_start": int(region.line1_start),
+        "line1_path_end": int(region.line1_end),
+        "line2_path_start": int(region.line2_start),
+        "line2_path_end": int(region.line2_end),
+    }
+
+
+def _synthetic_mask_path(image_path: str | Path) -> Path | None:
+    image_path = Path(image_path)
+    name = image_path.name
+    if name.startswith("img1_"):
+        mask_name = "mask1_" + name[len("img1_"):]
+    elif name.startswith("img2_"):
+        mask_name = "mask2_" + name[len("img2_"):]
+    else:
+        return None
+    return image_path.parent.parent / "masks" / mask_name
+
+
+def _mask_interval(mask_path: Path | None) -> tuple[int, int] | None:
+    if mask_path is None or not mask_path.is_file():
+        return None
+    with Image.open(mask_path) as opened:
+        mask = np.asarray(opened.convert("L"))
+    columns = np.any(mask > 0, axis=0)
+    indices = np.flatnonzero(columns)
+    if not len(indices):
+        return None
+    return int(indices[0]), int(indices[-1] + 1)
+
+
+def _interval_iou(left: tuple[float, float], right: tuple[float, float]) -> float:
+    intersection = max(0.0, min(left[1], right[1]) - max(left[0], right[0]))
+    union = max(left[1], right[1]) - min(left[0], right[0])
+    return float(intersection / union) if union > 0.0 else 0.0
+
+
+def synthetic_mask_region_metrics(
+    path,
+    traceback,
+    similarity_shape,
+    image1,
+    image2,
+    image_width1: int,
+    image_width2: int,
+    use_flip: bool,
+) -> dict:
+    """Compare dense predicted spans with committed synthetic rectangle masks."""
+    keys = {}
+    for prefix in ("line1", "line2"):
+        keys.update(
+            {
+                f"{prefix}_pred_start_px": None,
+                f"{prefix}_pred_end_px": None,
+                f"{prefix}_gt_start_px": None,
+                f"{prefix}_gt_end_px": None,
+                f"{prefix}_region_iou": None,
+                f"{prefix}_start_error_px": None,
+                f"{prefix}_end_error_px": None,
+            }
+        )
+    keys["mean_region_iou"] = None
+
+    region = dense_alignment_region(path, traceback)
+    if region.empty:
+        return keys
+
+    n1, n2 = map(int, similarity_shape)
+    specifications = (
+        (
+            "line1",
+            region.line1_start,
+            region.line1_end,
+            n1,
+            int(image_width1),
+            Path(image1),
+        ),
+        (
+            "line2",
+            region.line2_start,
+            region.line2_end,
+            n2,
+            int(image_width2),
+            Path(image2),
+        ),
+    )
+    ious = []
+    for prefix, start, end, n_windows, width, image_path in specifications:
+        pred = patch_range_to_pixels(start, end + 1, n_windows, width, use_flip)
+        pred = (min(pred), max(pred))
+        gt = _mask_interval(_synthetic_mask_path(image_path))
+        keys[f"{prefix}_pred_start_px"] = float(pred[0])
+        keys[f"{prefix}_pred_end_px"] = float(pred[1])
+        if gt is None:
+            continue
+        gt_float = (float(gt[0]), float(gt[1]))
+        iou = _interval_iou(pred, gt_float)
+        keys[f"{prefix}_gt_start_px"] = int(gt[0])
+        keys[f"{prefix}_gt_end_px"] = int(gt[1])
+        keys[f"{prefix}_region_iou"] = iou
+        keys[f"{prefix}_start_error_px"] = abs(float(pred[0]) - float(gt[0]))
+        keys[f"{prefix}_end_error_px"] = abs(float(pred[1]) - float(gt[1]))
+        ious.append(iou)
+
+    if ious:
+        keys["mean_region_iou"] = float(np.mean(ious))
+    return keys
 
 
 def resolve_score_mode(score_mode: str, dataset_type: str) -> str:
@@ -168,7 +359,7 @@ def select_heatmap_matrix(
 
 
 def contiguous_runs(indices) -> list[tuple[int, int]]:
-    """Return half-open runs so intervening gap windows are not painted."""
+    """Return half-open runs for sparse correspondence diagnostics."""
     values = sorted({int(index) for index in indices})
     if not values:
         return []
@@ -184,6 +375,7 @@ def contiguous_runs(indices) -> list[tuple[int, int]]:
 
 
 def _draw_matched_runs(ax, array, indices, n_windows, use_flip):
+    """Draw sparse runs; retained for diagnostics and backward compatibility."""
     for start, end in contiguous_runs(indices):
         x0, x1 = patch_range_to_pixels(
             start, end, n_windows, array.shape[1], use_flip
@@ -199,6 +391,25 @@ def _draw_matched_runs(ax, array, indices, n_windows, use_flip):
                 linewidth=1.5,
             )
         )
+
+
+def _draw_dense_span(ax, array, start, end, n_windows, use_flip):
+    if start < 0 or end < start:
+        return
+    x0, x1 = patch_range_to_pixels(
+        start, end + 1, n_windows, array.shape[1], use_flip
+    )
+    ax.add_patch(
+        Rectangle(
+            (x0, 1),
+            max(2.0, x1 - x0),
+            max(2.0, array.shape[0] - 2),
+            facecolor="red",
+            edgecolor="red",
+            alpha=0.28,
+            linewidth=1.5,
+        )
+    )
 
 
 def _draw_traceback_arrows(ax, traceback: np.ndarray):
@@ -260,19 +471,39 @@ def save_visualization(
         ax.set_xticks([])
         ax.set_yticks([])
 
-    if path:
-        _draw_matched_runs(
-            axes[0], arr1, [row for row, _ in path], len(features1.contextual), use_flip
+    region = dense_alignment_region(path, traceback)
+    if not region.empty:
+        _draw_dense_span(
+            axes[0],
+            arr1,
+            region.line1_start,
+            region.line1_end,
+            len(features1.contextual),
+            use_flip,
         )
-        _draw_matched_runs(
-            axes[1], arr2, [col for _, col in path], len(features2.contextual), use_flip
+        _draw_dense_span(
+            axes[1],
+            arr2,
+            region.line2_start,
+            region.line2_end,
+            len(features2.contextual),
+            use_flip,
+        )
+        axes[0].set_title(
+            f"dense aligned region: windows {region.line1_start}–{region.line1_end}",
+            fontsize=9,
+        )
+        axes[1].set_title(
+            f"dense aligned region: windows {region.line2_start}–{region.line2_end}",
+            fontsize=9,
         )
 
     metadata = f" | pair_id={pair.pair_id} | label={pair.label_type}" if pair.pair_id else ""
     input_label = "binarized real input" if binarized else "synthetic input"
     fig.suptitle(
         f"Smith-Waterman local image alignment | score={score:.4f} | "
-        f"score_mode={score_mode} | {input_label}{metadata}",
+        f"score_mode={score_mode} | red=dense region | "
+        f"warps={region.warp_steps} | {input_label}{metadata}",
         fontsize=11,
         fontweight="bold",
     )
@@ -324,12 +555,15 @@ def save_visualization(
             ax.scatter(
                 [col for _, col in path], [row for row, _ in path], s=30,
                 facecolors="none", edgecolors="yellow", linewidths=1.2,
-                label="matched diagonal cells", zorder=9
+                label="sparse diagonal correspondences", zorder=9
             )
 
         ax.set_xlim(-0.5, n2 - 0.5)
         ax.set_ylim(n1 - 0.5, -0.5)
-        ax.set_title(f"{heatmap_label}: values + directed local traceback", fontsize=10)
+        ax.set_title(
+            f"{heatmap_label}: sparse path retained; red line masks use dense spans",
+            fontsize=10,
+        )
         logical = "logical windows (0 = rightmost)" if use_flip else "logical windows"
         ax.set_xlabel(f"line B {logical}")
         ax.set_ylabel(f"line A {logical}")
@@ -349,3 +583,6 @@ _format_heatmap_value = format_heatmap_value
 _annotate_heatmap_values = annotate_heatmap_values
 _heatmap_matrix = select_heatmap_matrix
 _contiguous_runs = contiguous_runs
+_dense_alignment_region = dense_alignment_region
+_alignment_region_metrics = alignment_region_metrics
+_synthetic_mask_region_metrics = synthetic_mask_region_metrics
