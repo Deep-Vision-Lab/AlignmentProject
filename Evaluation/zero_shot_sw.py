@@ -233,8 +233,19 @@ def install_runner_patches(runner) -> None:
         max_row, max_col = map(
             int, np.unravel_index(np.argmax(dp_score), dp_score.shape)
         )
-        matched_rows = {row for row, _ in path}
-        matched_cols = {col for _, col in path}
+        region_metrics = runner.alignment_region_metrics(
+            path, traceback, raw_similarity.shape
+        )
+        mask_metrics = runner.synthetic_mask_region_metrics(
+            path,
+            traceback,
+            raw_similarity.shape,
+            image1,
+            image2,
+            arr1.shape[1],
+            arr2.shape[1],
+            models.image_model.use_flip,
+        )
         row = {
             "index": int(pair.index),
             "manifest_position": int(pair.manifest_position),
@@ -244,8 +255,7 @@ def install_runner_patches(runner) -> None:
             "split": pair.split,
             "status": "ok",
             "score": float(score),
-            "path_steps": len(path),
-            "traceback_steps": max(0, len(traceback) - 1),
+            **region_metrics,
             "dp_max_row": max_row,
             "dp_max_col": max_col,
             "dp_max_is_terminal": bool(
@@ -253,14 +263,9 @@ def install_runner_patches(runner) -> None:
                 and max_col == dp_score.shape[1] - 1
             ),
             "mean_path_cosine": float(np.mean(path_cosines)) if path_cosines else 0.0,
-            "line1_matched_fraction": len(matched_rows) / max(1, raw_similarity.shape[0]),
-            "line2_matched_fraction": len(matched_cols) / max(1, raw_similarity.shape[1]),
             "line1_windows": int(raw_similarity.shape[0]),
             "line2_windows": int(raw_similarity.shape[1]),
-            "line1_path_start": int(path[0][0]) if path else -1,
-            "line1_path_end": int(path[-1][0]) if path else -1,
-            "line2_path_start": int(path[0][1]) if path else -1,
-            "line2_path_end": int(path[-1][1]) if path else -1,
+            **mask_metrics,
             "feature": str(feature),
             "score_mode": resolved_mode,
             "score_clip": float(score_clip),
@@ -284,9 +289,11 @@ def install_runner_patches(runner) -> None:
             f"[{pair.index}] pair_id={pair.pair_id or '-'} label={pair.label_type or '-'} "
             f"score={score:.6f} score_mode={resolved_mode}+ink "
             f"dp_max=({max_row},{max_col}) terminal={row['dp_max_is_terminal']} "
-            f"path_steps={len(path)} matched_fraction="
-            f"({row['line1_matched_fraction']:.3f},{row['line2_matched_fraction']:.3f}) "
-            f"mean_cosine={row['mean_path_cosine']:.4f} saved={output}",
+            f"path_steps={row['path_steps']} warp_steps={row['warp_steps']} "
+            f"dense_fraction=({row['line1_matched_fraction']:.3f},"
+            f"{row['line2_matched_fraction']:.3f}) "
+            f"mean_cosine={row['mean_path_cosine']:.4f} "
+            f"region_iou={row['mean_region_iou']} saved={output}",
             flush=True,
         )
         return row
