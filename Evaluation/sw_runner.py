@@ -19,18 +19,24 @@ from Evaluation._eval_utils import (
 )
 from Evaluation.sw_core import (
     ImagePair,
+    _alignment_region_metrics,
     _build_match_scores,
     _contiguous_runs,
+    _dense_alignment_region,
     _format_heatmap_value,
     _heatmap_matrix,
     _resolve_score_mode,
+    _synthetic_mask_region_metrics,
+    alignment_region_metrics,
     build_match_scores,
     contiguous_runs,
+    dense_alignment_region,
     format_heatmap_value,
     resolve_score_mode,
     save_visualization,
     select_heatmap_matrix,
     smith_waterman,
+    synthetic_mask_region_metrics,
 )
 from Evaluation.sw_dataset import (
     _display_image,
@@ -152,8 +158,17 @@ def evaluate_sample(
 
     path_cosines = [float(raw_similarity[i, j]) for i, j in path]
     max_row, max_col = map(int, np.unravel_index(np.argmax(dp_score), dp_score.shape))
-    matched_rows = {row for row, _ in path}
-    matched_cols = {col for _, col in path}
+    region_metrics = alignment_region_metrics(path, traceback, raw_similarity.shape)
+    mask_metrics = synthetic_mask_region_metrics(
+        path,
+        traceback,
+        raw_similarity.shape,
+        image1,
+        image2,
+        arr1.shape[1],
+        arr2.shape[1],
+        models.image_model.use_flip,
+    )
     row = {
         "index": int(pair.index),
         "manifest_position": int(pair.manifest_position),
@@ -163,22 +178,16 @@ def evaluate_sample(
         "split": pair.split,
         "status": "ok",
         "score": float(score),
-        "path_steps": len(path),
-        "traceback_steps": max(0, len(traceback) - 1),
+        **region_metrics,
         "dp_max_row": max_row,
         "dp_max_col": max_col,
         "dp_max_is_terminal": bool(
             max_row == dp_score.shape[0] - 1 and max_col == dp_score.shape[1] - 1
         ),
         "mean_path_cosine": float(np.mean(path_cosines)) if path_cosines else 0.0,
-        "line1_matched_fraction": len(matched_rows) / max(1, raw_similarity.shape[0]),
-        "line2_matched_fraction": len(matched_cols) / max(1, raw_similarity.shape[1]),
         "line1_windows": int(raw_similarity.shape[0]),
         "line2_windows": int(raw_similarity.shape[1]),
-        "line1_path_start": int(path[0][0]) if path else -1,
-        "line1_path_end": int(path[-1][0]) if path else -1,
-        "line2_path_start": int(path[0][1]) if path else -1,
-        "line2_path_end": int(path[-1][1]) if path else -1,
+        **mask_metrics,
         "feature": str(feature),
         "score_mode": resolved_mode,
         "score_clip": float(score_clip),
@@ -203,22 +212,55 @@ def evaluate_sample(
         f"[{pair.index}] pair_id={pair.pair_id or '-'} label={pair.label_type or '-'} "
         f"score={score:.6f} score_mode={resolved_mode} "
         f"dp_max=({max_row},{max_col}) terminal={row['dp_max_is_terminal']} "
-        f"path_steps={len(path)} matched_fraction="
-        f"({row['line1_matched_fraction']:.3f},{row['line2_matched_fraction']:.3f}) "
-        f"mean_cosine={row['mean_path_cosine']:.4f} saved={output}",
+        f"path_steps={row['path_steps']} warp_steps={row['warp_steps']} "
+        f"dense_fraction=({row['line1_matched_fraction']:.3f},"
+        f"{row['line2_matched_fraction']:.3f}) "
+        f"mean_cosine={row['mean_path_cosine']:.4f} "
+        f"region_iou={row['mean_region_iou']} saved={output}",
         flush=True,
     )
     return row
 
 
+def _numeric_values(rows, key):
+    values = []
+    for row in rows:
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value):
+            values.append(value)
+    return values
+
+
 def aggregate(rows):
     successful = [row for row in rows if row.get("status") == "ok"]
     failed = [row for row in rows if row.get("status") != "ok"]
-    values = lambda key: [float(row[key]) for row in successful]
-    scores, paths = values("score"), values("path_steps")
-    traces, cosines = values("traceback_steps"), values("mean_path_cosine")
-    fractions1, fractions2 = values("line1_matched_fraction"), values("line2_matched_fraction")
     mean = lambda items: float(np.mean(items)) if items else 0.0
+    scores = _numeric_values(successful, "score")
+    paths = _numeric_values(successful, "path_steps")
+    traces = _numeric_values(successful, "traceback_steps")
+    warps = _numeric_values(successful, "warp_steps")
+    cosines = _numeric_values(successful, "mean_path_cosine")
+    fractions1 = _numeric_values(successful, "line1_matched_fraction")
+    fractions2 = _numeric_values(successful, "line2_matched_fraction")
+    path_fractions1 = _numeric_values(successful, "line1_path_fraction")
+    path_fractions2 = _numeric_values(successful, "line2_path_fraction")
+    span_windows1 = _numeric_values(successful, "line1_span_windows")
+    span_windows2 = _numeric_values(successful, "line2_span_windows")
+    region_ious = _numeric_values(successful, "mean_region_iou")
+    start_errors = (
+        _numeric_values(successful, "line1_start_error_px")
+        + _numeric_values(successful, "line2_start_error_px")
+    )
+    end_errors = (
+        _numeric_values(successful, "line1_end_error_px")
+        + _numeric_values(successful, "line2_end_error_px")
+    )
     return {
         "samples": len(rows),
         "successful": len(successful),
@@ -227,9 +269,17 @@ def aggregate(rows):
         "std_score": float(np.std(scores)) if scores else 0.0,
         "mean_path_steps": mean(paths),
         "mean_traceback_steps": mean(traces),
+        "mean_warp_steps": mean(warps),
         "mean_path_cosine": mean(cosines),
+        "mean_line1_path_fraction": mean(path_fractions1),
+        "mean_line2_path_fraction": mean(path_fractions2),
         "mean_line1_matched_fraction": mean(fractions1),
         "mean_line2_matched_fraction": mean(fractions2),
+        "mean_line1_span_windows": mean(span_windows1),
+        "mean_line2_span_windows": mean(span_windows2),
+        "mean_region_iou": mean(region_ious) if region_ious else None,
+        "mean_start_error_px": mean(start_errors) if start_errors else None,
+        "mean_end_error_px": mean(end_errors) if end_errors else None,
         "terminal_dp_maxima": sum(bool(row.get("dp_max_is_terminal")) for row in successful),
         "binarized_samples": sum(bool(row.get("binarized")) for row in successful),
         "failed_indices": [int(row["index"]) for row in failed],
@@ -239,13 +289,21 @@ def aggregate(rows):
 def batch_fieldnames():
     return [
         "index", "manifest_position", "pair_id", "label_type", "text_score", "split",
-        "status", "score", "path_steps", "traceback_steps", "dp_max_row", "dp_max_col",
-        "dp_max_is_terminal", "mean_path_cosine", "line1_matched_fraction",
-        "line2_matched_fraction", "line1_windows", "line2_windows", "line1_path_start",
-        "line1_path_end", "line2_path_start", "line2_path_end", "feature", "score_mode",
-        "score_clip", "threshold", "gap", "heatmap_source", "dataset_type", "binarized",
-        "binarization", "flipped", "image1", "image2", "binarized_image1",
-        "binarized_image2", "output", "error",
+        "status", "score", "path_steps", "traceback_steps", "warp_steps",
+        "dp_max_row", "dp_max_col", "dp_max_is_terminal", "mean_path_cosine",
+        "line1_path_windows", "line2_path_windows", "line1_span_windows",
+        "line2_span_windows", "line1_path_fraction", "line2_path_fraction",
+        "line1_matched_fraction", "line2_matched_fraction", "line1_windows",
+        "line2_windows", "line1_path_start", "line1_path_end", "line2_path_start",
+        "line2_path_end", "line1_pred_start_px", "line1_pred_end_px",
+        "line1_gt_start_px", "line1_gt_end_px", "line1_region_iou",
+        "line1_start_error_px", "line1_end_error_px", "line2_pred_start_px",
+        "line2_pred_end_px", "line2_gt_start_px", "line2_gt_end_px",
+        "line2_region_iou", "line2_start_error_px", "line2_end_error_px",
+        "mean_region_iou", "feature", "score_mode", "score_clip", "threshold",
+        "gap", "heatmap_source", "dataset_type", "binarized", "binarization",
+        "flipped", "image1", "image2", "binarized_image1", "binarized_image2",
+        "output", "error",
     ]
 
 
@@ -255,8 +313,11 @@ def error_row(args, pair, output, models, exc):
         "index": int(pair.index), "manifest_position": int(pair.manifest_position),
         "pair_id": pair.pair_id, "label_type": pair.label_type,
         "text_score": float(pair.text_score), "split": pair.split, "status": "error",
-        "score": 0.0, "path_steps": 0, "traceback_steps": 0, "dp_max_row": -1,
-        "dp_max_col": -1, "dp_max_is_terminal": False, "mean_path_cosine": 0.0,
+        "score": 0.0, "path_steps": 0, "traceback_steps": 0, "warp_steps": 0,
+        "dp_max_row": -1, "dp_max_col": -1, "dp_max_is_terminal": False,
+        "mean_path_cosine": 0.0, "line1_path_windows": 0,
+        "line2_path_windows": 0, "line1_span_windows": 0, "line2_span_windows": 0,
+        "line1_path_fraction": 0.0, "line2_path_fraction": 0.0,
         "line1_matched_fraction": 0.0, "line2_matched_fraction": 0.0,
         "line1_windows": 0, "line2_windows": 0, "line1_path_start": -1,
         "line1_path_end": -1, "line2_path_start": -1, "line2_path_end": -1,
@@ -298,10 +359,25 @@ def parse_args():
     parser.add_argument("--pair-manifest")
     parser.add_argument("--arabic-manifest")
     parser.add_argument("--real-labels", default=None)
-    parser.add_argument("--real-min-text-score", type=float, default=float(os.environ.get("REAL_MIN_TEXT_SCORE", "0.0")))
-    parser.add_argument("--real-text-key", default=os.environ.get("REAL_TEXT_KEY", "text_original_path"))
-    parser.add_argument("--real-split", choices=("all", "train", "valid", "test"), default="test")
-    parser.add_argument("--split-seed", type=int, default=int(os.environ.get("DATASET_SPLIT_SEED", "42")))
+    parser.add_argument(
+        "--real-min-text-score",
+        type=float,
+        default=float(os.environ.get("REAL_MIN_TEXT_SCORE", "0.0")),
+    )
+    parser.add_argument(
+        "--real-text-key",
+        default=os.environ.get("REAL_TEXT_KEY", "text_original_path"),
+    )
+    parser.add_argument(
+        "--real-split",
+        choices=("all", "train", "valid", "test"),
+        default="test",
+    )
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=int(os.environ.get("DATASET_SPLIT_SEED", "42")),
+    )
     parser.add_argument("--real-validate-paths", action="store_true")
     parser.add_argument("--image1-pattern", default="img1_{index}.png")
     parser.add_argument("--image2-pattern", default="img2_{index}.png")
