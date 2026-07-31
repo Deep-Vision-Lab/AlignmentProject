@@ -1,28 +1,28 @@
 #!/usr/bin/env bash
-# Submit real-dataset fine-tuning through the canonical multi-GPU launcher.
-# Run this file with bash from the login node; do not submit it with sbatch.
+# The only public real-data training command.
+# Run from the login node with:
+#   JOB_ID=<name> PRETRAINED_WEIGHTS=<checkpoint> bash scripts/train/run_real_finetune.sh
 set -euo pipefail
+set -a
 
 if [[ "$#" -ne 0 ]]; then
   echo "Usage: configure with environment variables, then run:" >&2
-  echo "  bash scripts/train/run_real_finetune.sh" >&2
+  echo "  JOB_ID=<name> PRETRAINED_WEIGHTS=<path> bash scripts/train/run_real_finetune.sh" >&2
   exit 2
 fi
 
-if [[ -n "${SLURM_JOB_ID:-}" ]]; then
-  echo "ERROR: do not run 'sbatch scripts/train/run_real_finetune.sh'." >&2
-  echo "Run it with bash from the login node; it submits the real Slurm job itself." >&2
-  exit 2
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+if [[ -n "${PROJECT_DIR:-}" ]]; then
+  PROJECT_DIR="$(readlink -f "${PROJECT_DIR}")"
+else
+  SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
+  PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 fi
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="${PROJECT_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
-PROJECT_DIR="$(readlink -f "${PROJECT_DIR}")"
 cd "${PROJECT_DIR}"
+mkdir -p out logs
 
 : "${JOB_ID:?Set JOB_ID to the output weights-folder name.}"
 : "${PRETRAINED_WEIGHTS:?Set PRETRAINED_WEIGHTS to model_latest.pth.}"
-
 [[ -f "${PRETRAINED_WEIGHTS}" ]] || {
   echo "ERROR: pretrained checkpoint not found: ${PRETRAINED_WEIGHTS}" >&2
   exit 2
@@ -40,66 +40,47 @@ print(model_backend.MODEL_NAME)
 PY
 )"
 
+# ---------------------------------------------------------------------------
+# Canonical experiment settings
+# ---------------------------------------------------------------------------
 NUM_GPUS="${NUM_GPUS:-2}"
-if ! [[ "${NUM_GPUS}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "ERROR: NUM_GPUS must be a positive integer, got ${NUM_GPUS}." >&2
-  exit 2
-fi
-
-# Dense overlap approximately doubles the visual sequence length. The CNN run
-# has ample RTX 4090 memory at local batch 16, so use a true local batch 32 and
-# synchronize every batch. ViT keeps accumulation because self-attention scales
-# quadratically with token count.
+EFFECTIVE_GLOBAL_BATCH_SIZE="${EFFECTIVE_GLOBAL_BATCH_SIZE:-${GLOBAL_BATCH_SIZE:-64}}"
 case "${MODEL_BACKEND}" in
   cnn_bilstm) DEFAULT_ACCUMULATION_STEPS=1 ;;
   vit) DEFAULT_ACCUMULATION_STEPS=4 ;;
-  *)
-    echo "ERROR: unsupported model backend '${MODEL_BACKEND}'." >&2
-    exit 2
-    ;;
+  *) echo "ERROR: unsupported model backend '${MODEL_BACKEND}'." >&2; exit 2 ;;
 esac
 GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-${DEFAULT_ACCUMULATION_STEPS}}"
-EFFECTIVE_GLOBAL_BATCH_SIZE="${EFFECTIVE_GLOBAL_BATCH_SIZE:-${GLOBAL_BATCH_SIZE:-64}}"
 
-if ! [[ "${GRADIENT_ACCUMULATION_STEPS}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "ERROR: GRADIENT_ACCUMULATION_STEPS must be positive." >&2
-  exit 2
-fi
-if ! [[ "${EFFECTIVE_GLOBAL_BATCH_SIZE}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "ERROR: EFFECTIVE_GLOBAL_BATCH_SIZE must be positive." >&2
-  exit 2
-fi
+for value_name in NUM_GPUS EFFECTIVE_GLOBAL_BATCH_SIZE GRADIENT_ACCUMULATION_STEPS; do
+  value="${!value_name}"
+  [[ "${value}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "ERROR: ${value_name} must be a positive integer, got ${value}." >&2
+    exit 2
+  }
+done
 BATCH_DENOMINATOR=$((NUM_GPUS * GRADIENT_ACCUMULATION_STEPS))
 if (( EFFECTIVE_GLOBAL_BATCH_SIZE % BATCH_DENOMINATOR != 0 )); then
-  echo "ERROR: effective batch ${EFFECTIVE_GLOBAL_BATCH_SIZE} must be divisible by" >&2
-  echo "       NUM_GPUS * GRADIENT_ACCUMULATION_STEPS = ${BATCH_DENOMINATOR}." >&2
+  echo "ERROR: EFFECTIVE_GLOBAL_BATCH_SIZE=${EFFECTIVE_GLOBAL_BATCH_SIZE} must be divisible by ${BATCH_DENOMINATOR}." >&2
   exit 2
 fi
 BATCH_SIZE=$((EFFECTIVE_GLOBAL_BATCH_SIZE / BATCH_DENOMINATOR))
 MICRO_GLOBAL_BATCH_SIZE=$((BATCH_SIZE * NUM_GPUS))
 
-# Keep the pretrained 32-pixel receptive field. Dense stride-8 overlap improves
-# localization and increases the sequence from 63 to 125 windows without changing
-# any checkpoint parameter shape.
 LINE_HEIGHT="${LINE_HEIGHT:-128}"
 LINE_WIDTH="${LINE_WIDTH:-1024}"
 WINDOW_SIZE="${WINDOW_SIZE:-32}"
 STRIDE_RATIO="${STRIDE_RATIO:-0.25}"
 WINDOW_OVERLAP_MODE="${WINDOW_OVERLAP_MODE:-custom}"
-
 read -r STRIDE_PIXELS COMPUTED_ALIGNMENT_WINDOWS < <(
   python - "${LINE_WIDTH}" "${WINDOW_SIZE}" "${STRIDE_RATIO}" "${WINDOW_OVERLAP_MODE}" <<'PY'
 import sys
-
 line_width = int(sys.argv[1])
 window_size = int(sys.argv[2])
-stride_ratio = float(sys.argv[3])
+ratio = float(sys.argv[3])
 mode = sys.argv[4].strip().lower()
-
 if line_width <= 0 or window_size <= 0 or window_size > line_width:
-    raise SystemExit(
-        f"Invalid line/window geometry: line_width={line_width}, window_size={window_size}."
-    )
+    raise SystemExit("Invalid line/window geometry")
 if mode == "no_overlap":
     stride = window_size
 elif mode == "light_overlap":
@@ -107,66 +88,43 @@ elif mode == "light_overlap":
 elif mode == "dense_overlap":
     stride = max(1, window_size // 4)
 elif mode == "custom":
-    stride = max(1, int(window_size * stride_ratio))
+    stride = max(1, int(window_size * ratio))
 else:
-    raise SystemExit(f"Unknown WINDOW_OVERLAP_MODE={mode!r}.")
-
-windows = ((line_width - window_size) // stride) + 1
-print(stride, windows)
+    raise SystemExit(f"Unknown WINDOW_OVERLAP_MODE={mode!r}")
+print(stride, ((line_width - window_size) // stride) + 1)
 PY
 )
 
 REAL_MAX_TEXT_SPAN_CHARS="${REAL_MAX_TEXT_SPAN_CHARS:-2}"
-if ! [[ "${REAL_MAX_TEXT_SPAN_CHARS}" =~ ^[0-9]+$ ]] \
-  || (( REAL_MAX_TEXT_SPAN_CHARS < 1 || REAL_MAX_TEXT_SPAN_CHARS > 2 )); then
-  echo "ERROR: REAL_MAX_TEXT_SPAN_CHARS must be 1 or 2 for truthful alignment." >&2
-  echo "Do not enlarge spans to repair long transcripts." >&2
+[[ "${REAL_MAX_TEXT_SPAN_CHARS}" =~ ^[12]$ ]] || {
+  echo "ERROR: REAL_MAX_TEXT_SPAN_CHARS must be 1 or 2." >&2
   exit 2
-fi
-
+}
 REAL_FILTER_INFEASIBLE_SPAN_DTW="${REAL_FILTER_INFEASIBLE_SPAN_DTW:-1}"
 REAL_MAX_ALIGNMENT_WINDOWS="${REAL_MAX_ALIGNMENT_WINDOWS:-${COMPUTED_ALIGNMENT_WINDOWS}}"
-if ! [[ "${REAL_MAX_ALIGNMENT_WINDOWS}" =~ ^[1-9][0-9]*$ ]]; then
+[[ "${REAL_MAX_ALIGNMENT_WINDOWS}" =~ ^[1-9][0-9]*$ ]] || {
   echo "ERROR: REAL_MAX_ALIGNMENT_WINDOWS must be positive." >&2
   exit 2
-fi
+}
 if (( REAL_MAX_ALIGNMENT_WINDOWS > COMPUTED_ALIGNMENT_WINDOWS )); then
-  echo "ERROR: REAL_MAX_ALIGNMENT_WINDOWS=${REAL_MAX_ALIGNMENT_WINDOWS} exceeds" >&2
-  echo "       the actual ${COMPUTED_ALIGNMENT_WINDOWS} windows from this geometry." >&2
+  echo "ERROR: feasibility cap ${REAL_MAX_ALIGNMENT_WINDOWS} exceeds actual windows ${COMPUTED_ALIGNMENT_WINDOWS}." >&2
   exit 2
 fi
 
-REAL_AUG_STITCH_PROB="${REAL_AUG_STITCH_PROB:-0}"
-REAL_TRAIN_SAMPLES_PER_EPOCH="${REAL_TRAIN_SAMPLES_PER_EPOCH:-6000}"
-if ! [[ "${REAL_TRAIN_SAMPLES_PER_EPOCH}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "ERROR: REAL_TRAIN_SAMPLES_PER_EPOCH must be positive." >&2
+DATA_DIR="${DATA_DIR:-${PROJECT_DIR}/DataSet/ArabicDataset}"
+REAL_MANIFEST_NAME="${REAL_MANIFEST_NAME:-dataset_manifest.jsonl}"
+MANIFEST_PATH="${DATA_DIR}/${REAL_MANIFEST_NAME}"
+[[ -f "${MANIFEST_PATH}" ]] || {
+  echo "ERROR: real dataset manifest not found: ${MANIFEST_PATH}" >&2
   exit 2
-fi
+}
 
-# Coarser text buckets plus power-of-two batch padding drastically reduce the
-# number of rank-specific JAX/XLA executable shapes. Persist compiled executables
-# so retries and later epochs reuse them instead of recompiling during a DDP step.
-SPAN_DTW_TEXT_BUCKET_SIZE="${SPAN_DTW_TEXT_BUCKET_SIZE:-64}"
-SPAN_DTW_MAX_TEXT_BUCKET="${SPAN_DTW_MAX_TEXT_BUCKET:-256}"
-SPAN_DTW_BATCH_BUCKET_SIZE="${SPAN_DTW_BATCH_BUCKET_SIZE:-32}"
-SPAN_DTW_BATCH_BUCKET_MODE="${SPAN_DTW_BATCH_BUCKET_MODE:-power2}"
-JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-${PROJECT_DIR}/.jax_cache/span_dtw}"
-JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS="${JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS:-0}"
-JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES="${JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES:--1}"
-DIST_TIMEOUT_SECONDS="${DIST_TIMEOUT_SECONDS:-7200}"
-mkdir -p "${JAX_COMPILATION_CACHE_DIR}"
-
-# Confirm backend and fixed patch width before requesting GPUs. Changing stride is
-# checkpoint-compatible; changing window width is not safe for the ViT projection
-# and changes the CNN receptive-field contract.
-python - "${PRETRAINED_WEIGHTS}" "${WINDOW_SIZE}" "${STRIDE_PIXELS}" <<'PY'
+# Verify checkpoint/backend compatibility before requesting GPUs.
+python - "${PRETRAINED_WEIGHTS}" "${WINDOW_SIZE}" <<'PY'
 import sys
 import torch
 import model_backend
-
-path = sys.argv[1]
-requested_window = int(sys.argv[2])
-requested_stride = int(sys.argv[3])
+path, requested_window = sys.argv[1], int(sys.argv[2])
 try:
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
 except TypeError:
@@ -175,111 +133,221 @@ config = checkpoint.get("model_config", {}) if isinstance(checkpoint, dict) else
 actual = str(config.get("model_backend", config.get("visual_encoder_type", ""))).lower()
 expected = str(model_backend.MODEL_NAME).lower()
 checkpoint_window = config.get("window_size")
-checkpoint_stride = config.get("stride")
-print(
-    f"branch_backend={expected} checkpoint_backend={actual or '<missing>'} "
-    f"checkpoint_window={checkpoint_window or '<missing>'} "
-    f"checkpoint_stride={checkpoint_stride or '<missing>'} "
-    f"requested_window={requested_window} requested_stride={requested_stride}"
-)
+print(f"branch_backend={expected} checkpoint_backend={actual or '<missing>'} checkpoint_window={checkpoint_window or '<missing>'} requested_window={requested_window}")
 if actual and actual != expected:
-    raise SystemExit(
-        f"Checkpoint/backend mismatch: branch={expected!r}, checkpoint={actual!r}."
-    )
+    raise SystemExit(f"Checkpoint/backend mismatch: branch={expected!r}, checkpoint={actual!r}")
 if checkpoint_window is not None and int(checkpoint_window) != requested_window:
-    raise SystemExit(
-        "Checkpoint/window mismatch: keep WINDOW_SIZE equal to the pretrained "
-        f"value ({checkpoint_window}), and change stride for denser coverage."
-    )
+    raise SystemExit(f"Checkpoint/window mismatch: expected WINDOW_SIZE={checkpoint_window}")
 PY
 
-export PROJECT_DIR
-export DATASET_TYPE=real
-export DATA_DIR="${DATA_DIR:-${PROJECT_DIR}/DataSet/ArabicDataset}"
-export NUM_SAMPLES="${NUM_SAMPLES:-10000}"
-export REAL_AUGMENT="${AUGMENT}"
-export REAL_AUG_STITCH_PROB
-export REAL_FILTER_INFEASIBLE_SPAN_DTW
-export REAL_MAX_ALIGNMENT_WINDOWS
-export REAL_TRAIN_SAMPLES_PER_EPOCH
-export REAL_SPLIT_BY_PAIR_ID="${REAL_SPLIT_BY_PAIR_ID:-1}"
-export REAL_DATASET_LABELS="${REAL_DATASET_LABELS:-high_match,medium_match}"
-export REAL_TEXT_KEY="${REAL_TEXT_KEY:-text_original_path}"
-export REAL_MIN_TEXT_SCORE="${REAL_MIN_TEXT_SCORE:-0.0}"
+# ---------------------------------------------------------------------------
+# Complete training configuration exported to Slurm and torchrun ranks
+# ---------------------------------------------------------------------------
+CONDA_ENV="${CONDA_ENV:-manucripts_align}"
+GPU_RESOURCE="${GPU_RESOURCE:-rtx_4090}"
+PARTITION="${PARTITION:-rtx4090}"
+CPUS_PER_TASK="${CPUS_PER_TASK:-$((8 * NUM_GPUS))}"
+MEMORY="${MEMORY:-96G}"
+TIME_LIMIT="${TIME_LIMIT:-1-00:00:00}"
+SLURM_JOB_NAME="${SLURM_JOB_NAME:-${JOB_ID}}"
+MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"
 
-export NUM_GPUS
-export BATCH_SIZE
-export GRADIENT_ACCUMULATION_STEPS
-export EFFECTIVE_GLOBAL_BATCH_SIZE
-export GPU_RESOURCE="${GPU_RESOURCE:-rtx_4090}"
-export PARTITION="${PARTITION:-rtx4090}"
-export CPUS_PER_TASK="${CPUS_PER_TASK:-16}"
-export MEMORY="${MEMORY:-96G}"
-export TIME_LIMIT="${TIME_LIMIT:-1-00:00:00}"
-export SLURM_JOB_NAME="${SLURM_JOB_NAME:-${JOB_ID}}"
+DATASET_TYPE=real
+NUM_SAMPLES="${NUM_SAMPLES:-10000}"
+REAL_AUGMENT="${AUGMENT}"
+REAL_TRAIN_SAMPLES_PER_EPOCH="${REAL_TRAIN_SAMPLES_PER_EPOCH:-6000}"
+REAL_AUG_STITCH_PROB="${REAL_AUG_STITCH_PROB:-0}"
+REAL_AUG_STITCH_POOL_SIZE="${REAL_AUG_STITCH_POOL_SIZE:-32}"
+REAL_AUG_STITCH_MAX_TEXT_CHARS="${REAL_AUG_STITCH_MAX_TEXT_CHARS:-120}"
+REAL_AUG_STITCH_PREFER_ADJACENT="${REAL_AUG_STITCH_PREFER_ADJACENT:-1}"
+REAL_AUG_STITCH_GAP_MIN="${REAL_AUG_STITCH_GAP_MIN:-0.08}"
+REAL_AUG_STITCH_GAP_MAX="${REAL_AUG_STITCH_GAP_MAX:-0.18}"
+REAL_AUG_APPEARANCE_PROB="${REAL_AUG_APPEARANCE_PROB:-0.85}"
+REAL_AUG_ROTATE_DEG="${REAL_AUG_ROTATE_DEG:-1.25}"
+REAL_AUG_TRANSLATE_X="${REAL_AUG_TRANSLATE_X:-0.012}"
+REAL_AUG_TRANSLATE_Y="${REAL_AUG_TRANSLATE_Y:-0.035}"
+REAL_AUG_BRIGHTNESS="${REAL_AUG_BRIGHTNESS:-0.12}"
+REAL_AUG_CONTRAST="${REAL_AUG_CONTRAST:-0.18}"
+REAL_AUG_BLUR_PROB="${REAL_AUG_BLUR_PROB:-0.15}"
+REAL_AUG_BLUR_RADIUS="${REAL_AUG_BLUR_RADIUS:-0.8}"
+REAL_AUG_NOISE_PROB="${REAL_AUG_NOISE_PROB:-0.18}"
+REAL_AUG_NOISE_STD="${REAL_AUG_NOISE_STD:-5.0}"
+REAL_AUG_MORPH_PROB="${REAL_AUG_MORPH_PROB:-0.25}"
+REAL_AUG_SPECKLE_PROB="${REAL_AUG_SPECKLE_PROB:-0.12}"
+REAL_AUG_SPECKLE_FRACTION="${REAL_AUG_SPECKLE_FRACTION:-0.0006}"
+REAL_DATASET_LABELS="${REAL_DATASET_LABELS:-high_match,medium_match}"
+REAL_TEXT_KEY="${REAL_TEXT_KEY:-text_original_path}"
+REAL_MIN_TEXT_SCORE="${REAL_MIN_TEXT_SCORE:-0.0}"
+REAL_SPLIT_BY_PAIR_ID="${REAL_SPLIT_BY_PAIR_ID:-1}"
+REAL_VALIDATE_PATHS="${REAL_VALIDATE_PATHS:-0}"
+REAL_BINARIZE="${REAL_BINARIZE:-1}"
+REAL_BINARIZE_METHOD="${REAL_BINARIZE_METHOD:-otsu}"
+REAL_BINARIZE_THRESHOLD="${REAL_BINARIZE_THRESHOLD:-180}"
+REAL_BINARIZE_AUTOCONTRAST="${REAL_BINARIZE_AUTOCONTRAST:-1}"
+REAL_BINARIZE_AUTO_INVERT="${REAL_BINARIZE_AUTO_INVERT:-1}"
 
-export JOB_ID
-export PRETRAINED_WEIGHTS
-export EPOCHS="${EPOCHS:-30}"
-export LEARNING_RATE="${LEARNING_RATE:-2e-5}"
-export VALID_EVERY_N_EPOCHS="${VALID_EVERY_N_EPOCHS:-1}"
-export TRAIN_SEED="${TRAIN_SEED:-42}"
-export DATASET_SPLIT_SEED="${DATASET_SPLIT_SEED:-42}"
-export USE_WANDB="${USE_WANDB:-1}"
-export WANDB_PROJECT="${WANDB_PROJECT:-alignment-real-finetuning}"
+LANGUAGE="${LANGUAGE:-Arabic}"
+TEXT_ENCODER_TYPE="${TEXT_ENCODER_TYPE:-arabic_span}"
+ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_NAME:-aubmindlab/bert-base-arabertv02}"
+MAX_TEXT_TOKEN_CHARS="${MAX_TEXT_TOKEN_CHARS:-2}"
+MAX_TEXT_SPAN_CHARS="${REAL_MAX_TEXT_SPAN_CHARS}"
+SPAN_MAX_CORE_CHARS_CAP="${REAL_MAX_TEXT_SPAN_CHARS}"
+MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-3}"
+SPAN_INCLUDE_SPACE_CONTEXT=0
+SPAN_ALLOW_CHARACTER_SPACE_SURFACES=0
+ALLOW_UNSAFE_SPAN_CONFIG=0
+SPAN_DTW_BACKEND="${SPAN_DTW_BACKEND:-jax}"
+SPAN_DTW_BUCKET_TEXT_LENGTHS="${SPAN_DTW_BUCKET_TEXT_LENGTHS:-1}"
+SPAN_DTW_TEXT_BUCKET_SIZE="${SPAN_DTW_TEXT_BUCKET_SIZE:-64}"
+SPAN_DTW_MAX_TEXT_BUCKET="${SPAN_DTW_MAX_TEXT_BUCKET:-256}"
+SPAN_DTW_BATCH_BUCKET_SIZE="${SPAN_DTW_BATCH_BUCKET_SIZE:-32}"
+SPAN_DTW_BATCH_BUCKET_MODE="${SPAN_DTW_BATCH_BUCKET_MODE:-power2}"
+SPAN_FEATURE_CACHE_SIZE="${SPAN_FEATURE_CACHE_SIZE:-2048}"
+SPAN_FEATURE_CACHE_DTYPE="${SPAN_FEATURE_CACHE_DTYPE:-float16}"
+CLEAR_SPAN_CACHE_EACH_EPOCH="${CLEAR_SPAN_CACHE_EACH_EPOCH:-1}"
 
-export MAX_TEXT_SPAN_CHARS="${REAL_MAX_TEXT_SPAN_CHARS}"
-export SPAN_MAX_CORE_CHARS_CAP="${REAL_MAX_TEXT_SPAN_CHARS}"
-export MAX_TEXT_TOKEN_CHARS="${MAX_TEXT_TOKEN_CHARS:-2}"
-export MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-3}"
-export SPAN_INCLUDE_SPACE_CONTEXT=0
-export SPAN_ALLOW_CHARACTER_SPACE_SURFACES=0
-export ALLOW_UNSAFE_SPAN_CONFIG=0
+NUM_NEGATIVES="${NUM_NEGATIVES:-10}"
+SPAN_DTW_ACTIVE_NEGATIVES_PER_SAMPLE="${SPAN_DTW_ACTIVE_NEGATIVES_PER_SAMPLE:-4}"
+SPAN_NEGATIVE_GRAD_MODE="${SPAN_NEGATIVE_GRAD_MODE:-hardest}"
+NEGATIVE_MODE="${NEGATIVE_MODE:-mixed}"
+USE_LOCAL_HARD_NEGATIVES="${USE_LOCAL_HARD_NEGATIVES:-1}"
+USE_IMAGE_PAIR_CONTRASTIVE="${USE_IMAGE_PAIR_CONTRASTIVE:-1}"
+IMAGE_TEXT_LOSS_ON_BOTH_LINES="${IMAGE_TEXT_LOSS_ON_BOTH_LINES:-1}"
 
-export LINE_HEIGHT
-export LINE_WIDTH
-export WINDOW_SIZE
-export STRIDE_RATIO
-export WINDOW_OVERLAP_MODE
-export NUM_NEGATIVES="${NUM_NEGATIVES:-10}"
-export USE_LOCAL_HARD_NEGATIVES="${USE_LOCAL_HARD_NEGATIVES:-1}"
-export USE_IMAGE_PAIR_CONTRASTIVE="${USE_IMAGE_PAIR_CONTRASTIVE:-1}"
+EPOCHS="${EPOCHS:-30}"
+LEARNING_RATE="${LEARNING_RATE:-2e-5}"
+VALID_EVERY_N_EPOCHS="${VALID_EVERY_N_EPOCHS:-1}"
+VALID_MAX_BATCHES="${VALID_MAX_BATCHES:-20}"
+TRAIN_SEED="${TRAIN_SEED:-42}"
+DATASET_SPLIT_SEED="${DATASET_SPLIT_SEED:-42}"
+USE_AMP="${USE_AMP:-1}"
+USE_WANDB="${USE_WANDB:-1}"
+WANDB_MODE="${WANDB_MODE:-online}"
+WANDB_PROJECT="${WANDB_PROJECT:-alignment-real-finetuning}"
 
-export SPAN_DTW_TEXT_BUCKET_SIZE
-export SPAN_DTW_MAX_TEXT_BUCKET
-export SPAN_DTW_BATCH_BUCKET_SIZE
-export SPAN_DTW_BATCH_BUCKET_MODE
-export JAX_COMPILATION_CACHE_DIR
-export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS
-export JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES
-export DIST_TIMEOUT_SECONDS
-export NCCL_ASYNC_ERROR_HANDLING="${NCCL_ASYNC_ERROR_HANDLING:-1}"
+TARGET_INK_HEIGHT_RATIO="${TARGET_INK_HEIGHT_RATIO:-0.72}"
+ZERO_SHOT_PREPROCESS="${ZERO_SHOT_PREPROCESS:-1}"
+ZERO_SHOT_PRESERVE_ASPECT="${ZERO_SHOT_PRESERVE_ASPECT:-1}"
+ZERO_SHOT_FOREGROUND_CROP="${ZERO_SHOT_FOREGROUND_CROP:-1}"
+ZERO_SHOT_SOURCE_GEOMETRY="${ZERO_SHOT_SOURCE_GEOMETRY:-1}"
 
-printf '%s\n' \
-  "Submitting real fine-tuning through the canonical launcher" \
-  "  branch                = $(git branch --show-current)" \
-  "  commit                = $(git rev-parse HEAD)" \
-  "  model backend          = ${MODEL_BACKEND}" \
-  "  checkpoint            = ${PRETRAINED_WEIGHTS}" \
-  "  job id                = ${JOB_ID}" \
-  "  GPUs                  = ${GPU_RESOURCE}:${NUM_GPUS}" \
-  "  per-GPU micro-batch   = ${BATCH_SIZE}" \
-  "  micro global batch    = ${MICRO_GLOBAL_BATCH_SIZE}" \
-  "  accumulation steps    = ${GRADIENT_ACCUMULATION_STEPS}" \
-  "  effective global batch= ${EFFECTIVE_GLOBAL_BATCH_SIZE}" \
-  "  epochs                = ${EPOCHS}" \
-  "  validation frequency  = ${VALID_EVERY_N_EPOCHS}" \
-  "  real augmentation     = ${REAL_AUGMENT}" \
-  "  stitch probability    = ${REAL_AUG_STITCH_PROB}" \
-  "  train samples/epoch   = ${REAL_TRAIN_SAMPLES_PER_EPOCH}" \
-  "  line geometry         = ${LINE_WIDTH}x${LINE_HEIGHT}" \
-  "  window/stride         = ${WINDOW_SIZE}/${STRIDE_PIXELS}" \
-  "  actual visual windows = ${COMPUTED_ALIGNMENT_WINDOWS}" \
-  "  feasibility cap       = ${REAL_MAX_ALIGNMENT_WINDOWS}" \
-  "  text bucket size      = ${SPAN_DTW_TEXT_BUCKET_SIZE}" \
-  "  batch bucket mode     = ${SPAN_DTW_BATCH_BUCKET_MODE}" \
-  "  JAX cache             = ${JAX_COMPILATION_CACHE_DIR}" \
-  "  DDP timeout seconds   = ${DIST_TIMEOUT_SECONDS}" \
-  "  max text span chars   = ${MAX_TEXT_SPAN_CHARS}"
+JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-${PROJECT_DIR}/.jax_cache/span_dtw}"
+JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS="${JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS:-0}"
+JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES="${JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES:--1}"
+XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
+DIST_TIMEOUT_SECONDS="${DIST_TIMEOUT_SECONDS:-7200}"
+NCCL_ASYNC_ERROR_HANDLING="${NCCL_ASYNC_ERROR_HANDLING:-1}"
+NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
+NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
+NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
+TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
+HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+PYTHONUNBUFFERED=1
+OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
+MKL_NUM_THREADS="${MKL_NUM_THREADS:-8}"
+set +a
+mkdir -p "${JAX_COMPILATION_CACHE_DIR}"
 
-exec bash "${PROJECT_DIR}/scripts/train/run_model_full_quality.sh"
+resolve_hf_home() {
+  local slug="models--${ARABIC_TEXT_MODEL_NAME//\//--}"
+  local candidate layout snapshots snapshot
+  local candidates=("${HF_HOME:-}" "${PROJECT_DIR}/.hf_cache" "${PROJECT_DIR}_clone/.hf_cache" "${HOME}/.cache/huggingface")
+  for candidate in "${candidates[@]}"; do
+    [[ -n "${candidate}" && -d "${candidate}" ]] || continue
+    for layout in "${candidate}" "${candidate}/hub"; do
+      snapshots="${layout}/${slug}/snapshots"
+      [[ -d "${snapshots}" ]] || continue
+      while IFS= read -r -d '' snapshot; do
+        [[ -f "${snapshot}/config.json" ]] || continue
+        if compgen -G "${snapshot}/model*.safetensors" >/dev/null || compgen -G "${snapshot}/pytorch_model*.bin" >/dev/null; then
+          printf '%s\n' "${candidate}"
+          return 0
+        fi
+      done < <(find "${snapshots}" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+    done
+  done
+  return 1
+}
+HF_HOME="$(resolve_hf_home)" || {
+  echo "ERROR: local cache for ${ARABIC_TEXT_MODEL_NAME} was not found." >&2
+  exit 1
+}
+export HF_HOME
+unset TRANSFORMERS_CACHE
+
+print_config() {
+  printf '%s\n' \
+    "Canonical real fine-tuning" \
+    "  branch                 = $(git branch --show-current)" \
+    "  model backend          = ${MODEL_BACKEND}" \
+    "  job id                 = ${JOB_ID}" \
+    "  checkpoint             = ${PRETRAINED_WEIGHTS}" \
+    "  GPUs                   = ${GPU_RESOURCE}:${NUM_GPUS}" \
+    "  per-GPU micro-batch    = ${BATCH_SIZE}" \
+    "  accumulation steps     = ${GRADIENT_ACCUMULATION_STEPS}" \
+    "  effective global batch = ${EFFECTIVE_GLOBAL_BATCH_SIZE}" \
+    "  epochs                 = ${EPOCHS}" \
+    "  train samples/epoch    = ${REAL_TRAIN_SAMPLES_PER_EPOCH}" \
+    "  window/stride          = ${WINDOW_SIZE}/${STRIDE_PIXELS}" \
+    "  visual windows         = ${COMPUTED_ALIGNMENT_WINDOWS}" \
+    "  JAX text bucket        = ${SPAN_DTW_TEXT_BUCKET_SIZE}" \
+    "  JAX batch bucket       = ${SPAN_DTW_BATCH_BUCKET_MODE}" \
+    "  DDP timeout seconds    = ${DIST_TIMEOUT_SECONDS}"
+}
+
+if [[ -z "${SLURM_JOB_ID:-}" ]]; then
+  print_config
+  sbatch \
+    --job-name="${SLURM_JOB_NAME}" \
+    --output="${PROJECT_DIR}/out/%x_%J.out" \
+    --chdir="${PROJECT_DIR}" \
+    --partition="${PARTITION}" \
+    --gpus="${GPU_RESOURCE}:${NUM_GPUS}" \
+    --tasks=1 \
+    --cpus-per-task="${CPUS_PER_TASK}" \
+    --mem="${MEMORY}" \
+    --time="${TIME_LIMIT}" \
+    --mail-type=ALL \
+    --mail-user="${MAIL_USER}" \
+    --export=ALL,PROJECT_DIR="${PROJECT_DIR}" \
+    "${SCRIPT_PATH}"
+  exit 0
+fi
+
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate "${CONDA_ENV}"
+python -c "import torch, transformers, jax; print(f'torch={torch.__version__} transformers={transformers.__version__} jax={jax.__version__}')"
+
+AUGMENT_ARG=--no-augment
+[[ "${REAL_AUGMENT}" == "1" ]] && AUGMENT_ARG=--augment
+TRAIN_ARGS=(
+  scripts/train/train_model.py
+  --job_id "${JOB_ID}"
+  --dataset_type real
+  --data_dir "${DATA_DIR}"
+  "${AUGMENT_ARG}"
+  --train_samples_per_epoch "${REAL_TRAIN_SAMPLES_PER_EPOCH}"
+  --num_samples "${NUM_SAMPLES}"
+  --epochs "${EPOCHS}"
+  --learning_rate "${LEARNING_RATE}"
+  --negative_mode "${NEGATIVE_MODE}"
+  --num_negatives "${NUM_NEGATIVES}"
+  --pretrained_weights "${PRETRAINED_WEIGHTS}"
+)
+
+print_config
+nvidia-smi -L || true
+RANK_WRAPPER="${PROJECT_DIR}/scripts/train/run_rank_isolated.sh"
+[[ -f "${RANK_WRAPPER}" ]] || { echo "ERROR: missing ${RANK_WRAPPER}" >&2; exit 1; }
+
+if (( NUM_GPUS > 1 )); then
+  exec torchrun \
+    --standalone \
+    --nnodes=1 \
+    --nproc_per_node="${NUM_GPUS}" \
+    --max_restarts=0 \
+    --no_python \
+    bash "${RANK_WRAPPER}" "${TRAIN_ARGS[@]}"
+fi
+exec bash "${RANK_WRAPPER}" "${TRAIN_ARGS[@]}"
