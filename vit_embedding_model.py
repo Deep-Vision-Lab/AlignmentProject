@@ -1,9 +1,9 @@
 """Patch-based Transformer visual encoder for line-image alignment.
 
-The encoder preserves the existing window sequence contract: with a 128x1024
-input, window_size=32, and stride=16 it emits 63 visual tokens. Each token is a
-learned projection of one full-height image window; Transformer self-attention
-then replaces the previous ResNet34 + BiLSTM contextual stack.
+The encoder preserves a fixed full-height patch width while allowing denser
+horizontal overlap. A pretrained 63-token positional table can therefore be
+interpolated to the 125-token stride-8 sequence without exposing positional
+slots that never received gradients during pretraining.
 """
 from __future__ import annotations
 
@@ -52,6 +52,7 @@ class LineWindowViT(nn.Module):
         mlp_dim: int,
         dropout: float,
         max_tokens: int,
+        position_base_tokens: int,
     ) -> None:
         super().__init__()
         input_height = int(input_height)
@@ -62,6 +63,7 @@ class LineWindowViT(nn.Module):
         num_heads = int(num_heads)
         mlp_dim = int(mlp_dim)
         max_tokens = int(max_tokens)
+        position_base_tokens = int(position_base_tokens)
 
         if input_height <= 0 or window_size <= 0 or stride <= 0:
             raise ValueError("input_height, window_size, and stride must be positive")
@@ -73,12 +75,18 @@ class LineWindowViT(nn.Module):
             )
         if max_tokens <= 0:
             raise ValueError("VIT_MAX_TOKENS must be positive")
+        if position_base_tokens <= 0 or position_base_tokens > max_tokens:
+            raise ValueError(
+                "VIT_POSITION_BASE_TOKENS must be positive and no larger than "
+                f"VIT_MAX_TOKENS={max_tokens}, got {position_base_tokens}"
+            )
 
         self.input_height = input_height
         self.window_size = window_size
         self.stride = stride
         self.embed_dim = embed_dim
         self.max_tokens = max_tokens
+        self.position_base_tokens = position_base_tokens
 
         # This is the ViT patch embedding. It is a learned linear projection of
         # every full-height 3 x H x window_size patch, not a CNN feature hierarchy.
@@ -119,12 +127,19 @@ class LineWindowViT(nn.Module):
             nn.init.zeros_(self.patch_embedding.bias)
 
     def _position_tokens(self, count: int) -> torch.Tensor:
-        if count <= self.max_tokens:
-            return self.position_embedding[:, :count]
-        # Interpolate only the positional table. Visual tokens themselves remain
-        # at the exact sliding-window locations required by the alignment losses.
+        """Resize only the positional table learned by the pretrained sequence."""
+        count = int(count)
+        if count <= 0:
+            raise ValueError("position token count must be positive")
+
+        # The pretrained stride-16 model optimized positions 0..62. Slots beyond
+        # that range still exist in the state dict but did not receive gradients.
+        # Interpolate the trained base table instead of slicing untrained slots.
+        base = self.position_embedding[:, : self.position_base_tokens]
+        if count == self.position_base_tokens:
+            return base
         return F.interpolate(
-            self.position_embedding.transpose(1, 2),
+            base.transpose(1, 2),
             size=count,
             mode="linear",
             align_corners=False,
@@ -182,6 +197,7 @@ class ViTEmbeddingModel(nn.Module):
         vit_mlp_dim: int = 512,
         vit_dropout: float = 0.10,
         vit_max_tokens: int = 256,
+        vit_position_base_tokens: int = 63,
     ) -> None:
         super().__init__()
         self.device = device
@@ -212,6 +228,7 @@ class ViTEmbeddingModel(nn.Module):
             mlp_dim=int(vit_mlp_dim),
             dropout=float(vit_dropout),
             max_tokens=int(vit_max_tokens),
+            position_base_tokens=int(vit_position_base_tokens),
         ).to(device)
         self.vision_norm = nn.LayerNorm(self.vector_size).to(device)
 
@@ -220,6 +237,7 @@ class ViTEmbeddingModel(nn.Module):
         self.vit_mlp_dim = int(vit_mlp_dim)
         self.vit_dropout = float(vit_dropout)
         self.vit_max_tokens = int(vit_max_tokens)
+        self.vit_position_base_tokens = int(vit_position_base_tokens)
 
     @property
     def use_flip(self) -> bool:
@@ -258,7 +276,8 @@ class ViTEmbeddingModel(nn.Module):
             print(
                 "image embeddings: "
                 f"encoder=vit contextual={tuple(contextual.shape)} "
-                f"local={tuple(local.shape)} flip={self.use_flip}",
+                f"local={tuple(local.shape)} flip={self.use_flip} "
+                f"position_base_tokens={self.vit_position_base_tokens}",
                 flush=True,
             )
 
@@ -282,6 +301,7 @@ class ViTEmbeddingModel(nn.Module):
             "vit_mlp_dim": self.vit_mlp_dim,
             "vit_dropout": self.vit_dropout,
             "vit_max_tokens": self.vit_max_tokens,
+            "vit_position_base_tokens": self.vit_position_base_tokens,
         }
 
 
@@ -298,6 +318,7 @@ def build_vit_from_environment(*, window_size, stride, vector_size, device, use_
         vit_mlp_dim=_env_int("VIT_MLP_DIM", 512),
         vit_dropout=_env_float("VIT_DROPOUT", 0.10),
         vit_max_tokens=_env_int("VIT_MAX_TOKENS", 256),
+        vit_position_base_tokens=_env_int("VIT_POSITION_BASE_TOKENS", 63),
     )
 
 
