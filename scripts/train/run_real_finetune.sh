@@ -52,7 +52,7 @@ case "${MODEL_BACKEND}" in
   cnn_bilstm) DEFAULT_ACCUMULATION_STEPS=2 ;;
   vit) DEFAULT_ACCUMULATION_STEPS=4 ;;
   *)
-    echo "ERROR: unsupported model backend ${MODEL_BACKEND!r}." >&2
+    echo "ERROR: unsupported model backend '${MODEL_BACKEND}'." >&2
     exit 2
     ;;
 esac
