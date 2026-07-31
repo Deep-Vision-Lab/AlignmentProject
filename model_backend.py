@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import os
 
-MODEL_NAME = "vit"
-VISUAL_ENCODER_TYPE = "vit"
+MODEL_NAME = "cnn_bilstm"
+VISUAL_ENCODER_TYPE = "cnn_bilstm"
 
 
 def _flag(name: str, default: bool) -> bool:
@@ -26,13 +26,6 @@ def _integer(name: str, default: int) -> int:
         return int(default)
 
 
-def _number(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, default))
-    except (TypeError, ValueError):
-        return float(default)
-
-
 def build_visual_model(
     *,
     window_size,
@@ -40,24 +33,32 @@ def build_visual_model(
     vector_size,
     device,
     use_flip,
+    use_bilstm=True,
+    bilstm_layers=2,
+    bilstm_hidden_dim=None,
+    use_local_grouping=True,
+    local_group_size=3,
     **_ignored,
 ):
-    from vit_embedding_model import build_vit_from_environment
+    from embeddingModel import EmbeddingModel
 
-    return build_vit_from_environment(
+    return EmbeddingModel(
         window_size=window_size,
         stride=stride,
         vector_size=vector_size,
         device=device,
         use_flip=use_flip,
+        use_bilstm=use_bilstm,
+        bilstm_layers=bilstm_layers,
+        bilstm_hidden_dim=bilstm_hidden_dim,
+        use_local_grouping=use_local_grouping,
+        local_group_size=local_group_size,
     )
 
 
 def install_training_backend(base_module) -> None:
     """Install this branch's constructor into the shared train.py module."""
     os.environ["VISUAL_ENCODER_TYPE"] = VISUAL_ENCODER_TYPE
-    os.environ["USE_BILSTM"] = "0"
-    os.environ["USE_LOCAL_WINDOW_GROUPING"] = "0"
 
     def constructor(
         window_size=32,
@@ -80,22 +81,16 @@ def install_training_backend(base_module) -> None:
 
 
 def prepare_visual_model(model) -> None:
-    from vit_embedding_model import prepare_vit_model
+    from training_optimizations import prepare_raw_model
 
-    prepare_vit_model(model)
+    prepare_raw_model(model)
 
 
 def visual_model_config() -> dict:
     return {
         "model_backend": MODEL_NAME,
         "visual_encoder_type": VISUAL_ENCODER_TYPE,
-        "use_bilstm": False,
-        "use_local_window_grouping": False,
-        "vit_input_height": _integer("VIT_INPUT_HEIGHT", 128),
-        "vit_layers": _integer("VIT_LAYERS", 4),
-        "vit_heads": _integer("VIT_HEADS", 4),
-        "vit_mlp_dim": _integer("VIT_MLP_DIM", 512),
-        "vit_dropout": _number("VIT_DROPOUT", 0.10),
-        "vit_max_tokens": _integer("VIT_MAX_TOKENS", 256),
+        "cnn_chunk_size": _integer("CNN_CHUNK_SIZE", 1024),
+        "use_channels_last": _flag("USE_CHANNELS_LAST", True),
         "torch_compile_visual": _flag("TORCH_COMPILE_VISUAL", False),
     }
