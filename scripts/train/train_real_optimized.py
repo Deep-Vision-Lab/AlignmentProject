@@ -39,7 +39,7 @@ def _configure_real_span_profile() -> int:
             "Use train_optimized.py for synthetic training."
         )
 
-    raw_limit = os.environ.get("REAL_MAX_TEXT_SPAN_CHARS", "16")
+    raw_limit = os.environ.get("REAL_MAX_TEXT_SPAN_CHARS", "32")
     try:
         span_limit = int(raw_limit)
     except ValueError as exc:
