@@ -17,6 +17,7 @@ from RealDataAugmentation import (
     BinaryInkAugment,
     RealLinePairAugmentor,
 )
+from real_span_feasibility import filter_subset_by_span_feasibility
 
 
 class RepeatToLengthDataset(Dataset):
@@ -41,6 +42,13 @@ class RepeatToLengthDataset(Dataset):
         return self.dataset[int(index) % len(self.dataset)]
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _train_real_transform():
     """Return binarization plus post-binary training perturbations."""
     return transforms.Compose(
@@ -63,6 +71,61 @@ def _train_real_transform():
     )
 
 
+def _filter_positive_subsets(full_dataset, train_subset, valid_subset, test_subset):
+    """Filter only impossible positive pairs while preserving split assignment."""
+    enabled = _env_flag("REAL_FILTER_INFEASIBLE_SPAN_DTW", True)
+    if not enabled:
+        return train_subset, valid_subset, test_subset, None
+
+    max_image_windows = int(os.environ.get("REAL_MAX_ALIGNMENT_WINDOWS", "63"))
+    max_span_chars = int(
+        os.environ.get(
+            "MAX_TEXT_SPAN_CHARS",
+            getattr(base_loader, "max_text_span_chars", 2),
+        )
+    )
+
+    filtered = []
+    stats = []
+    for split_name, subset in (
+        ("train", train_subset),
+        ("valid", valid_subset),
+        ("test", test_subset),
+    ):
+        filtered_subset, split_stats = filter_subset_by_span_feasibility(
+            full_dataset,
+            subset,
+            split_name=split_name,
+            max_image_windows=max_image_windows,
+            max_span_chars=max_span_chars,
+        )
+        filtered.append(filtered_subset)
+        stats.append(split_stats)
+
+    summary = " ".join(
+        f"{item.split_name}_kept={item.kept} "
+        f"{item.split_name}_removed={item.removed}"
+        for item in stats
+    )
+    max_required = max(item.max_required_spans for item in stats)
+    examples = [example for item in stats for example in item.examples]
+    print(
+        "Filtered infeasible real Span-DTW positives: "
+        f"max_image_windows={max_image_windows} "
+        f"max_span_chars={max_span_chars} "
+        f"max_required_spans_seen={max_required} "
+        f"{summary}",
+        flush=True,
+    )
+    if examples:
+        print(
+            "Filtered examples: " + " | ".join(examples[:5]),
+            flush=True,
+        )
+
+    return (*filtered, stats)
+
+
 def build_dataloaders(data_dir=None):
     """Build loaders, augmenting only the real-dataset training split."""
     if data_dir is None:
@@ -80,6 +143,14 @@ def build_dataloaders(data_dir=None):
         base_loader._group_split_real_dataset(full_dataset)
         if split_by_pair
         else base_loader._random_split_seeded(full_dataset)
+    )
+    train_subset, valid_subset, test_subset, feasibility_stats = (
+        _filter_positive_subsets(
+            full_dataset,
+            train_subset,
+            valid_subset,
+            test_subset,
+        )
     )
 
     augmentor = RealLinePairAugmentor.from_env()
@@ -107,6 +178,7 @@ def build_dataloaders(data_dir=None):
         f"stitch_prob={augmentor.stitch_probability:.3f} "
         f"appearance_prob={augmentor.appearance_probability:.3f} "
         f"stitch_max_chars={augmentor.stitch_max_text_chars} "
+        f"feasibility_filter={feasibility_stats is not None} "
         f"binarize={base_loader._real_binarize} "
         f"split_by_pair_id={split_by_pair}",
         flush=True,
