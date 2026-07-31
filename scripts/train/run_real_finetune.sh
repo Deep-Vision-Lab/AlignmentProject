@@ -61,9 +61,14 @@ if ! [[ "${REAL_MAX_TEXT_SPAN_CHARS}" =~ ^[0-9]+$ ]] \
   exit 2
 fi
 
-# RTL line stitching can create transcripts that mathematically require more
-# Span-DTW transitions than the fixed 63-window image sequence provides. Keep
-# scan/appearance/ink augmentation enabled, but disable stitching by default.
+# The default 1024-pixel line with window size 32 and stride 16 yields 63 image
+# windows. Positive transcripts that need more transitions are filtered after
+# the deterministic group split, so they cannot crash training or validation.
+REAL_FILTER_INFEASIBLE_SPAN_DTW="${REAL_FILTER_INFEASIBLE_SPAN_DTW:-1}"
+REAL_MAX_ALIGNMENT_WINDOWS="${REAL_MAX_ALIGNMENT_WINDOWS:-63}"
+
+# RTL line stitching can create infeasible positives. Keep scan/appearance/ink
+# augmentation enabled, but disable stitching by default.
 REAL_AUG_STITCH_PROB="${REAL_AUG_STITCH_PROB:-0}"
 
 # Confirm that the checkpoint belongs to the active branch model before GPUs are requested.
@@ -93,6 +98,8 @@ export DATA_DIR="${DATA_DIR:-${PROJECT_DIR}/DataSet/ArabicDataset}"
 export NUM_SAMPLES="${NUM_SAMPLES:-10000}"
 export REAL_AUGMENT="${AUGMENT}"
 export REAL_AUG_STITCH_PROB
+export REAL_FILTER_INFEASIBLE_SPAN_DTW
+export REAL_MAX_ALIGNMENT_WINDOWS
 export REAL_TRAIN_SAMPLES_PER_EPOCH="${REAL_TRAIN_SAMPLES_PER_EPOCH:-568}"
 export REAL_SPLIT_BY_PAIR_ID="${REAL_SPLIT_BY_PAIR_ID:-1}"
 export REAL_DATASET_LABELS="${REAL_DATASET_LABELS:-high_match,medium_match}"
@@ -144,6 +151,8 @@ printf '%s\n' \
   "  epochs              = ${EPOCHS}" \
   "  real augmentation   = ${REAL_AUGMENT}" \
   "  stitch probability  = ${REAL_AUG_STITCH_PROB}" \
+  "  feasibility filter  = ${REAL_FILTER_INFEASIBLE_SPAN_DTW}" \
+  "  alignment windows   = ${REAL_MAX_ALIGNMENT_WINDOWS}" \
   "  train samples/epoch = ${REAL_TRAIN_SAMPLES_PER_EPOCH}" \
   "  max text span chars = ${MAX_TEXT_SPAN_CHARS}"
 
