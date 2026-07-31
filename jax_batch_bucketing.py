@@ -18,8 +18,23 @@ def _integer(name, default):
 
 
 def _padded_batch_size(size: int) -> int:
-    multiple = max(1, _integer("SPAN_DTW_BATCH_BUCKET_SIZE", 8))
-    return ((int(size) + multiple - 1) // multiple) * multiple
+    """Return a compile-stable padded batch size.
+
+    Padding to every multiple of eight creates many rank-specific JAX/XLA shapes
+    for the no-gradient negative-scoring pass. Power-of-two padding reduces that
+    shape family substantially while detached padded entries remain loss-neutral.
+    """
+    minimum = max(1, _integer("SPAN_DTW_BATCH_BUCKET_SIZE", 32))
+    target = max(int(size), minimum)
+    mode = os.environ.get("SPAN_DTW_BATCH_BUCKET_MODE", "power2").strip().lower()
+    if mode == "multiple":
+        return ((target + minimum - 1) // minimum) * minimum
+    if mode == "power2":
+        return 1 << (target - 1).bit_length()
+    raise ValueError(
+        "SPAN_DTW_BATCH_BUCKET_MODE must be 'power2' or 'multiple', "
+        f"got {mode!r}."
+    )
 
 
 def _optimized_span_dtw_costs_jax(self, encodings, image_embeddings):
