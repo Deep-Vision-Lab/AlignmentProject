@@ -46,10 +46,12 @@ if ! [[ "${NUM_GPUS}" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
-# Dense overlap approximately doubles the visual sequence length. Keep an
-# effective batch of 64 while lowering the per-GPU micro-batch to protect memory.
+# Dense overlap approximately doubles the visual sequence length. The CNN run
+# has ample RTX 4090 memory at local batch 16, so use a true local batch 32 and
+# synchronize every batch. ViT keeps accumulation because self-attention scales
+# quadratically with token count.
 case "${MODEL_BACKEND}" in
-  cnn_bilstm) DEFAULT_ACCUMULATION_STEPS=2 ;;
+  cnn_bilstm) DEFAULT_ACCUMULATION_STEPS=1 ;;
   vit) DEFAULT_ACCUMULATION_STEPS=4 ;;
   *)
     echo "ERROR: unsupported model backend '${MODEL_BACKEND}'." >&2
@@ -114,9 +116,6 @@ print(stride, windows)
 PY
 )
 
-# The optimized Arabic span encoder is designed for truthful visible cores of at
-# most two characters. Longer cores can make one small image region represent an
-# entire phrase and are deliberately rejected by training_optimizations.py.
 REAL_MAX_TEXT_SPAN_CHARS="${REAL_MAX_TEXT_SPAN_CHARS:-2}"
 if ! [[ "${REAL_MAX_TEXT_SPAN_CHARS}" =~ ^[0-9]+$ ]] \
   || (( REAL_MAX_TEXT_SPAN_CHARS < 1 || REAL_MAX_TEXT_SPAN_CHARS > 2 )); then
@@ -125,9 +124,6 @@ if ! [[ "${REAL_MAX_TEXT_SPAN_CHARS}" =~ ^[0-9]+$ ]] \
   exit 2
 fi
 
-# Derive the feasibility cap from the exact geometry used by the visual model.
-# A smaller explicit cap is allowed as a conservative filter; a larger one would
-# keep samples that the actual image sequence cannot align and is rejected.
 REAL_FILTER_INFEASIBLE_SPAN_DTW="${REAL_FILTER_INFEASIBLE_SPAN_DTW:-1}"
 REAL_MAX_ALIGNMENT_WINDOWS="${REAL_MAX_ALIGNMENT_WINDOWS:-${COMPUTED_ALIGNMENT_WINDOWS}}"
 if ! [[ "${REAL_MAX_ALIGNMENT_WINDOWS}" =~ ^[1-9][0-9]*$ ]]; then
@@ -140,15 +136,25 @@ if (( REAL_MAX_ALIGNMENT_WINDOWS > COMPUTED_ALIGNMENT_WINDOWS )); then
   exit 2
 fi
 
-# Keep appearance and ink augmentation enabled but disable line stitching because
-# concatenated transcripts can violate the fixed visual-sequence contract.
 REAL_AUG_STITCH_PROB="${REAL_AUG_STITCH_PROB:-0}"
-REAL_TRAIN_SAMPLES_PER_EPOCH="${REAL_TRAIN_SAMPLES_PER_EPOCH:-7000}"
-
+REAL_TRAIN_SAMPLES_PER_EPOCH="${REAL_TRAIN_SAMPLES_PER_EPOCH:-6000}"
 if ! [[ "${REAL_TRAIN_SAMPLES_PER_EPOCH}" =~ ^[1-9][0-9]*$ ]]; then
   echo "ERROR: REAL_TRAIN_SAMPLES_PER_EPOCH must be positive." >&2
   exit 2
 fi
+
+# Coarser text buckets plus power-of-two batch padding drastically reduce the
+# number of rank-specific JAX/XLA executable shapes. Persist compiled executables
+# so retries and later epochs reuse them instead of recompiling during a DDP step.
+SPAN_DTW_TEXT_BUCKET_SIZE="${SPAN_DTW_TEXT_BUCKET_SIZE:-64}"
+SPAN_DTW_MAX_TEXT_BUCKET="${SPAN_DTW_MAX_TEXT_BUCKET:-256}"
+SPAN_DTW_BATCH_BUCKET_SIZE="${SPAN_DTW_BATCH_BUCKET_SIZE:-32}"
+SPAN_DTW_BATCH_BUCKET_MODE="${SPAN_DTW_BATCH_BUCKET_MODE:-power2}"
+JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-${PROJECT_DIR}/.jax_cache/span_dtw}"
+JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS="${JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS:-0}"
+JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES="${JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES:--1}"
+DIST_TIMEOUT_SECONDS="${DIST_TIMEOUT_SECONDS:-7200}"
+mkdir -p "${JAX_COMPILATION_CACHE_DIR}"
 
 # Confirm backend and fixed patch width before requesting GPUs. Changing stride is
 # checkpoint-compatible; changing window width is not safe for the ViT projection
@@ -214,7 +220,7 @@ export SLURM_JOB_NAME="${SLURM_JOB_NAME:-${JOB_ID}}"
 
 export JOB_ID
 export PRETRAINED_WEIGHTS
-export EPOCHS="${EPOCHS:-15}"
+export EPOCHS="${EPOCHS:-30}"
 export LEARNING_RATE="${LEARNING_RATE:-2e-5}"
 export VALID_EVERY_N_EPOCHS="${VALID_EVERY_N_EPOCHS:-1}"
 export TRAIN_SEED="${TRAIN_SEED:-42}"
@@ -239,6 +245,16 @@ export NUM_NEGATIVES="${NUM_NEGATIVES:-10}"
 export USE_LOCAL_HARD_NEGATIVES="${USE_LOCAL_HARD_NEGATIVES:-1}"
 export USE_IMAGE_PAIR_CONTRASTIVE="${USE_IMAGE_PAIR_CONTRASTIVE:-1}"
 
+export SPAN_DTW_TEXT_BUCKET_SIZE
+export SPAN_DTW_MAX_TEXT_BUCKET
+export SPAN_DTW_BATCH_BUCKET_SIZE
+export SPAN_DTW_BATCH_BUCKET_MODE
+export JAX_COMPILATION_CACHE_DIR
+export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS
+export JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES
+export DIST_TIMEOUT_SECONDS
+export NCCL_ASYNC_ERROR_HANDLING="${NCCL_ASYNC_ERROR_HANDLING:-1}"
+
 printf '%s\n' \
   "Submitting real fine-tuning through the canonical launcher" \
   "  branch                = $(git branch --show-current)" \
@@ -260,6 +276,10 @@ printf '%s\n' \
   "  window/stride         = ${WINDOW_SIZE}/${STRIDE_PIXELS}" \
   "  actual visual windows = ${COMPUTED_ALIGNMENT_WINDOWS}" \
   "  feasibility cap       = ${REAL_MAX_ALIGNMENT_WINDOWS}" \
+  "  text bucket size      = ${SPAN_DTW_TEXT_BUCKET_SIZE}" \
+  "  batch bucket mode     = ${SPAN_DTW_BATCH_BUCKET_MODE}" \
+  "  JAX cache             = ${JAX_COMPILATION_CACHE_DIR}" \
+  "  DDP timeout seconds   = ${DIST_TIMEOUT_SECONDS}" \
   "  max text span chars   = ${MAX_TEXT_SPAN_CHARS}"
 
 exec bash "${PROJECT_DIR}/scripts/train/run_model_full_quality.sh"
