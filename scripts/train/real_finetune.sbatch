@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-#SBATCH --qos=jelsana
-#SBATCH --gpus=rtx_6000:1
+#SBATCH --gpus=rtx_4090:1
 #SBATCH --tasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=48G
 #SBATCH --time=1-00:00:00
 #SBATCH --output=/home/ahmedmas/BGU-Lab/AlignmentProject/out/%x_%J.out
 #SBATCH --mail-type=ALL
