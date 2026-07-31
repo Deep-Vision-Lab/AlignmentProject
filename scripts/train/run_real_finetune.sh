@@ -50,12 +50,21 @@ if (( GLOBAL_BATCH_SIZE % NUM_GPUS != 0 )); then
 fi
 BATCH_SIZE=$((GLOBAL_BATCH_SIZE / NUM_GPUS))
 
-REAL_MAX_TEXT_SPAN_CHARS="${REAL_MAX_TEXT_SPAN_CHARS:-32}"
+# The optimized Arabic span encoder is designed for truthful visible cores of at
+# most two characters. Longer cores can make one small image region represent an
+# entire phrase and are deliberately rejected by training_optimizations.py.
+REAL_MAX_TEXT_SPAN_CHARS="${REAL_MAX_TEXT_SPAN_CHARS:-2}"
 if ! [[ "${REAL_MAX_TEXT_SPAN_CHARS}" =~ ^[0-9]+$ ]] \
-  || (( REAL_MAX_TEXT_SPAN_CHARS < 2 )); then
-  echo "ERROR: REAL_MAX_TEXT_SPAN_CHARS must be an integer >= 2." >&2
+  || (( REAL_MAX_TEXT_SPAN_CHARS < 1 || REAL_MAX_TEXT_SPAN_CHARS > 2 )); then
+  echo "ERROR: REAL_MAX_TEXT_SPAN_CHARS must be 1 or 2 for truthful alignment." >&2
+  echo "Do not enlarge spans to repair long stitched transcripts." >&2
   exit 2
 fi
+
+# RTL line stitching can create transcripts that mathematically require more
+# Span-DTW transitions than the fixed 63-window image sequence provides. Keep
+# scan/appearance/ink augmentation enabled, but disable stitching by default.
+REAL_AUG_STITCH_PROB="${REAL_AUG_STITCH_PROB:-0}"
 
 # Confirm that the checkpoint belongs to the active branch model before GPUs are requested.
 python - "${PRETRAINED_WEIGHTS}" <<'PY'
@@ -83,6 +92,7 @@ export DATASET_TYPE=real
 export DATA_DIR="${DATA_DIR:-${PROJECT_DIR}/DataSet/ArabicDataset}"
 export NUM_SAMPLES="${NUM_SAMPLES:-10000}"
 export REAL_AUGMENT="${AUGMENT}"
+export REAL_AUG_STITCH_PROB
 export REAL_TRAIN_SAMPLES_PER_EPOCH="${REAL_TRAIN_SAMPLES_PER_EPOCH:-568}"
 export REAL_SPLIT_BY_PAIR_ID="${REAL_SPLIT_BY_PAIR_ID:-1}"
 export REAL_DATASET_LABELS="${REAL_DATASET_LABELS:-high_match,medium_match}"
@@ -107,12 +117,13 @@ export DATASET_SPLIT_SEED="${DATASET_SPLIT_SEED:-42}"
 export USE_WANDB="${USE_WANDB:-1}"
 export WANDB_PROJECT="${WANDB_PROJECT:-alignment-real-finetuning}"
 
-# Real transcripts and stitched samples require a wider positive Span-DTW lattice.
-# All shorter spans remain available to the dynamic program.
 export MAX_TEXT_SPAN_CHARS="${REAL_MAX_TEXT_SPAN_CHARS}"
 export SPAN_MAX_CORE_CHARS_CAP="${REAL_MAX_TEXT_SPAN_CHARS}"
 export MAX_TEXT_TOKEN_CHARS="${MAX_TEXT_TOKEN_CHARS:-2}"
 export MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-3}"
+export SPAN_INCLUDE_SPACE_CONTEXT=0
+export SPAN_ALLOW_CHARACTER_SPACE_SURFACES=0
+export ALLOW_UNSAFE_SPAN_CONFIG=0
 
 export WINDOW_SIZE="${WINDOW_SIZE:-32}"
 export STRIDE_RATIO="${STRIDE_RATIO:-0.5}"
@@ -132,6 +143,7 @@ printf '%s\n' \
   "  global batch        = ${GLOBAL_BATCH_SIZE}" \
   "  epochs              = ${EPOCHS}" \
   "  real augmentation   = ${REAL_AUGMENT}" \
+  "  stitch probability  = ${REAL_AUG_STITCH_PROB}" \
   "  train samples/epoch = ${REAL_TRAIN_SAMPLES_PER_EPOCH}" \
   "  max text span chars = ${MAX_TEXT_SPAN_CHARS}"
 
