@@ -8,6 +8,7 @@ active model boundary.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -39,6 +40,22 @@ def _branch_model_config(stride, args):
     config = _original_model_config(stride, args)
     config.update(_GEOMETRY_CONFIG)
     config.update(model_backend.visual_model_config())
+    config.update(
+        {
+            "span_dtw_batch_bucket_mode": os.environ.get(
+                "SPAN_DTW_BATCH_BUCKET_MODE", "power2"
+            ),
+            "span_dtw_text_bucket_size": int(
+                os.environ.get("SPAN_DTW_TEXT_BUCKET_SIZE", "64")
+            ),
+            "jax_compilation_cache_dir": os.environ.get(
+                "JAX_COMPILATION_CACHE_DIR", ""
+            ),
+            "distributed_timeout_seconds": int(
+                os.environ.get("DIST_TIMEOUT_SECONDS", "7200")
+            ),
+        }
+    )
     return config
 
 
