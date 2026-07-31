@@ -97,5 +97,6 @@ def visual_model_config() -> dict:
         "vit_mlp_dim": _integer("VIT_MLP_DIM", 512),
         "vit_dropout": _number("VIT_DROPOUT", 0.10),
         "vit_max_tokens": _integer("VIT_MAX_TOKENS", 256),
+        "vit_position_base_tokens": _integer("VIT_POSITION_BASE_TOKENS", 63),
         "torch_compile_visual": _flag("TORCH_COMPILE_VISUAL", False),
     }
