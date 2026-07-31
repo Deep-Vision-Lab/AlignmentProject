@@ -61,6 +61,9 @@ def install_vit_evaluation_loader() -> None:
                 vit_mlp_dim=int(config.get("vit_mlp_dim", 512)),
                 vit_dropout=float(config.get("vit_dropout", 0.10)),
                 vit_max_tokens=int(config.get("vit_max_tokens", 256)),
+                vit_position_base_tokens=int(
+                    config.get("vit_position_base_tokens", 63)
+                ),
             )
 
         try:
