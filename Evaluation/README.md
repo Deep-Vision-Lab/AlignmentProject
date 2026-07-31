@@ -22,7 +22,7 @@ bash Evaluation/evaluate.sh
 Results are written under:
 
 ```text
-Results/Evaluation/<model>/<run>/<label>/
+Results/Evaluation/<model>/Real_Experiments/<run>/<label>/
 ```
 
 ## Internal modules
