@@ -1,6 +1,6 @@
-# Training entrypoint
+# Training
 
-Run only:
+Use only this command from the project root:
 
 ```bash
 JOB_ID=<output_name> \
@@ -8,10 +8,11 @@ PRETRAINED_WEIGHTS="$PWD/Weights/ViT/model_latest.pth" \
 bash scripts/train/run_real_finetune.sh
 ```
 
-Do not run the other files in this directory directly. They are internal runtime components used by `run_real_finetune.sh`:
+The launcher submits its own Slurm job. Do not run it with `sbatch`.
 
-- `train_model.py` selects the active branch model.
-- `train_optimized.py` initializes DDP, data loading, losses, and checkpointing.
-- `run_rank_isolated.sh` isolates one GPU per rank.
+## Files in this folder
 
-The public launcher submits its own Slurm job. Do not invoke it with `sbatch`.
+- `run_real_finetune.sh` — the only public training command.
+- `train_optimized.py` — the internal optimized trainer used by the launcher.
+
+Branch selection and per-rank GPU isolation live under `training_runtime/` so the public training folder stays small and unambiguous.
