@@ -322,7 +322,7 @@ python -c "import torch, transformers, jax; print(f'torch={torch.__version__} tr
 AUGMENT_ARG=--no-augment
 [[ "${REAL_AUGMENT}" == "1" ]] && AUGMENT_ARG=--augment
 TRAIN_ARGS=(
-  scripts/train/train_model.py
+  training_runtime/entrypoint.py
   --job_id "${JOB_ID}"
   --dataset_type real
   --data_dir "${DATA_DIR}"
@@ -338,7 +338,7 @@ TRAIN_ARGS=(
 
 print_config
 nvidia-smi -L || true
-RANK_WRAPPER="${PROJECT_DIR}/scripts/train/run_rank_isolated.sh"
+RANK_WRAPPER="${PROJECT_DIR}/training_runtime/run_rank_isolated.sh"
 [[ -f "${RANK_WRAPPER}" ]] || { echo "ERROR: missing ${RANK_WRAPPER}" >&2; exit 1; }
 
 if (( NUM_GPUS > 1 )); then
