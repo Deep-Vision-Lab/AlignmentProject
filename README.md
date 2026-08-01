@@ -55,7 +55,7 @@ After Stage 1 finishes, use only its newly created checkpoint:
 
 ```bash
 JOB_ID=cnn_connected_subword_real \
-SYNTHETIC_WEIGHTS="$PWD/Weights/cnn_connected_subword_synthetic/model_best.pth" \
+SYNTHETIC_WEIGHTS="$PWD/Weights/cnn_connected_subword_synthetic/model_latest.pth" \
 bash scripts/train/run_connected_subword_real.sh
 ```
 
@@ -63,7 +63,7 @@ For ViT:
 
 ```bash
 JOB_ID=vit_connected_subword_real \
-SYNTHETIC_WEIGHTS="$PWD/Weights/vit_connected_subword_synthetic/model_best.pth" \
+SYNTHETIC_WEIGHTS="$PWD/Weights/vit_connected_subword_synthetic/model_latest.pth" \
 bash scripts/train/run_connected_subword_real.sh
 ```
 
@@ -75,14 +75,14 @@ samples per epoch.
 Qualitative/Smith–Waterman evaluation:
 
 ```bash
-WEIGHTS="$PWD/Weights/<real_job_id>/model_best.pth" \
+WEIGHTS="$PWD/Weights/<real_job_id>/model_latest.pth" \
 bash Evaluation/evaluate_connected_subword.sh
 ```
 
 Transcript-supervised pair, retrieval, and word-correspondence evaluation:
 
 ```bash
-WEIGHTS="$PWD/Weights/<real_job_id>/model_best.pth" \
+WEIGHTS="$PWD/Weights/<real_job_id>/model_latest.pth" \
 bash Evaluation/evaluate_transcript_connected_subword.sh
 ```
 
