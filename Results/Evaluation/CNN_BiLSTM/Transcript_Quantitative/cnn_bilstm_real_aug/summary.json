@@ -1,0 +1,75 @@
+{
+  "checkpoint": "/home/ahmedmas/BGU-Lab/AlignmentProject/Weights/cnn_bilstm_real_aug/model_best.pth",
+  "model_backend": "cnn_bilstm",
+  "manifest_pairs": 3825,
+  "split_counts": {
+    "train": 2295,
+    "valid": 764,
+    "test": 766
+  },
+  "real_text_key": "text_original_path",
+  "positive_overlap": 0.5,
+  "negative_overlap": 0.1,
+  "min_shared_words": 2,
+  "ranking_score": "coverage_sw",
+  "min_path_steps": 5,
+  "pair_classification": {
+    "threshold_selected_on": "valid",
+    "threshold": 0.5186616029109827,
+    "validation": {
+      "threshold": 0.5186616029109827,
+      "accuracy": 0.9497206703910615,
+      "precision": 0.9861111111111112,
+      "recall": 0.7319587628865979,
+      "f1": 0.8402366863905325,
+      "tp": 71,
+      "fp": 1,
+      "tn": 439,
+      "fn": 26,
+      "dice": 0.8402366863905325,
+      "positive_set_iou": 0.7244897959183674,
+      "auroc": 0.8916354264292409,
+      "average_precision": 0.8507479491840861,
+      "positives": 97,
+      "negatives": 440
+    },
+    "test": {
+      "threshold": 0.5186616029109827,
+      "accuracy": 0.9327731092436975,
+      "precision": 0.896551724137931,
+      "recall": 0.4126984126984127,
+      "f1": 0.5652173913043478,
+      "tp": 26,
+      "fp": 3,
+      "tn": 529,
+      "fn": 37,
+      "dice": 0.5652173913043478,
+      "positive_set_iou": 0.3939393939393939,
+      "auroc": 0.7585034013605442,
+      "average_precision": 0.591138337938744,
+      "positives": 63,
+      "negatives": 532
+    }
+  },
+  "retrieval": {
+    "queries": 63,
+    "pool_size": 20,
+    "candidate_protocol": "one transcript-positive plus unique transcript-negative images",
+    "recall_at_1": 0.5238095238095238,
+    "recall_at_5": 0.7142857142857143,
+    "recall_at_10": 0.8412698412698413,
+    "mrr": 0.6229497354497354,
+    "map": 0.6229497354497354
+  },
+  "word_alignment": {
+    "pairs": 0,
+    "available": false,
+    "error": "ValueError: No valid span-DTW path. There are too few image windows for the text length. text_length=420, image_windows=125, minimum_required_spans=271, max_text_span_chars=2, max_windows_per_span=3. Fix by: 1. decreasing STRIDE_RATIO, for example 0.5 instead of 1.0; 2. increasing MAX_TEXT_SPAN_CHARS, for example 3; 3. using a smaller WINDOW_SIZE only if it increases usable windows. Do not fix this by increasing MAX_WINDOWS_PER_SPAN.",
+    "is_spatial_ground_truth": false
+  },
+  "metric_scope": {
+    "pair_precision_recall_f1": "transcript-defined pair matching",
+    "pair_dice_iou": "overlap of predicted-positive and transcript-positive pair sets",
+    "word_dice_iou": "transcript-token correspondence proxy, not image pixels"
+  }
+}
