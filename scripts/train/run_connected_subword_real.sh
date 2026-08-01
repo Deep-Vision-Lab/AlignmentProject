@@ -4,12 +4,12 @@
 set -euo pipefail
 
 if [[ "$#" -ne 0 ]]; then
-  echo "Usage: JOB_ID=<name> SYNTHETIC_WEIGHTS=<model_best.pth> bash scripts/train/run_connected_subword_real.sh" >&2
+  echo "Usage: JOB_ID=<name> SYNTHETIC_WEIGHTS=<model_latest.pth> bash scripts/train/run_connected_subword_real.sh" >&2
   exit 2
 fi
 
 : "${JOB_ID:?Set JOB_ID to the real-data output weights-folder name.}"
-: "${SYNTHETIC_WEIGHTS:?Set SYNTHETIC_WEIGHTS to the Stage-1 synthetic model_best.pth.}"
+: "${SYNTHETIC_WEIGHTS:?Set SYNTHETIC_WEIGHTS to the Stage-1 synthetic model_latest.pth.}"
 [[ -f "${SYNTHETIC_WEIGHTS}" ]] || {
   echo "ERROR: synthetic checkpoint not found: ${SYNTHETIC_WEIGHTS}" >&2
   exit 2
