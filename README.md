@@ -2,51 +2,73 @@
 
 Arabic manuscript image–text and image–image alignment experiments.
 
-## Supported commands
+## Connected-subword experiment
 
-There are only two public commands. Run both from the repository root on the login node.
+Two isolated experiment branches implement Arabic connected-component text
+units without modifying the established model branches:
 
-### 1. Fine-tune the active branch model
+- `agent/connected-subword-cnn` — CNN+BiLSTM visual encoder.
+- `agent/connected-subword-vit` — ViT visual encoder.
 
-```bash
-JOB_ID=cnn_bilstm_real_aug_6k_stride8_30ep_stable \
-PRETRAINED_WEIGHTS="$PWD/Weights/cnn_bilstm/model_latest.pth" \
-bash scripts/train/run_real_finetune.sh
+The text line is converted into:
+
+```text
+connected run → <SUBWORD_BOUNDARY> → connected run → <SPACE> → next word
 ```
 
-The active branch determines the model:
+Each connected run can consume several consecutive visual windows. The explicit
+subword boundary consumes one or two transition windows, `<SPACE>` separates complete
+words, and the ordinary free `<BLANK>` transition remains available for page
+background or unused windows.
 
-- `agent/training-speed-optimization` → CNN+BiLSTM
-- `agent/use-vit-encoder` → ViT
+Example:
 
-The launcher submits its own Slurm job. Do not call it with `sbatch`.
+```text
+الرحمن الرحيم
+↓
+ا, <SUBWORD_BOUNDARY>, لر, <SUBWORD_BOUNDARY>, حمن,
+<SPACE>, ا, <SUBWORD_BOUNDARY>, لر, <SUBWORD_BOUNDARY>, حيم
+```
 
-### 2. Evaluate a trained checkpoint
+The tokenizer follows Unicode Arabic joining behavior; it does not split by a
+fixed character count.
+
+### Train
+
+Run from the repository root on the login node. The script submits its own Slurm
+job, so do not prefix it with `sbatch`.
+
+```bash
+JOB_ID=cnn_connected_subword_real \
+PRETRAINED_WEIGHTS="$PWD/Weights/cnn_bilstm_real_aug/model_best.pth" \
+bash scripts/train/run_connected_subword_finetune.sh
+```
+
+On the ViT branch, use a ViT checkpoint:
+
+```bash
+JOB_ID=vit_connected_subword_real \
+PRETRAINED_WEIGHTS="$PWD/Weights/vit_real_aug/model_best.pth" \
+bash scripts/train/run_connected_subword_finetune.sh
+```
+
+### Evaluate
 
 ```bash
 WEIGHTS="$PWD/Weights/<job_id>/model_best.pth" \
-bash Evaluation/evaluate.sh
+bash Evaluation/evaluate_connected_subword.sh
 ```
 
-The evaluator submits one Slurm job, reconstructs the model configuration from the checkpoint, and evaluates both `high_match` and `medium_match` by default.
+Transcript-supervised pair, retrieval, and word-correspondence evaluation:
 
-## Internal files
+```bash
+WEIGHTS="$PWD/Weights/<job_id>/model_best.pth" \
+bash Evaluation/evaluate_transcript_connected_subword.sh
+```
 
-Everything else under `scripts/train/` and the Python files under `Evaluation/` are implementation modules used by the two commands above. They are not alternative launchers and should not be run directly.
+## Baseline branches
 
-In particular:
+The original approaches remain unchanged:
 
-- `scripts/train/train_model.py` installs the active branch backend.
-- `scripts/train/train_optimized.py` owns the optimized training runtime.
-- `scripts/train/run_rank_isolated.sh` isolates one CUDA device per distributed rank.
-- `Evaluation/eval_img_align_sw.py` is the internal evaluation engine called by `Evaluation/evaluate.sh`.
-
-## Current real-data defaults
-
-- 6,000 augmented samples per epoch
-- 30 epochs
-- effective global batch size 64
-- window size 32, stride 8, 125 visual windows
-- stitching disabled
-- infeasible Span-DTW positives filtered
-- JAX persistent compilation cache enabled
+- `agent/training-speed-optimization` — CNN+BiLSTM character-span baseline.
+- `agent/use-vit-encoder` — ViT character-span baseline.
