@@ -22,6 +22,8 @@ from connected_subword_mode import (
     install_connected_subword_mode,
     install_connected_subword_training,
 )
+from direct_subword_supervision import config as direct_subword_config
+from direct_subword_supervision import install as install_direct_subword_supervision
 from distributed_runtime_guard import install_distributed_runtime_guard
 from unified_line_geometry import install_training_geometry
 
@@ -33,6 +35,7 @@ install_connected_subword_training(optimized.base)
 model_backend.install_training_backend(optimized.base)
 optimized.prepare_raw_model = model_backend.prepare_visual_model
 install_distributed_runtime_guard(optimized.base)
+_DIRECT_SUBWORD_CONFIG = install_direct_subword_supervision(optimized.base)
 
 _original_model_config = optimized.base.model_config
 
@@ -41,6 +44,7 @@ def _branch_model_config(stride, args):
     config = _original_model_config(stride, args)
     config.update(_GEOMETRY_CONFIG)
     config.update(model_backend.visual_model_config())
+    config.update(_DIRECT_SUBWORD_CONFIG or direct_subword_config())
     config.update(
         {
             "span_dtw_batch_bucket_mode": os.environ.get(
