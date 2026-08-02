@@ -1,0 +1,23 @@
+{
+  "samples": 10,
+  "successful": 10,
+  "failed": 0,
+  "mean_score": 34.09601345062256,
+  "std_score": 6.216358340632644,
+  "mean_path_steps": 84.9,
+  "mean_traceback_steps": 107.6,
+  "mean_warp_steps": 22.7,
+  "mean_path_cosine": 0.9318984162588352,
+  "mean_line1_path_fraction": 0.6791999999999999,
+  "mean_line2_path_fraction": 0.6791999999999999,
+  "mean_line1_matched_fraction": 0.7592,
+  "mean_line2_matched_fraction": 0.7807999999999999,
+  "mean_line1_span_windows": 94.9,
+  "mean_line2_span_windows": 97.6,
+  "mean_region_iou": 0.6081952004742557,
+  "mean_start_error_px": 136.76000000000002,
+  "mean_end_error_px": 189.564,
+  "terminal_dp_maxima": 0,
+  "binarized_samples": 0,
+  "failed_indices": []
+}
