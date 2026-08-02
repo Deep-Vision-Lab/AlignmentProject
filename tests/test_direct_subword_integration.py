@@ -27,7 +27,8 @@ class FakeTextEncoder(nn.Module):
 class FakeImageModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.scale = nn.Parameter(torch.tensor(1.0))
+        self.local_bias = nn.Parameter(torch.tensor([0.05, -0.05]))
+        self.context_mix = nn.Parameter(torch.tensor(0.10))
         self.window_size = 32
         self.stride = 16
         self.use_flip = False
@@ -49,10 +50,14 @@ def compute_embeddings(model, images):
         [[1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0]],
         dtype=torch.float32,
     )
-    raw = model.scale * base.unsqueeze(0).expand(batch, -1, -1)
-    norm = torch.nn.functional.normalize(raw, dim=-1)
+    raw = base.unsqueeze(0).expand(batch, -1, -1) + model.local_bias
+    local = torch.nn.functional.normalize(raw, dim=-1)
+    neighbor = torch.roll(local, shifts=1, dims=1)
+    contextual = torch.nn.functional.normalize(
+        local + model.context_mix * neighbor, dim=-1
+    )
     ink = torch.ones(batch, 4)
-    return norm, norm, ink, raw
+    return contextual, local, ink, raw
 
 
 train = SimpleNamespace(
@@ -64,7 +69,7 @@ train = SimpleNamespace(
 )
 
 
-def test_direct_batch_loss_backpropagates_to_image_and_text(monkeypatch):
+def test_direct_batch_loss_backpropagates_to_local_context_and_text(monkeypatch):
     monkeypatch.setenv("DIRECT_SUBWORD_SUPERVISION", "1")
     model = FakeImageModel()
     text = FakeTextEncoder()
@@ -83,6 +88,8 @@ def test_direct_batch_loss_backpropagates_to_image_and_text(monkeypatch):
     loss, stats = direct.make_batch_loss(train)(model, text, None, batch)
     assert torch.isfinite(loss)
     assert stats["direct_subword_regions"] == 4.0
+    assert 0.0 <= stats["direct_window_iou"] <= 1.0
     loss.backward()
-    assert model.scale.grad is not None
+    assert model.local_bias.grad is not None
+    assert model.context_mix.grad is not None
     assert text.table.grad is not None
