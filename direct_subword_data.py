@@ -57,6 +57,17 @@ def load_sidecar(path: str | os.PathLike[str]) -> list[dict]:
     items = payload.get("subwords") if isinstance(payload, dict) else None
     if not isinstance(items, list):
         raise ValueError(f"Invalid direct-subword sidecar: {path}")
+    validation = payload.get("validation", {}) if isinstance(payload, dict) else {}
+    if flag("DIRECT_SUBWORD_STRICT_BOXES", True):
+        if not validation:
+            raise ValueError(
+                f"Sidecar {path} has no validation metadata. Re-run "
+                "scripts/data/build_connected_subword_boxes.py."
+            )
+        if not bool(validation.get("valid", False)):
+            raise ValueError(
+                f"Sidecar {path} failed validation: {validation.get('errors', [])}"
+            )
     minimum = max(0.0, number("DIRECT_SUBWORD_MIN_BOX_WIDTH", 1.0))
     result = []
     for index, item in enumerate(items):
@@ -116,8 +127,13 @@ def install_dataset_patch() -> None:
 
     def patched_getitem(self, index):
         item = original_getitem(self, index)
-        if not enabled() or not isinstance(item, dict):
+        if not enabled():
             return item
+        if not isinstance(item, dict):
+            raise RuntimeError(
+                "Direct subword supervision requires paired synthetic lines. "
+                "Set LOAD_PAIRED_LINES=1 and rebuild the DataLoader."
+            )
         record = self._sample_records[int(index)]
         cache = getattr(self, "_direct_subword_cache", None)
         if cache is None:
@@ -125,6 +141,11 @@ def install_dataset_patch() -> None:
 
         def regions(key: str) -> list[dict]:
             image = record[key]
+            if not image:
+                raise RuntimeError(
+                    f"Paired synthetic record is missing {key}; direct supervision "
+                    "cannot train on a single line."
+                )
             if image not in cache:
                 path = sidecar_path(image)
                 if not path.is_file():
