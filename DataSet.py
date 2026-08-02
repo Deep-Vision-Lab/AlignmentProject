@@ -59,7 +59,12 @@ class TextLineModern(Dataset):
     def _build_records(self):
         images_dir = self.new_dataset["images"]
         texts_dir = self.new_dataset["texts"]
-        paired = bool(use_image_pair_contrastive)
+        paired = bool(
+            use_image_pair_contrastive
+            or image_text_loss_on_both_lines
+            or _env_flag("LOAD_PAIRED_LINES", False)
+            or _env_flag("DIRECT_SUBWORD_SUPERVISION", False)
+        )
         for zero_index in range(self.num_samples):
             sample_index = zero_index + 1
             image1 = os.path.join(images_dir, f"img1_{sample_index}.png")
