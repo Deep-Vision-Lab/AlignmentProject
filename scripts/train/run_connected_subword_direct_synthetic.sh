@@ -29,11 +29,13 @@ ZERO_SHOT_PROFILE="${ZERO_SHOT_PROFILE:-0}"
 }
 
 # Build or refresh sidecars before the ordinary launcher submits Slurm. The
-# builder hashes its renderer configuration and rewrites stale sidecars.
+# builder hashes its renderer and model-window geometry and rewrites stale
+# sidecars. Exact pixel-empty boxes remain valid only when the actual training
+# windows overlapping them contain foreground ink.
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   source "$(conda info --base)/etc/profile.d/conda.sh"
   conda activate "${CONDA_ENV}"
-  python scripts/data/build_connected_subword_boxes.py \
+  python scripts/data/build_connected_subword_boxes_window_validated.py \
     --data-dir "${DATA_DIR}" \
     --font "${FONT_PATH}" \
     --font-size "${DIRECT_SUBWORD_FONT_SIZE:-90}" \
