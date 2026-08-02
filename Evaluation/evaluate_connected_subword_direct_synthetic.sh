@@ -37,7 +37,6 @@ CONDA_ENV="${CONDA_ENV:-manucripts_align}"
 PARTITION="${PARTITION:-rtx4090}"
 GPU_RESOURCE="${GPU_RESOURCE:-rtx_4090}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-4}"
-MEMORY="${MEMORY:-32G}"
 TIME_LIMIT="${TIME_LIMIT:-12:00:00}"
 MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"
 EVAL_JOB_NAME="${EVAL_JOB_NAME:-eval_connected_direct_sweep}"
@@ -63,7 +62,6 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
     --gpus="${GPU_RESOURCE}:1"
     --tasks=1
     --cpus-per-task="${CPUS_PER_TASK}"
-    --mem="${MEMORY}"
     --time="${TIME_LIMIT}"
     --mail-type=ALL
     --mail-user="${MAIL_USER}"
