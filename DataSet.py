@@ -43,6 +43,7 @@ class TextLineModern(Dataset):
         self._image_cache_size = max(0, int(os.environ.get("IMAGE_DECODE_CACHE_SIZE", "0")))
         self._preload_transcripts = _env_flag("PRELOAD_TRANSCRIPTS", True)
         self._sample_records = []
+        self._direct_subword_cache = {}
 
         if new_dataset:
             if num_samples_override is not None:
@@ -110,6 +111,25 @@ class TextLineModern(Dataset):
             image = self.transform(image)
         return image
 
+    def _direct_subword_regions(self, image_path):
+        from direct_subword_data import load_sidecar, sidecar_path
+
+        cached = self._direct_subword_cache.get(image_path)
+        if cached is not None:
+            return cached
+        path = sidecar_path(image_path)
+        if not path.is_file():
+            if _env_flag("DIRECT_SUBWORD_STRICT_BOXES", True):
+                raise FileNotFoundError(
+                    f"Missing {path}. Run "
+                    "scripts/data/build_connected_subword_boxes_window_validated.py first."
+                )
+            regions = []
+        else:
+            regions = load_sidecar(path)
+        self._direct_subword_cache[image_path] = regions
+        return regions
+
     def __getitem__(self, idx):
         if not self.new_dataset:
             raise NotImplementedError("Handling for non-DataSet is not included.")
@@ -124,9 +144,14 @@ class TextLineModern(Dataset):
         text2 = record.get("text2")
         if text2 is None:
             text2 = self._read_text_file(record["text2_path"])
-        return {
+        result = {
             "text1": text1,
             "image1": image1,
             "text2": text2,
             "image2": self._read_image(record["image2"]),
         }
+        if _env_flag("DIRECT_SUBWORD_SUPERVISION", False):
+            result["subwords1"] = self._direct_subword_regions(record["image1"])
+            result["subwords2"] = self._direct_subword_regions(record["image2"])
+            result["sample_index"] = int(idx)
+        return result
