@@ -84,6 +84,19 @@ def prepare_visual_model(model) -> None:
     from training_optimizations import prepare_raw_model
 
     prepare_raw_model(model)
+    if _flag("DIRECT_SUBWORD_SUPERVISION", False) and _flag(
+        "DIRECT_SUBWORD_STROKE_INPUT", True
+    ):
+        import embeddingModel as embedding_model_module
+        from stroke_aware_preprocessing import (
+            stroke_aware_window_ink_ratio_from_patches,
+        )
+
+        # training_optimizations installs an ImageNet-RGB ink estimator. Replace
+        # it last because channel 0 now stores normalized soft ink directly.
+        embedding_model_module.window_ink_ratio_from_patches = (
+            stroke_aware_window_ink_ratio_from_patches
+        )
 
 
 def visual_model_config() -> dict:
