@@ -5,9 +5,21 @@ from Evaluation import real_subword_box_metrics as box_metrics
 from Evaluation.real_subword_box_geometry import load_line_annotations
 
 
-# The metric module resolves this global at evaluation time. Replace its simple
-# scaling fallback with the exact foreground-crop, aspect-resize and pad map.
+# The metric module resolves these globals at evaluation time. Replace its
+# simple scaling fallback with the exact crop/resize/pad mapping, and do not
+# interpret generic names such as Sheet1 as annotations for line 1 only.
 box_metrics.load_line_annotations = load_line_annotations
+
+
+def _sheet_matches_line(sheet_name: str, requested_line: int | None) -> bool:
+    rendered = str(sheet_name).strip().lower()
+    if requested_line is None or ("line" not in rendered and "سطر" not in rendered):
+        return True
+    match = box_metrics._LINE_NUMBER.search(rendered)
+    return match is None or int(match.group(1)) == int(requested_line)
+
+
+box_metrics._sheet_matches_line = _sheet_matches_line
 
 
 def install(sw_runner_module) -> None:
