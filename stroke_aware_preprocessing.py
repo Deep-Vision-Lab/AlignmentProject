@@ -48,6 +48,9 @@ def preprocessing_config(default_enabled: bool = True) -> dict[str, Any]:
         "stroke_aware_normalize": _flag("STROKE_AWARE_NORMALIZE", True),
         "stroke_aware_distance_clip": _number("STROKE_AWARE_DISTANCE_CLIP", 8.0),
         "stroke_aware_ink_threshold": _number("STROKE_AWARE_INK_THRESHOLD", 0.08),
+        "stroke_aware_ink_ratio_threshold": _number(
+            "STROKE_AWARE_INK_RATIO_THRESHOLD", 0.08
+        ),
         "stroke_aware_augment": _flag("DIRECT_SUBWORD_STROKE_AUGMENT", True),
         "stroke_aware_morph_probability": _number("STROKE_AUG_MORPH_PROB", 0.40),
         "stroke_aware_gamma_probability": _number("STROKE_AUG_GAMMA_PROB", 0.30),
@@ -250,6 +253,32 @@ class StrokeAwareLineTransform:
         return tensor
 
 
+def stroke_aware_window_ink_ratio_from_patches(
+    patches: torch.Tensor, contrast_threshold: float | None = None
+) -> torch.Tensor:
+    """Compute per-window ink directly from the normalized soft-ink channel."""
+    threshold = (
+        _number("STROKE_AWARE_INK_RATIO_THRESHOLD", 0.08)
+        if contrast_threshold is None
+        else float(contrast_threshold)
+    )
+    threshold = max(0.0, min(1.0, threshold))
+    with torch.no_grad():
+        work = patches.detach().float()
+        if work.ndim != 5 or work.shape[2] < 1:
+            raise ValueError(
+                "Expected stroke-aware patches with shape "
+                "[batch, windows, channels, height, width]"
+            )
+        first_channel = work[:, :, 0]
+        ink = (
+            (first_channel + 1.0) * 0.5
+            if _flag("STROKE_AWARE_NORMALIZE", True)
+            else first_channel
+        ).clamp(0.0, 1.0)
+        return ink.ge(threshold).float().mean(dim=(2, 3))
+
+
 def _clone_dataset_with_transform(dataset, transform):
     if isinstance(dataset, Subset):
         base = copy.copy(dataset.dataset)
@@ -322,6 +351,7 @@ def apply_checkpoint_preprocessing_config(config: dict[str, Any] | None) -> None
         "stroke_aware_normalize": "STROKE_AWARE_NORMALIZE",
         "stroke_aware_distance_clip": "STROKE_AWARE_DISTANCE_CLIP",
         "stroke_aware_ink_threshold": "STROKE_AWARE_INK_THRESHOLD",
+        "stroke_aware_ink_ratio_threshold": "STROKE_AWARE_INK_RATIO_THRESHOLD",
         "stroke_aware_augment": "DIRECT_SUBWORD_STROKE_AUGMENT",
         "stroke_aware_morph_probability": "STROKE_AUG_MORPH_PROB",
         "stroke_aware_gamma_probability": "STROKE_AUG_GAMMA_PROB",
@@ -340,6 +370,12 @@ def apply_checkpoint_preprocessing_config(config: dict[str, Any] | None) -> None
     for key, environment_name in mapping.items():
         if key in config:
             _set_env_value(environment_name, config[key])
+    if _flag("DIRECT_SUBWORD_STROKE_INPUT", False):
+        import embeddingModel as embedding_model_module
+
+        embedding_model_module.window_ink_ratio_from_patches = (
+            stroke_aware_window_ink_ratio_from_patches
+        )
     # Evaluation must always be deterministic even when the checkpoint records
     # that training augmentation was enabled.
     os.environ["DIRECT_SUBWORD_STROKE_AUGMENT"] = "0"
