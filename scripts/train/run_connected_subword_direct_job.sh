@@ -43,6 +43,7 @@ conda activate "${CONDA_ENV}"
 WINDOW_SIZE="${WINDOW_SIZE:-32}"
 STRIDE_RATIO="${STRIDE_RATIO:-0.25}"
 export WINDOW_SIZE STRIDE_RATIO
+export PYTHONUNBUFFERED=1
 
 CHUNK_SIZE=$(( (NUM_SAMPLES + PREP_WORKERS - 1) / PREP_WORKERS ))
 PIDS=()
@@ -86,8 +87,7 @@ for (( worker=0; worker<PREP_WORKERS; worker++ )); do
     --start-index "${START_INDEX}" \
     --end-index "${END_INDEX}" \
     --snap-radius "${DIRECT_SUBWORD_SNAP_RADIUS:-8}" \
-    --overlay-count "${OVERLAY_COUNT}" \
-    > "${PROJECT_DIR}/out/${JOB_ID}_sidecars_${START_INDEX}_${END_INDEX}_${SLURM_JOB_ID}.log" 2>&1 &
+    --overlay-count "${OVERLAY_COUNT}" &
   PIDS+=("$!")
   RANGES+=("${START_INDEX}-${END_INDEX}")
 done
@@ -101,7 +101,6 @@ for index in "${!PIDS[@]}"; do
   else
     STATUS=$?
     echo "ERROR: sidecar worker failed for samples ${RANGE} with exit code ${STATUS}." >&2
-    echo "Log: ${PROJECT_DIR}/out/${JOB_ID}_sidecars_${RANGE//-/_}_${SLURM_JOB_ID}.log" >&2
     FAILED=1
   fi
 done
