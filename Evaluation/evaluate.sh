@@ -57,7 +57,9 @@ REAL_BOX_IN_MASK_RULE="${REAL_BOX_IN_MASK_RULE:-center}"
 REAL_BOX_MIN_COVERAGE="${REAL_BOX_MIN_COVERAGE:-0.50}"
 REAL_BOX_COORDINATE_SPACE="${REAL_BOX_COORDINATE_SPACE:-original}"
 REAL_BOX_BBOX_FORMAT="${REAL_BOX_BBOX_FORMAT:-xyxy}"
-REAL_BOX_ANNOTATIONS_ROOT="${REAL_BOX_ANNOTATIONS_ROOT:-}"
+# Search the whole real dataset by default. The resolver ranks candidates using
+# pair/page metadata rather than assuming workbooks live beside linesImages/.
+REAL_BOX_ANNOTATIONS_ROOT="${REAL_BOX_ANNOTATIONS_ROOT:-${REAL_DATA_DIR}}"
 
 [[ -d "${REAL_DATA_DIR}" ]] || {
   echo "ERROR: real dataset directory not found: ${REAL_DATA_DIR}" >&2
@@ -75,6 +77,24 @@ REAL_BOX_ANNOTATIONS_ROOT="${REAL_BOX_ANNOTATIONS_ROOT:-}"
   echo "ERROR: START_INDEX must be a non-negative integer." >&2
   exit 2
 }
+
+if [[ "${REAL_BOX_EVAL}" == "1" || "${REAL_BOX_EVAL,,}" == "true" ]]; then
+  [[ -e "${REAL_BOX_ANNOTATIONS_ROOT}" ]] || {
+    echo "ERROR: Excel annotation root does not exist: ${REAL_BOX_ANNOTATIONS_ROOT}" >&2
+    exit 2
+  }
+  REAL_BOX_WORKBOOK_COUNT="$(find "${REAL_BOX_ANNOTATIONS_ROOT}" -type f \
+    \( -iname '*.xlsx' -o -iname '*.xlsm' -o -iname '*.xls' \) \
+    ! -name '~$*' -print 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ "${REAL_BOX_WORKBOOK_COUNT}" -eq 0 ]]; then
+    echo "ERROR: no Excel annotation workbooks were found under:" >&2
+    echo "  ${REAL_BOX_ANNOTATIONS_ROOT}" >&2
+    echo "Set REAL_BOX_ANNOTATIONS_ROOT to the directory that contains the .xlsx/.xls files." >&2
+    exit 2
+  fi
+else
+  REAL_BOX_WORKBOOK_COUNT=0
+fi
 
 CONDA_ENV="${CONDA_ENV:-manucripts_align}"
 PARTITION="${PARTITION:-rtx4090}"
@@ -96,7 +116,8 @@ print_config() {
     "  samples      = ${N_SAMPLES}" \
     "  box scoring  = ${REAL_BOX_EVAL}" \
     "  box rule     = ${REAL_BOX_IN_MASK_RULE}" \
-    "  box root     = ${REAL_BOX_ANNOTATIONS_ROOT:-auto-near-line-image}" \
+    "  box root     = ${REAL_BOX_ANNOTATIONS_ROOT}" \
+    "  workbooks    = ${REAL_BOX_WORKBOOK_COUNT}" \
     "  results root = ${RESULTS_ROOT}"
 }
 
