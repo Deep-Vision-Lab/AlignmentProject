@@ -7,12 +7,16 @@ import torch.nn as nn
 
 from direct_subword_data import enabled, flag, install_dataset_patch, integer, number
 from direct_subword_loss import make_batch_loss
+from stroke_aware_preprocessing import (
+    install_training_preprocessing,
+    preprocessing_config,
+)
 
 _INSTALLED = False
 
 
 def config() -> dict:
-    return {
+    resolved = {
         "direct_subword_supervision": enabled(),
         "direct_subword_box_dir": os.environ.get("DIRECT_SUBWORD_BOX_DIR", ""),
         "direct_subword_temperature": number("DIRECT_SUBWORD_TEMPERATURE", 0.07),
@@ -64,6 +68,8 @@ def config() -> dict:
         ),
         "synthetic_alignment_backend": "renderer_subword_intervals_no_dtw",
     }
+    resolved.update(preprocessing_config(default_enabled=enabled()))
+    return resolved
 
 
 class DirectCriterion(nn.Module):
@@ -146,6 +152,7 @@ def install(train_module) -> dict:
             "subword intervals. Keep it disabled for direct supervision."
         )
     install_dataset_patch()
+    install_training_preprocessing()
     train_module.compute_batch_loss = make_batch_loss(train_module)
     train_module.build_criterion = lambda: DirectCriterion()
     _install_wandb_metrics(train_module)
