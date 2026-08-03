@@ -62,7 +62,7 @@ def load_sidecar(path: str | os.PathLike[str]) -> list[dict]:
         if not validation:
             raise ValueError(
                 f"Sidecar {path} has no validation metadata. Re-run "
-                "scripts/data/build_connected_subword_boxes.py."
+                "scripts/data/build_connected_subword_boxes_window_validated.py."
             )
         if not bool(validation.get("valid", False)):
             raise ValueError(
@@ -115,66 +115,46 @@ def window_overlap_weights(
     return torch.flip(overlap, dims=[0]) if use_flip else overlap
 
 
+def direct_subword_collate(batch):
+    """Top-level, spawn-picklable wrapper around the ordinary project collate."""
+    import DataLoader as loader_module
+
+    original_collate = getattr(
+        loader_module,
+        "_direct_subword_original_collate",
+        None,
+    )
+    if original_collate is None:
+        # Spawned DataLoader workers import DataLoader afresh, so its public
+        # function is still the original collate in those worker processes.
+        original_collate = loader_module.custom_collate_fn
+    if original_collate is direct_subword_collate:
+        raise RuntimeError("Direct-subword collate lost its original collate function")
+
+    result = original_collate(batch)
+    if enabled() and isinstance(result, dict):
+        result["subwords1"] = [item.get("subwords1", []) for item in batch]
+        result["subwords2"] = [item.get("subwords2", []) for item in batch]
+        result["sample_indices"] = [item.get("sample_index", -1) for item in batch]
+    return result
+
+
 def install_dataset_patch() -> None:
-    """Attach sidecar regions to synthetic samples and preserve them in collate."""
+    """Install only the module-level collate wrapper.
+
+    Sidecar loading lives directly in ``DataSet.TextLineModern`` so spawned
+    DataLoader workers do not depend on a runtime-local ``__getitem__`` patch.
+    """
     import DataLoader as loader_module
     import DataSet as dataset_module
 
     dataset_cls = dataset_module.TextLineModern
-    if getattr(dataset_cls, "_direct_subword_patched", False):
+    if not hasattr(dataset_cls, "_direct_subword_regions"):
+        raise RuntimeError(
+            "TextLineModern lacks integrated direct-subword loading. Pull the "
+            "complete agent/connected-subword-cnn update before training."
+        )
+    if loader_module.custom_collate_fn is direct_subword_collate:
         return
-    original_getitem = dataset_cls.__getitem__
-
-    def patched_getitem(self, index):
-        item = original_getitem(self, index)
-        if not enabled():
-            return item
-        if not isinstance(item, dict):
-            raise RuntimeError(
-                "Direct subword supervision requires paired synthetic lines. "
-                "Set LOAD_PAIRED_LINES=1 and rebuild the DataLoader."
-            )
-        record = self._sample_records[int(index)]
-        cache = getattr(self, "_direct_subword_cache", None)
-        if cache is None:
-            cache = self._direct_subword_cache = {}
-
-        def regions(key: str) -> list[dict]:
-            image = record[key]
-            if not image:
-                raise RuntimeError(
-                    f"Paired synthetic record is missing {key}; direct supervision "
-                    "cannot train on a single line."
-                )
-            if image not in cache:
-                path = sidecar_path(image)
-                if not path.is_file():
-                    if flag("DIRECT_SUBWORD_STRICT_BOXES", True):
-                        raise FileNotFoundError(
-                            f"Missing {path}. Run "
-                            "scripts/data/build_connected_subword_boxes.py first."
-                        )
-                    cache[image] = []
-                else:
-                    cache[image] = load_sidecar(path)
-            return cache[image]
-
-        item = dict(item)
-        item["subwords1"] = regions("image1")
-        item["subwords2"] = regions("image2")
-        item["sample_index"] = int(index)
-        return item
-
-    dataset_cls.__getitem__ = patched_getitem
-    dataset_cls._direct_subword_patched = True
-    original_collate = loader_module.custom_collate_fn
-
-    def patched_collate(batch):
-        result = original_collate(batch)
-        if enabled() and isinstance(result, dict):
-            result["subwords1"] = [item.get("subwords1", []) for item in batch]
-            result["subwords2"] = [item.get("subwords2", []) for item in batch]
-            result["sample_indices"] = [item.get("sample_index", -1) for item in batch]
-        return result
-
-    loader_module.custom_collate_fn = patched_collate
+    loader_module._direct_subword_original_collate = loader_module.custom_collate_fn
+    loader_module.custom_collate_fn = direct_subword_collate
