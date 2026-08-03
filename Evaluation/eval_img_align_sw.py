@@ -152,8 +152,10 @@ _sw_dataset._group_split_pairs = _diverse_group_split
 
 from Evaluation import sw_runner as _implementation
 from Evaluation.zero_shot_sw import install_runner_patches
+from Evaluation.real_subword_box_patch import install as install_real_subword_box_patch
 
 install_runner_patches(_implementation)
+install_real_subword_box_patch(_implementation)
 
 # Real images still need to be binarized before feature extraction, but those
 # intermediate files are now created only inside a temporary directory and are
