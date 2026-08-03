@@ -1,4 +1,5 @@
 import json
+import pickle
 
 from PIL import Image
 from torchvision import transforms
@@ -42,6 +43,9 @@ def test_direct_dataset_loads_both_lines_and_collates_sidecars(tmp_path, monkeyp
     monkeypatch.setattr(dataset_module, "use_image_pair_contrastive", False)
     monkeypatch.setattr(dataset_module, "image_text_loss_on_both_lines", False)
     install_dataset_patch()
+
+    assert "<locals>" not in loader_module.custom_collate_fn.__qualname__
+    pickle.dumps(loader_module.custom_collate_fn)
 
     dataset = dataset_module.TextLineModern(
         new_dataset={
