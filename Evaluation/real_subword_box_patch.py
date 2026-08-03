@@ -1,11 +1,20 @@
 """Runtime integration for real Excel subword-box quantitative evaluation."""
 from __future__ import annotations
 
+import os
+
 from Evaluation import real_subword_box_metrics as box_metrics
 from Evaluation.real_subword_box_geometry import load_line_annotations
 
 
 box_metrics.load_line_annotations = load_line_annotations
+
+
+def _flag(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _sheet_matches_line(sheet_name: str, requested_line: int | None) -> bool:
@@ -37,7 +46,15 @@ def install(sw_runner_module) -> None:
         pair = kwargs.get("pair") if "pair" in kwargs else (args[1] if len(args) > 1 else None)
         if models is None or pair is None:
             return row
-        row.update(box_metrics.metrics_from_evaluation_row(row, pair, models))
+        try:
+            row.update(box_metrics.metrics_from_evaluation_row(row, pair, models))
+        except FileNotFoundError as exc:
+            if _flag("REAL_REQUIRE_BOX_ANNOTATIONS", False):
+                raise SystemExit(
+                    "Strict real-box evaluation aborted on the first unresolved "
+                    f"annotation: {exc}"
+                ) from exc
+            raise
         print(
             f"[{row.get('index')}] real-box status={row.get('real_box_status')} "
             f"shared={row.get('shared_subword_matches')} "
