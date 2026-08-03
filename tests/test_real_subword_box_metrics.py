@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 from openpyxl import Workbook
 from PIL import Image, ImageDraw
@@ -49,32 +50,44 @@ def test_shared_subwords_are_matched_in_order():
     ) == [(0, 1), (1, 2)]
 
 
-def test_excel_boxes_follow_real_crop_resize_and_pad_geometry(tmp_path, monkeypatch):
-    side = tmp_path / "pair_000001" / "A"
-    image_dir = side / "linesImages"
-    annotation_dir = side / "annotations"
-    image_dir.mkdir(parents=True)
-    annotation_dir.mkdir(parents=True)
-
-    image_path = image_dir / "line_01.png"
+def _save_line(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
     image = Image.new("RGB", (200, 60), "white")
     draw = ImageDraw.Draw(image)
     draw.rectangle((25, 18, 175, 42), fill="black")
-    image.save(image_path)
+    image.save(path)
 
+
+def _save_boxes(path: Path, include_image_column: bool = False):
+    path.parent.mkdir(parents=True, exist_ok=True)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "annotations"
-    sheet.append(["subword", "x0", "y0", "x1", "y1"])
-    sheet.append(["كتب", 110, 18, 170, 42])
-    sheet.append(["محمد", 30, 18, 100, 42])
-    workbook.save(annotation_dir / "subword_boxes.xlsx")
+    if include_image_column:
+        sheet.append(["image_name", "subword", "x0", "y0", "x1", "y1"])
+        sheet.append(["line_01.png", "كتب", 110, 18, 170, 42])
+        sheet.append(["line_01.png", "محمد", 30, 18, 100, 42])
+    else:
+        sheet.append(["subword", "x0", "y0", "x1", "y1"])
+        sheet.append(["كتب", 110, 18, 170, 42])
+        sheet.append(["محمد", 30, 18, 100, 42])
+    workbook.save(path)
 
+
+def _set_geometry(monkeypatch):
     monkeypatch.setenv("REAL_BOX_COORDINATE_SPACE", "original")
     monkeypatch.setenv("ZERO_SHOT_PREPROCESS", "1")
     monkeypatch.setenv("ZERO_SHOT_FOREGROUND_CROP", "1")
     monkeypatch.setenv("ZERO_SHOT_PRESERVE_ASPECT", "1")
     monkeypatch.setenv("ZERO_SHOT_TARGET_INK_HEIGHT_RATIO", "0.72")
+
+
+def test_excel_boxes_follow_real_crop_resize_and_pad_geometry(tmp_path, monkeypatch):
+    side = tmp_path / "pair_000001" / "A"
+    image_path = side / "linesImages" / "line_01.png"
+    _save_line(image_path)
+    _save_boxes(side / "annotations" / "subword_boxes.xlsx")
+    _set_geometry(monkeypatch)
 
     annotations = load_line_annotations(image_path, 1024, 128)
 
@@ -83,6 +96,29 @@ def test_excel_boxes_follow_real_crop_resize_and_pad_geometry(tmp_path, monkeypa
     assert [box.text for box in annotations.boxes] == ["كتب", "محمد"]
     assert all(0 <= box.x0 < box.x1 <= 1024 for box in annotations.boxes)
     assert all(0 <= box.y0 < box.y1 <= 128 for box in annotations.boxes)
+
+
+def test_workbook_can_live_elsewhere_under_arabic_dataset(tmp_path, monkeypatch):
+    dataset_root = tmp_path / "ArabicDataset"
+    side = dataset_root / "DatasetPairs" / "page_pairs" / "pair_000060" / "A"
+    image_path = side / "linesImages" / "line_01.png"
+    _save_line(image_path)
+    (side / "page_meta.json").write_text(
+        json.dumps({"writer_id": "writer_17", "page_id": "page_0042"}),
+        encoding="utf-8",
+    )
+
+    correct = dataset_root / "Dataset" / "Quran" / "Labels" / "writer_17" / "page_0042.xlsx"
+    _save_boxes(correct, include_image_column=True)
+    _save_boxes(dataset_root / "unrelated" / "page_9999.xlsx", include_image_column=True)
+
+    monkeypatch.setenv("REAL_BOX_ANNOTATIONS_ROOT", str(dataset_root))
+    _set_geometry(monkeypatch)
+    annotations = load_line_annotations(image_path, 1024, 128)
+
+    assert annotations.status == "ok"
+    assert Path(annotations.workbook) == correct.resolve()
+    assert [box.text for box in annotations.boxes] == ["كتب", "محمد"]
 
 
 def test_batch_summary_reports_micro_and_macro_box_metrics():
