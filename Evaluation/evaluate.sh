@@ -78,24 +78,6 @@ REAL_BOX_ANNOTATIONS_ROOT="${REAL_BOX_ANNOTATIONS_ROOT:-${REAL_DATA_DIR}}"
   exit 2
 }
 
-if [[ "${REAL_BOX_EVAL}" == "1" || "${REAL_BOX_EVAL,,}" == "true" ]]; then
-  [[ -e "${REAL_BOX_ANNOTATIONS_ROOT}" ]] || {
-    echo "ERROR: Excel annotation root does not exist: ${REAL_BOX_ANNOTATIONS_ROOT}" >&2
-    exit 2
-  }
-  REAL_BOX_WORKBOOK_COUNT="$(find "${REAL_BOX_ANNOTATIONS_ROOT}" -type f \
-    \( -iname '*.xlsx' -o -iname '*.xlsm' -o -iname '*.xls' \) \
-    ! -name '~$*' -print 2>/dev/null | wc -l | tr -d ' ')"
-  if [[ "${REAL_BOX_WORKBOOK_COUNT}" -eq 0 ]]; then
-    echo "ERROR: no Excel annotation workbooks were found under:" >&2
-    echo "  ${REAL_BOX_ANNOTATIONS_ROOT}" >&2
-    echo "Set REAL_BOX_ANNOTATIONS_ROOT to the directory that contains the .xlsx/.xls files." >&2
-    exit 2
-  fi
-else
-  REAL_BOX_WORKBOOK_COUNT=0
-fi
-
 CONDA_ENV="${CONDA_ENV:-manucripts_align}"
 PARTITION="${PARTITION:-rtx4090}"
 GPU_RESOURCE="${GPU_RESOURCE:-rtx_4090}"
@@ -103,6 +85,7 @@ CPUS_PER_TASK="${CPUS_PER_TASK:-4}"
 TIME_LIMIT="${TIME_LIMIT:-08:00:00}"
 MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"
 EVAL_JOB_NAME="${EVAL_JOB_NAME:-eval_${MODEL_TAG}_${RUN_TAG}}"
+REAL_BOX_WORKBOOK_COUNT="${REAL_BOX_WORKBOOK_COUNT:-deferred-to-slurm-job}"
 
 print_config() {
   printf '%s\n' \
@@ -141,6 +124,23 @@ fi
 
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
+
+if [[ "${REAL_BOX_EVAL}" == "1" || "${REAL_BOX_EVAL,,}" == "true" ]]; then
+  [[ -e "${REAL_BOX_ANNOTATIONS_ROOT}" ]] || {
+    echo "ERROR: Excel annotation root does not exist: ${REAL_BOX_ANNOTATIONS_ROOT}" >&2
+    exit 2
+  }
+  REAL_BOX_WORKBOOK_COUNT="$(find "${REAL_BOX_ANNOTATIONS_ROOT}" -type f \
+    \( -iname '*.xlsx' -o -iname '*.xlsm' -o -iname '*.xls' \) \
+    ! -name '~$*' -print 2>/dev/null | wc -l | tr -d ' ')"
+  export REAL_BOX_WORKBOOK_COUNT
+  if [[ "${REAL_BOX_WORKBOOK_COUNT}" -eq 0 ]]; then
+    echo "ERROR: no Excel annotation workbooks were found under:" >&2
+    echo "  ${REAL_BOX_ANNOTATIONS_ROOT}" >&2
+    echo "Set REAL_BOX_ANNOTATIONS_ROOT to the directory that contains the .xlsx/.xls files." >&2
+    exit 2
+  fi
+fi
 
 # Keep evaluation preprocessing identical to training. Model window/stride and
 # backend are reconstructed from the checkpoint configuration.
