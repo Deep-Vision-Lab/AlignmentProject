@@ -50,6 +50,15 @@ GAP="${GAP:--0.30}"
 HEATMAP_SOURCE="${HEATMAP_SOURCE:-dp-score}"
 RESULTS_ROOT="${RESULTS_ROOT:-${PROJECT_DIR}/Results/Evaluation/${MODEL_TAG}/Real_Experiments/${RUN_TAG}}"
 
+# Real quantitative localization from the per-subword Excel annotations.
+REAL_BOX_EVAL="${REAL_BOX_EVAL:-1}"
+REAL_REQUIRE_BOX_ANNOTATIONS="${REAL_REQUIRE_BOX_ANNOTATIONS:-0}"
+REAL_BOX_IN_MASK_RULE="${REAL_BOX_IN_MASK_RULE:-center}"
+REAL_BOX_MIN_COVERAGE="${REAL_BOX_MIN_COVERAGE:-0.50}"
+REAL_BOX_COORDINATE_SPACE="${REAL_BOX_COORDINATE_SPACE:-original}"
+REAL_BOX_BBOX_FORMAT="${REAL_BOX_BBOX_FORMAT:-xyxy}"
+REAL_BOX_ANNOTATIONS_ROOT="${REAL_BOX_ANNOTATIONS_ROOT:-}"
+
 [[ -d "${REAL_DATA_DIR}" ]] || {
   echo "ERROR: real dataset directory not found: ${REAL_DATA_DIR}" >&2
   exit 2
@@ -71,7 +80,6 @@ CONDA_ENV="${CONDA_ENV:-manucripts_align}"
 PARTITION="${PARTITION:-rtx4090}"
 GPU_RESOURCE="${GPU_RESOURCE:-rtx_4090}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-4}"
-MEMORY="${MEMORY:-32G}"
 TIME_LIMIT="${TIME_LIMIT:-08:00:00}"
 MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"
 EVAL_JOB_NAME="${EVAL_JOB_NAME:-eval_${MODEL_TAG}_${RUN_TAG}}"
@@ -86,6 +94,9 @@ print_config() {
     "  split        = ${REAL_SPLIT}" \
     "  labels       = ${LABELS}" \
     "  samples      = ${N_SAMPLES}" \
+    "  box scoring  = ${REAL_BOX_EVAL}" \
+    "  box rule     = ${REAL_BOX_IN_MASK_RULE}" \
+    "  box root     = ${REAL_BOX_ANNOTATIONS_ROOT:-auto-near-line-image}" \
     "  results root = ${RESULTS_ROOT}"
 }
 
@@ -99,7 +110,6 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
     --gpus="${GPU_RESOURCE}:1" \
     --tasks=1 \
     --cpus-per-task="${CPUS_PER_TASK}" \
-    --mem="${MEMORY}" \
     --time="${TIME_LIMIT}" \
     --mail-type=ALL \
     --mail-user="${MAIL_USER}" \
@@ -116,6 +126,7 @@ conda activate "${CONDA_ENV}"
 export LINE_HEIGHT="${LINE_HEIGHT:-128}"
 export LINE_WIDTH="${LINE_WIDTH:-1024}"
 export TARGET_INK_HEIGHT_RATIO="${TARGET_INK_HEIGHT_RATIO:-0.72}"
+export ZERO_SHOT_TARGET_INK_HEIGHT_RATIO="${ZERO_SHOT_TARGET_INK_HEIGHT_RATIO:-${TARGET_INK_HEIGHT_RATIO}}"
 export ZERO_SHOT_PREPROCESS="${ZERO_SHOT_PREPROCESS:-1}"
 export ZERO_SHOT_PRESERVE_ASPECT="${ZERO_SHOT_PRESERVE_ASPECT:-1}"
 export ZERO_SHOT_FOREGROUND_CROP="${ZERO_SHOT_FOREGROUND_CROP:-1}"
@@ -129,6 +140,9 @@ export SW_INK_AWARE="${SW_INK_AWARE:-1}"
 export SW_MIN_INK="${SW_MIN_INK:-0.02}"
 export SW_BLANK_BLANK_SCORE="${SW_BLANK_BLANK_SCORE:--0.20}"
 export SW_BLANK_INK_SCORE="${SW_BLANK_INK_SCORE:--0.50}"
+export REAL_BOX_EVAL REAL_REQUIRE_BOX_ANNOTATIONS REAL_BOX_IN_MASK_RULE
+export REAL_BOX_MIN_COVERAGE REAL_BOX_COORDINATE_SPACE REAL_BOX_BBOX_FORMAT
+export REAL_BOX_ANNOTATIONS_ROOT
 
 print_config
 IFS=',' read -r -a LABEL_ARRAY <<< "${LABELS}"
