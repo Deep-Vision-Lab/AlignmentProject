@@ -11,6 +11,7 @@ from stroke_aware_preprocessing import (
     _shift_vertical,
     apply_checkpoint_preprocessing_config,
     preprocessing_config,
+    stroke_aware_window_ink_ratio_from_patches,
 )
 
 
@@ -69,6 +70,21 @@ def test_transform_is_spawn_picklable():
     pickle.dumps(StrokeAwareLineTransform(training=True))
 
 
+def test_window_ink_ratio_uses_soft_ink_channel(monkeypatch):
+    monkeypatch.setenv("STROKE_AWARE_NORMALIZE", "1")
+    monkeypatch.setenv("STROKE_AWARE_INK_RATIO_THRESHOLD", "0.08")
+    patches = torch.full((1, 2, 3, 4, 5), -1.0)
+    patches[0, 0, 0, 1:3, 2:4] = 1.0
+    # Fill the derived channels to ensure they do not affect the ink ratio.
+    patches[0, 1, 1:] = 1.0
+
+    ratios = stroke_aware_window_ink_ratio_from_patches(patches)
+
+    assert ratios.shape == (1, 2)
+    assert abs(float(ratios[0, 0]) - 0.20) < 1e-6
+    assert float(ratios[0, 1]) == 0.0
+
+
 def test_checkpoint_config_enables_channels_but_disables_eval_augmentation(monkeypatch):
     monkeypatch.delenv("DIRECT_SUBWORD_STROKE_INPUT", raising=False)
     monkeypatch.delenv("DIRECT_SUBWORD_STROKE_AUGMENT", raising=False)
@@ -78,12 +94,14 @@ def test_checkpoint_config_enables_channels_but_disables_eval_augmentation(monke
             "stroke_aware_input": True,
             "stroke_aware_augment": True,
             "stroke_aware_distance_clip": 6.0,
+            "stroke_aware_ink_ratio_threshold": 0.12,
         }
     )
 
     assert os.environ["DIRECT_SUBWORD_STROKE_INPUT"] == "1"
     assert os.environ["DIRECT_SUBWORD_STROKE_AUGMENT"] == "0"
     assert os.environ["STROKE_AWARE_DISTANCE_CLIP"] == "6.0"
+    assert os.environ["STROKE_AWARE_INK_RATIO_THRESHOLD"] == "0.12"
 
 
 def test_preprocessing_config_records_reproducible_defaults(monkeypatch):
@@ -94,4 +112,5 @@ def test_preprocessing_config_records_reproducible_defaults(monkeypatch):
     assert config["stroke_aware_channels"] == (
         "soft_ink,distance_proximity,sobel_magnitude"
     )
+    assert config["stroke_aware_ink_ratio_threshold"] == 0.08
     assert config["stroke_aware_vertical_shift_max"] == 4
