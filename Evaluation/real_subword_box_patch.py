@@ -1,11 +1,13 @@
 """Runtime integration for real Excel subword-box quantitative evaluation."""
 from __future__ import annotations
 
-from Evaluation.real_subword_box_metrics import (
-    aggregate as aggregate_box_metrics,
-    fieldnames as box_fieldnames,
-    metrics_from_evaluation_row,
-)
+from Evaluation import real_subword_box_metrics as box_metrics
+from Evaluation.real_subword_box_geometry import load_line_annotations
+
+
+# The metric module resolves this global at evaluation time. Replace its simple
+# scaling fallback with the exact foreground-crop, aspect-resize and pad map.
+box_metrics.load_line_annotations = load_line_annotations
 
 
 def install(sw_runner_module) -> None:
@@ -29,7 +31,7 @@ def install(sw_runner_module) -> None:
         if models is None or pair is None:
             return row
 
-        metrics = metrics_from_evaluation_row(row, pair, models)
+        metrics = box_metrics.metrics_from_evaluation_row(row, pair, models)
         row.update(metrics)
         print(
             f"[{row.get('index')}] real-box status={row.get('real_box_status')} "
@@ -44,12 +46,12 @@ def install(sw_runner_module) -> None:
 
     def aggregate(rows):
         summary = original_aggregate(rows)
-        summary.update(aggregate_box_metrics(rows))
+        summary.update(box_metrics.aggregate(rows))
         return summary
 
     def batch_fieldnames():
         names = list(original_fieldnames())
-        for name in box_fieldnames():
+        for name in box_metrics.fieldnames():
             if name not in names:
                 names.append(name)
         return names
