@@ -96,6 +96,39 @@ def test_bbox_json_boxes_follow_real_crop_resize_and_pad_geometry(tmp_path, monk
     assert all(0 <= box.y0 < box.y1 <= 128 for box in annotations.boxes)
 
 
+def test_nested_numeric_line_key_and_text_to_raw_box_mapping(tmp_path, monkeypatch):
+    side = tmp_path / "ArabicDataset" / "DatasetPairs" / "page_pairs" / "pair_000060" / "A"
+    image_path = side / "linesImages" / "line_01.png"
+    _save_line(image_path)
+
+    bbox_path = side / "debug" / "bbox.json"
+    bbox_path.parent.mkdir(parents=True)
+    bbox_path.write_text(
+        json.dumps(
+            {
+                "lines": {
+                    "1": {
+                        "subwords": {
+                            "كتب": [110, 18, 170, 42],
+                            "محمد": [30, 18, 100, 42],
+                        }
+                    },
+                    "2": {"subwords": {"غير": [10, 10, 20, 20]}},
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("REAL_BOX_JSON", str(side))
+    _set_geometry(monkeypatch)
+
+    annotations = load_line_annotations(image_path, 1024, 128)
+
+    assert annotations.status == "ok"
+    assert [box.text for box in annotations.boxes] == ["كتب", "محمد"]
+
+
 def test_global_coco_bbox_json_is_supported(tmp_path, monkeypatch):
     dataset = tmp_path / "ArabicDataset"
     image_path = dataset / "DatasetPairs" / "page_pairs" / "pair_000001" / "B" / "linesImages" / "line_02.png"
