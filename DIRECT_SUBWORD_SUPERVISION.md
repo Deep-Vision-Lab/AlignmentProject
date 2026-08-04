@@ -72,12 +72,11 @@ Results/AugmentationPreview/Synthetic_Arabic_*/img1_*/
 To inspect the geometric zero-shot augmentation used by the Span-DTW experiment
 instead, replace `--profile box-safe` with `--profile zero-shot`.
 
-## Recommended fully offline train-and-evaluate pipeline
+## Recommended fully offline training
 
 Run from the repository root on the login node. The command submits one Slurm
-training job that prepares all four sources' sidecars inside the compute job,
-then immediately queues calibrated synthetic evaluation with an
-`afterok:<training_job_id>` dependency.
+job that prepares all four sources' sidecars inside the compute job and then
+starts training.
 
 ```bash
 JOB_ID=cnn_connected_subword_direct_multisource \
@@ -92,15 +91,10 @@ DIRECT_SUBWORD_BOX_SAFE_AUGMENT=1 \
 DIRECT_SUBWORD_AUGMENT_PROBABILITY=0.85 \
 DIRECT_SUBWORD_CLEAN_PROBABILITY=0.15 \
 DIRECT_SUBWORD_NOISE_STD_MAX=10 \
-THRESHOLDS=0.60,0.70,0.80,0.85,0.90 \
-CALIBRATION_START_INDEX=1 \
-CALIBRATION_SAMPLES=100 \
-HOLDOUT_START_INDEX=101 \
-HOLDOUT_SAMPLES=100 \
 bash scripts/train/run_connected_subword_direct_pipeline.sh
 ```
 
-The pipeline prints both Slurm job IDs. Monitor them with:
+Monitor the job with:
 
 ```bash
 squeue -u "$USER" -o "%.18i %.42j %.10T %.10M %.10l %.25R"
@@ -112,9 +106,31 @@ The checkpoint is written to:
 Weights/cnn_connected_subword_direct_multisource/model_latest.pth
 ```
 
-The current synthetic Smith-Waterman evaluator accepts one dataset root, so the
-pipeline evaluates on `Synthetic_Arabic_1` by default after training on all four.
-Override this with `EVAL_DATA_DIR=/path/to/another/source`.
+## Optional leakage-safe evaluation
+
+Do not evaluate on any of the four training sources. To queue evaluation after
+training, provide a separate synthetic dataset through `EVAL_DATA_DIR`:
+
+```bash
+JOB_ID=cnn_connected_subword_direct_multisource \
+DATA_ROOT="$PWD/DataSet" \
+EVAL_DATA_DIR="$PWD/DataSet/Synthetic_Arabic_Eval" \
+HF_HOME="$PWD/.hf_cache" \
+SYNTHETIC_SAMPLES_PER_DIR=3000 \
+EPOCHS=35 \
+NUM_GPUS=2 \
+EFFECTIVE_GLOBAL_BATCH_SIZE=128 \
+THRESHOLDS=0.60,0.70,0.80,0.85,0.90 \
+CALIBRATION_START_INDEX=1 \
+CALIBRATION_SAMPLES=100 \
+HOLDOUT_START_INDEX=101 \
+HOLDOUT_SAMPLES=100 \
+bash scripts/train/run_connected_subword_direct_pipeline.sh
+```
+
+The launcher rejects `EVAL_DATA_DIR` when it resolves to one of the training
+sources. When no separate evaluation dataset is supplied, only training is
+submitted.
 
 The final calibrated holdout summary is written to:
 
