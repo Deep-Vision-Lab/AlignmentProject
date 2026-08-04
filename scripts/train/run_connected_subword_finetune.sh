@@ -22,8 +22,11 @@ export SPAN_DTW_MAX_TEXT_BUCKET="${SPAN_DTW_MAX_TEXT_BUCKET:-128}"
 # occupy many windows. Per-unit caps are enforced by connected_subword_mode.py.
 export ALLOW_UNSAFE_SPAN_CONFIG=1
 
-# Do not apply the old character-count feasibility filter to joining-run units.
-export REAL_FILTER_INFEASIBLE_SPAN_DTW=0
+# Filter real positives using the active tokenizer's exact state count. The
+# connected-aware implementation counts subwords, explicit boundaries, and
+# spaces, preventing native long lines from reaching Span-DTW with more text
+# states than available image windows.
+export REAL_FILTER_INFEASIBLE_SPAN_DTW="${REAL_FILTER_INFEASIBLE_SPAN_DTW:-1}"
 
 # Semantic image-image matching compares connected runs, not structural tokens.
 export PAIR_COMPOSITION_MAX_REGIONS="${PAIR_COMPOSITION_MAX_REGIONS:-1}"
