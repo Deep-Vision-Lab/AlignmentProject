@@ -1,4 +1,4 @@
-"""Map real subword boxes through the exact evaluation crop/pad geometry."""
+"""Map bbox.json subword boxes through the exact evaluation crop/pad geometry."""
 from __future__ import annotations
 
 import os
@@ -7,13 +7,12 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageOps
 
+from Evaluation.real_subword_box_json import load_json_annotations
 from Evaluation.real_subword_box_metrics import (
     BoxAnnotations,
     SubwordBox,
     _fill_missing_text,
-    _read_workbook,
     _reading_order,
-    discover_workbook,
 )
 from zero_shot_preprocessing import _ink_mask
 
@@ -80,12 +79,9 @@ def _geometry(image: Image.Image, target_width: int, target_height: int):
 
 
 def load_line_annotations(image_path, target_width: int, target_height: int) -> BoxAnnotations:
-    """Load Excel boxes and apply the same foreground crop, resize and pad."""
+    """Load bbox.json boxes and apply the evaluation crop, resize and pad."""
     image_path = Path(image_path)
-    workbook = discover_workbook(str(image_path))
-    if workbook is None:
-        return BoxAnnotations((), "", "", "missing", "No Excel workbook found near the line image")
-    annotations = _read_workbook(workbook, image_path)
+    annotations = load_json_annotations(image_path)
     if not annotations.boxes:
         return annotations
 
@@ -108,10 +104,8 @@ def load_line_annotations(image_path, target_width: int, target_height: int) -> 
             source_x0, source_x1 = box.x0 * source_width, box.x1 * source_width
             source_y0, source_y1 = box.y0 * source_height, box.y1 * source_height
         elif coordinate_space == "model":
-            source_x0, source_x1 = box.x0, box.x1
-            source_y0, source_y1 = box.y0, box.y1
-            mapped_x0, mapped_x1 = source_x0, source_x1
-            mapped_y0, mapped_y1 = source_y0, source_y1
+            mapped_x0, mapped_x1 = box.x0, box.x1
+            mapped_y0, mapped_y1 = box.y0, box.y1
             source_x0 = source_x1 = source_y0 = source_y1 = None
         else:
             source_x0, source_x1 = box.x0, box.x1
@@ -136,5 +130,5 @@ def load_line_annotations(image_path, target_width: int, target_height: int) -> 
     status, error = annotations.status, annotations.error
     if transformed and any(not box.text.strip() for box in transformed):
         status = "missing_text"
-        error = "Excel text is missing and transcript subword count does not match box count"
+        error = "bbox.json text is missing and transcript subword count does not match box count"
     return BoxAnnotations(tuple(transformed), annotations.workbook, annotations.sheet, status, error)
