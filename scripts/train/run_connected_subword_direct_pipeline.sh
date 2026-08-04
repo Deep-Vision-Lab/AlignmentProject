@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Submit balanced direct synthetic training fully offline, then queue evaluation.
+# Submit balanced direct synthetic training fully offline.
+# Optionally queue evaluation only on a separate, explicitly supplied dataset.
 set -euo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
@@ -22,6 +23,7 @@ WINDOW_SIZE="${WINDOW_SIZE:-32}"
 STRIDE_RATIO="${STRIDE_RATIO:-0.25}"
 TRAIN_SEED="${TRAIN_SEED:-42}"
 DATASET_SPLIT_SEED="${DATASET_SPLIT_SEED:-42}"
+EVAL_DATA_DIR="${EVAL_DATA_DIR:-}"
 THRESHOLDS="${THRESHOLDS:-0.60,0.70,0.80,0.85,0.90}"
 CALIBRATION_SAMPLES="${CALIBRATION_SAMPLES:-100}"
 HOLDOUT_SAMPLES="${HOLDOUT_SAMPLES:-100}"
@@ -51,7 +53,21 @@ for root in "${SYNTHETIC_ROOTS[@]}"; do
   }
 done
 NUM_SAMPLES=$((SOURCE_COUNT * SYNTHETIC_SAMPLES_PER_DIR))
-EVAL_DATA_DIR="${EVAL_DATA_DIR:-${SYNTHETIC_ROOTS[0]//[[:space:]]/}}"
+
+if [[ -n "${EVAL_DATA_DIR}" ]]; then
+  [[ -d "${EVAL_DATA_DIR}/images" && -d "${EVAL_DATA_DIR}/texts" ]] || {
+    echo "ERROR: EVAL_DATA_DIR must contain images/ and texts/: ${EVAL_DATA_DIR}" >&2
+    exit 2
+  }
+  for root in "${SYNTHETIC_ROOTS[@]}"; do
+    root="$(readlink -f "${root//[[:space:]]/}")"
+    if [[ "$(readlink -f "${EVAL_DATA_DIR}")" == "${root}" ]]; then
+      echo "ERROR: EVAL_DATA_DIR is one of the training sources: ${root}" >&2
+      echo "Use a separate synthetic evaluation dataset to avoid leakage." >&2
+      exit 2
+    fi
+  done
+fi
 
 [[ -f "${PROJECT_DIR}/scripts/train/run_connected_subword_direct_job.sh" ]] || {
   echo "ERROR: missing Slurm-side training wrapper." >&2
@@ -60,8 +76,6 @@ EVAL_DATA_DIR="${EVAL_DATA_DIR:-${SYNTHETIC_ROOTS[0]//[[:space:]]/}}"
 
 unset PRETRAINED_WEIGHTS SYNTHETIC_WEIGHTS
 
-# Export the complete experiment configuration before sbatch. The Slurm-side
-# wrapper builds/validates all source sidecars and starts training in one job.
 export PROJECT_DIR JOB_ID DATA_ROOT DATA_DIR SYNTHETIC_DATA_DIRS
 export SYNTHETIC_SAMPLES_PER_DIR SYNTHETIC_REQUIRE_FULL_PER_DIR
 export HF_HOME NUM_SAMPLES EPOCHS NUM_GPUS EFFECTIVE_GLOBAL_BATCH_SIZE
@@ -94,39 +108,38 @@ TRAIN_JOB_ID="${TRAIN_JOB_RAW%%;*}"
   exit 1
 }
 
-echo "Submitted offline training job: ${TRAIN_JOB_ID}"
-
-# The current synthetic Smith-Waterman evaluator consumes one dataset root. Use
-# the first source as a stable calibration/holdout set unless EVAL_DATA_DIR is
-# explicitly overridden. Training itself uses all four sources.
 WEIGHTS="${PROJECT_DIR}/Weights/${JOB_ID}/model_latest.pth"
-EVAL_OUTPUT="$(
-  WEIGHTS="${WEIGHTS}" \
-  DATA_DIR="${EVAL_DATA_DIR}" \
-  RUN_TAG="${JOB_ID}_calibrated_holdout" \
-  THRESHOLDS="${THRESHOLDS}" \
-  CALIBRATION_START_INDEX="${CALIBRATION_START_INDEX}" \
-  CALIBRATION_SAMPLES="${CALIBRATION_SAMPLES}" \
-  HOLDOUT_START_INDEX="${HOLDOUT_START_INDEX}" \
-  HOLDOUT_SAMPLES="${HOLDOUT_SAMPLES}" \
-  DEPENDENCY_JOB_ID="${TRAIN_JOB_ID}" \
-  EVAL_JOB_NAME="eval_${JOB_ID}" \
-  bash Evaluation/evaluate_connected_subword_direct_synthetic.sh
-)"
-printf '%s\n' "${EVAL_OUTPUT}"
-
-EVAL_JOB_ID="$(awk '/^[0-9]+(;[^[:space:]]+)?$/ {sub(/;.*/, "", $1); print $1}' <<< "${EVAL_OUTPUT}" | tail -1)"
+EVAL_JOB_ID=""
+RESULTS_PATH="not scheduled"
+if [[ -n "${EVAL_DATA_DIR}" ]]; then
+  EVAL_OUTPUT="$(
+    WEIGHTS="${WEIGHTS}" \
+    DATA_DIR="${EVAL_DATA_DIR}" \
+    RUN_TAG="${JOB_ID}_calibrated_holdout" \
+    THRESHOLDS="${THRESHOLDS}" \
+    CALIBRATION_START_INDEX="${CALIBRATION_START_INDEX}" \
+    CALIBRATION_SAMPLES="${CALIBRATION_SAMPLES}" \
+    HOLDOUT_START_INDEX="${HOLDOUT_START_INDEX}" \
+    HOLDOUT_SAMPLES="${HOLDOUT_SAMPLES}" \
+    DEPENDENCY_JOB_ID="${TRAIN_JOB_ID}" \
+    EVAL_JOB_NAME="eval_${JOB_ID}" \
+    bash Evaluation/evaluate_connected_subword_direct_synthetic.sh
+  )"
+  printf '%s\n' "${EVAL_OUTPUT}"
+  EVAL_JOB_ID="$(awk '/^[0-9]+(;[^[:space:]]+)?$/ {sub(/;.*/, "", $1); print $1}' <<< "${EVAL_OUTPUT}" | tail -1)"
+  RESULTS_PATH="${PROJECT_DIR}/Results/Evaluation/CNN_BiLSTM_ConnectedSubword_Direct/Synthetic/${JOB_ID}_calibrated_holdout"
+fi
 
 cat <<EOF
-Submitted fully offline direct connected-subword pipeline:
+Submitted fully offline direct connected-subword training:
   training job       = ${TRAIN_JOB_ID}
-  evaluation job     = ${EVAL_JOB_ID:-unknown} (afterok:${TRAIN_JOB_ID})
   sources            = ${SYNTHETIC_DATA_DIRS}
   samples per source = ${SYNTHETIC_SAMPLES_PER_DIR}
   total samples      = ${NUM_SAMPLES}
   augmentation       = box-safe appearance/stroke
-  evaluation source  = ${EVAL_DATA_DIR}
   checkpoint         = ${WEIGHTS}
   training log       = ${PROJECT_DIR}/out/${SLURM_JOB_NAME}_${TRAIN_JOB_ID}.out
-  results            = ${PROJECT_DIR}/Results/Evaluation/CNN_BiLSTM_ConnectedSubword_Direct/Synthetic/${JOB_ID}_calibrated_holdout
+  evaluation job     = ${EVAL_JOB_ID:-not scheduled}
+  evaluation source  = ${EVAL_DATA_DIR:-not supplied}
+  results            = ${RESULTS_PATH}
 EOF
