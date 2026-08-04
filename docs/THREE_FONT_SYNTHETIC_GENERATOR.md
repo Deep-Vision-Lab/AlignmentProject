@@ -56,6 +56,17 @@ OUTPUT_DIR=DataSet/Synthetic_Arabic_Three_Font_Preview \
 bash scripts/data/run_generate_three_font_synthetic.sh --skip-matrices
 ```
 
+Preview the generated images together with the exact transcripts, segment roles, and fonts:
+
+```bash
+python scripts/data/preview_three_font_synthetic_dataset.py \
+  --data-dir DataSet/Synthetic_Arabic_Three_Font_Preview \
+  --samples 10 \
+  --show
+```
+
+The preview prints the exact text to the terminal and saves `three_font_exact_text_preview.png` inside the generated dataset directory.
+
 ## Why transcript matching is better
 
 The older training-time augmentation cropped image fractions and estimated the corresponding text from proportional character spans. Arabic glyph widths, joining forms, and whitespace make that estimate unreliable.
