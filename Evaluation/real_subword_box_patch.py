@@ -8,13 +8,54 @@ from Evaluation.real_subword_bbox_json_priority import install as install_bbox_j
 from Evaluation.real_subword_box_geometry import load_line_annotations
 
 
-# The ArabicDataset also contains unrelated ``debug/bboxes.json`` files. Install
-# canonical bbox.json discovery before quantitative metrics resolve annotations.
+# Install JSON discovery before quantitative metrics resolve annotations.
 install_bbox_json_priority()
 
-# The metric module resolves this global at evaluation time. Replace its simple
-# fallback with bbox.json loading plus the exact crop/resize/pad mapping.
+# The metric module resolves this global at evaluation time. Replace its legacy
+# workbook fallback with bbox JSON loading plus the exact crop/resize/pad mapping.
 box_metrics.load_line_annotations = load_line_annotations
+
+
+_PAIR_UNDEFINED_FIELDS = (
+    "pair_box_precision",
+    "pair_box_recall",
+    "pair_box_f1",
+    "pair_box_specificity",
+    "pair_box_accuracy",
+    "mean_box_interval_iou",
+    "mean_box_pixel_iou",
+    "mean_region_iou",
+)
+_LINE_UNDEFINED_SUFFIXES = (
+    "box_precision",
+    "box_recall",
+    "box_f1",
+    "box_specificity",
+    "box_accuracy",
+    "mean_box_mask_coverage",
+    "shared_box_mask_coverage",
+    "box_interval_iou",
+    "box_pixel_precision",
+    "box_pixel_recall",
+    "box_pixel_f1",
+    "box_pixel_iou",
+    "region_iou",
+    "start_error_px",
+    "end_error_px",
+)
+_SUMMARY_UNDEFINED_FIELDS = (
+    "box_micro_precision",
+    "box_micro_recall",
+    "box_micro_f1",
+    "box_micro_specificity",
+    "box_micro_accuracy",
+    "box_macro_precision",
+    "box_macro_recall",
+    "box_macro_f1",
+    "mean_box_interval_iou",
+    "mean_box_pixel_iou",
+    "mean_shared_subword_matches",
+)
 
 
 def _flag(name: str, default: bool) -> bool:
@@ -22,6 +63,28 @@ def _flag(name: str, default: bool) -> bool:
     if value is None:
         return bool(default)
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sanitize_unavailable_metrics(metrics: dict) -> dict:
+    """Use null, not a vacuous perfect score, when GT cannot be evaluated."""
+    status = str(metrics.get("real_box_status") or "")
+    if metrics.get("real_box_evaluated") and status == "ok":
+        return metrics
+
+    for field in _PAIR_UNDEFINED_FIELDS:
+        metrics[field] = None
+    for prefix in ("line1", "line2"):
+        for suffix in _LINE_UNDEFINED_SUFFIXES:
+            metrics[f"{prefix}_{suffix}"] = None
+    return metrics
+
+
+def _annotation_detail(row: dict, prefix: str) -> str:
+    return (
+        f"{prefix}: status={row.get(prefix + '_box_annotation_status')} "
+        f"source={row.get(prefix + '_box_annotation_path') or '<none>'} "
+        f"error={row.get(prefix + '_box_annotation_error') or '<none>'}"
+    )
 
 
 def install(sw_runner_module) -> None:
@@ -50,11 +113,12 @@ def install(sw_runner_module) -> None:
         except FileNotFoundError as exc:
             if _flag("REAL_REQUIRE_BOX_ANNOTATIONS", False):
                 raise SystemExit(
-                    "Strict bbox.json evaluation aborted on the first unresolved "
+                    "Strict bbox JSON evaluation aborted on the first unresolved "
                     f"annotation: {exc}"
                 ) from exc
             raise
-        row.update(metrics)
+
+        row.update(_sanitize_unavailable_metrics(metrics))
         print(
             f"[{row.get('index')}] real-box status={row.get('real_box_status')} "
             f"shared={row.get('shared_subword_matches')} "
@@ -64,11 +128,34 @@ def install(sw_runner_module) -> None:
             f"interval_iou={row.get('mean_box_interval_iou')}",
             flush=True,
         )
+        if row.get("real_box_status") != "ok":
+            print(
+                f"[{row.get('index')}] bbox annotation detail: "
+                f"{_annotation_detail(row, 'line1')}; "
+                f"{_annotation_detail(row, 'line2')}",
+                flush=True,
+            )
         return row
 
     def aggregate(rows):
         summary = original_aggregate(rows)
-        summary.update(box_metrics.aggregate(rows))
+
+        # Only fully resolved, shared-subword annotation rows may contribute to
+        # quantitative localization scores. Keep all rows for status accounting.
+        aggregate_rows = []
+        for row in rows:
+            if str(row.get("real_box_status") or "") == "ok":
+                aggregate_rows.append(row)
+            else:
+                unavailable = dict(row)
+                unavailable["real_box_evaluated"] = False
+                aggregate_rows.append(unavailable)
+
+        box_summary = box_metrics.aggregate(aggregate_rows)
+        if int(box_summary.get("real_box_samples") or 0) == 0:
+            for field in _SUMMARY_UNDEFINED_FIELDS:
+                box_summary[field] = None
+        summary.update(box_summary)
         return summary
 
     def batch_fieldnames():
