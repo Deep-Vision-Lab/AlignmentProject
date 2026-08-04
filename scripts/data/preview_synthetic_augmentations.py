@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Save PNG previews for dense aligned and unaligned augmentation modes."""
+"""Save image-and-text previews for dense aligned/unaligned augmentations."""
 from __future__ import annotations
 
 import argparse
@@ -7,6 +7,7 @@ import csv
 import os
 import random
 import sys
+import textwrap
 from pathlib import Path
 
 from PIL import Image
@@ -52,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Preview full-line, two-region, cross-injection, and "
-            "aligned-plus-unaligned augmentations."
+            "aligned-plus-unaligned augmentations together with their exact text."
         )
     )
     parser.add_argument("--data-root", default="DataSet")
@@ -64,6 +65,12 @@ def parse_args() -> argparse.Namespace:
         default="Results/AugmentationPreview_Arabic_1_3",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--text-wrap-width",
+        type=int,
+        default=42,
+        help="Maximum characters per displayed transcript line.",
+    )
     parser.add_argument("--show", action="store_true")
     return parser.parse_args()
 
@@ -84,8 +91,67 @@ def _load(record):
     return (image1, image2), (text1, text2)
 
 
-def _safe_text(text):
+def _safe_text(text) -> str:
     return "" if text is None else " ".join(text.strip().split())
+
+
+def _display_text(text, width: int) -> str:
+    """Return a wrapped display string while preserving exact text elsewhere."""
+    exact = _safe_text(text)
+    if not exact:
+        return "<EMPTY>"
+
+    wrapped = textwrap.wrap(
+        exact,
+        width=max(8, int(width)),
+        break_long_words=True,
+        break_on_hyphens=False,
+    ) or [exact]
+
+    # These packages are optional. When installed they improve Arabic shaping
+    # in Matplotlib; sidecar files and TSV rows always keep the exact raw text.
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+
+        return "\n".join(
+            get_display(arabic_reshaper.reshape(line))
+            for line in wrapped
+        )
+    except ImportError:
+        return "\n".join(wrapped)
+
+
+def _write_text_sidecar(
+    path: Path,
+    *,
+    exact_text: str,
+    folder_name: str,
+    target_sample: int,
+    donor_folder: str,
+    donor_sample: int,
+    preview_label: str,
+    actual_mode: str,
+    line_number: int,
+) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                f"target_folder: {folder_name}",
+                f"target_sample: {target_sample}",
+                f"donor_folder: {donor_folder}",
+                f"donor_sample: {donor_sample}",
+                f"preview_label: {preview_label}",
+                f"actual_mode: {actual_mode}",
+                f"line_number: {line_number}",
+                "",
+                "exact_text:",
+                exact_text,
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
 
 def main() -> None:
@@ -95,6 +161,8 @@ def main() -> None:
         raise ValueError("--samples-per-folder must be positive")
     if args.random_copies < 0:
         raise ValueError("--random-copies cannot be negative")
+    if args.text_wrap_width <= 0:
+        raise ValueError("--text-wrap-width must be positive")
 
     if not args.show:
         import matplotlib
@@ -152,7 +220,10 @@ def main() -> None:
         figure, axes = plt.subplots(
             len(targets) * paired_rows,
             len(columns),
-            figsize=(4.2 * len(columns), 2.25 * len(targets) * paired_rows),
+            figsize=(
+                4.6 * len(columns),
+                3.4 * len(targets) * paired_rows,
+            ),
             squeeze=False,
         )
         folder_output = output_root / folder.name
@@ -203,23 +274,60 @@ def main() -> None:
 
             for column, label in enumerate(columns):
                 result = rendered[label]
-                for line_number, key in ((1, "image1"), (2, "image2")):
-                    image = result[key]
+                for line_number, image_key, text_key in (
+                    (1, "image1", "text1"),
+                    (2, "image2", "text2"),
+                ):
+                    image = result[image_key]
                     if image is None:
                         continue
-                    filename = (
+
+                    exact_text = _safe_text(result[text_key])
+                    stem = (
                         f"sample_{target_record.sample_index:05d}_"
-                        f"{label}_line{line_number}.png"
+                        f"{label}_line{line_number}"
                     )
-                    image.save(folder_output / filename)
+                    image_path = folder_output / f"{stem}.png"
+                    text_path = folder_output / f"{stem}.txt"
+                    image.save(image_path)
+                    _write_text_sidecar(
+                        text_path,
+                        exact_text=exact_text,
+                        folder_name=target_record.folder_name,
+                        target_sample=target_record.sample_index,
+                        donor_folder=donor_record.folder_name,
+                        donor_sample=donor_record.sample_index,
+                        preview_label=label,
+                        actual_mode=str(result["mode"]),
+                        line_number=line_number,
+                    )
+
                     row = offset * paired_rows + line_number - 1
-                    axes[row, column].imshow(image)
-                    axes[row, column].set_title(
-                        f"{label}\nline {line_number}"
-                        if line_number == 1
-                        else f"line {line_number}"
+                    axis = axes[row, column]
+                    axis.imshow(image)
+                    axis.set_title(
+                        f"{label}\nmode={result['mode']} | line {line_number}",
+                        fontsize=9,
                     )
-                    axes[row, column].axis("off")
+                    axis.text(
+                        0.5,
+                        -0.12,
+                        _display_text(exact_text, args.text_wrap_width),
+                        transform=axis.transAxes,
+                        ha="center",
+                        va="top",
+                        fontsize=8,
+                        wrap=True,
+                    )
+                    axis.axis("off")
+
+                    print(
+                        f"[{target_record.folder_name}] "
+                        f"sample={target_record.sample_index} "
+                        f"label={label} mode={result['mode']} "
+                        f"line={line_number} text={exact_text}",
+                        flush=True,
+                    )
 
                 manifest.append(
                     {
@@ -235,15 +343,15 @@ def main() -> None:
                 )
 
         figure.suptitle(
-            f"{folder.name}: dense aligned and unaligned augmentation",
+            f"{folder.name}: images with exact augmented transcripts",
             fontsize=14,
         )
-        figure.tight_layout()
+        figure.tight_layout(rect=(0, 0, 1, 0.975), h_pad=3.2)
         grid_path = (
             output_root
             / f"{folder.name}_all_augmentation_modes.png"
         )
-        figure.savefig(grid_path, dpi=160, bbox_inches="tight")
+        figure.savefig(grid_path, dpi=180, bbox_inches="tight")
         print(f"Saved {grid_path}", flush=True)
         if args.show:
             plt.show()
@@ -259,6 +367,11 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(manifest)
     print(f"Saved {manifest_path}", flush=True)
+    print(
+        "Each PNG now has a same-name UTF-8 .txt sidecar containing the exact "
+        "generated transcript and augmentation metadata.",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
