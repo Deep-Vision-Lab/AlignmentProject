@@ -5,6 +5,11 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from pathlib import Path
+import sys
+
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
 
 from connected_subword_mode import connected_units
 from RealDataSet import ArabicManifestLinePairDataset
@@ -79,13 +84,12 @@ def main() -> None:
         f"offending_lines={len(offenders)} max_required={rows[0]['required'] if rows else 0}"
     )
     if rows:
-        ordered = sorted(counts)
+        values = sorted(item["required"] for item in rows)
         for percentile in (50, 90, 95, 99, 100):
             position = min(
-                len(rows) - 1,
-                max(0, int(round((percentile / 100.0) * (len(rows) - 1)))),
+                len(values) - 1,
+                max(0, int(round((percentile / 100.0) * (len(values) - 1)))),
             )
-            values = sorted(item["required"] for item in rows)
             print(f"p{percentile}_required={values[position]}")
 
     for item in offenders[: max(0, args.top)]:
