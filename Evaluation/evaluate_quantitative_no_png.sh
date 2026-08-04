@@ -51,6 +51,7 @@ REAL_BOX_COORDINATE_SPACE="${REAL_BOX_COORDINATE_SPACE:-original}"
 REAL_BOX_BBOX_FORMAT="${REAL_BOX_BBOX_FORMAT:-auto}"
 REAL_BOX_JSON="${REAL_BOX_JSON:-}"
 REAL_BOX_ANNOTATIONS_ROOT="${REAL_BOX_ANNOTATIONS_ROOT:-${REAL_DATA_DIR}}"
+REAL_BOX_ALLOW_ALTERNATE_JSON_NAMES="${REAL_BOX_ALLOW_ALTERNATE_JSON_NAMES:-0}"
 REAL_BOX_JSON_COUNT="${REAL_BOX_JSON_COUNT:-deferred-to-slurm-job}"
 
 [[ -d "${REAL_DATA_DIR}" ]] || {
@@ -90,6 +91,7 @@ print_config() {
     "  save PNG     = no" \
     "  box scoring  = ${REAL_BOX_EVAL}" \
     "  bbox source  = ${REAL_BOX_JSON:-${REAL_BOX_ANNOTATIONS_ROOT}}" \
+    "  bbox name    = bbox.json" \
     "  bbox files   = ${REAL_BOX_JSON_COUNT}" \
     "  results root = ${RESULTS_ROOT}"
 }
@@ -121,15 +123,25 @@ BOX_SOURCE="${REAL_BOX_JSON:-${REAL_BOX_ANNOTATIONS_ROOT}}"
   exit 2
 }
 if [[ -f "${BOX_SOURCE}" ]]; then
+  if [[ "$(basename "${BOX_SOURCE}")" != "bbox.json" && "${REAL_BOX_ALLOW_ALTERNATE_JSON_NAMES}" != "1" ]]; then
+    echo "ERROR: REAL_BOX_JSON must point to bbox.json, not $(basename "${BOX_SOURCE}")." >&2
+    exit 2
+  fi
   REAL_BOX_JSON_COUNT=1
 else
-  REAL_BOX_JSON_COUNT="$(find "${BOX_SOURCE}" -type f \
-    \( -iname 'bbox.json' -o -iname 'bboxes.json' -o -iname 'bounding_boxes.json' \) \
-    -print 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ "${REAL_BOX_ALLOW_ALTERNATE_JSON_NAMES}" == "1" ]]; then
+    REAL_BOX_JSON_COUNT="$(find "${BOX_SOURCE}" -type f \
+      \( -iname 'bbox.json' -o -iname 'bboxes.json' -o -iname 'bounding_boxes.json' \) \
+      -print 2>/dev/null | wc -l | tr -d ' ')"
+  else
+    REAL_BOX_JSON_COUNT="$(find "${BOX_SOURCE}" -type f -iname 'bbox.json' \
+      -print 2>/dev/null | wc -l | tr -d ' ')"
+  fi
 fi
 export REAL_BOX_JSON_COUNT
 if [[ "${REAL_BOX_JSON_COUNT}" -eq 0 ]]; then
-  echo "ERROR: no bbox.json annotation files were found under ${BOX_SOURCE}" >&2
+  echo "ERROR: no canonical bbox.json annotation files were found under ${BOX_SOURCE}" >&2
+  echo "The evaluator intentionally ignores unrelated debug/bboxes.json files." >&2
   exit 2
 fi
 
@@ -152,7 +164,7 @@ export SW_BLANK_BLANK_SCORE="${SW_BLANK_BLANK_SCORE:--0.20}"
 export SW_BLANK_INK_SCORE="${SW_BLANK_INK_SCORE:--0.50}"
 export REAL_BOX_EVAL REAL_REQUIRE_BOX_ANNOTATIONS REAL_BOX_IN_MASK_RULE
 export REAL_BOX_MIN_COVERAGE REAL_BOX_COORDINATE_SPACE REAL_BOX_BBOX_FORMAT
-export REAL_BOX_JSON REAL_BOX_ANNOTATIONS_ROOT
+export REAL_BOX_JSON REAL_BOX_ANNOTATIONS_ROOT REAL_BOX_ALLOW_ALTERNATE_JSON_NAMES
 
 mkdir -p "${RESULTS_ROOT}"
 print_config
