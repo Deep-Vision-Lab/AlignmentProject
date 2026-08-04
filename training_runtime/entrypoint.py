@@ -15,6 +15,24 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
+# ``run_connected_subword_finetune.sh`` intentionally uses a global span cap
+# above the legacy character-span limit of three windows. ``run_real_finetune.sh``
+# is shared with character-span experiments and currently resets the generic
+# safety flag before this entrypoint starts. Restore the connected-subword
+# permission before importing ``train_optimized`` because its configuration
+# validator runs at import time. The connected-subword loss still applies its
+# own per-unit limits in ``connected_subword_mode.py``; no loss term is changed.
+_tokenization_mode = os.environ.get(
+    "SPAN_TOKENIZATION_MODE", "character_span"
+).strip().lower()
+if _tokenization_mode in {
+    "connected_subword",
+    "connected-subword",
+    "joining_run",
+    "joining-run",
+} and int(os.environ.get("MAX_WINDOWS_PER_SPAN", "3")) > 3:
+    os.environ["ALLOW_UNSAFE_SPAN_CONFIG"] = "1"
+
 from scripts.train import train_optimized as optimized
 
 import model_backend
