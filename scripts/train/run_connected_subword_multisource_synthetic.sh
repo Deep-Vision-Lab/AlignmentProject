@@ -28,7 +28,7 @@ DEFAULT_DIRS=(
 )
 
 if [[ -z "${SYNTHETIC_DATA_DIRS:-}" ]]; then
-  SYNTHETIC_DATA_DIRS="$(IFS=,; printf '%s' "${DEFAULT_DIRS[*]}")"
+  SYNTHETIC_DATA_DIRS="${DEFAULT_DIRS[0]},${DEFAULT_DIRS[1]},${DEFAULT_DIRS[2]},${DEFAULT_DIRS[3]}"
 fi
 
 IFS=',' read -r -a SOURCE_DIRS <<< "${SYNTHETIC_DATA_DIRS}"
