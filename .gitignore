@@ -40,3 +40,14 @@ TestResults/*.txt
 
 #ablations
 Experiments/Phase1_Ablation/out/*.out
+
+
+# Obsidian local state
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache/
+.obsidian/plugins/obsidian-git/data.json
+.trash/
+
+# macOS
+.DS_Store
