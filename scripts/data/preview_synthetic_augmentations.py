@@ -1,229 +1,278 @@
 #!/usr/bin/env python3
-"""Save original-versus-augmented PNG previews for all synthetic sources.
+"""Save PNG previews for the lightweight synthetic augmentation modes.
 
-Examples
---------
-Direct no-DTW, geometry-preserving augmentation::
-
-    python scripts/data/preview_synthetic_augmentations.py \
-      --data-root DataSet --profile box-safe
-
-Span-DTW zero-shot augmentation::
-
-    python scripts/data/preview_synthetic_augmentations.py \
-      --data-root DataSet --profile zero-shot
+The output includes original paired lines, mild full-line augmentation,
+two separated regions from one line, cross-line donor injection, and optional
+random mixed examples. The script works without a display on HPC nodes.
 """
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import random
-import re
 import sys
 from pathlib import Path
 
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
-from multi_synthetic_dataloader import (  # noqa: E402
-    BoxSafeSyntheticAugment,
-    resolve_synthetic_data_dirs,
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from SyntheticAugmentedDataLoader import (  # noqa: E402
+    SyntheticPairAugmentor,
+    _load_rgb,
+    _make_record,
+    _read_text,
+    _sample_count,
+    resolve_synthetic_folders,
+    synthetic_folder_names,
 )
-from zero_shot_preprocessing import build_preprocessor  # noqa: E402
 
-
-_INDEX_PATTERN = re.compile(r"img1_(\d+)\.png$")
 try:
-    _BILINEAR = Image.Resampling.BILINEAR
+    _RESAMPLE_BILINEAR = Image.Resampling.BILINEAR
 except AttributeError:  # Pillow < 9
-    _BILINEAR = Image.BILINEAR
+    _RESAMPLE_BILINEAR = Image.BILINEAR
+
+
+def _set_lightweight_defaults() -> None:
+    """Match the default training launcher without overriding user choices."""
+    defaults = {
+        "SYNTHETIC_DATASET_FOLDERS": (
+            "Synthetic_Arabic_1,Synthetic_Arabic_2,Synthetic_Arabic_3"
+        ),
+        "SYNTHETIC_AUGMENT_COPIES_PER_SAMPLE": "2",
+        "SYNTHETIC_INJECTION_PROB": "0.50",
+        "SYNTHETIC_TWO_REGION_PROB": "0.35",
+        "SYNTHETIC_SCALE_MIN": "0.90",
+        "SYNTHETIC_SCALE_MAX": "1.00",
+        "SYNTHETIC_TRANSLATE_PCT": "0.04",
+        "SYNTHETIC_CONTRAST": "0.10",
+        "SYNTHETIC_ROTATION_DEGREES": "0",
+        "SYNTHETIC_SHEAR_DEGREES": "0",
+        "SYNTHETIC_BRIGHTNESS": "0",
+        "SYNTHETIC_SHARPNESS": "0",
+        "SYNTHETIC_BLUR_PROB": "0",
+        "SYNTHETIC_NOISE_PROB": "0",
+        "SYNTHETIC_MORPHOLOGY_PROB": "0",
+        "SYNTHETIC_ERASE_PROB": "0",
+    }
+    for name, value in defaults.items():
+        os.environ.setdefault(name, value)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Create contact sheets and full-resolution PNG variants showing the "
-            "actual synthetic training augmentations."
+            "Write PNG previews for mild full-line, two-region, and injection "
+            "augmentations."
         )
     )
     parser.add_argument(
         "--data-root",
-        default=str(ROOT / "DataSet"),
-        help="DataSet directory containing Synthetic_Arabic_1 through _4.",
+        default="DataSet",
+        help="Parent directory of Synthetic_Arabic_1, _2, and _3.",
     )
     parser.add_argument(
-        "--profile",
-        choices=("box-safe", "zero-shot"),
-        default="box-safe",
-        help=(
-            "box-safe preserves renderer subword intervals; zero-shot uses the "
-            "crop/resize/rotate manuscript augmentation used with Span-DTW."
-        ),
+        "--folders",
+        nargs="*",
+        default=None,
+        help="Optional folder-name override.",
     )
-    parser.add_argument("--samples-per-source", type=int, default=2)
-    parser.add_argument("--augmentations", type=int, default=4)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--samples-per-folder", type=int, default=3)
+    parser.add_argument(
+        "--random-copies",
+        type=int,
+        default=2,
+        help="Additional randomly selected augmentation modes per source sample.",
+    )
     parser.add_argument(
         "--output-dir",
-        default=str(ROOT / "Results" / "AugmentationPreview"),
+        default="Results/AugmentationPreview_Arabic_1_3",
     )
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--show",
         action="store_true",
-        help="Open each contact sheet with the operating-system image viewer.",
+        help="Open each comparison grid after saving it.",
     )
     return parser.parse_args()
 
 
-def numeric_image_paths(images_dir: Path) -> list[Path]:
-    indexed = []
-    for path in images_dir.glob("img1_*.png"):
-        match = _INDEX_PATTERN.fullmatch(path.name)
-        if match:
-            indexed.append((int(match.group(1)), path))
-    return [path for _index, path in sorted(indexed)]
+def _load_record(record):
+    image1 = _load_rgb(record.image1_path)
+    text1 = _read_text(record.text1_path)
+    image2 = _load_rgb(record.image2_path) if record.image2_path else None
+    text2 = _read_text(record.text2_path) if record.text2_path else None
+    return (image1, image2), (text1, text2)
 
 
-def seed_everything(seed: int) -> None:
-    random.seed(int(seed))
-    np.random.seed(int(seed) % (2**32 - 1))
-
-
-def label_tile(image: Image.Image, label: str, width=512, height=64) -> Image.Image:
-    resized = image.convert("RGB").resize((width, height), _BILINEAR)
-    label_height = 24
-    tile = Image.new("RGB", (width, height + label_height), "white")
-    tile.paste(resized, (0, label_height))
-    draw = ImageDraw.Draw(tile)
-    font = ImageFont.load_default()
-    draw.text((6, 6), label, fill="black", font=font)
-    return tile
-
-
-def make_contact_sheet(rows: list[list[tuple[str, Image.Image]]]) -> Image.Image:
-    if not rows:
-        raise ValueError("No preview rows were created")
-    tile_width, tile_height = 512, 88
-    columns = max(len(row) for row in rows)
-    sheet = Image.new("RGB", (columns * tile_width, len(rows) * tile_height), "white")
-    for row_index, row in enumerate(rows):
-        for column_index, (label, image) in enumerate(row):
-            sheet.paste(
-                label_tile(image, label, tile_width, tile_height - 24),
-                (column_index * tile_width, row_index * tile_height),
-            )
-    return sheet
-
-
-def box_safe_variants(image: Image.Image, count: int, seed: int):
-    target_size = (1024, 128)
-    original = image.convert("RGB").resize(target_size, _BILINEAR)
-    results = [("original", original)]
-    augmenter = BoxSafeSyntheticAugment()
-    for index in range(count):
-        seed_everything(seed + index)
-        # This matches training: appearance/stroke augmentation first, then the
-        # fixed 1024x128 resize. No crop, rotation, translation, or random scale.
-        augmented = augmenter(image.copy()).resize(target_size, _BILINEAR)
-        results.append((f"augmented_{index + 1}", augmented))
-    return results
-
-
-def zero_shot_variants(image: Image.Image, count: int, seed: int):
-    seed_everything(seed)
-    clean = build_preprocessor("synthetic", training=False)(image.copy())
-    results = [("clean", clean)]
-    for index in range(count):
-        seed_everything(seed + index)
-        augmented = build_preprocessor("synthetic", training=True)(image.copy())
-        results.append((f"augmented_{index + 1}", augmented))
-    return results
-
-
-def save_full_resolution_variants(
-    output_dir: Path,
-    source_name: str,
-    sample_name: str,
-    variants: list[tuple[str, Image.Image]],
-) -> None:
-    sample_dir = output_dir / source_name / sample_name
-    sample_dir.mkdir(parents=True, exist_ok=True)
-    for label, image in variants:
-        image.save(sample_dir / f"{label}.png")
+def _safe_text(text: str | None) -> str:
+    return "" if text is None else " ".join(text.strip().split())
 
 
 def main() -> None:
+    _set_lightweight_defaults()
     args = parse_args()
-    if args.samples_per_source <= 0:
-        raise SystemExit("--samples-per-source must be positive")
-    if args.augmentations <= 0:
-        raise SystemExit("--augmentations must be positive")
+    if args.samples_per_folder <= 0:
+        raise ValueError("--samples-per-folder must be positive.")
+    if args.random_copies < 0:
+        raise ValueError("--random-copies cannot be negative.")
 
-    # Force discovery from the supplied root rather than an unrelated training
-    # environment variable left in the shell.
-    os.environ.pop("SYNTHETIC_DATA_DIRS", None)
-    source_dirs = resolve_synthetic_data_dirs(args.data_root)
-    if len(source_dirs) != 4:
-        raise SystemExit(
-            "Expected four sources Synthetic_Arabic_1 through _4, found: "
-            + ", ".join(str(path) for path in source_dirs)
+    if not args.show:
+        import matplotlib
+
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    names = tuple(args.folders) if args.folders else synthetic_folder_names()
+    _, folders = resolve_synthetic_folders(args.data_root, names)
+    output_root = Path(args.output_dir)
+    output_root.mkdir(parents=True, exist_ok=True)
+    rng = random.Random(args.seed)
+    random.seed(args.seed)
+    augmentor = SyntheticPairAugmentor.from_env()
+
+    records_by_folder = {}
+    for folder in folders:
+        count = _sample_count(folder)
+        if count < args.samples_per_folder:
+            raise ValueError(
+                f"{folder.name} contains {count} samples, fewer than requested "
+                f"{args.samples_per_folder}."
+            )
+        chosen = rng.sample(range(count), args.samples_per_folder)
+        records_by_folder[folder.name] = [_make_record(folder, index) for index in chosen]
+
+    manifest_rows = []
+    fixed_modes = ["original", "full_line", "two_region", "cross_injection"]
+    random_modes = [f"random_{index + 1}" for index in range(args.random_copies)]
+    columns = fixed_modes + random_modes
+
+    for folder_index, folder in enumerate(folders):
+        targets = records_by_folder[folder.name]
+        donor_folder = folders[(folder_index + 1) % len(folders)]
+        donor_pool = records_by_folder[donor_folder.name]
+        rows = len(targets) * (2 if targets[0].paired else 1)
+        figure, axes = plt.subplots(
+            rows,
+            len(columns),
+            figsize=(4.2 * len(columns), 2.25 * rows),
+            squeeze=False,
         )
+        folder_output = output_root / folder.name
+        folder_output.mkdir(parents=True, exist_ok=True)
 
-    output_dir = Path(args.output_dir).expanduser().resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    contact_sheets = []
+        for sample_offset, target_record in enumerate(targets):
+            donor_record = donor_pool[sample_offset % len(donor_pool)]
+            target_images, target_texts = _load_record(target_record)
+            donor_images, donor_texts = _load_record(donor_record)
+            rendered = {}
 
-    for source_index, source_dir in enumerate(source_dirs):
-        paths = numeric_image_paths(source_dir / "images")
-        if len(paths) < args.samples_per_source:
-            raise SystemExit(
-                f"{source_dir} has only {len(paths)} img1 PNG files; "
-                f"{args.samples_per_source} were requested"
+            original_image1 = target_images[0].resize(
+                (augmentor.appearance.width, augmentor.appearance.height),
+                _RESAMPLE_BILINEAR,
             )
-        chooser = random.Random(args.seed + source_index)
-        selected = chooser.sample(paths, args.samples_per_source)
-        rows = []
-        for sample_offset, image_path in enumerate(selected):
-            with Image.open(image_path) as opened:
-                original = opened.convert("RGB")
-            sample_seed = args.seed + source_index * 10000 + sample_offset * 100
-            if args.profile == "box-safe":
-                variants = box_safe_variants(
-                    original, args.augmentations, sample_seed
+            original_image2 = (
+                target_images[1].resize(
+                    (augmentor.appearance.width, augmentor.appearance.height),
+                    _RESAMPLE_BILINEAR,
                 )
-            else:
-                variants = zero_shot_variants(
-                    original, args.augmentations, sample_seed
-                )
-            save_full_resolution_variants(
-                output_dir,
-                source_dir.name,
-                image_path.stem,
-                variants,
+                if target_images[1] is not None
+                else None
             )
-            rows.append(
-                [(f"{image_path.name}: {label}", image) for label, image in variants]
-            )
+            rendered["original"] = {
+                "image1": original_image1,
+                "image2": original_image2,
+                "text1": target_texts[0],
+                "text2": target_texts[1],
+                "mode": "original",
+            }
 
-        sheet = make_contact_sheet(rows)
-        sheet_path = output_dir / f"{source_dir.name}_{args.profile}_preview.png"
-        sheet.save(sheet_path)
-        contact_sheets.append((source_dir.name, sheet_path, sheet))
-        print(f"Saved {sheet_path}")
+            for mode in ("full_line", "two_region", "cross_injection"):
+                rendered[mode] = augmentor.apply(
+                    target_images=target_images,
+                    target_texts=target_texts,
+                    donor_images=donor_images,
+                    donor_texts=donor_texts,
+                    mode=mode,
+                )
+            for label in random_modes:
+                rendered[label] = augmentor.apply(
+                    target_images=target_images,
+                    target_texts=target_texts,
+                    donor_images=donor_images,
+                    donor_texts=donor_texts,
+                    mode=None,
+                )
+
+            for column_index, label in enumerate(columns):
+                result = rendered[label]
+                mode_name = str(result["mode"])
+                for line_number, image_key in ((1, "image1"), (2, "image2")):
+                    image = result[image_key]
+                    if image is None:
+                        continue
+                    filename = (
+                        f"sample_{target_record.sample_index:05d}_"
+                        f"{label}_line{line_number}.png"
+                    )
+                    image.save(folder_output / filename)
+                    row_index = (
+                        sample_offset * (2 if target_record.paired else 1)
+                        + line_number
+                        - 1
+                    )
+                    axes[row_index, column_index].imshow(image)
+                    axes[row_index, column_index].set_title(
+                        f"{label}\nline {line_number}"
+                        if line_number == 1
+                        else f"line {line_number}"
+                    )
+                    axes[row_index, column_index].axis("off")
+
+                manifest_rows.append(
+                    {
+                        "target_folder": target_record.folder_name,
+                        "target_sample": target_record.sample_index,
+                        "donor_folder": donor_record.folder_name,
+                        "donor_sample": donor_record.sample_index,
+                        "preview_label": label,
+                        "actual_mode": mode_name,
+                        "text1": _safe_text(result["text1"]),
+                        "text2": _safe_text(result["text2"]),
+                    }
+                )
+
+        figure.suptitle(
+            f"{folder.name}: original, mild full-line, two regions, and injection",
+            fontsize=14,
+        )
+        figure.tight_layout()
+        grid_path = output_root / f"{folder.name}_all_augmentation_modes.png"
+        figure.savefig(grid_path, dpi=160, bbox_inches="tight")
+        print(f"Saved {grid_path}", flush=True)
         if args.show:
-            sheet.show(title=f"{source_dir.name} {args.profile} augmentation")
+            plt.show()
+        plt.close(figure)
 
-    manifest = output_dir / f"{args.profile}_preview_files.txt"
-    manifest.write_text(
-        "\n".join(f"{name}: {path}" for name, path, _sheet in contact_sheets) + "\n",
-        encoding="utf-8",
+    manifest_path = output_root / "augmentation_manifest.tsv"
+    with manifest_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=list(manifest_rows[0]),
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerows(manifest_rows)
+    print(f"Saved {manifest_path}", flush=True)
+    print(
+        "Each folder contains individual PNGs for every mode and paired line. "
+        "The top-level grids make side-by-side inspection easy.",
+        flush=True,
     )
-    print(f"Full-resolution variants: {output_dir}/Synthetic_Arabic_*/img1_*/")
-    print(f"Preview manifest: {manifest}")
 
 
 if __name__ == "__main__":
