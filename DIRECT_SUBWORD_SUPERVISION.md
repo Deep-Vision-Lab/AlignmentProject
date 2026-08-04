@@ -50,6 +50,28 @@ coordinates.
 `ZERO_SHOT_PROFILE` therefore remains disabled in direct mode. Its geometric
 transformations would invalidate fixed interval coordinates.
 
+## Preview the augmentations
+
+Create contact-sheet PNGs for all four sources before training:
+
+```bash
+python scripts/data/preview_synthetic_augmentations.py \
+  --data-root "$PWD/DataSet" \
+  --profile box-safe \
+  --samples-per-source 2 \
+  --augmentations 4 \
+  --output-dir "$PWD/Results/AugmentationPreview"
+```
+
+The script writes one preview sheet per source and full-resolution variants under:
+
+```text
+Results/AugmentationPreview/Synthetic_Arabic_*/img1_*/
+```
+
+To inspect the geometric zero-shot augmentation used by the Span-DTW experiment
+instead, replace `--profile box-safe` with `--profile zero-shot`.
+
 ## Recommended fully offline train-and-evaluate pipeline
 
 Run from the repository root on the login node. The command submits one Slurm
