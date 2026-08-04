@@ -4,8 +4,13 @@ from __future__ import annotations
 import os
 
 from Evaluation import real_subword_box_metrics as box_metrics
+from Evaluation.real_subword_bbox_json_priority import install as install_bbox_json_priority
 from Evaluation.real_subword_box_geometry import load_line_annotations
 
+
+# The ArabicDataset also contains unrelated ``debug/bboxes.json`` files. Install
+# canonical bbox.json discovery before quantitative metrics resolve annotations.
+install_bbox_json_priority()
 
 # The metric module resolves this global at evaluation time. Replace its simple
 # fallback with bbox.json loading plus the exact crop/resize/pad mapping.
