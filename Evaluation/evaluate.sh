@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Offline real-data quantitative evaluation from Excel subword boxes.
+# Offline legacy quantitative evaluation from bbox.json annotations.
 set -euo pipefail
 set -a
 
@@ -33,8 +33,8 @@ REAL_BOX_EVAL="${REAL_BOX_EVAL:-1}"
 REAL_REQUIRE_BOX_ANNOTATIONS="${REAL_REQUIRE_BOX_ANNOTATIONS:-0}"
 REAL_BOX_IN_MASK_RULE="${REAL_BOX_IN_MASK_RULE:-center}"
 REAL_BOX_MIN_COVERAGE="${REAL_BOX_MIN_COVERAGE:-0.50}"
-REAL_BOX_BBOX_FORMAT="${REAL_BOX_BBOX_FORMAT:-xyxy}"
-REAL_BOX_ANNOTATIONS_ROOT="${REAL_BOX_ANNOTATIONS_ROOT:-}"
+REAL_BOX_BBOX_FORMAT="${REAL_BOX_BBOX_FORMAT:-auto}"
+REAL_BOX_JSON="${REAL_BOX_JSON:-${REAL_DATA_DIR}}"
 RESULTS_ROOT="${RESULTS_ROOT:-${PROJECT_DIR}/Results/Evaluation/${MODEL_TAG}/Real_Boxes/${RUN_TAG}}"
 
 [[ -f "${ARABIC_MANIFEST}" ]] || { echo "ERROR: manifest not found: ${ARABIC_MANIFEST}" >&2; exit 2; }
@@ -47,10 +47,11 @@ CPUS_PER_TASK="${CPUS_PER_TASK:-4}"
 TIME_LIMIT="${TIME_LIMIT:-08:00:00}"
 MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"
 EVAL_JOB_NAME="${EVAL_JOB_NAME:-eval_${MODEL_TAG}_${RUN_TAG}}"
+BBOX_COUNT="${BBOX_COUNT:-deferred-to-slurm-job}"
 
 print_config() {
   printf '%s\n' \
-    "Legacy real Excel-box evaluation" \
+    "Legacy real bbox.json evaluation" \
     "  branch       = $(git branch --show-current)" \
     "  checkpoint   = ${WEIGHTS}" \
     "  manifest     = ${ARABIC_MANIFEST}" \
@@ -58,7 +59,8 @@ print_config() {
     "  labels       = ${LABELS}" \
     "  samples      = ${N_SAMPLES}" \
     "  box rule     = ${REAL_BOX_IN_MASK_RULE}" \
-    "  box root     = ${REAL_BOX_ANNOTATIONS_ROOT:-auto-near-line-image}" \
+    "  bbox source  = ${REAL_BOX_JSON}" \
+    "  bbox files   = ${BBOX_COUNT}" \
     "  results      = ${RESULTS_ROOT}"
 }
 
@@ -82,7 +84,15 @@ fi
 
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
-export REAL_BOX_IN_MASK_RULE REAL_BOX_MIN_COVERAGE REAL_BOX_BBOX_FORMAT
+
+[[ -e "${REAL_BOX_JSON}" ]] || { echo "ERROR: bbox.json source not found: ${REAL_BOX_JSON}" >&2; exit 2; }
+if [[ -f "${REAL_BOX_JSON}" ]]; then
+  BBOX_COUNT=1
+else
+  BBOX_COUNT="$(find "${REAL_BOX_JSON}" -type f \( -iname 'bbox.json' -o -iname 'bboxes.json' -o -iname 'bounding_boxes.json' \) -print 2>/dev/null | wc -l | tr -d ' ')"
+fi
+[[ "${BBOX_COUNT}" -gt 0 ]] || { echo "ERROR: no bbox.json files found under ${REAL_BOX_JSON}" >&2; exit 2; }
+export REAL_BOX_JSON REAL_BOX_IN_MASK_RULE REAL_BOX_MIN_COVERAGE REAL_BOX_BBOX_FORMAT
 
 mkdir -p "${RESULTS_ROOT}"
 print_config
@@ -97,9 +107,9 @@ ARGS=(
   --n-samples "${N_SAMPLES}"
   --threshold "${THRESHOLD}"
   --gap "${GAP}"
-  --annotation-root "${REAL_BOX_ANNOTATIONS_ROOT}"
+  --annotation-root "${REAL_BOX_JSON}"
 )
 if [[ "${REAL_REQUIRE_BOX_ANNOTATIONS}" == "1" ]]; then
   ARGS+=(--require-annotations)
 fi
-python -m Evaluation.eval_real_subword_boxes "${ARGS[@]}"
+python -m Evaluation.eval_real_subword_boxes_json "${ARGS[@]}"
