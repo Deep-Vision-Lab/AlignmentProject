@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Internal branch-aware entrypoint for the optimized trainer.
 
-Users should run ``scripts/train/run_connected_subword_finetune.sh`` on the
-connected-subword experiment branches. ``model_backend.py`` remains the only
-active difference between the CNN+BiLSTM and ViT branches.
+Users should run the branch launchers under ``scripts/train``. The CNN+BiLSTM
+backend remains selected by ``model_backend.py`` while experiment-specific data
+and loss patches are installed here before training begins.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 from scripts.train import train_optimized as optimized
 
+import DataLoader as data_loader
 import model_backend
 from connected_subword_mode import (
     install_connected_subword_mode,
@@ -25,10 +26,12 @@ from connected_subword_mode import (
 from direct_subword_supervision import config as direct_subword_config
 from direct_subword_supervision import install as install_direct_subword_supervision
 from distributed_runtime_guard import install_distributed_runtime_guard
+from multi_synthetic_dataloader import install as install_multi_synthetic_dataloader
 from unified_line_geometry import install_training_geometry
 
 
 _GEOMETRY_CONFIG = install_training_geometry()
+_MULTI_SYNTHETIC_CONFIG = install_multi_synthetic_dataloader(data_loader)
 install_connected_subword_mode()
 install_connected_subword_training(optimized.base)
 
@@ -44,6 +47,7 @@ def _branch_model_config(stride, args):
     config = _original_model_config(stride, args)
     config.update(_GEOMETRY_CONFIG)
     config.update(model_backend.visual_model_config())
+    config.update(_MULTI_SYNTHETIC_CONFIG)
     config.update(_DIRECT_SUBWORD_CONFIG or direct_subword_config())
     config.update(
         {
