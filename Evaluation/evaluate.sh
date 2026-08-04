@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# The only public real-data evaluation command.
-# Run from the login node with:
-#   WEIGHTS=Weights/<job_id>/model_best.pth bash Evaluation/evaluate.sh
+# Canonical real-data evaluation using bbox.json quantitative annotations.
 set -euo pipefail
 set -a
 
@@ -50,14 +48,18 @@ GAP="${GAP:--0.30}"
 HEATMAP_SOURCE="${HEATMAP_SOURCE:-dp-score}"
 RESULTS_ROOT="${RESULTS_ROOT:-${PROJECT_DIR}/Results/Evaluation/${MODEL_TAG}/Real_Experiments/${RUN_TAG}}"
 
-# Real quantitative localization from the per-subword Excel annotations.
+# Object-level quantitative localization from bbox.json.
 REAL_BOX_EVAL="${REAL_BOX_EVAL:-1}"
 REAL_REQUIRE_BOX_ANNOTATIONS="${REAL_REQUIRE_BOX_ANNOTATIONS:-0}"
 REAL_BOX_IN_MASK_RULE="${REAL_BOX_IN_MASK_RULE:-center}"
 REAL_BOX_MIN_COVERAGE="${REAL_BOX_MIN_COVERAGE:-0.50}"
 REAL_BOX_COORDINATE_SPACE="${REAL_BOX_COORDINATE_SPACE:-original}"
-REAL_BOX_BBOX_FORMAT="${REAL_BOX_BBOX_FORMAT:-xyxy}"
-REAL_BOX_ANNOTATIONS_ROOT="${REAL_BOX_ANNOTATIONS_ROOT:-}"
+REAL_BOX_BBOX_FORMAT="${REAL_BOX_BBOX_FORMAT:-auto}"
+# REAL_BOX_JSON may point to one global bbox.json or a directory containing
+# per-page/per-side bbox.json files. The root fallback is the real dataset.
+REAL_BOX_JSON="${REAL_BOX_JSON:-}"
+REAL_BOX_ANNOTATIONS_ROOT="${REAL_BOX_ANNOTATIONS_ROOT:-${REAL_DATA_DIR}}"
+REAL_BOX_JSON_COUNT="${REAL_BOX_JSON_COUNT:-deferred-to-slurm-job}"
 
 [[ -d "${REAL_DATA_DIR}" ]] || {
   echo "ERROR: real dataset directory not found: ${REAL_DATA_DIR}" >&2
@@ -86,7 +88,7 @@ EVAL_JOB_NAME="${EVAL_JOB_NAME:-eval_${MODEL_TAG}_${RUN_TAG}}"
 
 print_config() {
   printf '%s\n' \
-    "Canonical real evaluation" \
+    "Canonical real bbox.json evaluation" \
     "  branch       = $(git branch --show-current)" \
     "  model        = ${MODEL_TAG}" \
     "  run          = ${RUN_TAG}" \
@@ -96,7 +98,8 @@ print_config() {
     "  samples      = ${N_SAMPLES}" \
     "  box scoring  = ${REAL_BOX_EVAL}" \
     "  box rule     = ${REAL_BOX_IN_MASK_RULE}" \
-    "  box root     = ${REAL_BOX_ANNOTATIONS_ROOT:-auto-near-line-image}" \
+    "  bbox source  = ${REAL_BOX_JSON:-${REAL_BOX_ANNOTATIONS_ROOT}}" \
+    "  bbox files   = ${REAL_BOX_JSON_COUNT}" \
     "  results root = ${RESULTS_ROOT}"
 }
 
@@ -121,6 +124,32 @@ fi
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 
+if [[ "${REAL_BOX_EVAL}" == "1" || "${REAL_BOX_EVAL,,}" == "true" ]]; then
+  BOX_SOURCE="${REAL_BOX_JSON:-${REAL_BOX_ANNOTATIONS_ROOT}}"
+  [[ -e "${BOX_SOURCE}" ]] || {
+    echo "ERROR: bbox.json source does not exist: ${BOX_SOURCE}" >&2
+    exit 2
+  }
+  if [[ -f "${BOX_SOURCE}" ]]; then
+    [[ "$(basename "${BOX_SOURCE}")" =~ ^(bbox|bboxes|bounding_boxes)\.json$ ]] || {
+      echo "ERROR: REAL_BOX_JSON must point to bbox.json, bboxes.json, or bounding_boxes.json" >&2
+      exit 2
+    }
+    REAL_BOX_JSON_COUNT=1
+  else
+    REAL_BOX_JSON_COUNT="$(find "${BOX_SOURCE}" -type f \
+      \( -iname 'bbox.json' -o -iname 'bboxes.json' -o -iname 'bounding_boxes.json' \) \
+      -print 2>/dev/null | wc -l | tr -d ' ')"
+  fi
+  export REAL_BOX_JSON_COUNT
+  if [[ "${REAL_BOX_JSON_COUNT}" -eq 0 ]]; then
+    echo "ERROR: no bbox.json annotation files were found under:" >&2
+    echo "  ${BOX_SOURCE}" >&2
+    echo "Set REAL_BOX_JSON to the global bbox.json file or its containing directory." >&2
+    exit 2
+  fi
+fi
+
 # Keep evaluation preprocessing identical to training. Model window/stride and
 # backend are reconstructed from the checkpoint configuration.
 export LINE_HEIGHT="${LINE_HEIGHT:-128}"
@@ -142,7 +171,7 @@ export SW_BLANK_BLANK_SCORE="${SW_BLANK_BLANK_SCORE:--0.20}"
 export SW_BLANK_INK_SCORE="${SW_BLANK_INK_SCORE:--0.50}"
 export REAL_BOX_EVAL REAL_REQUIRE_BOX_ANNOTATIONS REAL_BOX_IN_MASK_RULE
 export REAL_BOX_MIN_COVERAGE REAL_BOX_COORDINATE_SPACE REAL_BOX_BBOX_FORMAT
-export REAL_BOX_ANNOTATIONS_ROOT
+export REAL_BOX_JSON REAL_BOX_ANNOTATIONS_ROOT
 
 print_config
 IFS=',' read -r -a LABEL_ARRAY <<< "${LABELS}"

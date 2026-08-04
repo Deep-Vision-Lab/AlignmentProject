@@ -1,27 +1,28 @@
-"""Runtime integration for real Excel subword-box quantitative evaluation."""
+"""Runtime integration for bbox.json subword-box quantitative evaluation."""
 from __future__ import annotations
+
+import os
 
 from Evaluation import real_subword_box_metrics as box_metrics
 from Evaluation.real_subword_box_geometry import load_line_annotations
 
 
+# The metric module resolves this global at evaluation time. Replace its simple
+# fallback with bbox.json loading plus the exact crop/resize/pad mapping.
 box_metrics.load_line_annotations = load_line_annotations
 
 
-def _sheet_matches_line(sheet_name: str, requested_line: int | None) -> bool:
-    rendered = str(sheet_name).strip().lower()
-    if requested_line is None or ("line" not in rendered and "سطر" not in rendered):
-        return True
-    match = box_metrics._LINE_NUMBER.search(rendered)
-    return match is None or int(match.group(1)) == int(requested_line)
-
-
-box_metrics._sheet_matches_line = _sheet_matches_line
+def _flag(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def install(sw_runner_module) -> None:
     if getattr(sw_runner_module, "_real_subword_box_patch_installed", False):
         return
+
     original_evaluate = sw_runner_module.evaluate_sample
     original_aggregate = sw_runner_module.aggregate
     original_fieldnames = sw_runner_module.batch_fieldnames
@@ -33,11 +34,22 @@ def install(sw_runner_module) -> None:
             dataset_type = args[2]
         if str(dataset_type or row.get("dataset_type", "")).lower() != "real":
             return row
+
         models = kwargs.get("models") if "models" in kwargs else (args[0] if args else None)
         pair = kwargs.get("pair") if "pair" in kwargs else (args[1] if len(args) > 1 else None)
         if models is None or pair is None:
             return row
-        row.update(box_metrics.metrics_from_evaluation_row(row, pair, models))
+
+        try:
+            metrics = box_metrics.metrics_from_evaluation_row(row, pair, models)
+        except FileNotFoundError as exc:
+            if _flag("REAL_REQUIRE_BOX_ANNOTATIONS", False):
+                raise SystemExit(
+                    "Strict bbox.json evaluation aborted on the first unresolved "
+                    f"annotation: {exc}"
+                ) from exc
+            raise
+        row.update(metrics)
         print(
             f"[{row.get('index')}] real-box status={row.get('real_box_status')} "
             f"shared={row.get('shared_subword_matches')} "
