@@ -51,10 +51,41 @@ DENOMINATOR=$((NUM_GPUS * GRADIENT_ACCUMULATION_STEPS))
 BATCH_SIZE=$((EFFECTIVE_GLOBAL_BATCH_SIZE / DENOMINATOR))
 
 DATA_DIR="${DATA_DIR:-${PROJECT_DIR}/DataSet/Synthetic_Arabic}"
-[[ -d "${DATA_DIR}/images" && -d "${DATA_DIR}/texts" ]] || {
-  echo "ERROR: synthetic dataset must contain images/ and texts/: ${DATA_DIR}" >&2
-  exit 2
-}
+SYNTHETIC_DATA_DIRS="${SYNTHETIC_DATA_DIRS:-}"
+SYNTHETIC_SAMPLES_PER_DIR="${SYNTHETIC_SAMPLES_PER_DIR:-3000}"
+SYNTHETIC_REQUIRE_FULL_PER_DIR="${SYNTHETIC_REQUIRE_FULL_PER_DIR:-1}"
+if [[ -n "${SYNTHETIC_DATA_DIRS}" ]]; then
+  [[ "${SYNTHETIC_SAMPLES_PER_DIR}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "ERROR: SYNTHETIC_SAMPLES_PER_DIR must be a positive integer." >&2
+    exit 2
+  }
+  IFS=',' read -r -a SYNTHETIC_ROOTS <<< "${SYNTHETIC_DATA_DIRS}"
+  [[ "${#SYNTHETIC_ROOTS[@]}" -gt 0 ]] || {
+    echo "ERROR: SYNTHETIC_DATA_DIRS is empty." >&2
+    exit 2
+  }
+  for root in "${SYNTHETIC_ROOTS[@]}"; do
+    root="${root//[[:space:]]/}"
+    [[ -d "${root}/images" && -d "${root}/texts" ]] || {
+      echo "ERROR: synthetic source must contain images/ and texts/: ${root}" >&2
+      exit 2
+    }
+  done
+  EXPECTED_TOTAL=$((SYNTHETIC_SAMPLES_PER_DIR * ${#SYNTHETIC_ROOTS[@]}))
+  NUM_SAMPLES="${NUM_SAMPLES:-${EXPECTED_TOTAL}}"
+  if (( NUM_SAMPLES != EXPECTED_TOTAL )); then
+    echo "ERROR: NUM_SAMPLES=${NUM_SAMPLES}, but balanced sources require ${EXPECTED_TOTAL}." >&2
+    exit 2
+  fi
+  DATA_DESCRIPTION="${SYNTHETIC_DATA_DIRS}"
+else
+  [[ -d "${DATA_DIR}/images" && -d "${DATA_DIR}/texts" ]] || {
+    echo "ERROR: synthetic dataset must contain images/ and texts/: ${DATA_DIR}" >&2
+    exit 2
+  }
+  NUM_SAMPLES="${NUM_SAMPLES:-8000}"
+  DATA_DESCRIPTION="${DATA_DIR}"
+fi
 
 CONDA_ENV="${CONDA_ENV:-manucripts_align}"
 GPU_RESOURCE="${GPU_RESOURCE:-rtx_4090}"
@@ -79,15 +110,14 @@ SPAN_DTW_TEXT_BUCKET_SIZE="${SPAN_DTW_TEXT_BUCKET_SIZE:-32}"
 SPAN_DTW_MAX_TEXT_BUCKET="${SPAN_DTW_MAX_TEXT_BUCKET:-128}"
 SPAN_DTW_BACKEND="${SPAN_DTW_BACKEND:-jax}"
 ALLOW_UNSAFE_SPAN_CONFIG=1
-PAIR_COMPOSITION_MAX_REGIONS=1
-PAIR_COMPOSITION_MAX_CHARS=24
-USE_IMAGE_PAIR_CONTRASTIVE=0
-IMAGE_TEXT_LOSS_ON_BOTH_LINES=0
+PAIR_COMPOSITION_MAX_REGIONS="${PAIR_COMPOSITION_MAX_REGIONS:-1}"
+PAIR_COMPOSITION_MAX_CHARS="${PAIR_COMPOSITION_MAX_CHARS:-24}"
+USE_IMAGE_PAIR_CONTRASTIVE="${USE_IMAGE_PAIR_CONTRASTIVE:-0}"
+IMAGE_TEXT_LOSS_ON_BOTH_LINES="${IMAGE_TEXT_LOSS_ON_BOTH_LINES:-0}"
 
 WINDOW_SIZE="${WINDOW_SIZE:-32}"
 STRIDE_RATIO="${STRIDE_RATIO:-0.25}"
 WINDOW_OVERLAP_MODE="${WINDOW_OVERLAP_MODE:-custom}"
-NUM_SAMPLES="${NUM_SAMPLES:-8000}"
 EPOCHS="${EPOCHS:-35}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
 NEGATIVE_MODE="${NEGATIVE_MODE:-mixed}"
@@ -101,6 +131,7 @@ USE_WANDB="${USE_WANDB:-1}"
 WANDB_MODE="${WANDB_MODE:-online}"
 WANDB_PROJECT="${WANDB_PROJECT:-alignment-connected-subword-synthetic}"
 ZERO_SHOT_PROFILE="${ZERO_SHOT_PROFILE:-1}"
+SYNTHETIC_MANUSCRIPT_AUGMENT="${SYNTHETIC_MANUSCRIPT_AUGMENT:-1}"
 
 JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-${PROJECT_DIR}/.jax_cache/connected_subword}"
 XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
@@ -145,9 +176,11 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
     "  branch                 = $(git branch --show-current)" \
     "  backend                = ${MODEL_BACKEND}" \
     "  job id                 = ${JOB_ID}" \
-    "  data                   = ${DATA_DIR}" \
-    "  epochs                 = ${EPOCHS}" \
+    "  data                   = ${DATA_DESCRIPTION}" \
+    "  samples per source     = ${SYNTHETIC_SAMPLES_PER_DIR}" \
     "  synthetic samples      = ${NUM_SAMPLES}" \
+    "  augmentations          = ${SYNTHETIC_MANUSCRIPT_AUGMENT}" \
+    "  epochs                 = ${EPOCHS}" \
     "  effective global batch = ${EFFECTIVE_GLOBAL_BATCH_SIZE}"
   sbatch \
     --job-name="${SLURM_JOB_NAME}" \
