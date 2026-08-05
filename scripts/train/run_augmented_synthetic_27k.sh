@@ -61,19 +61,20 @@ NCCL_ASYNC_ERROR_HANDLING="${NCCL_ASYNC_ERROR_HANDLING:-1}"
 NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 CUDA_DEVICE_ORDER="${CUDA_DEVICE_ORDER:-PCI_BUS_ID}"
 
-printf '%s\n' \
-  "Augmented Arabic synthetic training" \
-  "  branch=${BRANCH_NAME}" \
-  "  dataset=${DATA_DIR}" \
-  "  pairs=${PAIR_COUNT}" \
-  "  samples=${NUM_SAMPLES}" \
-  "  epochs=${EPOCHS}" \
-  "  online augmentation=disabled" \
-  "  NCCL P2P=disabled" \
-  "  job id=${JOB_ID}"
-
 if [[ -f "${PROJECT_DIR}/scripts/train/run_connected_subword_synthetic.sh" ]]; then
   NUM_GPUS="${NUM_GPUS:-2}"
+  printf '%s\n' \
+    "Augmented Arabic synthetic training" \
+    "  branch=${BRANCH_NAME}" \
+    "  dataset=${DATA_DIR}" \
+    "  pairs=${PAIR_COUNT}" \
+    "  samples=${NUM_SAMPLES}" \
+    "  epochs=${EPOCHS}" \
+    "  online augmentation=disabled" \
+    "  NCCL P2P=disabled" \
+    "  GPUs=${NUM_GPUS}" \
+    "  Slurm tasks=1" \
+    "  job id=${JOB_ID}"
   exec bash "${PROJECT_DIR}/scripts/train/run_connected_subword_synthetic.sh"
 fi
 
@@ -99,14 +100,31 @@ TIME_LIMIT="${TIME_LIMIT:-2-00:00:00}"
 MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"
 SLURM_JOB_NAME="${SLURM_JOB_NAME:-${JOB_ID}}"
 
+printf '%s\n' \
+  "Augmented Arabic synthetic training" \
+  "  branch=${BRANCH_NAME}" \
+  "  dataset=${DATA_DIR}" \
+  "  pairs=${PAIR_COUNT}" \
+  "  samples=${NUM_SAMPLES}" \
+  "  epochs=${EPOCHS}" \
+  "  online augmentation=disabled" \
+  "  NCCL P2P=disabled" \
+  "  Slurm request=${NUM_GPUS} ${GPU_RESOURCE} GPU(s), 1 task, ${CPUS_PER_TASK} CPUs, ${MEMORY}" \
+  "  job id=${JOB_ID}"
+
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   sbatch \
     --job-name="${SLURM_JOB_NAME}" \
     --output="${PROJECT_DIR}/out/%x_%J.out" \
+    --error="${PROJECT_DIR}/out/%x_%J.err" \
     --chdir="${PROJECT_DIR}" \
+    --partition="${PARTITION}" \
+    --account="${ACCOUNT}" \
+    --qos="${QOS}" \
     --gpus="${GPU_RESOURCE}:${NUM_GPUS}" \
-    --ntasks=6 \
+    --ntasks=1 \
     --cpus-per-task="${CPUS_PER_TASK}" \
+    --mem="${MEMORY}" \
     --time="${TIME_LIMIT}" \
     --mail-type=ALL \
     --mail-user="${MAIL_USER}" \
@@ -115,8 +133,13 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   exit 0
 fi
 
-if command -v module >/dev/null 2>&1; then module load anaconda || true; fi
-command -v conda >/dev/null 2>&1 || { echo "ERROR: conda is unavailable." >&2; exit 2; }
+if command -v module >/dev/null 2>&1; then
+  module load anaconda || true
+fi
+command -v conda >/dev/null 2>&1 || {
+  echo "ERROR: conda is unavailable." >&2
+  exit 2
+}
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 
@@ -131,9 +154,22 @@ export NCCL_P2P_DISABLE NCCL_SHM_DISABLE NCCL_ASYNC_ERROR_HANDLING NCCL_DEBUG
 export CUDA_DEVICE_ORDER
 
 if [[ "${TRAINING_MODE}" == generic ]]; then
-  TRAIN_ARGS=(train.py --job_id "${JOB_ID}" --dataset_type synthetic --data_dir "${DATA_DIR}" --num_samples "${NUM_SAMPLES}" --epochs "${EPOCHS}" --no-augment)
+  TRAIN_ARGS=(
+    train.py
+    --job_id "${JOB_ID}"
+    --dataset_type synthetic
+    --data_dir "${DATA_DIR}"
+    --num_samples "${NUM_SAMPLES}"
+    --epochs "${EPOCHS}"
+    --no-augment
+  )
   if (( NUM_GPUS > 1 )); then
-    exec torchrun --standalone --nnodes=1 --nproc_per_node="${NUM_GPUS}" --max_restarts=0 "${TRAIN_ARGS[@]}"
+    exec torchrun \
+      --standalone \
+      --nnodes=1 \
+      --nproc_per_node="${NUM_GPUS}" \
+      --max_restarts=0 \
+      "${TRAIN_ARGS[@]}"
   fi
   exec python "${TRAIN_ARGS[@]}"
 fi
