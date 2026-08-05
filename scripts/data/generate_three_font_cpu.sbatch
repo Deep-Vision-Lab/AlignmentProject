@@ -2,11 +2,11 @@
 #SBATCH --job-name=gen_27k_three_font_cpu
 #SBATCH --time=02-00:00:00
 #SBATCH --nodes=1
-#SBATCH --ntasks=1
+#SBATCH --ntasks=6
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --output=out/%x_%J.out
-#SBATCH --error=out/%x_%J.err
+
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ahmedmas@post.bgu.ac.il
 
