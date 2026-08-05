@@ -57,6 +57,43 @@ DATASET_TYPE=synthetic
 SYNTHETIC_MANUSCRIPT_AUGMENT=0
 REAL_AUGMENT=0
 
+# Keep the established two-character span semantics and make the image sequence
+# dense enough for the generator's 85-120-character lines. For width 1024,
+# WINDOW_SIZE=32 and stride 8 produce 125 image windows, so every transcript up
+# to 120 characters is structurally feasible for span-DTW.
+LINE_WIDTH="${LINE_WIDTH:-1024}"
+WINDOW_SIZE="${WINDOW_SIZE:-32}"
+STRIDE_RATIO="${STRIDE_RATIO:-0.25}"
+WINDOW_OVERLAP_MODE="${WINDOW_OVERLAP_MODE:-custom}"
+read -r STRIDE_PIXELS IMAGE_WINDOWS < <(
+  python - "${LINE_WIDTH}" "${WINDOW_SIZE}" "${STRIDE_RATIO}" "${WINDOW_OVERLAP_MODE}" <<'PY'
+import sys
+width = int(sys.argv[1])
+window = int(sys.argv[2])
+ratio = float(sys.argv[3])
+mode = sys.argv[4].strip().lower()
+if width <= 0 or window <= 0 or window > width:
+    raise SystemExit("Invalid line/window geometry")
+if mode == "no_overlap":
+    stride = window
+elif mode == "light_overlap":
+    stride = max(1, window // 2)
+elif mode == "dense_overlap":
+    stride = max(1, window // 4)
+elif mode == "custom":
+    stride = max(1, int(window * ratio))
+else:
+    raise SystemExit(f"Unknown WINDOW_OVERLAP_MODE={mode!r}")
+print(stride, ((width - window) // stride) + 1)
+PY
+)
+EXPECTED_MAX_TEXT_CHARS="${EXPECTED_MAX_TEXT_CHARS:-120}"
+if (( IMAGE_WINDOWS < EXPECTED_MAX_TEXT_CHARS )); then
+  echo "ERROR: image geometry produces ${IMAGE_WINDOWS} windows, fewer than the expected ${EXPECTED_MAX_TEXT_CHARS}-character transcript capacity." >&2
+  echo "Use the default WINDOW_SIZE=32, STRIDE_RATIO=0.25, WINDOW_OVERLAP_MODE=custom." >&2
+  exit 2
+fi
+
 # Selected RTX 4090 pairs on the cluster do not support CUDA peer access.
 NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
 NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
@@ -65,7 +102,7 @@ NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 CUDA_DEVICE_ORDER="${CUDA_DEVICE_ORDER:-PCI_BUS_ID}"
 
 # Connected-subword and stroke-aware branches have a canonical self-submitting
-# launcher. Export the shared dataset and NCCL settings before delegating.
+# launcher. Export the shared dataset, geometry, and NCCL settings before delegating.
 if [[ -f "${PROJECT_DIR}/scripts/train/run_connected_subword_synthetic.sh" ]]; then
   NUM_GPUS="${NUM_GPUS:-2}"
   printf '%s\n' \
@@ -76,6 +113,7 @@ if [[ -f "${PROJECT_DIR}/scripts/train/run_connected_subword_synthetic.sh" ]]; t
     "  samples=${NUM_SAMPLES}" \
     "  epochs=${EPOCHS}" \
     "  online augmentation=disabled" \
+    "  geometry=window ${WINDOW_SIZE}, stride ${STRIDE_PIXELS}, ${IMAGE_WINDOWS} windows" \
     "  NCCL P2P=disabled" \
     "  GPUs=${NUM_GPUS}" \
     "  Slurm tasks=1" \
@@ -113,6 +151,7 @@ printf '%s\n' \
   "  samples=${NUM_SAMPLES}" \
   "  epochs=${EPOCHS}" \
   "  online augmentation=disabled" \
+  "  geometry=window ${WINDOW_SIZE}, stride ${STRIDE_PIXELS}, ${IMAGE_WINDOWS} windows" \
   "  NCCL P2P=disabled" \
   "  Slurm request=${NUM_GPUS} ${GPU_RESOURCE} GPU(s), 1 task, ${CPUS_PER_TASK} CPUs, ${MEMORY}" \
   "  job id=${JOB_ID}"
@@ -133,7 +172,7 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
     --time="${TIME_LIMIT}" \
     --mail-type=ALL \
     --mail-user="${MAIL_USER}" \
-    --export=ALL,PROJECT_DIR="${PROJECT_DIR}",DATA_DIR="${DATA_DIR}",JOB_ID="${JOB_ID}",NUM_SAMPLES="${NUM_SAMPLES}",EPOCHS="${EPOCHS}",NUM_GPUS="${NUM_GPUS}",TRAINING_MODE="${TRAINING_MODE}",SYNTHETIC_MANUSCRIPT_AUGMENT=0,REAL_AUGMENT=0,DATASET_TYPE=synthetic,NCCL_P2P_DISABLE=1,NCCL_SHM_DISABLE=0,NCCL_ASYNC_ERROR_HANDLING=1 \
+    --export=ALL,PROJECT_DIR="${PROJECT_DIR}",DATA_DIR="${DATA_DIR}",JOB_ID="${JOB_ID}",NUM_SAMPLES="${NUM_SAMPLES}",EPOCHS="${EPOCHS}",NUM_GPUS="${NUM_GPUS}",TRAINING_MODE="${TRAINING_MODE}",SYNTHETIC_MANUSCRIPT_AUGMENT=0,REAL_AUGMENT=0,DATASET_TYPE=synthetic,WINDOW_SIZE="${WINDOW_SIZE}",STRIDE_RATIO="${STRIDE_RATIO}",WINDOW_OVERLAP_MODE="${WINDOW_OVERLAP_MODE}",NCCL_P2P_DISABLE=1,NCCL_SHM_DISABLE=0,NCCL_ASYNC_ERROR_HANDLING=1 \
     "${SCRIPT_PATH}"
   exit 0
 fi
@@ -157,6 +196,7 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-8}"
 export NCCL_P2P_DISABLE NCCL_SHM_DISABLE NCCL_ASYNC_ERROR_HANDLING NCCL_DEBUG
 export CUDA_DEVICE_ORDER
+export WINDOW_SIZE STRIDE_RATIO WINDOW_OVERLAP_MODE
 
 if [[ "${TRAINING_MODE}" == generic ]]; then
   TRAIN_ARGS=(
@@ -166,6 +206,9 @@ if [[ "${TRAINING_MODE}" == generic ]]; then
     --data_dir "${DATA_DIR}"
     --num_samples "${NUM_SAMPLES}"
     --epochs "${EPOCHS}"
+    --window_size "${WINDOW_SIZE}"
+    --stride_ratio "${STRIDE_RATIO}"
+    --window_overlap_mode "${WINDOW_OVERLAP_MODE}"
     --no-augment
   )
   if (( NUM_GPUS > 1 )); then
