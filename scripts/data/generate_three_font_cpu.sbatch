@@ -48,7 +48,8 @@ printf '%s\n' \
   "Project:       ${PROJECT_DIR}" \
   "Conda env:     ${CONDA_ENV}" \
   "CPU cores:     ${SLURM_CPUS_PER_TASK:-4}" \
-  "Output:        ${OUTPUT_DIR}"
+  "Output:        ${OUTPUT_DIR}" \
+  "Fonts:         Amiri-Regular.ttf, Arslan_Wessam_B.ttf, DejaVuSans-Bold.ttf"
 
 # This is a CPU-only generation job. No GPU is requested or exposed.
 export CUDA_VISIBLE_DEVICES=""
@@ -84,6 +85,16 @@ then
   exit 2
 fi
 
+for font in \
+  Fonts/Amiri-Regular.ttf \
+  Fonts/Arslan_Wessam_B.ttf \
+  Fonts/DejaVuSans-Bold.ttf; do
+  if [[ ! -f "${font}" ]]; then
+    echo "ERROR: required font is missing: ${PROJECT_DIR}/${font}" >&2
+    exit 2
+  fi
+done
+
 if [[ -d "${OUTPUT_DIR}" ]] \
   && [[ -n "$(find "${OUTPUT_DIR}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
   echo "ERROR: output directory is not empty: ${OUTPUT_DIR}" >&2
@@ -93,6 +104,10 @@ fi
 
 python generateDataArabicThreeFontsCompatible.py \
   --font-dir Fonts \
+  --fonts \
+    Amiri-Regular.ttf \
+    Arslan_Wessam_B.ttf \
+    DejaVuSans-Bold.ttf \
   --font-count 3 \
   --samples-per-font 3000 \
   --output-dir "${OUTPUT_DIR}" \
