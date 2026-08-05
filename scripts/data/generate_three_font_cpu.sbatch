@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=gen_three_font_cpu
-#SBATCH --time=01-00:00:00
+#SBATCH --job-name=gen_27k_three_font_cpu
+#SBATCH --time=02-00:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --output=out/%x_%J.out
+#SBATCH --error=out/%x_%J.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ahmedmas@post.bgu.ac.il
 
@@ -26,8 +27,11 @@ if [[ ! -f "${PROJECT_DIR}/generateDataArabicThreeFontsRandomized.py" ]]; then
 fi
 
 CONDA_ENV="${CONDA_ENV:-manucripts_align}"
-OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_DIR}/DataSet/Synthetic_Arabic_Three_Font_Augmented}"
+SAMPLES_PER_FONT="${SAMPLES_PER_FONT:-9000}"
+OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_DIR}/DataSet/Synthetic_Arabic_Three_Font_Long_Noisy_27000}"
 REQUIREMENTS_FILE="${PROJECT_DIR}/scripts/data/requirements_three_font_generator.txt"
+TOTAL_PAIRS=$((3 * SAMPLES_PER_FONT))
+TOTAL_IMAGES=$((2 * TOTAL_PAIRS))
 
 mkdir -p "${PROJECT_DIR}/out"
 cd "${PROJECT_DIR}"
@@ -41,6 +45,8 @@ printf '%s\n' \
   "Conda env:     ${CONDA_ENV}" \
   "CPU cores:     ${SLURM_CPUS_PER_TASK:-4}" \
   "Output:        ${OUTPUT_DIR}" \
+  "Per font:      ${SAMPLES_PER_FONT} pairs" \
+  "Expected:      ${TOTAL_PAIRS} pairs / ${TOTAL_IMAGES} images" \
   "Text length:   85-120 characters" \
   "Noise:         Gaussian + salt/pepper + optional blur" \
   "Fonts:         randomized from Amiri-Regular.ttf, Arslan_Wessam_B.ttf, DejaVuSans-Bold.ttf" \
@@ -95,7 +101,7 @@ if [[ -d "${OUTPUT_DIR}" ]] \
   exit 2
 fi
 
-SAMPLES_PER_FONT=3000 \
+SAMPLES_PER_FONT="${SAMPLES_PER_FONT}" \
 OUTPUT_DIR="${OUTPUT_DIR}" \
 FONT_SIZE=84 \
 MIN_TEXT_CHARS=85 \
@@ -116,4 +122,6 @@ bash scripts/data/run_generate_three_font_synthetic.sh
 
 printf '%s\n' \
   "Finished:      $(date)" \
-  "Dataset:       ${OUTPUT_DIR}"
+  "Dataset:       ${OUTPUT_DIR}" \
+  "Pairs:         ${TOTAL_PAIRS}" \
+  "Images:        ${TOTAL_IMAGES}"
