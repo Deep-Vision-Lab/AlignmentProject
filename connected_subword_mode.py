@@ -1,13 +1,9 @@
 """Arabic connected-subword tokenization for Span-DTW alignment.
 
-This experimental mode replaces character-span search with a deterministic
-sequence of Arabic joining runs. Each connected run is one semantic text state
-that may consume several consecutive image windows. A learned
-``<SUBWORD_BOUNDARY>`` state is inserted between disconnected runs inside a
-word, while the existing learned ``<SPACE>`` state separates complete words.
-
-The ordinary free ``<BLANK>`` transition is retained for background and unused
-image windows. It is not the same as the explicit subword-boundary state.
+Connected Arabic runs, explicit intra-word boundaries, and spaces form the
+source coordinate system. The encoder exposes variable spans of one or more
+connected units, so a single image window may represent multiple neighboring
+units when the visual sequence is shorter than the structural token sequence.
 """
 from __future__ import annotations
 
@@ -21,9 +17,6 @@ MODE_NAME = "connected_subword"
 BOUNDARY_TOKEN = "<SUBWORD_BOUNDARY>"
 SPACE_TOKEN = "<SPACE>"
 
-# Unicode Joining_Type=Right_Joining letters commonly found in Arabic and
-# Arabic-script manuscript datasets. All other Arabic letters default to
-# Dual_Joining. HAMZA is explicitly non-joining.
 _RIGHT_JOINING = frozenset(
     "اآأؤإدذرزوةٱٲٳٵٶٷڈډڊڋڌڍڎڏڐڑڒړڔڕږژڙۀۃۄۅۆۇۈۉۊۋۍۏےۓە"
 )
@@ -45,6 +38,13 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return int(default)
+
+
 def connected_mode_enabled() -> bool:
     return os.environ.get("SPAN_TOKENIZATION_MODE", "character_span").strip().lower() in {
         MODE_NAME,
@@ -52,6 +52,12 @@ def connected_mode_enabled() -> bool:
         "joining_run",
         "joining-run",
     }
+
+
+def connected_max_units_per_span() -> int:
+    """Maximum connected units a single DTW text span may consume."""
+    fallback = _env_int("MAX_TEXT_SPAN_CHARS", 3)
+    return max(1, _env_int("SPAN_CONNECTED_MAX_UNITS_PER_SPAN", fallback))
 
 
 def _base_count(text: str) -> int:
@@ -96,11 +102,8 @@ def _joining_type(cluster: str) -> str:
 
 
 def _connects(previous_cluster: str, next_cluster: str) -> bool:
-    """Return whether adjacent logical-order clusters share one ink component."""
     previous_type = _joining_type(previous_cluster)
     next_type = _joining_type(next_cluster)
-    # In logical Arabic order, the previous character must join toward its left
-    # (D/C), while the next character must accept a join from its right (D/R/C).
     return previous_type in {"D", "C"} and next_type in {"D", "R", "C"}
 
 
@@ -145,12 +148,53 @@ def render_connected_units(text: str) -> list[str]:
     return rendered
 
 
+def connected_span_slices(
+    units: list[ConnectedUnit], max_units: int | None = None
+) -> list[tuple[int, int]]:
+    """Enumerate variable connected-unit spans without crossing word spaces."""
+    cap = connected_max_units_per_span() if max_units is None else max(1, int(max_units))
+    result: list[tuple[int, int]] = []
+    for start, unit in enumerate(units):
+        if unit.kind == "space":
+            result.append((start, 1))
+            continue
+        for length in range(1, cap + 1):
+            end = start + length
+            if end > len(units):
+                break
+            candidate = units[start:end]
+            if any(item.kind == "space" for item in candidate):
+                break
+            result.append((start, length))
+    return result
+
+
+def minimum_connected_spans(text: str, max_units: int | None = None) -> int:
+    """Return the exact minimum span count under connected-unit span rules."""
+    units = connected_units(text)
+    if not units:
+        return 0
+    slices = connected_span_slices(units, max_units=max_units)
+    by_start: dict[int, list[int]] = {}
+    for start, length in slices:
+        by_start.setdefault(start, []).append(length)
+    inf = len(units) + 1
+    best = [inf] * (len(units) + 1)
+    best[0] = 0
+    for start in range(len(units)):
+        if best[start] >= inf:
+            continue
+        for length in by_start.get(start, []):
+            best[start + length] = min(best[start + length], best[start] + 1)
+    return best[-1]
+
+
 _INSTALLED = False
 _TRAINING_PATCHED = False
 
 
 def install_connected_subword_mode() -> bool:
-    """Patch the current span encoder and transition limits for this experiment."""
+    """Patch the span encoder and per-span window limits for this experiment."""
     global _INSTALLED
     if _INSTALLED or not connected_mode_enabled():
         return _INSTALLED
@@ -187,51 +231,119 @@ def install_connected_subword_mode() -> bool:
         del use_cache
         prepared = [self._prepare_text(text) for text in texts]
         sequences = [connected_units(text) for text in prepared]
-        visible_surfaces = [
-            unit.text
-            for sequence in sequences
-            for unit in sequence
-            if unit.kind == "subword" and unit.text
-        ]
-        if visible_surfaces:
-            self._surface_backbone_features_cached(visible_surfaces)
+        max_units = connected_max_units_per_span()
+
+        span_metadata = []
+        all_raw_surfaces: list[str] = []
+        for units in sequences:
+            source_word_indices: list[int | None] = []
+            word_index = 0
+            for unit in units:
+                if unit.kind == "space":
+                    source_word_indices.append(None)
+                    word_index += 1
+                else:
+                    source_word_indices.append(word_index)
+
+            candidates = []
+            for start, length in connected_span_slices(units, max_units=max_units):
+                covered = units[start : start + length]
+                raw = "".join(
+                    unit.text for unit in covered if unit.kind != "boundary"
+                )
+                display = "".join(
+                    BOUNDARY_TOKEN
+                    if unit.kind == "boundary"
+                    else SPACE_TOKEN
+                    if unit.kind == "space"
+                    else unit.text
+                    for unit in covered
+                )
+                kinds = [unit.kind for unit in covered]
+                semantic_words = {
+                    source_word_indices[index]
+                    for index in range(start, start + length)
+                    if source_word_indices[index] is not None
+                }
+                candidates.append(
+                    {
+                        "start": start,
+                        "length": length,
+                        "raw": raw,
+                        "display": display,
+                        "kind": kinds[0] if length == 1 else "compound",
+                        "is_space": all(kind == "space" for kind in kinds),
+                        "is_boundary": all(kind == "boundary" for kind in kinds),
+                        "boundary_count": sum(kind == "boundary" for kind in kinds),
+                        "char_length": max(
+                            1,
+                            sum(
+                                unit.char_length
+                                for unit in covered
+                                if unit.kind == "subword"
+                            ),
+                        ),
+                        "word_index": (
+                            next(iter(semantic_words))
+                            if len(semantic_words) == 1
+                            else None
+                        ),
+                    }
+                )
+                all_raw_surfaces.append(raw)
+            span_metadata.append((units, candidates, source_word_indices))
+
+        if all_raw_surfaces:
+            self._surface_backbone_features_cached(all_raw_surfaces)
 
         blank_vector = self.norm(self.blank_embedding.view(1, -1))
         boundary_vector = self.norm(self.subword_boundary_embedding.view(1, -1))
+        boundary_blend = float(
+            os.environ.get("SPAN_SUBWORD_BOUNDARY_EMBEDDING_WEIGHT", "0.25")
+        )
         encodings = []
-        for source_text, units in zip(prepared, sequences):
-            raw_cores = [unit.text if unit.kind != "boundary" else "" for unit in units]
+        for source_text, (units, candidates, source_word_indices) in zip(
+            prepared, span_metadata
+        ):
+            raw_cores = [candidate["raw"] for candidate in candidates]
             if raw_cores:
                 embeddings = self._project_surfaces(raw_cores)
-                boundary_mask = torch.as_tensor(
-                    [unit.kind == "boundary" for unit in units],
+                boundary_counts = torch.as_tensor(
+                    [candidate["boundary_count"] for candidate in candidates],
+                    dtype=embeddings.dtype,
+                    device=embeddings.device,
+                ).unsqueeze(-1)
+                if boundary_blend and boundary_counts.any():
+                    embeddings = self.norm(
+                        embeddings
+                        + boundary_counts
+                        * float(boundary_blend)
+                        * boundary_vector.expand(embeddings.shape[0], -1)
+                    )
+                pure_boundaries = torch.as_tensor(
+                    [candidate["is_boundary"] for candidate in candidates],
                     dtype=torch.bool,
                     device=embeddings.device,
                 )
-                if boundary_mask.any():
+                if pure_boundaries.any():
                     embeddings = torch.where(
-                        boundary_mask.unsqueeze(-1),
+                        pure_boundaries.unsqueeze(-1),
                         boundary_vector.expand(embeddings.shape[0], -1),
                         embeddings,
                     )
             else:
                 embeddings = boundary_vector.new_empty((0, boundary_vector.shape[-1]))
 
-            display_texts = [
-                BOUNDARY_TOKEN
-                if unit.kind == "boundary"
-                else SPACE_TOKEN
-                if unit.kind == "space"
-                else unit.text
-                for unit in units
-            ]
-            starts = list(range(len(units)))
-            lengths = [1] * len(units)
-            is_space = [unit.kind == "space" for unit in units]
-            is_boundary = [unit.kind == "boundary" for unit in units]
-            unit_char_lengths = [unit.char_length for unit in units]
+            starts = [candidate["start"] for candidate in candidates]
+            lengths = [candidate["length"] for candidate in candidates]
+            display_texts = [candidate["display"] for candidate in candidates]
+            is_space = [candidate["is_space"] for candidate in candidates]
+            is_boundary = [candidate["is_boundary"] for candidate in candidates]
+            unit_char_lengths = [candidate["char_length"] for candidate in candidates]
+            unit_kinds = [candidate["kind"] for candidate in candidates]
+            span_word_indices = [candidate["word_index"] for candidate in candidates]
 
-            blank_index = len(units)
+            blank_index = len(candidates)
             embeddings = torch.cat([embeddings, blank_vector], dim=0)
             starts.append(-1)
             lengths.append(0)
@@ -240,6 +352,8 @@ def install_connected_subword_mode() -> bool:
             is_space.append(False)
             is_boundary.append(False)
             unit_char_lengths.append(0)
+            unit_kinds.append("blank")
+            span_word_indices.append(None)
             is_blank = [False] * blank_index + [True]
 
             encoding = span_encoding_cls(
@@ -255,11 +369,14 @@ def install_connected_subword_mode() -> bool:
                 is_blank=is_blank,
                 blank_index=blank_index,
                 text_length=len(units),
-                max_span_chars=1,
+                max_span_chars=max_units,
             )
             encoding.is_boundary = is_boundary
             encoding.unit_char_lengths = unit_char_lengths
-            encoding.unit_kinds = [unit.kind for unit in units] + ["blank"]
+            encoding.unit_kinds = unit_kinds
+            encoding.span_word_indices = span_word_indices
+            encoding.source_unit_kinds = [unit.kind for unit in units]
+            encoding.source_unit_word_indices = source_word_indices
             encoding.tokenization_mode = MODE_NAME
             encoding.source_text = source_text
             encodings.append(encoding)
@@ -323,7 +440,7 @@ def install_connected_subword_mode() -> bool:
 
 
 def install_connected_subword_training(train_module) -> bool:
-    """Remove structural boundary/space states from semantic pair matching."""
+    """Remove structural-only states from semantic pair matching."""
     global _TRAINING_PATCHED
     if _TRAINING_PATCHED or not connected_mode_enabled():
         return _TRAINING_PATCHED
@@ -340,7 +457,6 @@ def install_connected_subword_training(train_module) -> bool:
 
     train_module.extract_aligned_span_regions = filtered_extract
 
-    # The optimized trainer has its own cached region extractor.
     try:
         import training_optimizations
 
@@ -365,7 +481,7 @@ _EVALUATION_PATCHED = False
 
 
 def install_connected_subword_evaluation(utils_module) -> bool:
-    """Make word-level evaluation understand unit-index rather than char-index paths."""
+    """Make word evaluation understand variable connected-unit spans."""
     global _EVALUATION_PATCHED
     if _EVALUATION_PATCHED or not connected_mode_enabled():
         return _EVALUATION_PATCHED
@@ -384,16 +500,18 @@ def install_connected_subword_evaluation(utils_module) -> bool:
             return original_extract(models, text, image_features, feature=feature)
 
         word_matches = list(re.finditer(r"\S+", prepared))
-        unit_word_indices: list[int | None] = []
-        word_index = 0
-        for kind in getattr(encoding, "unit_kinds", [])[:-1]:
-            if kind == "space":
-                unit_word_indices.append(None)
-                word_index += 1
-            elif kind == "subword":
-                unit_word_indices.append(word_index)
-            else:
-                unit_word_indices.append(None)
+        span_word_indices = getattr(encoding, "span_word_indices", None)
+        if span_word_indices is None:
+            span_word_indices = []
+            word_index = 0
+            for kind in getattr(encoding, "unit_kinds", [])[:-1]:
+                if kind == "space":
+                    span_word_indices.append(None)
+                    word_index += 1
+                elif kind == "subword":
+                    span_word_indices.append(word_index)
+                else:
+                    span_word_indices.append(None)
 
         visual = image_features.select(feature)
         regions = []
@@ -403,9 +521,9 @@ def install_connected_subword_evaluation(utils_module) -> bool:
                 if step.get("is_blank", False):
                     continue
                 span_index = int(step["span_idx"])
-                if not 0 <= span_index < len(unit_word_indices):
+                if not 0 <= span_index < len(span_word_indices):
                     continue
-                if unit_word_indices[span_index] == index:
+                if span_word_indices[span_index] == index:
                     overlapping.append(step)
             if not overlapping:
                 continue
