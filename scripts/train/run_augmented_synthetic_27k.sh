@@ -57,29 +57,29 @@ DATASET_TYPE=synthetic
 SYNTHETIC_MANUSCRIPT_AUGMENT=0
 REAL_AUGMENT=0
 
-# Some RTX 4090 combinations on the cluster do not support CUDA peer access.
-# Force NCCL to communicate through the safe shared-memory path instead of P2P.
+# Selected RTX 4090 pairs on the cluster do not support CUDA peer access.
 NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
 NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
 NCCL_ASYNC_ERROR_HANDLING="${NCCL_ASYNC_ERROR_HANDLING:-1}"
 NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 CUDA_DEVICE_ORDER="${CUDA_DEVICE_ORDER:-PCI_BUS_ID}"
 
-printf '%s\n' \
-  "Augmented Arabic synthetic training" \
-  "  branch=${BRANCH_NAME}" \
-  "  dataset=${DATA_DIR}" \
-  "  pairs=${PAIR_COUNT}" \
-  "  samples=${NUM_SAMPLES}" \
-  "  epochs=${EPOCHS}" \
-  "  online augmentation=disabled" \
-  "  NCCL P2P=disabled" \
-  "  job id=${JOB_ID}"
-
-# Connected-subword and stroke-aware branches have their own self-submitting
-# launcher. The exported dataset and NCCL settings override its old defaults.
+# Connected-subword and stroke-aware branches have a canonical self-submitting
+# launcher. Export the shared dataset and NCCL settings before delegating.
 if [[ -f "${PROJECT_DIR}/scripts/train/run_connected_subword_synthetic.sh" ]]; then
   NUM_GPUS="${NUM_GPUS:-2}"
+  printf '%s\n' \
+    "Augmented Arabic synthetic training" \
+    "  branch=${BRANCH_NAME}" \
+    "  dataset=${DATA_DIR}" \
+    "  pairs=${PAIR_COUNT}" \
+    "  samples=${NUM_SAMPLES}" \
+    "  epochs=${EPOCHS}" \
+    "  online augmentation=disabled" \
+    "  NCCL P2P=disabled" \
+    "  GPUs=${NUM_GPUS}" \
+    "  Slurm tasks=1" \
+    "  job id=${JOB_ID}"
   exec bash "${PROJECT_DIR}/scripts/train/run_connected_subword_synthetic.sh"
 fi
 
@@ -104,6 +104,18 @@ MEMORY="${MEMORY:-96G}"
 TIME_LIMIT="${TIME_LIMIT:-2-00:00:00}"
 MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"
 SLURM_JOB_NAME="${SLURM_JOB_NAME:-${JOB_ID}}"
+
+printf '%s\n' \
+  "Augmented Arabic synthetic training" \
+  "  branch=${BRANCH_NAME}" \
+  "  dataset=${DATA_DIR}" \
+  "  pairs=${PAIR_COUNT}" \
+  "  samples=${NUM_SAMPLES}" \
+  "  epochs=${EPOCHS}" \
+  "  online augmentation=disabled" \
+  "  NCCL P2P=disabled" \
+  "  Slurm request=${NUM_GPUS} ${GPU_RESOURCE} GPU(s), 1 task, ${CPUS_PER_TASK} CPUs, ${MEMORY}" \
+  "  job id=${JOB_ID}"
 
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   sbatch \
