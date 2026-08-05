@@ -4,6 +4,7 @@
 #SBATCH --qos=jelsana
 #SBATCH --account=jelsana
 #SBATCH --time=01-00:00:00
+#SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
@@ -33,7 +34,8 @@ if [[ ! -f "${PROJECT_DIR}/generateDataArabicThreeFontsCompatible.py" ]]; then
 fi
 
 CONDA_ENV="${CONDA_ENV:-manucripts_align}"
-OUTPUT_DIR="${PROJECT_DIR}/DataSet/Synthetic_Arabic_Three_Font_Augmented"
+OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_DIR}/DataSet/Synthetic_Arabic_Three_Font_Augmented}"
+REQUIREMENTS_FILE="${PROJECT_DIR}/scripts/data/requirements_three_font_generator.txt"
 
 mkdir -p "${PROJECT_DIR}/out"
 cd "${PROJECT_DIR}"
@@ -65,10 +67,27 @@ fi
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 
+# Validate rendering dependencies before creating any dataset files.
+if ! python - <<'PY'
+import arabic_reshaper
+from bidi.algorithm import get_display
+from PIL import Image, ImageDraw, ImageFont
+import numpy
+from tqdm import tqdm
+print("Generator dependencies are available.")
+PY
+then
+  echo "ERROR: required Arabic rendering packages are missing from ${CONDA_ENV}." >&2
+  echo "Install them once from the login node, then resubmit:" >&2
+  echo "  conda activate ${CONDA_ENV}" >&2
+  echo "  python -m pip install -r ${REQUIREMENTS_FILE}" >&2
+  exit 2
+fi
+
 if [[ -d "${OUTPUT_DIR}" ]] \
   && [[ -n "$(find "${OUTPUT_DIR}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
   echo "ERROR: output directory is not empty: ${OUTPUT_DIR}" >&2
-  echo "Remove it, rename it, or use a different output directory before retrying." >&2
+  echo "Remove it, rename it, or set OUTPUT_DIR to a different path before retrying." >&2
   exit 2
 fi
 
@@ -76,7 +95,7 @@ python generateDataArabicThreeFontsCompatible.py \
   --font-dir Fonts \
   --font-count 3 \
   --samples-per-font 3000 \
-  --output-dir DataSet/Synthetic_Arabic_Three_Font_Augmented \
+  --output-dir "${OUTPUT_DIR}" \
   --original-ratio 0.15 \
   --cross-injection-ratio 0.50 \
   --aligned-unaligned-ratio 0.35 \
