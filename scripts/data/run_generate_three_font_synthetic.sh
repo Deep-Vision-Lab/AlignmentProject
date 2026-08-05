@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python generateDataArabicThreeFonts.py \
+python generateDataArabicThreeFontsCompatible.py \
   --font-dir "${FONT_DIR:-Fonts}" \
   --font-count "${FONT_COUNT:-3}" \
   --samples-per-font "${SAMPLES_PER_FONT:-3000}" \
@@ -13,4 +13,5 @@ python generateDataArabicThreeFonts.py \
   --segment-gap-min "${SEGMENT_GAP_MIN:-4}" \
   --segment-gap-max "${SEGMENT_GAP_MAX:-10}" \
   --target-fill-ratio "${TARGET_FILL_RATIO:-0.94}" \
+  --skip-matrices \
   "$@"
