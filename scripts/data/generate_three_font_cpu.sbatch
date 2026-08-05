@@ -14,9 +14,24 @@
 
 set -euo pipefail
 
-SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
-PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "${SCRIPT_PATH}")/../.." && pwd)}"
+# Slurm executes a temporary copy of this file from /var/spool. Therefore,
+# BASH_SOURCE must not be used to locate the repository. SLURM_SUBMIT_DIR is
+# the directory from which `sbatch` was executed.
+PROJECT_DIR="${PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}"
 PROJECT_DIR="$(readlink -f "${PROJECT_DIR}")"
+
+# Also support submission while standing inside scripts/data.
+if [[ ! -f "${PROJECT_DIR}/generateDataArabicThreeFontsCompatible.py" ]] \
+  && [[ -f "${PROJECT_DIR}/../../generateDataArabicThreeFontsCompatible.py" ]]; then
+  PROJECT_DIR="$(readlink -f "${PROJECT_DIR}/../..")"
+fi
+
+if [[ ! -f "${PROJECT_DIR}/generateDataArabicThreeFontsCompatible.py" ]]; then
+  echo "ERROR: generator was not found under PROJECT_DIR=${PROJECT_DIR}" >&2
+  echo "Submit this job from the AlignmentProject root, or set PROJECT_DIR explicitly." >&2
+  exit 2
+fi
+
 CONDA_ENV="${CONDA_ENV:-manucripts_align}"
 OUTPUT_DIR="${PROJECT_DIR}/DataSet/Synthetic_Arabic_Three_Font_Augmented"
 
@@ -27,6 +42,7 @@ printf '%s\n' \
   "Started:       $(date)" \
   "Job ID:        ${SLURM_JOB_ID:-not-set}" \
   "Node:          ${SLURM_JOB_NODELIST:-not-set}" \
+  "Submit dir:    ${SLURM_SUBMIT_DIR:-not-set}" \
   "Project:       ${PROJECT_DIR}" \
   "Conda env:     ${CONDA_ENV}" \
   "CPU cores:     ${SLURM_CPUS_PER_TASK:-4}" \
@@ -49,9 +65,10 @@ fi
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 
-if [[ -d "${OUTPUT_DIR}" ]] && [[ -n "$(find "${OUTPUT_DIR}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
+if [[ -d "${OUTPUT_DIR}" ]] \
+  && [[ -n "$(find "${OUTPUT_DIR}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
   echo "ERROR: output directory is not empty: ${OUTPUT_DIR}" >&2
-  echo "Remove it, rename it, or submit with a different output directory before retrying." >&2
+  echo "Remove it, rename it, or use a different output directory before retrying." >&2
   exit 2
 fi
 
