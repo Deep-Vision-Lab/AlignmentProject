@@ -52,18 +52,15 @@ if (( PAIR_COUNT < NUM_SAMPLES )); then
   exit 2
 fi
 
-# All visual augmentation is already stored in the generated PNG files.
+# Augmentation is already stored in the generated PNG files.
 DATASET_TYPE=synthetic
 SYNTHETIC_MANUSCRIPT_AUGMENT=0
 REAL_AUGMENT=0
 
-# Keep the established two-character span semantics and make the image sequence
-# dense enough for the generator's 85-120-character lines. For width 1024,
-# WINDOW_SIZE=32 and stride 8 produce 125 image windows, so every transcript up
-# to 120 characters is structurally feasible for span-DTW.
+# Preserve the original 63-window geometry.
 LINE_WIDTH="${LINE_WIDTH:-1024}"
 WINDOW_SIZE="${WINDOW_SIZE:-32}"
-STRIDE_RATIO="${STRIDE_RATIO:-0.25}"
+STRIDE_RATIO="${STRIDE_RATIO:-0.5}"
 WINDOW_OVERLAP_MODE="${WINDOW_OVERLAP_MODE:-custom}"
 read -r STRIDE_PIXELS IMAGE_WINDOWS < <(
   python - "${LINE_WIDTH}" "${WINDOW_SIZE}" "${STRIDE_RATIO}" "${WINDOW_OVERLAP_MODE}" <<'PY'
@@ -87,10 +84,71 @@ else:
 print(stride, ((width - window) // stride) + 1)
 PY
 )
-EXPECTED_MAX_TEXT_CHARS="${EXPECTED_MAX_TEXT_CHARS:-120}"
-if (( IMAGE_WINDOWS < EXPECTED_MAX_TEXT_CHARS )); then
-  echo "ERROR: image geometry produces ${IMAGE_WINDOWS} windows, fewer than the expected ${EXPECTED_MAX_TEXT_CHARS}-character transcript capacity." >&2
-  echo "Use the default WINDOW_SIZE=32, STRIDE_RATIO=0.25, WINDOW_OVERLAP_MODE=custom." >&2
+
+# A visual window aligns to a variable-length text span, not necessarily to one
+# character. Keep the smallest useful extension over the old two-character cap.
+MAX_TEXT_SPAN_CHARS="${MAX_TEXT_SPAN_CHARS:-3}"
+SPAN_MAX_CORE_CHARS_CAP="${SPAN_MAX_CORE_CHARS_CAP:-${MAX_TEXT_SPAN_CHARS}}"
+[[ "${MAX_TEXT_SPAN_CHARS}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "ERROR: MAX_TEXT_SPAN_CHARS must be a positive integer." >&2
+  exit 2
+}
+[[ "${SPAN_MAX_CORE_CHARS_CAP}" =~ ^[0-9]+$ ]] || {
+  echo "ERROR: SPAN_MAX_CORE_CHARS_CAP must be a non-negative integer." >&2
+  exit 2
+}
+if (( SPAN_MAX_CORE_CHARS_CAP > 0 && SPAN_MAX_CORE_CHARS_CAP < MAX_TEXT_SPAN_CHARS )); then
+  EFFECTIVE_SPAN_CHARS="${SPAN_MAX_CORE_CHARS_CAP}"
+else
+  EFFECTIVE_SPAN_CHARS="${MAX_TEXT_SPAN_CHARS}"
+fi
+
+# Check the actual transcripts with the encoder's span rule: whitespace is a
+# standalone position; each contiguous non-space run can be covered by spans of
+# up to EFFECTIVE_SPAN_CHARS characters.
+IFS=$'\t' read -r WORST_REQUIRED_SPANS WORST_TEXT_LENGTH WORST_TEXT_FILE < <(
+  python - "${DATA_DIR}/texts" "${NUM_SAMPLES}" "${EFFECTIVE_SPAN_CHARS}" <<'PY'
+import math
+import pathlib
+import re
+import sys
+
+texts_dir = pathlib.Path(sys.argv[1])
+limit = int(sys.argv[2])
+max_chars = int(sys.argv[3])
+pattern = re.compile(r"text[12]_(\d+)\.txt$")
+worst = (-1, -1, "")
+seen = 0
+for path in texts_dir.glob("text[12]_*.txt"):
+    match = pattern.fullmatch(path.name)
+    if not match or int(match.group(1)) > limit:
+        continue
+    text = path.read_text(encoding="utf-8").strip()
+    required = 0
+    index = 0
+    while index < len(text):
+        if text[index].isspace():
+            required += 1
+            index += 1
+            continue
+        end = index + 1
+        while end < len(text) and not text[end].isspace():
+            end += 1
+        required += math.ceil((end - index) / max_chars)
+        index = end
+    seen += 1
+    candidate = (required, len(text), path.name)
+    if candidate > worst:
+        worst = candidate
+if seen == 0:
+    raise SystemExit(f"No transcript files found under {texts_dir}")
+print(f"{worst[0]}\t{worst[1]}\t{worst[2]}")
+PY
+)
+if (( WORST_REQUIRED_SPANS > IMAGE_WINDOWS )); then
+  echo "ERROR: current text-span capacity still cannot fit every transcript." >&2
+  echo "Worst file: ${WORST_TEXT_FILE}; text length=${WORST_TEXT_LENGTH}; required spans=${WORST_REQUIRED_SPANS}; image windows=${IMAGE_WINDOWS}." >&2
+  echo "Increase MAX_TEXT_SPAN_CHARS while keeping STRIDE_RATIO=${STRIDE_RATIO}." >&2
   exit 2
 fi
 
@@ -102,7 +160,8 @@ NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 CUDA_DEVICE_ORDER="${CUDA_DEVICE_ORDER:-PCI_BUS_ID}"
 
 # Connected-subword and stroke-aware branches have a canonical self-submitting
-# launcher. Export the shared dataset, geometry, and NCCL settings before delegating.
+# launcher. The exported geometry, dataset and augmentation settings override its
+# old defaults before delegation.
 if [[ -f "${PROJECT_DIR}/scripts/train/run_connected_subword_synthetic.sh" ]]; then
   NUM_GPUS="${NUM_GPUS:-2}"
   printf '%s\n' \
@@ -114,6 +173,7 @@ if [[ -f "${PROJECT_DIR}/scripts/train/run_connected_subword_synthetic.sh" ]]; t
     "  epochs=${EPOCHS}" \
     "  online augmentation=disabled" \
     "  geometry=window ${WINDOW_SIZE}, stride ${STRIDE_PIXELS}, ${IMAGE_WINDOWS} windows" \
+    "  text spans=1-${EFFECTIVE_SPAN_CHARS} chars; worst transcript needs ${WORST_REQUIRED_SPANS}/${IMAGE_WINDOWS} positions" \
     "  NCCL P2P=disabled" \
     "  GPUs=${NUM_GPUS}" \
     "  Slurm tasks=1" \
@@ -133,6 +193,7 @@ else
   exit 2
 fi
 
+# Keep the existing SBATCH resource request unchanged.
 GPU_RESOURCE="${GPU_RESOURCE:-rtx_4090}"
 PARTITION="${PARTITION:-rtx4090}"
 ACCOUNT="${ACCOUNT:-jelsana}"
@@ -152,6 +213,7 @@ printf '%s\n' \
   "  epochs=${EPOCHS}" \
   "  online augmentation=disabled" \
   "  geometry=window ${WINDOW_SIZE}, stride ${STRIDE_PIXELS}, ${IMAGE_WINDOWS} windows" \
+  "  text spans=1-${EFFECTIVE_SPAN_CHARS} chars; worst transcript needs ${WORST_REQUIRED_SPANS}/${IMAGE_WINDOWS} positions" \
   "  NCCL P2P=disabled" \
   "  Slurm request=${NUM_GPUS} ${GPU_RESOURCE} GPU(s), 1 task, ${CPUS_PER_TASK} CPUs, ${MEMORY}" \
   "  job id=${JOB_ID}"
@@ -172,7 +234,7 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
     --time="${TIME_LIMIT}" \
     --mail-type=ALL \
     --mail-user="${MAIL_USER}" \
-    --export=ALL,PROJECT_DIR="${PROJECT_DIR}",DATA_DIR="${DATA_DIR}",JOB_ID="${JOB_ID}",NUM_SAMPLES="${NUM_SAMPLES}",EPOCHS="${EPOCHS}",NUM_GPUS="${NUM_GPUS}",TRAINING_MODE="${TRAINING_MODE}",SYNTHETIC_MANUSCRIPT_AUGMENT=0,REAL_AUGMENT=0,DATASET_TYPE=synthetic,WINDOW_SIZE="${WINDOW_SIZE}",STRIDE_RATIO="${STRIDE_RATIO}",WINDOW_OVERLAP_MODE="${WINDOW_OVERLAP_MODE}",NCCL_P2P_DISABLE=1,NCCL_SHM_DISABLE=0,NCCL_ASYNC_ERROR_HANDLING=1 \
+    --export=ALL,PROJECT_DIR="${PROJECT_DIR}",DATA_DIR="${DATA_DIR}",JOB_ID="${JOB_ID}",NUM_SAMPLES="${NUM_SAMPLES}",EPOCHS="${EPOCHS}",NUM_GPUS="${NUM_GPUS}",TRAINING_MODE="${TRAINING_MODE}",SYNTHETIC_MANUSCRIPT_AUGMENT=0,REAL_AUGMENT=0,DATASET_TYPE=synthetic,WINDOW_SIZE="${WINDOW_SIZE}",STRIDE_RATIO="${STRIDE_RATIO}",WINDOW_OVERLAP_MODE="${WINDOW_OVERLAP_MODE}",MAX_TEXT_SPAN_CHARS="${MAX_TEXT_SPAN_CHARS}",SPAN_MAX_CORE_CHARS_CAP="${SPAN_MAX_CORE_CHARS_CAP}",NCCL_P2P_DISABLE=1,NCCL_SHM_DISABLE=0,NCCL_ASYNC_ERROR_HANDLING=1 \
     "${SCRIPT_PATH}"
   exit 0
 fi
@@ -197,6 +259,7 @@ export MKL_NUM_THREADS="${MKL_NUM_THREADS:-8}"
 export NCCL_P2P_DISABLE NCCL_SHM_DISABLE NCCL_ASYNC_ERROR_HANDLING NCCL_DEBUG
 export CUDA_DEVICE_ORDER
 export WINDOW_SIZE STRIDE_RATIO WINDOW_OVERLAP_MODE
+export MAX_TEXT_SPAN_CHARS SPAN_MAX_CORE_CHARS_CAP
 
 if [[ "${TRAINING_MODE}" == generic ]]; then
   TRAIN_ARGS=(
