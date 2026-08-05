@@ -4,11 +4,35 @@ from collections import OrderedDict
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
+from torchvision import transforms as tv_transforms
 
 from Parameters import *
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+_STOCHASTIC_TRANSFORM_TOKENS = (
+    "random", "jitter", "noise", "blur", "erasing", "affine",
+    "perspective", "crop", "rotation",
+)
+
+
+def _deterministic_only(transform):
+    """Drop online augmentation while keeping stable preprocessing."""
+    if transform is None:
+        return None
+    children = getattr(transform, "transforms", None)
+    if children is not None:
+        kept = []
+        for child in children:
+            filtered = _deterministic_only(child)
+            if filtered is not None:
+                kept.append(filtered)
+        return tv_transforms.Compose(kept)
+    name = transform.__class__.__name__.lower()
+    if any(token in name for token in _STOCHASTIC_TRANSFORM_TOKENS):
+        return None
+    return transform
 
 
 def _env_flag(name, default=False):
@@ -38,7 +62,7 @@ class TextLineModern(Dataset):
 
     def __init__(self, new_dataset=None, transform=None, num_samples_override=None):
         self.new_dataset = new_dataset
-        self.transform = transform
+        self.transform = _deterministic_only(transform)
         self._image_cache = OrderedDict()
         self._image_cache_size = max(0, int(os.environ.get("IMAGE_DECODE_CACHE_SIZE", "0")))
         self._preload_transcripts = _env_flag("PRELOAD_TRANSCRIPTS", True)
@@ -75,9 +99,7 @@ class TextLineModern(Dataset):
             }
             if self._preload_transcripts:
                 record["text1"] = self._read_text_file(text1_path)
-                record["text2"] = (
-                    self._read_text_file(text2_path) if has_pair else None
-                )
+                record["text2"] = self._read_text_file(text2_path) if has_pair else None
             self._sample_records.append(record)
 
     def __len__(self):
@@ -115,7 +137,6 @@ class TextLineModern(Dataset):
         image1 = self._read_image(record["image1"])
         if record["image2"] is None:
             return text1, image1
-
         text2 = record.get("text2")
         if text2 is None:
             text2 = self._read_text_file(record["text2_path"])
