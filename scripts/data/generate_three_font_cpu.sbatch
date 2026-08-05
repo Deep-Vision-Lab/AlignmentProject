@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=gen_three_font_cpu
-#SBATCH --partition=jelsana
-#SBATCH --qos=jelsana
-#SBATCH --account=jelsana
+
 #SBATCH --time=01-00:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --output=out/%x_%J.out
-#SBATCH --error=out/%x_%J.err
+
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ahmedmas@post.bgu.ac.il
 
