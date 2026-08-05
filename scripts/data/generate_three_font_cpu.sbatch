@@ -13,21 +13,17 @@
 
 set -euo pipefail
 
-# Slurm executes a temporary copy of this file from /var/spool. Therefore,
-# BASH_SOURCE must not be used to locate the repository. SLURM_SUBMIT_DIR is
-# the directory from which `sbatch` was executed.
 PROJECT_DIR="${PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}"
 PROJECT_DIR="$(readlink -f "${PROJECT_DIR}")"
 
-# Also support submission while standing inside scripts/data.
-if [[ ! -f "${PROJECT_DIR}/generateDataArabicThreeFontsCompatible.py" ]] \
-  && [[ -f "${PROJECT_DIR}/../../generateDataArabicThreeFontsCompatible.py" ]]; then
+if [[ ! -f "${PROJECT_DIR}/generateDataArabicThreeFontsRandomized.py" ]] \
+  && [[ -f "${PROJECT_DIR}/../../generateDataArabicThreeFontsRandomized.py" ]]; then
   PROJECT_DIR="$(readlink -f "${PROJECT_DIR}/../..")"
 fi
 
-if [[ ! -f "${PROJECT_DIR}/generateDataArabicThreeFontsCompatible.py" ]]; then
-  echo "ERROR: generator was not found under PROJECT_DIR=${PROJECT_DIR}" >&2
-  echo "Submit this job from the AlignmentProject root, or set PROJECT_DIR explicitly." >&2
+if [[ ! -f "${PROJECT_DIR}/generateDataArabicThreeFontsRandomized.py" ]]; then
+  echo "ERROR: randomized generator was not found under PROJECT_DIR=${PROJECT_DIR}" >&2
+  echo "Submit from the AlignmentProject root, or set PROJECT_DIR explicitly." >&2
   exit 2
 fi
 
@@ -47,9 +43,9 @@ printf '%s\n' \
   "Conda env:     ${CONDA_ENV}" \
   "CPU cores:     ${SLURM_CPUS_PER_TASK:-4}" \
   "Output:        ${OUTPUT_DIR}" \
-  "Fonts:         Amiri-Regular.ttf, Arslan_Wessam_B.ttf, DejaVuSans-Bold.ttf"
+  "Fonts:         randomized from Amiri-Regular.ttf, Arslan_Wessam_B.ttf, DejaVuSans-Bold.ttf" \
+  "Modes:         original, cross_injection, aligned_unaligned, two_aligned_parts, three_aligned_parts"
 
-# This is a CPU-only generation job. No GPU is requested or exposed.
 export CUDA_VISIBLE_DEVICES=""
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
@@ -66,12 +62,10 @@ fi
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 
-# Validate rendering dependencies before creating any dataset files.
 if ! python - <<'PY'
 import arabic_reshaper
 from bidi.algorithm import get_display
 from PIL import Image, ImageDraw, ImageFont
-import numpy
 from tqdm import tqdm
 print("Generator dependencies are available.")
 PY
@@ -100,7 +94,7 @@ if [[ -d "${OUTPUT_DIR}" ]] \
   exit 2
 fi
 
-python generateDataArabicThreeFontsCompatible.py \
+python generateDataArabicThreeFontsRandomized.py \
   --font-dir Fonts \
   --fonts \
     Amiri-Regular.ttf \
@@ -109,9 +103,11 @@ python generateDataArabicThreeFontsCompatible.py \
   --font-count 3 \
   --samples-per-font 3000 \
   --output-dir "${OUTPUT_DIR}" \
-  --original-ratio 0.15 \
-  --cross-injection-ratio 0.50 \
-  --aligned-unaligned-ratio 0.35 \
+  --original-ratio 0.10 \
+  --cross-injection-ratio 0.25 \
+  --aligned-unaligned-ratio 0.20 \
+  --two-aligned-parts-ratio 0.25 \
+  --three-aligned-parts-ratio 0.20 \
   --mixed-font-injection-prob 0.50 \
   --segment-gap-min 2 \
   --segment-gap-max 6 \
