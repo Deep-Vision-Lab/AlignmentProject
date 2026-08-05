@@ -103,15 +103,10 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   sbatch \
     --job-name="${SLURM_JOB_NAME}" \
     --output="${PROJECT_DIR}/out/%x_%J.out" \
-    --error="${PROJECT_DIR}/out/%x_%J.err" \
     --chdir="${PROJECT_DIR}" \
-    --partition="${PARTITION}" \
-    --account="${ACCOUNT}" \
-    --qos="${QOS}" \
     --gpus="${GPU_RESOURCE}:${NUM_GPUS}" \
-    --ntasks=1 \
+    --ntasks=6 \
     --cpus-per-task="${CPUS_PER_TASK}" \
-    --mem="${MEMORY}" \
     --time="${TIME_LIMIT}" \
     --mail-type=ALL \
     --mail-user="${MAIL_USER}" \
