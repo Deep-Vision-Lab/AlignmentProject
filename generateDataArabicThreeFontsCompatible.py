@@ -7,16 +7,66 @@ matching the original Arabic generator's image/mask conventions:
 - 1024x128 images, white text on black;
 - paired img1/img2, mask1/mask2, and text1/text2 filenames;
 - masks cover the shared phrase's complete horizontal range over full height;
-- no matrices, similarity matrices, or subword-box outputs.
+- no matrices, similarity matrices, or subword-box outputs;
+- Arabic words retain their internal characters without inserted spaces and are
+  reshaped into connected presentation forms before right-to-left rendering.
 """
 from __future__ import annotations
 
 import json
+import unicodedata
 from pathlib import Path
+from typing import Iterable
 
 from PIL import Image, ImageDraw
 
 import generateDataArabicThreeFonts as generator
+
+
+def clean_text(text: str) -> list[str]:
+    """Normalize Arabic while preserving characters inside each word.
+
+    The previous implementation joined every printable character with a space,
+    turning ``الكتاب`` into ``ا ل ك ت ا ب``. Arabic reshaping cannot connect
+    letters across those artificial spaces.
+    """
+    text = unicodedata.normalize("NFKC", text)
+    text = generator.DIACRITICS.sub("", text)
+    printable = "".join(character for character in text if character.isprintable())
+    return printable.split()
+
+
+def normalize(text: str) -> str:
+    """Collapse real whitespace without separating Arabic characters."""
+    return " ".join(clean_text(text))
+
+
+def join_text(parts: Iterable[str]) -> str:
+    """Join logical phrase segments using one real inter-phrase space."""
+    return " ".join(
+        part for part in (normalize(value) for value in parts) if part
+    )
+
+
+def visual_text(text: str) -> str:
+    """Return connected, display-ordered Arabic text for Pillow rendering."""
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+    except ImportError as exc:
+        raise RuntimeError(
+            "Install arabic-reshaper and python-bidi before generation."
+        ) from exc
+
+    reshaper = arabic_reshaper.ArabicReshaper(
+        configuration={
+            "delete_harakat": True,
+            "support_zwj": True,
+            "use_unshaped_instead_of_isolated": False,
+        }
+    )
+    shaped = reshaper.reshape(normalize(text))
+    return get_display(shaped)
 
 
 def full_height_shared_mask(
@@ -101,6 +151,7 @@ def write_compatible_summary(root: Path) -> None:
             "image_size": [1024, 128],
             "font_size": 90,
             "full_height_masks": True,
+            "connected_arabic_shaping": True,
             "generated_directories": ["images", "masks", "texts"],
             "omitted_outputs": [
                 "matrices",
@@ -116,6 +167,12 @@ def write_compatible_summary(root: Path) -> None:
 
 
 def main() -> None:
+    # Correct the base generator before any plans, transcripts, or glyphs are
+    # produced. LinePlan.text resolves generator.join_text dynamically.
+    generator.clean_text = clean_text
+    generator.normalize = normalize
+    generator.join_text = join_text
+    generator.visual_text = visual_text
     generator.output_dirs = output_dirs
     generator.render_line = render_line
     generator.save = save
