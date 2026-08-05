@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=gen_three_font_cpu
-
 #SBATCH --time=01-00:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --output=out/%x_%J.out
-
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ahmedmas@post.bgu.ac.il
 
@@ -43,6 +41,8 @@ printf '%s\n' \
   "Conda env:     ${CONDA_ENV}" \
   "CPU cores:     ${SLURM_CPUS_PER_TASK:-4}" \
   "Output:        ${OUTPUT_DIR}" \
+  "Text length:   85-120 characters" \
+  "Noise:         Gaussian + salt/pepper + optional blur" \
   "Fonts:         randomized from Amiri-Regular.ttf, Arslan_Wessam_B.ttf, DejaVuSans-Bold.ttf" \
   "Modes:         original, cross_injection, aligned_unaligned, two_aligned_parts, three_aligned_parts"
 
@@ -65,7 +65,8 @@ conda activate "${CONDA_ENV}"
 if ! python - <<'PY'
 import arabic_reshaper
 from bidi.algorithm import get_display
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
+import numpy
 from tqdm import tqdm
 print("Generator dependencies are available.")
 PY
@@ -94,24 +95,24 @@ if [[ -d "${OUTPUT_DIR}" ]] \
   exit 2
 fi
 
-python generateDataArabicThreeFontsRandomized.py \
-  --font-dir Fonts \
-  --fonts \
-    Amiri-Regular.ttf \
-    Arslan_Wessam_B.ttf \
-    DejaVuSans-Bold.ttf \
-  --font-count 3 \
-  --samples-per-font 3000 \
-  --output-dir "${OUTPUT_DIR}" \
-  --original-ratio 0.10 \
-  --cross-injection-ratio 0.25 \
-  --aligned-unaligned-ratio 0.20 \
-  --two-aligned-parts-ratio 0.25 \
-  --three-aligned-parts-ratio 0.20 \
-  --mixed-font-injection-prob 0.50 \
-  --segment-gap-min 2 \
-  --segment-gap-max 6 \
-  --target-fill-ratio 0.96
+SAMPLES_PER_FONT=3000 \
+OUTPUT_DIR="${OUTPUT_DIR}" \
+FONT_SIZE=84 \
+MIN_TEXT_CHARS=85 \
+MAX_TEXT_CHARS=120 \
+NOISE_PROB=0.75 \
+ORIGINAL_NOISE_SCALE=0.20 \
+GAUSSIAN_NOISE_PROB=0.90 \
+GAUSSIAN_NOISE_STD_MIN=2.0 \
+GAUSSIAN_NOISE_STD_MAX=10.0 \
+SALT_PEPPER_NOISE_PROB=0.55 \
+SALT_PEPPER_DENSITY_MIN=0.0005 \
+SALT_PEPPER_DENSITY_MAX=0.0035 \
+BLUR_PROB=0.25 \
+BLUR_RADIUS_MIN=0.15 \
+BLUR_RADIUS_MAX=0.75 \
+TARGET_FILL_RATIO=0.98 \
+bash scripts/data/run_generate_three_font_synthetic.sh
 
 printf '%s\n' \
   "Finished:      $(date)" \
