@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from generateDataArabicThreeFontsCompatible import (
+    _remove_render_controls,
     clean_text,
     full_height_shared_mask,
     normalize,
@@ -19,12 +20,24 @@ def test_arabic_normalization_preserves_connected_words():
     assert "ا ل ك ت ا ب" not in normalize(text)
 
 
+def test_generate_data_arabic_control_cleanup_removes_box_characters():
+    dirty = "ال\u200cكتاب\u200d \ufeffالجديد"
+    assert _remove_render_controls(dirty) == "الكتاب الجديد"
+    assert normalize(dirty) == "الكتاب الجديد"
+
+
 def test_arabic_display_shaping_does_not_insert_character_spaces():
     pytest.importorskip("arabic_reshaper")
     pytest.importorskip("bidi.algorithm")
     displayed = visual_text("الكتاب الجديد")
     assert displayed.count(" ") == 1
     assert "ا ل" not in displayed
+
+
+def test_generate_data_arabic_reshaper_deletes_at_sign():
+    pytest.importorskip("arabic_reshaper")
+    pytest.importorskip("bidi.algorithm")
+    assert "@" not in visual_text("الكتاب@الجديد")
 
 
 def test_full_height_shared_mask_uses_complete_height():
