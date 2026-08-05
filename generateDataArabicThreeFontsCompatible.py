@@ -8,8 +8,9 @@ matching the original Arabic generator's image/mask conventions:
 - paired img1/img2, mask1/mask2, and text1/text2 filenames;
 - masks cover the shared phrase's complete horizontal range over full height;
 - no matrices, similarity matrices, or subword-box outputs;
-- Arabic words retain their internal characters without inserted spaces and are
-  reshaped into connected presentation forms before right-to-left rendering.
+- Arabic words retain their internal characters without inserted spaces;
+- the same box/control-character safeguards from generateDataArabic.py are
+  applied before right-to-left rendering.
 """
 from __future__ import annotations
 
@@ -23,17 +24,41 @@ from PIL import Image, ImageDraw
 import generateDataArabicThreeFonts as generator
 
 
-def clean_text(text: str) -> list[str]:
-    """Normalize Arabic while preserving characters inside each word.
+_RENDER_CONTROL_CODEPOINTS = {
+    0x200B,
+    0x200C,
+    0x200D,
+    0x200E,
+    0x200F,
+    0x202A,
+    0x202B,
+    0x202C,
+    0x202D,
+    0x202E,
+    0x2066,
+    0x2067,
+    0x2068,
+    0x2069,
+    0xFEFF,
+}
 
-    The previous implementation joined every printable character with a space,
-    turning ``الكتاب`` into ``ا ل ك ت ا ب``. Arabic reshaping cannot connect
-    letters across those artificial spaces.
-    """
+
+def _remove_render_controls(text: str) -> str:
+    """Remove invisible controls that can render as '?' or tofu boxes."""
+    return "".join(
+        character
+        for character in text
+        if character.isprintable()
+        and ord(character) not in _RENDER_CONTROL_CODEPOINTS
+    )
+
+
+def clean_text(text: str) -> list[str]:
+    """Normalize Arabic while preserving characters inside each word."""
     text = unicodedata.normalize("NFKC", text)
     text = generator.DIACRITICS.sub("", text)
-    printable = "".join(character for character in text if character.isprintable())
-    return printable.split()
+    text = _remove_render_controls(text)
+    return text.split()
 
 
 def normalize(text: str) -> str:
@@ -49,7 +74,7 @@ def join_text(parts: Iterable[str]) -> str:
 
 
 def visual_text(text: str) -> str:
-    """Return connected, display-ordered Arabic text for Pillow rendering."""
+    """Shape Arabic with the safeguards used by generateDataArabic.py."""
     try:
         import arabic_reshaper
         from bidi.algorithm import get_display
@@ -61,11 +86,13 @@ def visual_text(text: str) -> str:
     reshaper = arabic_reshaper.ArabicReshaper(
         configuration={
             "delete_harakat": True,
-            "support_zwj": True,
-            "use_unshaped_instead_of_isolated": False,
+            "support_zwj": False,
+            "delete_at_sign": True,
+            "use_unshaped_instead_of_isolated": True,
         }
     )
     shaped = reshaper.reshape(normalize(text))
+    shaped = _remove_render_controls(shaped)
     return get_display(shaped)
 
 
@@ -152,6 +179,7 @@ def write_compatible_summary(root: Path) -> None:
             "font_size": 90,
             "full_height_masks": True,
             "connected_arabic_shaping": True,
+            "generateDataArabic_box_cleanup": True,
             "generated_directories": ["images", "masks", "texts"],
             "omitted_outputs": [
                 "matrices",
@@ -167,8 +195,6 @@ def write_compatible_summary(root: Path) -> None:
 
 
 def main() -> None:
-    # Correct the base generator before any plans, transcripts, or glyphs are
-    # produced. LinePlan.text resolves generator.join_text dynamically.
     generator.clean_text = clean_text
     generator.normalize = normalize
     generator.join_text = join_text
