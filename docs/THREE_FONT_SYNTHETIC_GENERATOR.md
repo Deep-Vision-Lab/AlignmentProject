@@ -1,14 +1,31 @@
 # Three-font exact-text synthetic Arabic generator
 
-`generateDataArabicThreeFonts.py` generates original and augmented Arabic line pairs at dataset-generation time. Each visible region is created from an explicit text segment before rendering, so the UTF-8 transcript exactly matches the image.
+The branch provides a generation-time augmentation pipeline using the three fonts in `Fonts/`. It builds every visible segment from known logical Arabic text before rendering, so the saved UTF-8 transcript matches the generated line.
 
-## Recommended full dataset
+The recommended entry point is:
 
 ```bash
 bash scripts/data/run_generate_three_font_synthetic.sh
 ```
 
-The launcher uses:
+The launcher uses `generateDataArabicThreeFontsCompatible.py`, which preserves the three-font augmentation logic while matching the important settings from `generateDataArabic.py`.
+
+## Settings inherited from `generateDataArabic.py`
+
+```text
+Image width: 1024
+Image height: 128
+Font size: 90
+White text on black background
+Paired img1/img2 filenames
+Paired text1/text2 filenames
+Paired mask1/mask2 filenames
+Shared-phrase masks span the full 128-pixel image height
+```
+
+The mask is a vertical white band over the horizontal range occupied by the shared phrase. It is not limited to the glyph height.
+
+## Recommended dataset mixture
 
 ```text
 3 auto-discovered fonts from Fonts/
@@ -21,10 +38,16 @@ The launcher uses:
 94% target canvas fill
 ```
 
+## Full generation command
+
+```bash
+bash scripts/data/run_generate_three_font_synthetic.sh
+```
+
 Equivalent explicit command:
 
 ```bash
-python generateDataArabicThreeFonts.py \
+python generateDataArabicThreeFontsCompatible.py \
   --font-dir Fonts \
   --font-count 3 \
   --samples-per-font 3000 \
@@ -35,28 +58,21 @@ python generateDataArabicThreeFonts.py \
   --mixed-font-injection-prob 0.30 \
   --segment-gap-min 4 \
   --segment-gap-max 10 \
-  --target-fill-ratio 0.94
+  --target-fill-ratio 0.94 \
+  --skip-matrices
 ```
 
-To control the exact font order instead of auto-discovery:
-
-```bash
-python generateDataArabicThreeFonts.py \
-  --font-dir Fonts \
-  --fonts FONT_1.ttf FONT_2.ttf FONT_3.ttf \
-  --font-count 3 \
-  --samples-per-font 3000
-```
+`--skip-matrices` is accepted for compatibility, but the wrapper never creates matrix directories even when that flag is absent.
 
 ## Fast validation run
 
 ```bash
 SAMPLES_PER_FONT=10 \
 OUTPUT_DIR=DataSet/Synthetic_Arabic_Three_Font_Preview \
-bash scripts/data/run_generate_three_font_synthetic.sh --skip-matrices
+bash scripts/data/run_generate_three_font_synthetic.sh
 ```
 
-Preview the generated images together with the exact transcripts, segment roles, and fonts:
+Preview the images with the exact transcripts, segment roles, and fonts:
 
 ```bash
 python scripts/data/preview_three_font_synthetic_dataset.py \
@@ -65,30 +81,42 @@ python scripts/data/preview_three_font_synthetic_dataset.py \
   --show
 ```
 
-The preview prints the exact text to the terminal and saves `three_font_exact_text_preview.png` inside the generated dataset directory.
+## Generated outputs
 
-## Why transcript matching is better
+Only these dataset directories are created:
 
-The older training-time augmentation cropped image fractions and estimated the corresponding text from proportional character spans. Arabic glyph widths, joining forms, and whitespace make that estimate unreliable.
+```text
+images/
+masks/
+texts/
+```
 
-This generator instead:
+Additional audit files:
 
-1. chooses complete logical Arabic phrases;
-2. assigns every phrase a role: `shared`, `context`, or `injected`;
-3. renders each phrase as a tightly cropped patch;
-4. places patches in right-to-left logical order with a small explicit gap;
-5. joins the same phrase strings to produce the saved transcript.
+```text
+metadata.jsonl
+generation_summary.json
+```
 
-No image crop is converted back into guessed text.
+The following are deliberately not created:
 
-## Output contract
+```text
+matrices/
+similarity_matrices/
+subword_boxes/
+```
 
-- `images/img1_N.png`, `images/img2_N.png`: 1024×128 paired line images.
-- `texts/text1_N.txt`, `texts/text2_N.txt`: exact logical Arabic transcripts.
-- `masks/mask1_N.png`, `masks/mask2_N.png`: bounding masks for the shared segment.
-- `matrices/scoreMatrix_N.npy`: Needleman-Wunsch score matrix over exact transcripts with spaces removed.
-- `similarity_matrices/similarityMatrix_N.npy`: exact character-equality matrix.
-- `metadata.jsonl`: mode, exact segment text, role, font, and pixel box for each visible region.
-- `generation_summary.json`: selected fonts, mode counts, and generation configuration.
+The metadata retains exact segment text, role, and font, but does not expose or save subword boxes.
 
-Use `--corpus path/to/arabic_lines.txt` to add project-specific phrases. Each non-empty line containing at least two words is added to the built-in phrase pools.
+## Output filenames
+
+```text
+images/img1_N.png
+images/img2_N.png
+masks/mask1_N.png
+masks/mask2_N.png
+texts/text1_N.txt
+texts/text2_N.txt
+```
+
+Use `--corpus path/to/arabic_lines.txt` to add project-specific Arabic phrases. Each non-empty line containing at least two words is added to the built-in phrase pools.
