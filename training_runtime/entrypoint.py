@@ -24,6 +24,15 @@ if _tokenization_mode in {
 # This branch is stroke-aware even when the synthetic job uses Span-DTW rather
 # than renderer-box direct supervision.
 os.environ.setdefault("DIRECT_SUBWORD_STROKE_INPUT", "1")
+if os.environ.get("SYNTHETIC_MANUSCRIPT_AUGMENT", "1").strip().lower() in {
+    "0",
+    "false",
+    "no",
+    "off",
+}:
+    # The 27k launcher uses already-augmented PNGs. Keep the derived stroke
+    # channels, but do not apply a second stochastic augmentation pipeline.
+    os.environ.setdefault("DIRECT_SUBWORD_STROKE_AUGMENT", "0")
 
 from scripts.train import train_optimized as optimized
 
