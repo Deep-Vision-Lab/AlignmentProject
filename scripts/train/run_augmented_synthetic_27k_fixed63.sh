@@ -2,7 +2,6 @@
 # Train the current branch on the validated 27,000-pair fixed-63 Arabic dataset.
 # This wrapper does not change the underlying Slurm resource configuration.
 set -euo pipefail
-set -a
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -64,17 +63,12 @@ print(
 )
 PY
 
-# The images already contain the generated noise and visual augmentation.
 DATASET_TYPE=synthetic
 SYNTHETIC_MANUSCRIPT_AUGMENT=0
 REAL_AUGMENT=0
-
-# Preserve the established 63-window visual sequence.
 WINDOW_SIZE="${WINDOW_SIZE:-32}"
 STRIDE_RATIO="${STRIDE_RATIO:-0.5}"
 WINDOW_OVERLAP_MODE="${WINDOW_OVERLAP_MODE:-custom}"
-
-# Keep multi-character span support available for spaces and connected units.
 MAX_TEXT_SPAN_CHARS="${MAX_TEXT_SPAN_CHARS:-3}"
 SPAN_MAX_CORE_CHARS_CAP="${SPAN_MAX_CORE_CHARS_CAP:-${MAX_TEXT_SPAN_CHARS}}"
 SPAN_CONNECTED_MAX_UNITS_PER_SPAN="${SPAN_CONNECTED_MAX_UNITS_PER_SPAN:-${MAX_TEXT_SPAN_CHARS}}"
@@ -83,5 +77,24 @@ export DATA_DIR NUM_SAMPLES EXPECTED_TEXT_CHARS
 export DATASET_TYPE SYNTHETIC_MANUSCRIPT_AUGMENT REAL_AUGMENT
 export WINDOW_SIZE STRIDE_RATIO WINDOW_OVERLAP_MODE
 export MAX_TEXT_SPAN_CHARS SPAN_MAX_CORE_CHARS_CAP SPAN_CONNECTED_MAX_UNITS_PER_SPAN
+
+has_gpu_allocation() {
+  local name value
+  for name in CUDA_VISIBLE_DEVICES SLURM_STEP_GPUS SLURM_JOB_GPUS SLURM_GPU_INDEX; do
+    value="${!name:-}"
+    if [[ -n "${value}" && "${value}" != "NoDevFiles" && "${value}" != "(null)" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# An interactive CPU Slurm session also defines SLURM_JOB_ID. The underlying
+# launcher must not mistake that for the requested GPU batch allocation.
+if [[ -n "${SLURM_JOB_ID:-}" ]] && ! has_gpu_allocation; then
+  echo "Detected CPU-only Slurm context ${SLURM_JOB_ID}; submitting the GPU batch job instead of starting torchrun locally."
+  unset SLURM_JOB_ID SLURM_STEP_ID SLURM_STEP_GPUS SLURM_JOB_GPUS \
+    SLURM_GPU_INDEX CUDA_VISIBLE_DEVICES
+fi
 
 exec bash "${PROJECT_DIR}/scripts/train/run_augmented_synthetic_27k.sh"
