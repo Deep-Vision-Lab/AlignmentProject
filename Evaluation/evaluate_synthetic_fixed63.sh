@@ -132,12 +132,28 @@ fi
 if command -v module >/dev/null 2>&1; then
   module load anaconda || true
 fi
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate "${CONDA_ENV}"
+command -v conda >/dev/null 2>&1 || {
+  echo "ERROR: conda is unavailable on the evaluation node." >&2
+  exit 2
+}
+
+PYTHON_RUN=(conda run --no-capture-output -n "${CONDA_ENV}" python)
+if ! "${PYTHON_RUN[@]}" - <<'PY'
+import sys
+import torch
+print(f"Evaluation Python: {sys.executable}")
+print(f"PyTorch: {torch.__version__}; CUDA available={torch.cuda.is_available()}")
+if not torch.cuda.is_available():
+    raise SystemExit("PyTorch cannot see the allocated CUDA GPU")
+PY
+then
+  echo "ERROR: ${CONDA_ENV} does not provide a CUDA-enabled PyTorch runtime on this node." >&2
+  exit 2
+fi
 
 mkdir -p "${OUTPUT_DIR}"
 
-python - \
+"${PYTHON_RUN[@]}" - \
   "${DATA_DIR}" \
   "${NUM_SAMPLES}" \
   "${DATASET_SPLIT_SEED}" \
@@ -246,7 +262,7 @@ export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 export TOKENIZERS_PARALLELISM=false
 
 print_config
-python -m Evaluation.eval_stroke_aware_synthetic \
+"${PYTHON_RUN[@]}" -m Evaluation.eval_stroke_aware_synthetic \
   --weights "${WEIGHTS}" \
   --device cuda \
   --data-dir "${DATA_DIR}" \
