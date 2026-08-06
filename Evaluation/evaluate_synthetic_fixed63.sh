@@ -5,7 +5,7 @@ set -a
 
 if [[ "$#" -ne 0 ]]; then
   echo "Usage: [WEIGHTS=<checkpoint>] bash Evaluation/evaluate_synthetic_fixed63.sh" >&2
-  echo "Optional: RUN_ID, DATA_DIR, N_SAMPLES, TEST_START, RESULTS_ROOT." >&2
+  echo "Optional: RUN_ID, DATA_DIR, N_SAMPLES, TEST_START, RESULTS_ROOT, CONDA_ENV_PYTHON." >&2
   exit 2
 fi
 
@@ -132,13 +132,45 @@ fi
 if command -v module >/dev/null 2>&1; then
   module load anaconda || true
 fi
-command -v conda >/dev/null 2>&1 || {
-  echo "ERROR: conda is unavailable on the evaluation node." >&2
-  exit 2
+
+resolve_python() {
+  local conda_base=""
+  local candidate=""
+  local -a candidates=()
+
+  [[ -n "${CONDA_ENV_PYTHON:-}" ]] && candidates+=("${CONDA_ENV_PYTHON}")
+  if [[ -n "${CONDA_PREFIX:-}" && "$(basename "${CONDA_PREFIX}")" == "${CONDA_ENV}" ]]; then
+    candidates+=("${CONDA_PREFIX}/bin/python")
+  fi
+  candidates+=(
+    "${HOME}/.conda/envs/${CONDA_ENV}/bin/python"
+    "${HOME}/miniconda3/envs/${CONDA_ENV}/bin/python"
+    "${HOME}/anaconda3/envs/${CONDA_ENV}/bin/python"
+  )
+  if command -v conda >/dev/null 2>&1; then
+    conda_base="$(conda info --base 2>/dev/null || true)"
+    [[ -n "${conda_base}" ]] && candidates+=("${conda_base}/envs/${CONDA_ENV}/bin/python")
+  fi
+
+  for candidate in "${candidates[@]}"; do
+    [[ -x "${candidate}" ]] || continue
+    if "${candidate}" -c 'import torch' >/dev/null 2>&1; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  echo "ERROR: could not find a Python executable with PyTorch for ${CONDA_ENV}." >&2
+  echo "Checked candidates:" >&2
+  printf '  %s\n' "${candidates[@]}" >&2
+  echo "Set CONDA_ENV_PYTHON to the working environment's bin/python path." >&2
+  return 1
 }
 
-PYTHON_RUN=(conda run --no-capture-output -n "${CONDA_ENV}" python)
-if ! "${PYTHON_RUN[@]}" - <<'PY'
+EVAL_PYTHON="$(resolve_python)"
+export CONDA_ENV_PYTHON="${EVAL_PYTHON}"
+
+if ! "${EVAL_PYTHON}" - <<'PY'
 import sys
 import torch
 print(f"Evaluation Python: {sys.executable}")
@@ -147,13 +179,13 @@ if not torch.cuda.is_available():
     raise SystemExit("PyTorch cannot see the allocated CUDA GPU")
 PY
 then
-  echo "ERROR: ${CONDA_ENV} does not provide a CUDA-enabled PyTorch runtime on this node." >&2
+  echo "ERROR: ${EVAL_PYTHON} cannot use the allocated CUDA GPU." >&2
   exit 2
 fi
 
 mkdir -p "${OUTPUT_DIR}"
 
-"${PYTHON_RUN[@]}" - \
+"${EVAL_PYTHON}" - \
   "${DATA_DIR}" \
   "${NUM_SAMPLES}" \
   "${DATASET_SPLIT_SEED}" \
@@ -262,7 +294,7 @@ export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 export TOKENIZERS_PARALLELISM=false
 
 print_config
-"${PYTHON_RUN[@]}" -m Evaluation.eval_stroke_aware_synthetic \
+"${EVAL_PYTHON}" -m Evaluation.eval_stroke_aware_synthetic \
   --weights "${WEIGHTS}" \
   --device cuda \
   --data-dir "${DATA_DIR}" \
