@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python generateDataArabicThreeFontsRandomized.py \
+python generateDataArabicThreeFontsFixed63.py \
   --font-dir "${FONT_DIR:-Fonts}" \
   --fonts \
     "${FONT_1:-Amiri-Regular.ttf}" \
     "${FONT_2:-Arslan_Wessam_B.ttf}" \
     "${FONT_3:-DejaVuSans-Bold.ttf}" \
   --font-count "${FONT_COUNT:-3}" \
-  --samples-per-font "${SAMPLES_PER_FONT:-3000}" \
-  --output-dir "${OUTPUT_DIR:-DataSet/Synthetic_Arabic_Three_Font_Augmented}" \
+  --samples-per-font "${SAMPLES_PER_FONT:-9000}" \
+  --output-dir "${OUTPUT_DIR:-DataSet/AugmentedArabicDataset63}" \
   --font-size "${FONT_SIZE:-84}" \
-  --min-text-chars "${MIN_TEXT_CHARS:-85}" \
-  --max-text-chars "${MAX_TEXT_CHARS:-120}" \
+  --min-text-chars 63 \
+  --max-text-chars 63 \
   --original-ratio "${ORIGINAL_RATIO:-0.10}" \
   --cross-injection-ratio "${CROSS_INJECTION_RATIO:-0.25}" \
   --aligned-unaligned-ratio "${ALIGNED_UNALIGNED_RATIO:-0.20}" \
