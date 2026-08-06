@@ -124,8 +124,8 @@ fi
 
 if [[ -f "${PROJECT_DIR}/train.py" ]] && grep -q -- '--dataset_type' "${PROJECT_DIR}/train.py"; then TRAINING_MODE=generic; NUM_GPUS="${NUM_GPUS:-2}"; elif [[ -f "${PROJECT_DIR}/run_train.sh" ]]; then TRAINING_MODE=legacy; NUM_GPUS="${NUM_GPUS:-1}"; else echo "ERROR: no supported training entry point on ${BRANCH_NAME}." >&2; exit 2; fi
 
-GPU_RESOURCE="${GPU_RESOURCE:-rtx_4090}"; PARTITION="${PARTITION:-rtx4090}"; ACCOUNT="${ACCOUNT:-jelsana}"; QOS="${QOS:-normal}"
-CPUS_PER_TASK="${CPUS_PER_TASK:-$((8 * NUM_GPUS))}"; MEMORY="${MEMORY:-96G}"; TIME_LIMIT="${TIME_LIMIT:-2-00:00:00}"; MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"; SLURM_JOB_NAME="${SLURM_JOB_NAME:-${JOB_ID}}"
+GPU_RESOURCE="${GPU_RESOURCE:-rtx_4090}"; PARTITION="${PARTITION:-rtx4090}";
+CPUS_PER_TASK="${CPUS_PER_TASK:-$((8 * NUM_GPUS))}"; TIME_LIMIT="${TIME_LIMIT:-2-00:00:00}"; MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"; SLURM_JOB_NAME="${SLURM_JOB_NAME:-${JOB_ID}}"
 printf '%s\n' "Augmented Arabic synthetic training" "  branch=${BRANCH_NAME}" "  dataset=${DATA_DIR}" "  pairs=${PAIR_COUNT}" "  samples=${NUM_SAMPLES}" "  epochs=${EPOCHS}" "  online augmentation=disabled" "  geometry=window ${WINDOW_SIZE}, stride ${STRIDE_PIXELS}, ${IMAGE_WINDOWS} windows" "  text spans=1-${EFFECTIVE_SPAN_CHARS} chars; worst transcript needs ${WORST_REQUIRED_SPANS}/${IMAGE_WINDOWS} positions" "  NCCL P2P=disabled" "  Slurm request=${NUM_GPUS} ${GPU_RESOURCE} GPU(s), 1 task, ${CPUS_PER_TASK} CPUs, ${MEMORY}" "  job id=${JOB_ID}"
 
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
