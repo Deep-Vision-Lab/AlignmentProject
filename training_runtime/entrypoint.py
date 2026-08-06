@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Internal branch-aware entrypoint for the optimized trainer.
-
-Users should run ``scripts/train/run_connected_subword_finetune.sh`` on the
-connected-subword experiment branches. ``model_backend.py`` remains the only
-active difference between the CNN+BiLSTM and ViT branches.
-"""
+"""Internal branch-aware entrypoint for optimized stroke-aware training."""
 from __future__ import annotations
 
 import os
@@ -15,13 +10,6 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-# ``run_connected_subword_finetune.sh`` intentionally uses a global span cap
-# above the legacy character-span limit of three windows. ``run_real_finetune.sh``
-# is shared with character-span experiments and currently resets the generic
-# safety flag before this entrypoint starts. Restore the connected-subword
-# permission before importing ``train_optimized`` because its configuration
-# validator runs at import time. The connected-subword loss still applies its
-# own per-unit limits in ``connected_subword_mode.py``; no loss term is changed.
 _tokenization_mode = os.environ.get(
     "SPAN_TOKENIZATION_MODE", "character_span"
 ).strip().lower()
@@ -33,6 +21,10 @@ if _tokenization_mode in {
 } and int(os.environ.get("MAX_WINDOWS_PER_SPAN", "3")) > 3:
     os.environ["ALLOW_UNSAFE_SPAN_CONFIG"] = "1"
 
+# This branch is stroke-aware even when the synthetic job uses Span-DTW rather
+# than renderer-box direct supervision.
+os.environ.setdefault("DIRECT_SUBWORD_STROKE_INPUT", "1")
+
 from scripts.train import train_optimized as optimized
 
 import model_backend
@@ -43,12 +35,14 @@ from connected_subword_mode import (
 from direct_subword_supervision import config as direct_subword_config
 from direct_subword_supervision import install as install_direct_subword_supervision
 from distributed_runtime_guard import install_distributed_runtime_guard
+from stroke_aware_preprocessing import install_training_preprocessing
 from unified_line_geometry import install_training_geometry
 
 
 _GEOMETRY_CONFIG = install_training_geometry()
 install_connected_subword_mode()
 install_connected_subword_training(optimized.base)
+install_training_preprocessing()
 
 model_backend.install_training_backend(optimized.base)
 optimized.prepare_raw_model = model_backend.prepare_visual_model
@@ -79,6 +73,12 @@ def _branch_model_config(stride, args):
             ),
             "span_tokenization_mode": os.environ.get(
                 "SPAN_TOKENIZATION_MODE", "character_span"
+            ),
+            "span_connected_max_units_per_span": int(
+                os.environ.get(
+                    "SPAN_CONNECTED_MAX_UNITS_PER_SPAN",
+                    os.environ.get("MAX_TEXT_SPAN_CHARS", "3"),
+                )
             ),
             "span_subword_boundary_token": "<SUBWORD_BOUNDARY>",
             "span_use_blank_transitions": os.environ.get(
