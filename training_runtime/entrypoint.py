@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -13,12 +14,15 @@ if str(PROJECT_DIR) not in sys.path:
 _tokenization_mode = os.environ.get(
     "SPAN_TOKENIZATION_MODE", "character_span"
 ).strip().lower()
-if _tokenization_mode in {
+_CONNECTED_MODES = {
     "connected_subword",
     "connected-subword",
     "joining_run",
     "joining-run",
-} and int(os.environ.get("MAX_WINDOWS_PER_SPAN", "3")) > 3:
+}
+if _tokenization_mode in _CONNECTED_MODES and int(
+    os.environ.get("MAX_WINDOWS_PER_SPAN", "3")
+) > 3:
     os.environ["ALLOW_UNSAFE_SPAN_CONFIG"] = "1"
 
 # This branch is stroke-aware even when the synthetic job uses Span-DTW rather
@@ -30,16 +34,16 @@ if os.environ.get("SYNTHETIC_MANUSCRIPT_AUGMENT", "1").strip().lower() in {
     "no",
     "off",
 }:
-    # The 27k launcher uses already-augmented PNGs. Keep the derived stroke
-    # channels, but do not apply a second stochastic augmentation pipeline.
     os.environ.setdefault("DIRECT_SUBWORD_STROKE_AUGMENT", "0")
 
 from scripts.train import train_optimized as optimized
 
 import model_backend
 from connected_subword_mode import (
+    connected_max_units_per_span,
     install_connected_subword_mode,
     install_connected_subword_training,
+    minimum_connected_spans,
 )
 from direct_subword_supervision import config as direct_subword_config
 from direct_subword_supervision import install as install_direct_subword_supervision
@@ -83,12 +87,7 @@ def _branch_model_config(stride, args):
             "span_tokenization_mode": os.environ.get(
                 "SPAN_TOKENIZATION_MODE", "character_span"
             ),
-            "span_connected_max_units_per_span": int(
-                os.environ.get(
-                    "SPAN_CONNECTED_MAX_UNITS_PER_SPAN",
-                    os.environ.get("MAX_TEXT_SPAN_CHARS", "3"),
-                )
-            ),
+            "span_connected_max_units_per_span": connected_max_units_per_span(),
             "span_subword_boundary_token": "<SUBWORD_BOUNDARY>",
             "span_use_blank_transitions": os.environ.get(
                 "SPAN_USE_BLANK_TRANSITIONS", "1"
@@ -114,5 +113,67 @@ def _branch_model_config(stride, args):
 optimized.base.model_config = _branch_model_config
 
 
+def _stride_pixels() -> int:
+    window = int(os.environ.get("WINDOW_SIZE", "32"))
+    mode = os.environ.get("WINDOW_OVERLAP_MODE", "custom").strip().lower()
+    if mode == "no_overlap":
+        return window
+    if mode == "light_overlap":
+        return max(1, window // 2)
+    if mode == "dense_overlap":
+        return max(1, window // 4)
+    if mode == "custom":
+        return max(1, int(window * float(os.environ.get("STRIDE_RATIO", "0.5"))))
+    raise RuntimeError(f"Unknown WINDOW_OVERLAP_MODE={mode!r}")
+
+
+def _validate_connected_capacity() -> None:
+    if _tokenization_mode not in _CONNECTED_MODES:
+        return
+    if int(os.environ.get("LOCAL_RANK", "0")) != 0:
+        return
+    data_dir = Path(os.environ.get("DATA_DIR", ""))
+    texts_dir = data_dir / "texts"
+    if not texts_dir.is_dir():
+        return
+    width = int(os.environ.get("LINE_WIDTH", "1024"))
+    window = int(os.environ.get("WINDOW_SIZE", "32"))
+    stride = _stride_pixels()
+    image_windows = ((width - window) // stride) + 1
+    sample_limit = int(os.environ.get("NUM_SAMPLES", "0"))
+    pattern = re.compile(r"text[12]_(\d+)\.txt$")
+    worst = (-1, -1, "")
+    seen = 0
+    max_units = connected_max_units_per_span()
+    for path in texts_dir.glob("text[12]_*.txt"):
+        match = pattern.fullmatch(path.name)
+        if match is None:
+            continue
+        if sample_limit > 0 and int(match.group(1)) > sample_limit:
+            continue
+        text = path.read_text(encoding="utf-8").strip()
+        required = minimum_connected_spans(text, max_units=max_units)
+        worst = max(worst, (required, len(text), path.name))
+        seen += 1
+    if not seen:
+        raise RuntimeError(f"No transcript files found under {texts_dir}")
+    print(
+        "connected_span_preflight "
+        f"max_units_per_span={max_units} image_windows={image_windows} "
+        f"worst_required_spans={worst[0]} worst_text_length={worst[1]} "
+        f"worst_file={worst[2]}",
+        flush=True,
+    )
+    if worst[0] > image_windows:
+        raise RuntimeError(
+            "Connected-subword configuration is infeasible before training: "
+            f"{worst[2]} needs {worst[0]} spans but only {image_windows} "
+            "image windows are available. Increase "
+            "SPAN_CONNECTED_MAX_UNITS_PER_SPAN while keeping the requested "
+            "STRIDE_RATIO unchanged."
+        )
+
+
 if __name__ == "__main__":
+    _validate_connected_capacity()
     optimized.main()
