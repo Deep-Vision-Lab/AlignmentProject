@@ -1,9 +1,4 @@
-"""Branch-selected visual model backend.
-
-This file is intentionally the only active model difference between the two
-canonical branches. Training, DDP, losses, data loading, evaluation, scripts,
-and optimization code remain shared.
-"""
+"""Branch-selected CNN+BiLSTM visual model backend."""
 from __future__ import annotations
 
 import os
@@ -84,16 +79,14 @@ def prepare_visual_model(model) -> None:
     from training_optimizations import prepare_raw_model
 
     prepare_raw_model(model)
-    if _flag("DIRECT_SUBWORD_SUPERVISION", False) and _flag(
-        "DIRECT_SUBWORD_STROKE_INPUT", True
-    ):
+    if _flag("DIRECT_SUBWORD_STROKE_INPUT", False):
         import embeddingModel as embedding_model_module
         from stroke_aware_preprocessing import (
             stroke_aware_window_ink_ratio_from_patches,
         )
 
-        # training_optimizations installs an ImageNet-RGB ink estimator. Replace
-        # it last because channel 0 now stores normalized soft ink directly.
+        # Channel 0 stores normalized soft ink directly. This replacement is
+        # required for both Span-DTW and direct-supervision training.
         embedding_model_module.window_ink_ratio_from_patches = (
             stroke_aware_window_ink_ratio_from_patches
         )
