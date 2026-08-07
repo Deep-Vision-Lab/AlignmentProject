@@ -70,6 +70,9 @@ _sw_dataset.group_split_pairs = _diverse_group_split
 _sw_dataset._group_split_pairs = _diverse_group_split
 
 from Evaluation import nw_runner as _implementation
+from Evaluation.nw_discontinuous_regions import install as install_discontinuous_regions
+
+install_discontinuous_regions(_implementation)
 
 globals().update(
     {
