@@ -1,0 +1,41 @@
+{
+  "metric_space": "horizontal_mask_columns",
+  "algorithm": "needleman_wunsch_component_aware_v2",
+  "visual_encoder": "vit",
+  "evaluated_pairs": 5400,
+  "evaluated_lines": 10800,
+  "no_prediction_pairs": 355,
+  "micro_counts": {
+    "tp": 4790986,
+    "fp": 608883,
+    "fn": 391709,
+    "tn": 5267622
+  },
+  "micro": {
+    "precision": 0.8872411534427965,
+    "recall": 0.924419824049071,
+    "iou": 0.8272332687222722,
+    "dice": 0.9054490008281547,
+    "f1": 0.9054490008281547
+  },
+  "macro_pair": {
+    "precision": 0.8327681430744448,
+    "recall": 0.9005895789327465,
+    "iou": 0.8118150566553248,
+    "dice": 0.8623615283480698,
+    "f1": 0.8623615283480698
+  },
+  "macro_line": {
+    "precision": 0.832566317925453,
+    "recall": 0.9007704540410365,
+    "iou": 0.8132481791737289,
+    "dice": 0.8622561842802984,
+    "f1": 0.8622561842802984
+  },
+  "dice_equals_f1_for_binary_masks": true,
+  "feature": "contextual",
+  "score_mode": "raw",
+  "score_clip": 4.0,
+  "threshold": 0.45,
+  "gap": -0.3
+}
