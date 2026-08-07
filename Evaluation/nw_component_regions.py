@@ -7,6 +7,7 @@ only for reporting metrics, never for selecting predicted components.
 """
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
@@ -127,9 +128,37 @@ def _merge_component_records(left, right, seeds):
     return _component_record(merged, seeds)
 
 
+def _global_path_score(steps, matrix: np.ndarray, gap_penalty: float) -> float:
+    """Reproduce the terminal NW traceback score without rerunning the DP."""
+    total = 0.0
+    for step in steps:
+        if step.index1 is not None and step.index2 is not None:
+            total += float(matrix[int(step.index1), int(step.index2)])
+        else:
+            total += float(gap_penalty)
+    return float(total)
+
+
+def _selected_coverage(components, shape: tuple[int, int]) -> float:
+    """Conservative fraction covered on both lines by selected components."""
+    if not components:
+        return 0.0
+    rows = {
+        int(row)
+        for component in components
+        for row, _ in component.get("path", ())
+    }
+    cols = {
+        int(col)
+        for component in components
+        for _, col in component.get("path", ())
+    }
+    n1, n2 = map(int, shape)
+    return float(min(len(rows) / max(1, n1), len(cols) / max(1, n2)))
+
+
 def _supported_runs(steps, match_scores: np.ndarray, gap_penalty: float):
     """Find up to three connected, distinctive components on the full NW path."""
-    del gap_penalty
     if not steps:
         return [], 0.0
 
@@ -150,7 +179,21 @@ def _supported_runs(steps, match_scores: np.ndarray, gap_penalty: float):
     merge_path_gap = max(0, _env_int("NW_COMPONENT_MERGE_PATH_GAP", 3))
     merge_window_gap = max(0, _env_int("NW_COMPONENT_MERGE_WINDOW_GAP", 2))
 
-    min_matches = max(1, _env_int("NW_COMPONENT_MIN_MATCHES", 4))
+    # The fixed-63 generator's smallest shared phrase is still a sustained text
+    # fragment, not a handful of windows.  Keep some slack for narrow Arabic
+    # glyphs, but reject tiny high-cosine islands such as pair_19.
+    min_matches = max(1, _env_int("NW_COMPONENT_MIN_MATCHES", 7))
+    min_span_windows = max(1, _env_int("NW_COMPONENT_MIN_SPAN_WINDOWS", 7))
+    min_span_fraction = max(
+        0.0, min(1.0, _env_float("NW_COMPONENT_MIN_SPAN_FRACTION", 0.13))
+    )
+    required_row_span = max(
+        min_span_windows, int(math.ceil(matrix.shape[0] * min_span_fraction))
+    )
+    required_col_span = max(
+        min_span_windows, int(math.ceil(matrix.shape[1] * min_span_fraction))
+    )
+
     min_seeds = max(1, _env_int("NW_COMPONENT_MIN_SEEDS", 2))
     min_mean_score = _env_float("NW_COMPONENT_MIN_MEAN_SCORE", 0.12)
     min_mean_z = _env_float("NW_COMPONENT_MIN_MEAN_MUTUAL_Z", 0.10)
@@ -160,6 +203,15 @@ def _supported_runs(steps, match_scores: np.ndarray, gap_penalty: float):
     min_quality = _env_float("NW_COMPONENT_MIN_QUALITY", 1.25)
     min_relative_quality = _env_float("NW_COMPONENT_MIN_RELATIVE_QUALITY", 0.35)
     max_components = max(1, _env_int("NW_COMPONENT_MAX_COMPONENTS", 3))
+
+    # A negative global score alone cannot veto local alignment because the
+    # dataset intentionally has unaligned context.  It becomes a veto only when
+    # the selected evidence is also tiny.  This is the pair_19 failure mode.
+    weak_global_score = _env_float("NW_COMPONENT_WEAK_GLOBAL_SCORE", -0.05)
+    weak_global_min_coverage = max(
+        0.0,
+        min(1.0, _env_float("NW_COMPONENT_WEAK_GLOBAL_MIN_COVERAGE", 0.16)),
+    )
 
     seeds = [
         item
@@ -199,6 +251,8 @@ def _supported_runs(steps, match_scores: np.ndarray, gap_penalty: float):
         component
         for component in components
         if len(component["path"]) >= min_matches
+        and int(component["row_span"]) >= required_row_span
+        and int(component["col_span"]) >= required_col_span
         and int(component["seed_count"]) >= min_seeds
         and float(component["mean_match_score"]) >= min_mean_score
         and float(component["mean_mutual_z"]) >= min_mean_z
@@ -236,6 +290,15 @@ def _supported_runs(steps, match_scores: np.ndarray, gap_penalty: float):
     credible.sort(key=lambda component: float(component["quality"]), reverse=True)
     credible = credible[:max_components]
     credible.sort(key=lambda component: int(component["step_start"]))
+
+    if not credible:
+        return [], 0.0
+
+    global_score = _global_path_score(steps, matrix, float(gap_penalty))
+    global_normalized = global_score / max(1, max(matrix.shape))
+    coverage = _selected_coverage(credible, matrix.shape)
+    if global_normalized < weak_global_score and coverage < weak_global_min_coverage:
+        return [], 0.0
 
     total_score = float(sum(float(component["score"]) for component in credible))
     return credible, total_score
