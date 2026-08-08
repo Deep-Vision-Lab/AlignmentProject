@@ -3,8 +3,13 @@ set -euo pipefail
 set -a
 
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
-ROOT="$(cd "$(dirname "${SCRIPT_PATH}")/.." && pwd)"
-ROOT="$(readlink -f "${ROOT}")"
+if [[ -n "${PROJECT_DIR:-}" && -d "${PROJECT_DIR}/Evaluation" && -f "${PROJECT_DIR}/model_backend.py" ]]; then
+  ROOT="$(readlink -f "${PROJECT_DIR}")"
+else
+  ROOT="$(cd "$(dirname "${SCRIPT_PATH}")/.." && pwd)"
+  ROOT="$(readlink -f "${ROOT}")"
+fi
+export PROJECT_DIR="${ROOT}"
 cd "${ROOT}"
 export PYTHONPATH="${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
@@ -27,10 +32,7 @@ resolve_python() {
   fi
   for candidate in "${candidates[@]}"; do
     [[ -x "${candidate}" ]] || continue
-    if "${candidate}" -c 'import torch' >/dev/null 2>&1; then
-      printf '%s\n' "${candidate}"
-      return 0
-    fi
+    if "${candidate}" -c 'import torch' >/dev/null 2>&1; then printf '%s\n' "${candidate}"; return 0; fi
   done
   echo "ERROR: no Python with PyTorch found for ${CONDA_ENV}" >&2
   return 1
@@ -39,18 +41,9 @@ PYTHON_BIN="$(resolve_python)"
 
 MODEL_NAME="$(${PYTHON_BIN} -c "import sys; sys.path.insert(0, r'${ROOT}'); import model_backend; print(model_backend.MODEL_NAME)")"
 case "${MODEL_NAME}" in
-  cnn_bilstm)
-    RUN_ID="${RUN_ID:-cnn_bilstm_augmented_fixed63_27k}"
-    MODEL_RESULT_TAG="training_speed_optimization"
-    ;;
-  vit)
-    RUN_ID="${RUN_ID:-vit_augmented_fixed63_27k}"
-    MODEL_RESULT_TAG="use_vit_encoder"
-    ;;
-  *)
-    RUN_ID="${RUN_ID:-${MODEL_NAME}}"
-    MODEL_RESULT_TAG="${MODEL_NAME}"
-    ;;
+  cnn_bilstm) RUN_ID="${RUN_ID:-cnn_bilstm_augmented_fixed63_27k}"; MODEL_RESULT_TAG="training_speed_optimization" ;;
+  vit) RUN_ID="${RUN_ID:-vit_augmented_fixed63_27k}"; MODEL_RESULT_TAG="use_vit_encoder" ;;
+  *) RUN_ID="${RUN_ID:-${MODEL_NAME}}"; MODEL_RESULT_TAG="${MODEL_NAME}" ;;
 esac
 
 if [[ -n "${WEIGHTS:-}" && ! -f "${WEIGHTS}" ]]; then
@@ -114,6 +107,7 @@ has_gpu_allocation() {
 print_config() {
   printf '%s\n' \
     "Mixed aligned/unaligned sanity evaluation" \
+    "  root               = ${ROOT}" \
     "  branch             = $(git branch --show-current 2>/dev/null || true)" \
     "  model              = ${MODEL_NAME}" \
     "  checkpoint         = ${WEIGHTS}" \
