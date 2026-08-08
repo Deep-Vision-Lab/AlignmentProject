@@ -23,6 +23,7 @@ printf '%s\n' \
   "  previews = ${OUTPUT_DIR}/previews" \
   "  summary  = ${OUTPUT_DIR}/preview_summary.json" \
   "  rows     = original + 1/2/3 shared injected regions" \
-  "  red      = injected real-handwriting regions" \
-  "  bbox     = not required for this visual-only fallback" \
-  "  warning  = inspection only; do not use estimated regions for training"
+  "  crop     = full line height; x spans selected subword run" \
+  "  red      = replaced full-height vertical strip" \
+  "  text     = full synchronized A/B transcript shown in PNG and .txt sidecar" \
+  "  warning  = inspection only until true bbox-to-line mapping is fixed"
