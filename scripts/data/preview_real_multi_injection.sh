@@ -11,7 +11,7 @@ SEED="${SEED:-42}"
 SOURCE_PAIRS="${SOURCE_PAIRS:-300}"
 PYTHON_BIN="${CONDA_ENV_PYTHON:-python}"
 
-"${PYTHON_BIN}" scripts/data/preview_real_multi_injection.py \
+"${PYTHON_BIN}" scripts/data/preview_real_multi_injection_visual.py \
   --data-dir "${DATA_DIR}" \
   --output-dir "${OUTPUT_DIR}" \
   --num-pairs "${NUM_PAIRS}" \
@@ -19,9 +19,10 @@ PYTHON_BIN="${CONDA_ENV_PYTHON:-python}"
   --seed "${SEED}"
 
 printf '%s\n' \
-  "Real multi-injection preview created." \
+  "Real multi-injection VISUAL preview created." \
   "  previews = ${OUTPUT_DIR}/previews" \
   "  summary  = ${OUTPUT_DIR}/preview_summary.json" \
   "  rows     = original + 1/2/3 shared injected regions" \
-  "  red      = injected real handwriting boxes" \
-  "  note     = page-bbox fallback is preview-only when exact line bbox lookup fails"
+  "  red      = injected real-handwriting regions" \
+  "  bbox     = not required for this visual-only fallback" \
+  "  warning  = inspection only; do not use estimated regions for training"
