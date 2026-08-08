@@ -30,7 +30,7 @@ GAP="${GAP:--0.30}"
 SAVE_PREDICTED_MASKS="${SAVE_PREDICTED_MASKS:-0}"
 COUNT_LABEL="${N_SAMPLES}"
 [[ "${N_SAMPLES}" == "0" ]] && COUNT_LABEL="all"
-OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_DIR}/Results/Evaluation/training_speed_optimization/Synthetic_Experiments/${RUN_ID}/NeedlemanWunsch_mask_metrics/test_start_${TEST_START}_count_${COUNT_LABEL}}"
+OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_DIR}/Results/Evaluation/training_speed_optimization/Synthetic_Experiments/${RUN_ID}/NeedlemanWunsch_mask_metrics_v3_local/test_start_${TEST_START}_count_${COUNT_LABEL}}"
 
 for name in NUM_SAMPLES N_SAMPLES TEST_START DATASET_SPLIT_SEED; do
   value="${!name}"
@@ -91,7 +91,11 @@ export NW_COMPONENT_MIN_SPAN_BALANCE="${NW_COMPONENT_MIN_SPAN_BALANCE:-0.55}"
 export NW_COMPONENT_MIN_QUALITY="${NW_COMPONENT_MIN_QUALITY:-1.25}"
 export NW_COMPONENT_MIN_RELATIVE_QUALITY="${NW_COMPONENT_MIN_RELATIVE_QUALITY:-0.35}"
 export NW_COMPONENT_MAX_COMPONENTS="${NW_COMPONENT_MAX_COMPONENTS:-3}"
-export NW_COMPONENT_WEAK_GLOBAL_SCORE="${NW_COMPONENT_WEAK_GLOBAL_SCORE:--0.05}"
+
+# Local-alignment policy: global NW may be negative because unrelated context
+# surrounds a real local shared phrase. Keep credible local components; tiny
+# accidental islands remain filtered by the component-v2 local constraints.
+export NW_COMPONENT_WEAK_GLOBAL_SCORE="${NW_COMPONENT_WEAK_GLOBAL_SCORE:--1000000.0}"
 export NW_COMPONENT_WEAK_GLOBAL_MIN_COVERAGE="${NW_COMPONENT_WEAK_GLOBAL_MIN_COVERAGE:-0.16}"
 
 CONDA_ENV="${CONDA_ENV:-manucripts_align}"
@@ -101,7 +105,7 @@ CPUS_PER_TASK="${CPUS_PER_TASK:-4}"
 MEMORY="${MEMORY:-32G}"
 TIME_LIMIT="${TIME_LIMIT:-12:00:00}"
 MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"
-EVAL_JOB_NAME="${EVAL_JOB_NAME:-eval_trainopt_maskmetrics}"
+EVAL_JOB_NAME="${EVAL_JOB_NAME:-eval_trainopt_maskmetrics_local}"
 
 has_gpu_allocation() {
   local name value
@@ -118,7 +122,7 @@ print_config() {
   local sample_text="${N_SAMPLES}"
   [[ "${N_SAMPLES}" == "0" ]] && sample_text="all remaining held-out test pairs"
   printf '%s\n' \
-    "Synthetic fixed-63 alignment-mask metrics" \
+    "Synthetic fixed-63 alignment-mask metrics (local policy)" \
     "  branch       = $(git branch --show-current 2>/dev/null || true)" \
     "  checkpoint   = ${WEIGHTS}" \
     "  dataset      = ${DATA_DIR}" \
@@ -129,6 +133,7 @@ print_config() {
     "  metrics      = precision, recall, IoU, Dice, F1" \
     "  metric space = horizontal mask columns" \
     "  feature      = ${FEATURE}" \
+    "  global veto  = disabled" \
     "  output       = ${OUTPUT_DIR}"
 }
 
