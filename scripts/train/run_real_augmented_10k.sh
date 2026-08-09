@@ -27,7 +27,9 @@ case "${MODEL_BACKEND}" in
     DEFAULT_JOB_ID="cnn_bilstm_real_aug10k"
     ;;
   vit)
-    DEFAULT_SOURCE_RUN="vit_augmented_fixed63_27k"
+    # The old vit_augmented_fixed63_27k folder is known to contain CNN+BiLSTM
+    # tensors.  Always prefer the clean branch-aware ViT pretraining run.
+    DEFAULT_SOURCE_RUN="vit_augmented_fixed63_27k_v2"
     DEFAULT_JOB_ID="vit_real_aug10k"
     ;;
   *)
@@ -44,9 +46,9 @@ CHECKPOINT_SELECTOR="${PROJECT_DIR}/scripts/train/select_compatible_pretrained.p
   exit 2
 }
 
-# Never trust a folder name alone.  Validate the actual image-model state-dict
-# keys before requesting GPUs.  With no explicit checkpoint, prefer the
-# canonical synthetic run and then scan other backend-named synthetic runs.
+# Never trust a folder name alone. Validate the actual image-model state-dict
+# keys before requesting GPUs. With no explicit checkpoint, prefer the clean
+# synthetic pretraining run and then scan other backend-named synthetic runs.
 if [[ -n "${PRETRAINED_WEIGHTS:-}" ]]; then
   PRETRAINED_WEIGHTS="$(python "${CHECKPOINT_SELECTOR}" \
     --weights-root "${PROJECT_DIR}/Weights" \
