@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Train the current branch on the validated 27,000-pair fixed-63 Arabic dataset.
-# This wrapper does not change the underlying Slurm resource configuration.
+# This wrapper validates the fixed-63 dataset and then uses the branch-aware
+# runtime so the active model_backend.py is installed before model creation.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -73,10 +74,22 @@ MAX_TEXT_SPAN_CHARS="${MAX_TEXT_SPAN_CHARS:-3}"
 SPAN_MAX_CORE_CHARS_CAP="${SPAN_MAX_CORE_CHARS_CAP:-${MAX_TEXT_SPAN_CHARS}}"
 SPAN_CONNECTED_MAX_UNITS_PER_SPAN="${SPAN_CONNECTED_MAX_UNITS_PER_SPAN:-${MAX_TEXT_SPAN_CHARS}}"
 
-export DATA_DIR NUM_SAMPLES EXPECTED_TEXT_CHARS
+MODEL_BACKEND="$(python - <<'PY'
+import model_backend
+print(model_backend.MODEL_NAME)
+PY
+)"
+EXPECTED_MODEL_BACKEND="${EXPECTED_MODEL_BACKEND:-${MODEL_BACKEND}}"
+if [[ "${MODEL_BACKEND}" != "${EXPECTED_MODEL_BACKEND}" ]]; then
+  echo "ERROR: active backend ${MODEL_BACKEND} does not match expected ${EXPECTED_MODEL_BACKEND}." >&2
+  exit 2
+fi
+
+export PROJECT_DIR DATA_DIR NUM_SAMPLES EXPECTED_TEXT_CHARS
 export DATASET_TYPE SYNTHETIC_MANUSCRIPT_AUGMENT REAL_AUGMENT
 export WINDOW_SIZE STRIDE_RATIO WINDOW_OVERLAP_MODE
 export MAX_TEXT_SPAN_CHARS SPAN_MAX_CORE_CHARS_CAP SPAN_CONNECTED_MAX_UNITS_PER_SPAN
+export MODEL_BACKEND EXPECTED_MODEL_BACKEND
 
 has_gpu_allocation() {
   local name value
@@ -95,4 +108,10 @@ if [[ -n "${SLURM_JOB_ID:-}" ]] && ! has_gpu_allocation; then
     SLURM_GPU_INDEX CUDA_VISIBLE_DEVICES
 fi
 
-exec bash "${PROJECT_DIR}/scripts/train/run_augmented_synthetic_27k.sh"
+BRANCH_AWARE_LAUNCHER="${PROJECT_DIR}/scripts/train/run_branch_aware_synthetic_27k.sh"
+[[ -f "${BRANCH_AWARE_LAUNCHER}" ]] || {
+  echo "ERROR: missing branch-aware synthetic launcher: ${BRANCH_AWARE_LAUNCHER}" >&2
+  exit 2
+}
+
+exec bash "${BRANCH_AWARE_LAUNCHER}"
