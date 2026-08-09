@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Branch-aware synthetic trainer.  Unlike the legacy synthetic fallback, this
+# Branch-aware synthetic trainer. Unlike the legacy synthetic fallback, this
 # always enters through training_runtime/entrypoint.py so model_backend.py is
 # installed before the visual model is constructed.
 set -euo pipefail
@@ -42,9 +42,31 @@ EPOCHS="${EPOCHS:-35}"
 WINDOW_SIZE="${WINDOW_SIZE:-32}"
 STRIDE_RATIO="${STRIDE_RATIO:-0.5}"
 WINDOW_OVERLAP_MODE="${WINDOW_OVERLAP_MODE:-custom}"
-MAX_TEXT_SPAN_CHARS="${MAX_TEXT_SPAN_CHARS:-3}"
+
+# The optimized truthful-visible-core runtime only supports 1-2 character
+# text cores. Keep the synthetic pretraining semantics identical to the real
+# fine-tuning path and reject unsafe overrides before requesting GPUs.
+MAX_TEXT_SPAN_CHARS="${MAX_TEXT_SPAN_CHARS:-2}"
+MAX_TEXT_TOKEN_CHARS="${MAX_TEXT_TOKEN_CHARS:-2}"
+MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-3}"
 SPAN_MAX_CORE_CHARS_CAP="${SPAN_MAX_CORE_CHARS_CAP:-${MAX_TEXT_SPAN_CHARS}}"
 SPAN_CONNECTED_MAX_UNITS_PER_SPAN="${SPAN_CONNECTED_MAX_UNITS_PER_SPAN:-${MAX_TEXT_SPAN_CHARS}}"
+SPAN_INCLUDE_SPACE_CONTEXT=0
+SPAN_ALLOW_CHARACTER_SPACE_SURFACES=0
+ALLOW_UNSAFE_SPAN_CONFIG=0
+
+[[ "${MAX_TEXT_SPAN_CHARS}" =~ ^[12]$ ]] || {
+  echo "ERROR: MAX_TEXT_SPAN_CHARS must be 1 or 2 for the optimized truthful-visible-core runtime; got ${MAX_TEXT_SPAN_CHARS}." >&2
+  exit 2
+}
+[[ "${MAX_TEXT_TOKEN_CHARS}" =~ ^[12]$ ]] || {
+  echo "ERROR: MAX_TEXT_TOKEN_CHARS must be 1 or 2; got ${MAX_TEXT_TOKEN_CHARS}." >&2
+  exit 2
+}
+[[ "${MAX_WINDOWS_PER_SPAN}" =~ ^[1-3]$ ]] || {
+  echo "ERROR: MAX_WINDOWS_PER_SPAN must be between 1 and 3; got ${MAX_WINDOWS_PER_SPAN}." >&2
+  exit 2
+}
 
 DATASET_TYPE=synthetic
 SYNTHETIC_MANUSCRIPT_AUGMENT=0
@@ -127,7 +149,9 @@ HF_HOME="$(resolve_hf_home)" || {
 
 export PROJECT_DIR DATA_DIR MODEL_BACKEND EXPECTED_MODEL_BACKEND JOB_ID
 export NUM_SAMPLES EPOCHS WINDOW_SIZE STRIDE_RATIO WINDOW_OVERLAP_MODE
-export MAX_TEXT_SPAN_CHARS SPAN_MAX_CORE_CHARS_CAP SPAN_CONNECTED_MAX_UNITS_PER_SPAN
+export MAX_TEXT_SPAN_CHARS MAX_TEXT_TOKEN_CHARS MAX_WINDOWS_PER_SPAN
+export SPAN_MAX_CORE_CHARS_CAP SPAN_CONNECTED_MAX_UNITS_PER_SPAN
+export SPAN_INCLUDE_SPACE_CONTEXT SPAN_ALLOW_CHARACTER_SPACE_SURFACES ALLOW_UNSAFE_SPAN_CONFIG
 export DATASET_TYPE SYNTHETIC_MANUSCRIPT_AUGMENT REAL_AUGMENT AUGMENT
 export NUM_GPUS CONDA_ENV GPU_RESOURCE PARTITION CPUS_PER_TASK MEMORY TIME_LIMIT
 export SLURM_JOB_NAME MAIL_USER NCCL_P2P_DISABLE NCCL_SHM_DISABLE
@@ -147,6 +171,9 @@ print_config() {
     "  epochs=${EPOCHS}" \
     "  window=${WINDOW_SIZE}" \
     "  stride ratio=${STRIDE_RATIO}" \
+    "  max text span chars=${MAX_TEXT_SPAN_CHARS}" \
+    "  max text token chars=${MAX_TEXT_TOKEN_CHARS}" \
+    "  max windows/span=${MAX_WINDOWS_PER_SPAN}" \
     "  online augmentation=disabled" \
     "  GPUs=${GPU_RESOURCE}:${NUM_GPUS}" \
     "  time limit=${TIME_LIMIT}" \
