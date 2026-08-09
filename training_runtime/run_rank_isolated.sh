@@ -102,4 +102,10 @@ if [[ "$#" -eq 0 ]]; then
   exit 88
 fi
 
-exec python "$@"
+python_bin="${TRAIN_PYTHON:-python}"
+[[ -x "${python_bin}" ]] || {
+  echo "ERROR rank_wrapper: training Python is not executable: ${python_bin}" >&2
+  exit 89
+}
+echo "rank_wrapper python=${python_bin}" >&2
+exec "${python_bin}" "$@"
