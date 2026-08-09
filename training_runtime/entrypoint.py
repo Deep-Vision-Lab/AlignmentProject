@@ -32,6 +32,21 @@ model_backend.install_training_backend(optimized.base)
 optimized.prepare_raw_model = model_backend.prepare_visual_model
 install_distributed_runtime_guard(optimized.base)
 
+# The standalone real+augmentation dataset already contains a leakage-safe
+# split. Patch only the real loader function used by train.py so DDP sampler
+# construction remains unchanged while the loader itself reads the explicit
+# train/valid/test manifests instead of re-splitting dataset_manifest.jsonl.
+if os.environ.get("REAL_USE_EXPLICIT_SPLIT_MANIFESTS", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}:
+    import AugmentedRealDataLoader as real_loader
+    from PreAugmentedRealDataLoader import build_dataloaders as explicit_real_build_dataloaders
+
+    real_loader.build_dataloaders = explicit_real_build_dataloaders
+
 _original_model_config = optimized.base.model_config
 
 
@@ -53,6 +68,10 @@ def _branch_model_config(stride, args):
             "distributed_timeout_seconds": int(
                 os.environ.get("DIST_TIMEOUT_SECONDS", "7200")
             ),
+            "explicit_real_split_manifests": os.environ.get(
+                "REAL_USE_EXPLICIT_SPLIT_MANIFESTS", "0"
+            ).strip().lower()
+            in {"1", "true", "yes", "on"},
         }
     )
     return config
