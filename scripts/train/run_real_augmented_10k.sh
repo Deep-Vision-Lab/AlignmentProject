@@ -37,18 +37,29 @@ case "${MODEL_BACKEND}" in
 esac
 
 JOB_ID="${JOB_ID:-${DEFAULT_JOB_ID}}"
-if [[ -z "${PRETRAINED_WEIGHTS:-}" ]]; then
-  for candidate in \
-    "${PROJECT_DIR}/Weights/${DEFAULT_SOURCE_RUN}/model_best.pth" \
-    "${PROJECT_DIR}/Weights/${DEFAULT_SOURCE_RUN}/model_latest.pth" \
-    "${PROJECT_DIR}/Weights/${DEFAULT_SOURCE_RUN}/checkpoint_latest.pth"; do
-    if [[ -f "${candidate}" ]]; then
-      PRETRAINED_WEIGHTS="${candidate}"
-      break
-    fi
-  done
+WINDOW_SIZE="${WINDOW_SIZE:-32}"
+CHECKPOINT_SELECTOR="${PROJECT_DIR}/scripts/train/select_compatible_pretrained.py"
+[[ -f "${CHECKPOINT_SELECTOR}" ]] || {
+  echo "ERROR: checkpoint selector missing: ${CHECKPOINT_SELECTOR}" >&2
+  exit 2
+}
+
+# Never trust a folder name alone.  Validate the actual image-model state-dict
+# keys before requesting GPUs.  With no explicit checkpoint, prefer the
+# canonical synthetic run and then scan other backend-named synthetic runs.
+if [[ -n "${PRETRAINED_WEIGHTS:-}" ]]; then
+  PRETRAINED_WEIGHTS="$(python "${CHECKPOINT_SELECTOR}" \
+    --weights-root "${PROJECT_DIR}/Weights" \
+    --backend "${MODEL_BACKEND}" \
+    --window-size "${WINDOW_SIZE}" \
+    --checkpoint "${PRETRAINED_WEIGHTS}")"
+else
+  PRETRAINED_WEIGHTS="$(python "${CHECKPOINT_SELECTOR}" \
+    --weights-root "${PROJECT_DIR}/Weights" \
+    --backend "${MODEL_BACKEND}" \
+    --window-size "${WINDOW_SIZE}" \
+    --preferred-dir "${DEFAULT_SOURCE_RUN}")"
 fi
-: "${PRETRAINED_WEIGHTS:?Could not find the synthetic pretrained checkpoint for ${MODEL_BACKEND}. Set PRETRAINED_WEIGHTS explicitly.}"
 PRETRAINED_WEIGHTS="$(readlink -f "${PRETRAINED_WEIGHTS}")"
 
 # The dataset already contains the bbox-strip augmentation physically. Load the
@@ -66,7 +77,7 @@ REAL_MANIFEST_NAME=dataset_manifest.jsonl
 WANDB_PROJECT="${WANDB_PROJECT:-alignment-real-aug10k}"
 TIME_LIMIT="${TIME_LIMIT:-3-00:00:00}"
 
-export PROJECT_DIR DATA_DIR MODEL_BACKEND JOB_ID PRETRAINED_WEIGHTS
+export PROJECT_DIR DATA_DIR MODEL_BACKEND JOB_ID PRETRAINED_WEIGHTS WINDOW_SIZE
 export AUGMENT REAL_AUGMENT REAL_USE_EXPLICIT_SPLIT_MANIFESTS
 export REAL_TRAIN_SAMPLES_PER_EPOCH NUM_SAMPLES REAL_DATASET_LABELS
 export REAL_MIN_TEXT_SCORE REAL_SPLIT_BY_PAIR_ID REAL_MANIFEST_NAME WANDB_PROJECT TIME_LIMIT
