@@ -51,7 +51,7 @@ fi
 : "${PRETRAINED_WEIGHTS:?Could not find the synthetic pretrained checkpoint for ${MODEL_BACKEND}. Set PRETRAINED_WEIGHTS explicitly.}"
 PRETRAINED_WEIGHTS="$(readlink -f "${PRETRAINED_WEIGHTS}")"
 
-# The dataset already contains the bbox-strip augmentation physically.  Load the
+# The dataset already contains the bbox-strip augmentation physically. Load the
 # explicit train/valid/test manifests written by the builder and do not re-split
 # or add another online augmentation layer.
 AUGMENT=0
@@ -64,11 +64,12 @@ REAL_MIN_TEXT_SCORE=0.0
 REAL_SPLIT_BY_PAIR_ID=0
 REAL_MANIFEST_NAME=dataset_manifest.jsonl
 WANDB_PROJECT="${WANDB_PROJECT:-alignment-real-aug10k}"
+TIME_LIMIT="${TIME_LIMIT:-3-00:00:00}"
 
 export PROJECT_DIR DATA_DIR MODEL_BACKEND JOB_ID PRETRAINED_WEIGHTS
 export AUGMENT REAL_AUGMENT REAL_USE_EXPLICIT_SPLIT_MANIFESTS
 export REAL_TRAIN_SAMPLES_PER_EPOCH NUM_SAMPLES REAL_DATASET_LABELS
-export REAL_MIN_TEXT_SCORE REAL_SPLIT_BY_PAIR_ID REAL_MANIFEST_NAME WANDB_PROJECT
+export REAL_MIN_TEXT_SCORE REAL_SPLIT_BY_PAIR_ID REAL_MANIFEST_NAME WANDB_PROJECT TIME_LIMIT
 
 has_gpu_allocation() {
   local name value
@@ -97,6 +98,7 @@ printf '%s\n' \
   "  train samples/epoch=${REAL_TRAIN_SAMPLES_PER_EPOCH}" \
   "  online augmentation=disabled" \
   "  pretrained=${PRETRAINED_WEIGHTS}" \
+  "  time limit=${TIME_LIMIT}" \
   "  job id=${JOB_ID}"
 
 exec bash "${PROJECT_DIR}/scripts/train/run_real_finetune.sh"
