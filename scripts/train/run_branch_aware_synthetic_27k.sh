@@ -79,6 +79,26 @@ RANK_WRAPPER="${PROJECT_DIR}/training_runtime/run_rank_isolated.sh"
 [[ -f "${ENTRYPOINT}" ]] || { echo "ERROR: missing ${ENTRYPOINT}" >&2; exit 2; }
 [[ -f "${RANK_WRAPPER}" ]] || { echo "ERROR: missing ${RANK_WRAPPER}" >&2; exit 2; }
 
+resolve_env_prefix() {
+  local candidate
+  for candidate in \
+    "${CONDA_PREFIX:-}" \
+    "${HOME}/.conda/envs/${CONDA_ENV}" \
+    "${HOME}/miniconda3/envs/${CONDA_ENV}" \
+    "${HOME}/anaconda3/envs/${CONDA_ENV}"; do
+    [[ -n "${candidate}" ]] || continue
+    [[ -x "${candidate}/bin/python" && -x "${candidate}/bin/torchrun" ]] || continue
+    if "${candidate}/bin/python" - <<'PY' >/dev/null 2>&1
+import torch, transformers, jax
+PY
+    then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 resolve_hf_home() {
   local model="${ARABIC_TEXT_MODEL_NAME:-aubmindlab/bert-base-arabertv02}"
   local slug="models--${model//\//--}"
@@ -152,11 +172,18 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   exit 0
 fi
 
-if command -v module >/dev/null 2>&1; then module load anaconda || true; fi
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate "${CONDA_ENV}"
+ENV_PREFIX="$(resolve_env_prefix)" || {
+  echo "ERROR: could not find a usable conda environment '${CONDA_ENV}' with torch, transformers, and jax." >&2
+  echo "Checked: ${CONDA_PREFIX:-<unset>}, ${HOME}/.conda/envs/${CONDA_ENV}, ${HOME}/miniconda3/envs/${CONDA_ENV}, ${HOME}/anaconda3/envs/${CONDA_ENV}" >&2
+  exit 2
+}
+TRAIN_PYTHON="${ENV_PREFIX}/bin/python"
+TORCHRUN_BIN="${ENV_PREFIX}/bin/torchrun"
+export ENV_PREFIX TRAIN_PYTHON TORCHRUN_BIN
+export PATH="${ENV_PREFIX}/bin:${PATH}"
+hash -r
 
-ACTIVE_MODEL_BACKEND="$(python - <<'PY'
+ACTIVE_MODEL_BACKEND="$(${TRAIN_PYTHON} - <<'PY'
 import model_backend
 print(model_backend.MODEL_NAME)
 PY
@@ -182,11 +209,12 @@ TRAIN_ARGS=(
 )
 
 print_config
-python -c "import torch, transformers, jax, model_backend; print(f'torch={torch.__version__} transformers={transformers.__version__} jax={jax.__version__} backend={model_backend.MODEL_NAME}')"
+printf '%s\n' "  env prefix=${ENV_PREFIX}" "  python=${TRAIN_PYTHON}" "  torchrun=${TORCHRUN_BIN}"
+"${TRAIN_PYTHON}" -c "import torch, transformers, jax, model_backend; print(f'torch={torch.__version__} transformers={transformers.__version__} jax={jax.__version__} backend={model_backend.MODEL_NAME}')"
 nvidia-smi -L || true
 
 if (( NUM_GPUS > 1 )); then
-  exec torchrun \
+  exec "${TORCHRUN_BIN}" \
     --standalone \
     --nnodes=1 \
     --nproc_per_node="${NUM_GPUS}" \
