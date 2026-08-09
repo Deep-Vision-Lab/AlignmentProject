@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fine-tune the current branch backend on the normalized real+injection dataset.
+# Fine-tune the current branch backend on the already-built real+injection 10K dataset.
 set -euo pipefail
 set -a
 
@@ -7,11 +7,11 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${PROJECT_DIR}"
 
-DATA_DIR="${DATA_DIR:-${PROJECT_DIR}/DataSet/ArabicDatasetRealAug10KOneLine}"
+DATA_DIR="${DATA_DIR:-${PROJECT_DIR}/DataSet/ArabicDatasetRealAug10K}"
 DATA_DIR="$(readlink -f "${DATA_DIR}")"
 for manifest in dataset_manifest.jsonl train_manifest.jsonl valid_manifest.jsonl test_manifest.jsonl; do
   [[ -f "${DATA_DIR}/${manifest}" ]] || {
-    echo "ERROR: missing ${DATA_DIR}/${manifest}. Build and normalize the real augmented dataset first." >&2
+    echo "ERROR: missing ${DATA_DIR}/${manifest}. Build ArabicDatasetRealAug10K first." >&2
     exit 2
   }
 done
@@ -51,6 +51,9 @@ fi
 : "${PRETRAINED_WEIGHTS:?Could not find the synthetic pretrained checkpoint for ${MODEL_BACKEND}. Set PRETRAINED_WEIGHTS explicitly.}"
 PRETRAINED_WEIGHTS="$(readlink -f "${PRETRAINED_WEIGHTS}")"
 
+# The dataset already contains the bbox-strip augmentation physically.  Load the
+# explicit train/valid/test manifests written by the builder and do not re-split
+# or add another online augmentation layer.
 AUGMENT=0
 REAL_AUGMENT=0
 REAL_USE_EXPLICIT_SPLIT_MANIFESTS=1
@@ -85,7 +88,7 @@ if [[ -n "${SLURM_JOB_ID:-}" ]] && ! has_gpu_allocation; then
 fi
 
 printf '%s\n' \
-  "Real+augmented one-line training" \
+  "Real+augmented 10K training" \
   "  backend=${MODEL_BACKEND}" \
   "  dataset=${DATA_DIR}" \
   "  train manifest=${DATA_DIR}/train_manifest.jsonl" \
