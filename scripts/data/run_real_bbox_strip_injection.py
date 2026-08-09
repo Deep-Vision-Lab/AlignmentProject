@@ -27,7 +27,7 @@ def _load_with_flat_page_fallback(image_path):
     if fallback.status == "ok" and fallback.boxes:
         print(
             f"[real-bbox] recovered {len(fallback.boxes)} subword boxes for "
-            f"{Path(image_path).name} via {fallback.source}",
+            f"{Path(image_path).name} via {fallback.sheet}",
             file=sys.stderr,
         )
         return fallback
@@ -37,10 +37,7 @@ def _load_with_flat_page_fallback(image_path):
     fallback_detail = str(fallback.error or "")
     if fallback_detail:
         detail = f"{detail}; flat-page fallback: {fallback_detail}" if detail else fallback_detail
-    try:
-        return type(result)(result.boxes, result.workbook, result.source, result.status, detail)
-    except Exception:
-        return result
+    return type(result)(result.boxes, result.workbook, result.sheet, result.status, detail)
 
 
 standard_bbox.load_json_annotations = _load_with_flat_page_fallback
