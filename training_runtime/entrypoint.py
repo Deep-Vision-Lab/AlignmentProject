@@ -21,6 +21,7 @@ from scripts.train import train_optimized as optimized
 
 import model_backend
 from distributed_runtime_guard import install_distributed_runtime_guard
+from training_stability import install_training_stability
 from unified_line_geometry import install_training_geometry
 
 
@@ -59,6 +60,7 @@ def _branch_model_config(stride, args):
             in {"1", "true", "yes", "on"},
         }
     )
+    install_training_stability(optimized.base, config, args.job_id)
     return config
 
 
