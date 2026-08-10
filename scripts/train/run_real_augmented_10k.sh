@@ -28,7 +28,7 @@ case "${MODEL_BACKEND}" in
     ;;
   vit)
     # The old vit_augmented_fixed63_27k folder is known to contain CNN+BiLSTM
-    # tensors.  Always prefer the clean branch-aware ViT pretraining run.
+    # tensors. Always prefer the clean branch-aware ViT pretraining run.
     DEFAULT_SOURCE_RUN="vit_augmented_fixed63_27k_v2"
     DEFAULT_JOB_ID="vit_real_aug10k"
     ;;
@@ -66,11 +66,13 @@ PRETRAINED_WEIGHTS="$(readlink -f "${PRETRAINED_WEIGHTS}")"
 
 # The dataset already contains the bbox-strip augmentation physically. Load the
 # explicit train/valid/test manifests written by the builder and do not re-split
-# or add another online augmentation layer.
+# or add another online augmentation layer. Keep the full feasible training pool,
+# but draw a fresh random subset each epoch when the requested epoch size is
+# smaller than that pool.
 AUGMENT=0
 REAL_AUGMENT=0
 REAL_USE_EXPLICIT_SPLIT_MANIFESTS=1
-REAL_TRAIN_SAMPLES_PER_EPOCH="${REAL_TRAIN_SAMPLES_PER_EPOCH:-10000}"
+REAL_TRAIN_SAMPLES_PER_EPOCH="${REAL_TRAIN_SAMPLES_PER_EPOCH:-6000}"
 NUM_SAMPLES="${NUM_SAMPLES:-10000}"
 REAL_DATASET_LABELS="${REAL_DATASET_LABELS:-high_match,medium_match}"
 REAL_MIN_TEXT_SCORE=0.0
@@ -109,6 +111,7 @@ printf '%s\n' \
   "  valid manifest=${DATA_DIR}/valid_manifest.jsonl" \
   "  test manifest=${DATA_DIR}/test_manifest.jsonl" \
   "  train samples/epoch=${REAL_TRAIN_SAMPLES_PER_EPOCH}" \
+  "  sampling=epoch-random subset when target < feasible train pool" \
   "  online augmentation=disabled" \
   "  pretrained=${PRETRAINED_WEIGHTS}" \
   "  time limit=${TIME_LIMIT}" \
