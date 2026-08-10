@@ -78,10 +78,68 @@ _validate_backend_identity()
 # before the optimized trainer constructs any train/validation/test loaders.
 _GEOMETRY_CONFIG = install_training_geometry()
 
+# Do not rely only on replacing train.EmbeddingModel. The generic trainer owns a
+# build_image_embedding() helper and that indirection allowed a CNN constructor
+# to survive in a ViT run. Replace the builder itself with the active branch
+# backend so model construction is unambiguous.
+def _branch_build_image_embedding(stride):
+    P = optimized.base.P
+    return model_backend.build_visual_model(
+        window_size=P.window_size,
+        stride=stride,
+        vector_size=P.vector_size,
+        device=P.device,
+        use_flip=(P.lang.lower() == "arabic"),
+        use_bilstm=getattr(P, "use_bilstm", True),
+        bilstm_layers=getattr(P, "bilstm_layers", 2),
+        bilstm_hidden_dim=getattr(P, "bilstm_hidden_dim", None),
+        use_local_grouping=getattr(P, "use_local_window_grouping", True),
+        local_group_size=getattr(P, "local_window_group_size", 3),
+    )
+
+
 model_backend.install_training_backend(optimized.base)
+optimized.base.build_image_embedding = _branch_build_image_embedding
 optimized.prepare_raw_model = model_backend.prepare_visual_model
 install_distributed_runtime_guard(optimized.base)
 install_epoch_subset_sampling(optimized.base)
+
+# Validate the freshly constructed architecture before attempting to load any
+# pretrained/resume checkpoint. This converts a huge load_state_dict mismatch
+# into an immediate, precise backend-construction error.
+_original_load_initial_states = optimized.base._load_initial_states
+
+
+def _load_initial_states_checked(args, model, text_encoder):
+    backend = str(model_backend.MODEL_NAME).strip().lower()
+    keys = tuple(model.state_dict().keys())
+    has_vit = any(key.startswith("vit_encoder.") for key in keys)
+    has_cnn = any(key.startswith("cnn_encoder.") for key in keys)
+    has_bilstm = any(key.startswith("sequence_encoder.bilstm.") for key in keys)
+
+    if backend == "vit" and (not has_vit or has_cnn or has_bilstm):
+        raise RuntimeError(
+            "ViT backend constructed the wrong visual model before checkpoint load: "
+            f"has_vit={has_vit} has_cnn={has_cnn} has_bilstm={has_bilstm}."
+        )
+    if backend == "cnn_bilstm" and (not has_cnn or not has_bilstm or has_vit):
+        raise RuntimeError(
+            "CNN+BiLSTM backend constructed the wrong visual model before checkpoint load: "
+            f"has_vit={has_vit} has_cnn={has_cnn} has_bilstm={has_bilstm}."
+        )
+
+    if optimized.base.CTX.is_main:
+        print(
+            "visual_builder "
+            f"backend={backend} model_class={model.__class__.__name__} "
+            f"has_vit={int(has_vit)} has_cnn={int(has_cnn)} "
+            f"has_bilstm={int(has_bilstm)}",
+            flush=True,
+        )
+    return _original_load_initial_states(args, model, text_encoder)
+
+
+optimized.base._load_initial_states = _load_initial_states_checked
 
 _original_model_config = optimized.base.model_config
 
@@ -110,7 +168,6 @@ def _branch_model_config(stride, args):
             in {"1", "true", "yes", "on"},
         }
     )
-
     install_training_stability(optimized.base, config, args.job_id)
     return config
 
