@@ -44,7 +44,7 @@ PY
 # Canonical experiment settings
 # ---------------------------------------------------------------------------
 NUM_GPUS="${NUM_GPUS:-2}"
-EFFECTIVE_GLOBAL_BATCH_SIZE="${EFFECTIVE_GLOBAL_BATCH_SIZE:-${GLOBAL_BATCH_SIZE:-64}}"
+EFFECTIVE_GLOBAL_BATCH_SIZE="${EFFECTIVE_GLOBAL_BATCH_SIZE:-${GLOBAL_BATCH_SIZE:-128}}"
 case "${MODEL_BACKEND}" in
   cnn_bilstm) DEFAULT_ACCUMULATION_STEPS=1 ;;
   vit) DEFAULT_ACCUMULATION_STEPS=4 ;;
@@ -285,6 +285,7 @@ print_config() {
     "  checkpoint             = ${PRETRAINED_WEIGHTS}" \
     "  GPUs                   = ${GPU_RESOURCE}:${NUM_GPUS}" \
     "  per-GPU micro-batch    = ${BATCH_SIZE}" \
+    "  micro global batch     = ${MICRO_GLOBAL_BATCH_SIZE}" \
     "  accumulation steps     = ${GRADIENT_ACCUMULATION_STEPS}" \
     "  effective global batch = ${EFFECTIVE_GLOBAL_BATCH_SIZE}" \
     "  epochs                 = ${EPOCHS}" \
