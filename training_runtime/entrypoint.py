@@ -21,6 +21,7 @@ from scripts.train import train_optimized as optimized
 
 import model_backend
 from distributed_runtime_guard import install_distributed_runtime_guard
+from training_stability import install_training_stability
 from unified_line_geometry import install_training_geometry
 
 
@@ -59,6 +60,11 @@ def _branch_model_config(stride, args):
             in {"1", "true", "yes", "on"},
         }
     )
+
+    # Install the numerical guard only after the final branch-aware config is
+    # known. The optimized train() closure resolves train_one_epoch dynamically,
+    # so this replacement is active before the first optimizer step.
+    install_training_stability(optimized.base, config, args.job_id)
     return config
 
 
