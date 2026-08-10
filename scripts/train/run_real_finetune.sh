@@ -44,7 +44,7 @@ PY
 # Canonical experiment settings
 # ---------------------------------------------------------------------------
 NUM_GPUS="${NUM_GPUS:-2}"
-EFFECTIVE_GLOBAL_BATCH_SIZE="${EFFECTIVE_GLOBAL_BATCH_SIZE:-${GLOBAL_BATCH_SIZE:-128}}"
+EFFECTIVE_GLOBAL_BATCH_SIZE="${EFFECTIVE_GLOBAL_BATCH_SIZE:-${GLOBAL_BATCH_SIZE:-64}}"
 case "${MODEL_BACKEND}" in
   cnn_bilstm) DEFAULT_ACCUMULATION_STEPS=1 ;;
   vit) DEFAULT_ACCUMULATION_STEPS=4 ;;
