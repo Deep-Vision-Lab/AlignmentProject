@@ -71,8 +71,12 @@ _sw_dataset._group_split_pairs = _diverse_group_split
 
 from Evaluation import nw_runner as _implementation
 from Evaluation.nw_component_regions import install as install_component_regions
+from Evaluation.real_subword_box_patch import install as install_real_subword_box_patch
 
+# Interpret the fixed global NW traceback as up to three supported regions, then
+# score those predictions against the real bbox.json annotations when available.
 install_component_regions(_implementation)
+install_real_subword_box_patch(_implementation)
 
 globals().update(
     {
