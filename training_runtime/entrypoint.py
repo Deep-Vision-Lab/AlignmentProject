@@ -21,6 +21,7 @@ from scripts.train import train_optimized as optimized
 
 import model_backend
 from distributed_runtime_guard import install_distributed_runtime_guard
+from epoch_subset_sampling import install_epoch_subset_sampling
 from training_stability import install_training_stability
 from unified_line_geometry import install_training_geometry
 
@@ -32,6 +33,7 @@ _GEOMETRY_CONFIG = install_training_geometry()
 model_backend.install_training_backend(optimized.base)
 optimized.prepare_raw_model = model_backend.prepare_visual_model
 install_distributed_runtime_guard(optimized.base)
+install_epoch_subset_sampling(optimized.base)
 
 _original_model_config = optimized.base.model_config
 
