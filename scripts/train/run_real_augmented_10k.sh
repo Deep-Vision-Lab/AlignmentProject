@@ -7,6 +7,14 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${PROJECT_DIR}"
 
+EXPECTED_BRANCH="agent/training-speed-optimization"
+CURRENT_BRANCH="$(git branch --show-current)"
+if [[ "${CURRENT_BRANCH}" != "${EXPECTED_BRANCH}" ]]; then
+  echo "ERROR: CNN+BiLSTM real training must be launched from ${EXPECTED_BRANCH}; current branch=${CURRENT_BRANCH}." >&2
+  echo "ERROR: do not switch the shared checkout while this Slurm job is queued or running." >&2
+  exit 2
+fi
+
 DATA_DIR="${DATA_DIR:-${PROJECT_DIR}/DataSet/ArabicDatasetRealAug10K}"
 DATA_DIR="$(readlink -f "${DATA_DIR}")"
 for manifest in dataset_manifest.jsonl train_manifest.jsonl valid_manifest.jsonl test_manifest.jsonl; do
@@ -21,21 +29,17 @@ import model_backend
 print(model_backend.MODEL_NAME)
 PY
 )"
-case "${MODEL_BACKEND}" in
-  cnn_bilstm)
-    DEFAULT_SOURCE_RUN="cnn_bilstm_augmented_fixed63_27k"
-    DEFAULT_JOB_ID="cnn_bilstm_real_aug10k"
-    ;;
-  vit)
-    DEFAULT_SOURCE_RUN="vit_augmented_fixed63_27k"
-    DEFAULT_JOB_ID="vit_real_aug10k"
-    ;;
-  *)
-    echo "ERROR: unsupported model backend ${MODEL_BACKEND}." >&2
-    exit 2
-    ;;
-esac
+[[ "${MODEL_BACKEND}" == "cnn_bilstm" ]] || {
+  echo "ERROR: ${EXPECTED_BRANCH} must resolve model_backend=cnn_bilstm, got ${MODEL_BACKEND}." >&2
+  exit 2
+}
 
+TRAIN_EXPECTED_BRANCH="${EXPECTED_BRANCH}"
+TRAIN_EXPECTED_BACKEND="cnn_bilstm"
+TRAIN_EXPECTED_COMMIT="$(git rev-parse HEAD)"
+
+DEFAULT_SOURCE_RUN="cnn_bilstm_augmented_fixed63_27k"
+DEFAULT_JOB_ID="cnn_bilstm_real_aug10k"
 JOB_ID="${JOB_ID:-${DEFAULT_JOB_ID}}"
 if [[ -z "${PRETRAINED_WEIGHTS:-}" ]]; then
   for candidate in \
@@ -73,6 +77,7 @@ export PROJECT_DIR DATA_DIR MODEL_BACKEND JOB_ID PRETRAINED_WEIGHTS
 export AUGMENT REAL_AUGMENT REAL_USE_EXPLICIT_SPLIT_MANIFESTS
 export REAL_TRAIN_SAMPLES_PER_EPOCH EFFECTIVE_GLOBAL_BATCH_SIZE NUM_SAMPLES REAL_DATASET_LABELS
 export REAL_MIN_TEXT_SCORE REAL_SPLIT_BY_PAIR_ID REAL_MANIFEST_NAME WANDB_PROJECT TIME_LIMIT
+export TRAIN_EXPECTED_BRANCH TRAIN_EXPECTED_BACKEND TRAIN_EXPECTED_COMMIT
 
 has_gpu_allocation() {
   local name value
@@ -94,6 +99,8 @@ fi
 printf '%s\n' \
   "Real+augmented 10K training" \
   "  backend=${MODEL_BACKEND}" \
+  "  branch=${TRAIN_EXPECTED_BRANCH}" \
+  "  pinned commit=${TRAIN_EXPECTED_COMMIT}" \
   "  dataset=${DATA_DIR}" \
   "  train manifest=${DATA_DIR}/train_manifest.jsonl" \
   "  valid manifest=${DATA_DIR}/valid_manifest.jsonl" \
