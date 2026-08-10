@@ -102,4 +102,21 @@ if [[ "$#" -eq 0 ]]; then
   exit 88
 fi
 
-exec python "$@"
+python_request="${TRAIN_PYTHON:-python}"
+if [[ "${python_request}" == */* ]]; then
+  python_bin="${python_request}"
+else
+  python_bin="$(command -v "${python_request}" 2>/dev/null || true)"
+fi
+[[ -n "${python_bin}" && -x "${python_bin}" ]] || {
+  echo "ERROR rank_wrapper: could not resolve executable training Python from: ${python_request}" >&2
+  echo "ERROR rank_wrapper: PATH=${PATH}" >&2
+  exit 89
+}
+"${python_bin}" -c 'import torch' >/dev/null 2>&1 || {
+  echo "ERROR rank_wrapper: resolved Python cannot import torch: ${python_bin}" >&2
+  exit 90
+}
+export TRAIN_PYTHON="${python_bin}"
+echo "rank_wrapper python=${python_bin}" >&2
+exec "${python_bin}" "$@"
