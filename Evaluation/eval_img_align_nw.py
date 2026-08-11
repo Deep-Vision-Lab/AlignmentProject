@@ -71,10 +71,13 @@ _sw_dataset._group_split_pairs = _diverse_group_split
 
 from Evaluation import nw_runner as _implementation
 from Evaluation.nw_component_regions import install as install_component_regions
+from Evaluation.nw_physical_mapping import install as install_physical_mapping
 
-# Use the same component-aware Needleman-Wunsch interpretation for every
-# dataset. Ground-truth masks/bboxes are not consulted by the alignment path.
+# Keep the fixed global NW DP/component extraction unchanged, then make plotting
+# and real-data defaults use physical line coordinates and synthetic-equivalent
+# raw scoring.
 install_component_regions(_implementation)
+install_physical_mapping(_implementation)
 
 globals().update(
     {
