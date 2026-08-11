@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-import os
 from pathlib import Path
 import random
 import sys
@@ -67,35 +66,15 @@ def _diverse_group_split(pairs, seed):
     return assigned["train"], assigned["valid"], assigned["test"]
 
 
-def _flag(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return bool(default)
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 _sw_dataset.group_split_pairs = _diverse_group_split
 _sw_dataset._group_split_pairs = _diverse_group_split
 
 from Evaluation import nw_runner as _implementation
 from Evaluation.nw_component_regions import install as install_component_regions
-from Evaluation.real_alignment_mask_patch import install as install_real_alignment_mask_patch
 
-# Keep the synthetic-augmented evaluator's component interpretation unchanged:
-# the fixed global NW traceback is interpreted as up to three supported regions.
+# Use the same component-aware Needleman-Wunsch interpretation for every
+# dataset. Ground-truth masks/bboxes are not consulted by the alignment path.
 install_component_regions(_implementation)
-
-# Real augmented evaluation now uses the generated pair-specific binary masks by
-# default, so its localization metrics are the same union-of-components metrics
-# used by the synthetic augmented dataset. The older bbox scorer remains an
-# explicit fallback/ablation and is never loaded on the mask-metric path because
-# it writes several of the same output fields.
-if _flag("REAL_MASK_EVAL", True):
-    install_real_alignment_mask_patch(_implementation)
-elif _flag("REAL_BOX_EVAL", False):
-    from Evaluation.real_subword_box_patch import install as install_real_subword_box_patch
-
-    install_real_subword_box_patch(_implementation)
 
 globals().update(
     {
