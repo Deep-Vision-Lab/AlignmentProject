@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Evaluate a trained CNN+BiLSTM or ViT checkpoint with component-aware
 # Needleman-Wunsch on the explicit test split of ArabicDatasetRealAug10K.
+#
+# Real localization metrics use the generated pair-specific alignment masks, the
+# same way the synthetic augmented evaluator uses its committed binary masks.
 set -euo pipefail
 set -a
 
 if [[ "$#" -ne 0 ]]; then
   echo "Usage: WEIGHTS=<checkpoint> bash Evaluation/evaluate_nw_real_augmented.sh" >&2
-  echo "Optional overrides: REAL_DATA_DIR, TEST_MANIFEST, N_SAMPLES, LABELS, RESULTS_ROOT." >&2
+  echo "Optional overrides: REAL_DATA_DIR, TEST_MANIFEST, REAL_MASK_MANIFEST, N_SAMPLES, LABELS, RESULTS_ROOT." >&2
   exit 2
 fi
 
@@ -33,22 +36,117 @@ NW_ENTRYPOINT="${PROJECT_DIR}/Evaluation/eval_img_align_nw.py"
 
 REAL_DATA_DIR="${REAL_DATA_DIR:-${PROJECT_DIR}/DataSet/ArabicDatasetRealAug10K}"
 REAL_DATA_DIR="$(readlink -f "${REAL_DATA_DIR}")"
-TEST_MANIFEST="${TEST_MANIFEST:-${REAL_DATA_DIR}/test_manifest.jsonl}"
-TEST_MANIFEST="$(readlink -f "${TEST_MANIFEST}")"
 [[ -d "${REAL_DATA_DIR}" ]] || {
   echo "ERROR: real augmented dataset not found: ${REAL_DATA_DIR}" >&2
   exit 2
 }
+
+# Prefer the companion manifest written by build_real_alignment_masks.py.  The
+# original explicit test manifest remains untouched and is used only when the
+# caller explicitly disables mask evaluation.
+REAL_MASK_EVAL="${REAL_MASK_EVAL:-1}"
+REAL_REQUIRE_ALIGNMENT_MASKS="${REAL_REQUIRE_ALIGNMENT_MASKS:-1}"
+REAL_BOX_EVAL="${REAL_BOX_EVAL:-0}"
+case "${REAL_MASK_EVAL}" in 0|1) ;; *) echo "ERROR: REAL_MASK_EVAL must be 0 or 1." >&2; exit 2 ;; esac
+case "${REAL_REQUIRE_ALIGNMENT_MASKS}" in 0|1) ;; *) echo "ERROR: REAL_REQUIRE_ALIGNMENT_MASKS must be 0 or 1." >&2; exit 2 ;; esac
+case "${REAL_BOX_EVAL}" in 0|1) ;; *) echo "ERROR: REAL_BOX_EVAL must be 0 or 1." >&2; exit 2 ;; esac
+
+if [[ -z "${TEST_MANIFEST:-}" ]]; then
+  if [[ "${REAL_MASK_EVAL}" == "1" && -f "${REAL_DATA_DIR}/test_manifest_with_masks.jsonl" ]]; then
+    TEST_MANIFEST="${REAL_DATA_DIR}/test_manifest_with_masks.jsonl"
+  else
+    TEST_MANIFEST="${REAL_DATA_DIR}/test_manifest.jsonl"
+  fi
+fi
+TEST_MANIFEST="$(readlink -f "${TEST_MANIFEST}")"
 [[ -f "${TEST_MANIFEST}" ]] || {
   echo "ERROR: explicit test manifest not found: ${TEST_MANIFEST}" >&2
   exit 2
 }
+
+if [[ -z "${REAL_MASK_MANIFEST:-}" ]]; then
+  if [[ "${TEST_MANIFEST}" == *_with_masks.jsonl ]]; then
+    REAL_MASK_MANIFEST="${TEST_MANIFEST}"
+  else
+    MASK_CANDIDATE="${TEST_MANIFEST%.jsonl}_with_masks.jsonl"
+    if [[ -f "${MASK_CANDIDATE}" ]]; then
+      REAL_MASK_MANIFEST="${MASK_CANDIDATE}"
+    else
+      REAL_MASK_MANIFEST="${TEST_MANIFEST}"
+    fi
+  fi
+fi
+REAL_MASK_MANIFEST="$(readlink -f "${REAL_MASK_MANIFEST}")"
 
 TEST_ROWS="$(grep -cve '^[[:space:]]*$' "${TEST_MANIFEST}" || true)"
 [[ "${TEST_ROWS}" =~ ^[1-9][0-9]*$ ]] || {
   echo "ERROR: test manifest contains no rows: ${TEST_MANIFEST}" >&2
   exit 2
 }
+
+# Fail before requesting a GPU when mask ground truth is incomplete.  Paths are
+# resolved exactly as the real dataset manifests resolve them: relative to the
+# manifest/dataset root first, then absolute paths are accepted unchanged.
+if [[ "${REAL_MASK_EVAL}" == "1" ]]; then
+  [[ -f "${REAL_MASK_MANIFEST}" ]] || {
+    echo "ERROR: real alignment-mask manifest not found: ${REAL_MASK_MANIFEST}" >&2
+    echo "Run scripts/data/build_real_alignment_masks.py --all-manifests --write-manifests first." >&2
+    exit 2
+  }
+  python - "${REAL_MASK_MANIFEST}" "${REAL_DATA_DIR}" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = pathlib.Path(sys.argv[1]).expanduser().resolve()
+root = pathlib.Path(sys.argv[2]).expanduser().resolve()
+rows = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
+missing_fields = []
+missing_files = []
+usable = 0
+
+
+def resolve(value):
+    path = pathlib.Path(str(value).replace("\\", "/")).expanduser()
+    if path.is_absolute():
+        return path
+    for candidate in (manifest.parent / path, root / path, root.parent / path):
+        if candidate.exists():
+            return candidate.resolve()
+    return (manifest.parent / path).resolve()
+
+for index, row in enumerate(rows, start=1):
+    a, b = row.get("A"), row.get("B")
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        missing_fields.append((index, "A/B"))
+        continue
+    ma, mb = a.get("alignment_mask_path"), b.get("alignment_mask_path")
+    if not ma or not mb:
+        missing_fields.append((index, "alignment_mask_path"))
+        continue
+    pa, pb = resolve(ma), resolve(mb)
+    absent = [str(path) for path in (pa, pb) if not path.is_file()]
+    if absent:
+        missing_files.append((index, absent))
+        continue
+    usable += 1
+
+print(f"mask_ground_truth manifest={manifest} rows={len(rows)} usable={usable}")
+if missing_fields or missing_files:
+    print(
+        f"ERROR: incomplete real alignment-mask ground truth: "
+        f"missing_fields={len(missing_fields)} missing_files={len(missing_files)}",
+        file=sys.stderr,
+    )
+    for item in missing_fields[:5]:
+        print(f"  missing field row={item[0]} field={item[1]}", file=sys.stderr)
+    for item in missing_files[:5]:
+        print(f"  missing mask file row={item[0]} paths={item[1]}", file=sys.stderr)
+    raise SystemExit(2)
+if usable == 0:
+    raise SystemExit("ERROR: mask manifest contains no usable A/B alignment masks")
+PY
+fi
 
 N_SAMPLES="${N_SAMPLES:-${TEST_ROWS}}"
 START_INDEX="${START_INDEX:-1}"
@@ -98,18 +196,16 @@ SW_MIN_INK="${SW_MIN_INK:-0.02}"
 SW_BLANK_BLANK_SCORE="${SW_BLANK_BLANK_SCORE:--0.20}"
 SW_BLANK_INK_SCORE="${SW_BLANK_INK_SCORE:--0.50}"
 
-# The real augmented generator can contain 1, 2, or 3 separated shared
-# components. Keep the component-aware NW interpretation enabled and disable the
-# old global-score veto so unaligned context does not erase local evidence.
+# Same component-aware interpretation used by the augmented synthetic NW
+# evaluator. Ground-truth masks affect reporting only; they never select runs.
 NW_COMPONENT_MAX_COMPONENTS="${NW_COMPONENT_MAX_COMPONENTS:-3}"
 NW_COMPONENT_MIN_MATCHES="${NW_COMPONENT_MIN_MATCHES:-7}"
 NW_COMPONENT_MIN_SPAN_WINDOWS="${NW_COMPONENT_MIN_SPAN_WINDOWS:-7}"
 NW_COMPONENT_MIN_SPAN_FRACTION="${NW_COMPONENT_MIN_SPAN_FRACTION:-0.13}"
 NW_COMPONENT_WEAK_GLOBAL_SCORE="${NW_COMPONENT_WEAK_GLOBAL_SCORE:--1000000.0}"
 
-# Quantitative bbox.json scoring. Missing/unusable annotations are reported but
-# do not abort the whole batch by default.
-REAL_BOX_EVAL="${REAL_BOX_EVAL:-1}"
+# Legacy bbox evaluation remains available only as an explicit ablation:
+# REAL_MASK_EVAL=0 REAL_BOX_EVAL=1.
 REAL_REQUIRE_BOX_ANNOTATIONS="${REAL_REQUIRE_BOX_ANNOTATIONS:-0}"
 REAL_BOX_IN_MASK_RULE="${REAL_BOX_IN_MASK_RULE:-center}"
 REAL_BOX_MIN_COVERAGE="${REAL_BOX_MIN_COVERAGE:-0.50}"
@@ -128,6 +224,7 @@ MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"
 EVAL_JOB_NAME="${EVAL_JOB_NAME:-nw_real_aug_${RUN_TAG}}"
 
 export PROJECT_DIR WEIGHTS REAL_DATA_DIR TEST_MANIFEST TEST_ROWS
+export REAL_MASK_EVAL REAL_MASK_MANIFEST REAL_REQUIRE_ALIGNMENT_MASKS REAL_BOX_EVAL
 export N_SAMPLES START_INDEX LABELS FEATURE SCORE_MODE SCORE_CLIP THRESHOLD GAP
 export HEATMAP_SOURCE RUN_TAG RESULTS_ROOT
 export LINE_HEIGHT LINE_WIDTH TARGET_INK_HEIGHT_RATIO ZERO_SHOT_TARGET_INK_HEIGHT_RATIO
@@ -138,9 +235,8 @@ export SW_INK_AWARE SW_MIN_INK SW_BLANK_BLANK_SCORE SW_BLANK_INK_SCORE
 export NW_COMPONENT_MAX_COMPONENTS NW_COMPONENT_MIN_MATCHES
 export NW_COMPONENT_MIN_SPAN_WINDOWS NW_COMPONENT_MIN_SPAN_FRACTION
 export NW_COMPONENT_WEAK_GLOBAL_SCORE
-export REAL_BOX_EVAL REAL_REQUIRE_BOX_ANNOTATIONS REAL_BOX_IN_MASK_RULE
-export REAL_BOX_MIN_COVERAGE REAL_BOX_COORDINATE_SPACE REAL_BOX_BBOX_FORMAT
-export REAL_BOX_ANNOTATIONS_ROOT REAL_BOX_JSON
+export REAL_REQUIRE_BOX_ANNOTATIONS REAL_BOX_IN_MASK_RULE REAL_BOX_MIN_COVERAGE
+export REAL_BOX_COORDINATE_SPACE REAL_BOX_BBOX_FORMAT REAL_BOX_ANNOTATIONS_ROOT REAL_BOX_JSON
 export CONDA_ENV PARTITION GPU_RESOURCE CPUS_PER_TASK MEMORY TIME_LIMIT
 export MAIL_USER EVAL_JOB_NAME
 set +a
@@ -152,13 +248,16 @@ print_config() {
     "  checkpoint=${WEIGHTS}" \
     "  dataset=${REAL_DATA_DIR}" \
     "  manifest=${TEST_MANIFEST}" \
-    "  split=explicit test_manifest.jsonl (no re-split)" \
+    "  split=explicit test manifest (no re-split)" \
     "  manifest rows=${TEST_ROWS}" \
     "  start=${START_INDEX}" \
     "  samples=${N_SAMPLES}" \
     "  labels=${LABELS}" \
     "  algorithm=Needleman-Wunsch, up to ${NW_COMPONENT_MAX_COMPONENTS} components" \
-    "  bbox scoring=${REAL_BOX_EVAL}" \
+    "  mask scoring=${REAL_MASK_EVAL}" \
+    "  mask manifest=${REAL_MASK_MANIFEST}" \
+    "  bbox fallback=${REAL_BOX_EVAL}" \
+    "  metrics=same component-union mask IoU/start/end errors as synthetic augmented NW" \
     "  results=${RESULTS_ROOT}" \
     "  GPU=${GPU_RESOURCE}:1" \
     "  time limit=${TIME_LIMIT}"
