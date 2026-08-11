@@ -123,5 +123,7 @@ image_variance_target_std = float(os.environ.get("IMAGE_VARIANCE_TARGET_STD", 0.
 
 # Negatives
 negative_mode = os.environ.get("NEGATIVE_MODE", "mixed").lower()
-num_negatives = int(os.environ.get("NUM_NEGATIVES", 4))
+# Keep a 10-candidate pool (matching real-data training) while Span-DTW
+# activates only a smaller rotating subset per step for compute efficiency.
+num_negatives = int(os.environ.get("NUM_NEGATIVES", 10))
 span_negative_grad_mode = os.environ.get("SPAN_NEGATIVE_GRAD_MODE", "hardest").lower()
