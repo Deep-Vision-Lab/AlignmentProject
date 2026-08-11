@@ -1,0 +1,20 @@
+{
+  "algorithm": "needleman_wunsch",
+  "samples": 10,
+  "successful": 10,
+  "failed": 0,
+  "mean_score": -7.308995759487152,
+  "mean_normalized_score": -0.11601580570614527,
+  "mean_region_score": 1.882694149017334,
+  "mean_global_steps": 70.9,
+  "mean_global_match_steps": 55.1,
+  "mean_gap_in_line1": 7.9,
+  "mean_gap_in_line2": 7.9,
+  "mean_path_cosine": 0.68555943493554,
+  "mean_region_cosine": 0.2772343276378161,
+  "mean_region_iou": null,
+  "mean_start_error_px": null,
+  "mean_end_error_px": null,
+  "terminal_dp_maxima": 0,
+  "failed_indices": []
+}
