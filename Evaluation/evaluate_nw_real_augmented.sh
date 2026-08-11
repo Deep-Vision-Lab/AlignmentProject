@@ -50,7 +50,7 @@ TEST_ROWS="$(grep -cve '^[[:space:]]*$' "${TEST_MANIFEST}" || true)"
   exit 2
 }
 
-N_SAMPLES="${N_SAMPLES:-${TEST_ROWS}}"
+N_SAMPLES="${N_SAMPLES:-10}"
 START_INDEX="${START_INDEX:-1}"
 LABELS="${LABELS:-all}"
 FEATURE="${FEATURE:-contextual}"

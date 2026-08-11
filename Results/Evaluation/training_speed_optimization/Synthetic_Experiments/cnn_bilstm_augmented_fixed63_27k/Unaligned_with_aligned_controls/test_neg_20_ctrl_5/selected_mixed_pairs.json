@@ -1,0 +1,417 @@
+[
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_16867.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_24752.png",
+    "text1": "أساس كل علاقة على سبيل المثال مرور الأيام الحديقة مليئة بالزهور",
+    "text2": "المدينة جميلة عند بعض الأحيان التفكير الإيجابي يغير السفر يفتحب",
+    "source_index1": 16867,
+    "source_index2": 24752,
+    "pair_id": "synthetic_negative_16867_24752",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_23409.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_13469.png",
+    "text1": "المدينة الصداقة الحقيقية كنز بعد طول القهوة صباحا يضيء المستقبل",
+    "text2": "التعاون يحقق أفضل النتائج العائلة هي السند بعد تفكير بصوت منخفض",
+    "source_index1": 23409,
+    "source_index2": 13469,
+    "pair_id": "synthetic_negative_23409_13469",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_11472.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_11472.png",
+    "text1": "الإيجابي يغير الحياة صباحا تعدلقبل الصداقة الحقيقية تبنى بالعلم",
+    "text2": "بالعلم والعمل الرياضة تحافظال الإيجابي يغير الحياة الحضارة تبنى",
+    "source_index1": 11472,
+    "source_index2": 11472,
+    "pair_id": "synthetic_aligned_control_11472",
+    "label_type": "aligned_control_same_sample",
+    "selection_diagnostics": {
+      "gt_masks_nonempty": true
+    },
+    "sample_kind": "ALIGNED_CONTROL",
+    "expected_mask": true
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_5767.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_3547.png",
+    "text1": "التعليم يرفع مستوى أساس كل علاقة نور يضيء المستقبل الحضارة تبنى",
+    "text2": "بعد تفكير سماء صافيةبكلهدوء القراءة غذاء العقل والروح يحقق أفضل",
+    "source_index1": 5767,
+    "source_index2": 3547,
+    "pair_id": "synthetic_negative_5767_3547",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_10101.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_19737.png",
+    "text1": "العقل والروح الأفق يفتح آفاقا السبب تبنى بالعلم في الوقت المحدد",
+    "text2": "عن الضوضاء يرفع مستوى المجتمعات التفكير الإيجابي يغيرا بشكل عام",
+    "source_index1": 10101,
+    "source_index2": 19737,
+    "pair_id": "synthetic_negative_10101_19737",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_12613.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_16449.png",
+    "text1": "نسيم الصباح السفر يفتح آفاقا جديدة الأمانة أساس كل الحقيقية كنز",
+    "text2": "على العائلة هي السند الحقيقي في بعض تبنى بالعلم والعمل تبنىمعمر",
+    "source_index1": 12613,
+    "source_index2": 16449,
+    "pair_id": "synthetic_negative_12613_16449",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_8856.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_15156.png",
+    "text1": "خلف الأفق الأمانة أساس كل علاقة الحظ أفضل النتائج يؤتي ثمارهبعد",
+    "text2": "الصداقة الحديقة مليئةمرةأخرىل التعليم يرفع مستوى مع مرور الأيام",
+    "source_index1": 8856,
+    "source_index2": 15156,
+    "pair_id": "synthetic_negative_8856_15156",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_21936.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_8593.png",
+    "text1": "صباحا تعدل المزاج بسرعة كبيرةل أفضل النتائج مع نسيم العمل الجاد",
+    "text2": "هي السند الحقيقيبشكلعاما التفكير الإيجابي يغير العائلة هي السند",
+    "source_index1": 21936,
+    "source_index2": 8593,
+    "pair_id": "synthetic_negative_21936_8593",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_20322.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_11604.png",
+    "text1": "يضيء المستقبل في بعض التفكير الإيجابي وسط الطبيعة بالعلم والعمل",
+    "text2": "غذاء العقل والروح مرور العمل الجاد يؤتي في الوقتالع مشرقة اليوم",
+    "source_index1": 20322,
+    "source_index2": 11604,
+    "pair_id": "synthetic_negative_20322_11604",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_6289.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_17416.png",
+    "text1": "الصداقة الرياضة تحافظ بعد طول التعاون يحقق أفضل الشمس مشرقةبدون",
+    "text2": "هي السند الحقيقي الضوضاءبكثيرم صباحا تعدل وسط صباحا تعدل المزاج",
+    "source_index1": 6289,
+    "source_index2": 17416,
+    "pair_id": "synthetic_negative_6289_17416",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_3800.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_21515.png",
+    "text1": "على مدار اليوم الإيجابي يغير الصعاب مليئة بالزهور تعدل المزاجلح",
+    "text2": "على التعاون يحقق أفضل بعد طولبكل السفر يفتح آفاقا جديدة القراءة",
+    "source_index1": 3800,
+    "source_index2": 21515,
+    "pair_id": "synthetic_negative_3800_21515",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_700.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_700.png",
+    "text1": "أفضل النتائج سماء صافيةالقراءة التعليم يرفع بسرعة يضيء المستقبل",
+    "text2": "أفضل النتائج في الوقت التعليم يرفع أدنى يضيء المستقبل خلف الأفق",
+    "source_index1": 700,
+    "source_index2": 700,
+    "pair_id": "synthetic_aligned_control_700",
+    "label_type": "aligned_control_same_sample",
+    "selection_diagnostics": {
+      "gt_masks_nonempty": true
+    },
+    "sample_kind": "ALIGNED_CONTROL",
+    "expected_mask": true
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_26208.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_4469.png",
+    "text1": "المدينة جميلة القراءة غذاء العقل والروح التعاون يحقق تفكير عميق",
+    "text2": "كل علاقة التعليم يرفع مستوى تبنى بالعلم الرياضة تحافظ على الصحة",
+    "source_index1": 26208,
+    "source_index2": 4469,
+    "pair_id": "synthetic_negative_26208_4469",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_22552.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_20958.png",
+    "text1": "الإيجابي يغير الحياة تبنى بالعلما بسرعة كبيرة الشمس مشرقة اليوم",
+    "text2": "بعض الأحيان التعليم يرفع مستوى المجتمعات الرياضة تحافظ بشكل عام",
+    "source_index1": 22552,
+    "source_index2": 20958,
+    "pair_id": "synthetic_negative_22552_20958",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_5864.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_492.png",
+    "text1": "الإيجابي يغير مع طلوع آفاقا جديدة مع نسيم التفكير الإيجابي يغير",
+    "text2": "الحقيقية كنز ثمين يفتح آفاقابكلتأ التعليم يرفع مستوى عند الغروب",
+    "source_index1": 5864,
+    "source_index2": 492,
+    "pair_id": "synthetic_negative_5864_492",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_11269.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_15411.png",
+    "text1": "الحضارة تبنى بكلفيالم القهوة صباحا تعدل الصبر الرياضة تحافظ على",
+    "text2": "في بعضالمدين القراءة غذاء التعليم يرفع مستوى المجتمعات بشكل عام",
+    "source_index1": 11269,
+    "source_index2": 15411,
+    "pair_id": "synthetic_negative_11269_15411",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_17135.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_6033.png",
+    "text1": "قبل الظهر في هذا المكان السفر يفتحا الأمانة أساس كل علاقة ناجحة",
+    "text2": "الصداقة الحقيقية الصداقة الحقيقية كنز ثمين سبيل المثال بكل هدوء",
+    "source_index1": 17135,
+    "source_index2": 6033,
+    "pair_id": "synthetic_negative_17135_6033",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_6917.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_6917.png",
+    "text1": "آفاقا جديدة الرياضة تحافظ على الصحة على مدار اليوم بدون أدنى شك",
+    "text2": "على الصحة الرياضة تحافظ على الصحة من الصبرال القراءة غذاء العقل",
+    "source_index1": 6917,
+    "source_index2": 6917,
+    "pair_id": "synthetic_aligned_control_6917",
+    "label_type": "aligned_control_same_sample",
+    "selection_diagnostics": {
+      "gt_masks_nonempty": true
+    },
+    "sample_kind": "ALIGNED_CONTROL",
+    "expected_mask": true
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_17064.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_23509.png",
+    "text1": "صباحا تعدل المزاج لهذا يرفع مستوى قبل الظهرفيب العمل الجاد يؤتي",
+    "text2": "التعاون يحقق أفضل النتائج وسط الطبيعة مرور الأيام في المساءببطء",
+    "source_index1": 17064,
+    "source_index2": 23509,
+    "pair_id": "synthetic_negative_17064_23509",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_20595.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_1030.png",
+    "text1": "العلم نور القراءة غذاء العقل بكل هدوء الصداقة الحقيقية كنز ثمين",
+    "text2": "يفتح آفاقا في الوقت العمل الجاد الحظ صباحا تعدل على سبيل المثال",
+    "source_index1": 20595,
+    "source_index2": 1030,
+    "pair_id": "synthetic_negative_20595_1030",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_13681.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_13681.png",
+    "text1": "مع مرور التفكير الإيجابي يغير الحياة بشكل الحضارة تبنى الحقيقية",
+    "text2": "بدون التفكير الإيجابي يغير الحياة بعد قليلال الحضارة تبنى مشرقة",
+    "source_index1": 13681,
+    "source_index2": 13681,
+    "pair_id": "synthetic_aligned_control_13681",
+    "label_type": "aligned_control_same_sample",
+    "selection_diagnostics": {
+      "gt_masks_nonempty": true
+    },
+    "sample_kind": "ALIGNED_CONTROL",
+    "expected_mask": true
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_1211.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_5383.png",
+    "text1": "بكثير من مدار اليوم السفر يفتح آفاقا جديدة هي السند بسرعة كبيرة",
+    "text2": "الحقيقية كنز كل علاقة ناجحة كل علاقةالص الرياضة تحافظ على الصحة",
+    "source_index1": 1211,
+    "source_index2": 5383,
+    "pair_id": "synthetic_negative_1211_5383",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_8992.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_8992.png",
+    "text1": "العائلة هيفيالوقتا يضيء المستقبل بصوت منخفض الحضارة تبنى بالعلم",
+    "text2": "القهوة صباحا تعدلوسطالطبي الشمس مشرقة اليوم الحضارة تبنى بالعلم",
+    "source_index1": 8992,
+    "source_index2": 8992,
+    "pair_id": "synthetic_aligned_control_8992",
+    "label_type": "aligned_control_same_sample",
+    "selection_diagnostics": {
+      "gt_masks_nonempty": true
+    },
+    "sample_kind": "ALIGNED_CONTROL",
+    "expected_mask": true
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_25327.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_23757.png",
+    "text1": "في المساء السفر يفتح آفاقا جديدة الوقت المحدد الشمس مشرقة اليوم",
+    "text2": "علاقة ناجحةفي التعاون يحقق أفضل النتائج بعد تفكير عميق كل علاقة",
+    "source_index1": 25327,
+    "source_index2": 23757,
+    "pair_id": "synthetic_negative_25327_23757",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  },
+  {
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img1_18726.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDataset63/images/img2_7771.png",
+    "text1": "آفاقا جديدة بصوت منخفضالعلم تبنى بالعلم المثال الجاد يؤتي ثماره",
+    "text2": "الأمانة أساس كل علاقة لحسن الحظ بدون أدنى شك تحافظ على الصحةالح",
+    "source_index1": 18726,
+    "source_index2": 7771,
+    "pair_id": "synthetic_negative_18726_7771",
+    "label_type": "cross_pair_no_shared_text",
+    "selection_diagnostics": {
+      "shared_words": [],
+      "shared_bigrams": [],
+      "shared_compact_ngrams": []
+    },
+    "sample_kind": "UNALIGNED",
+    "expected_mask": false
+  }
+]

@@ -1,0 +1,14 @@
+{
+  "dataset_type": "synthetic",
+  "same_prediction_function": "Evaluation.evaluate_unaligned_pairs._evaluate_one",
+  "unaligned_samples": 20,
+  "unaligned_zero_mask_pairs": 20,
+  "unaligned_zero_mask_rate": 1.0,
+  "unaligned_false_positive_pairs": 0,
+  "unaligned_false_positive_rate": 0.0,
+  "aligned_control_samples": 5,
+  "aligned_control_mask_detected_pairs": 5,
+  "aligned_control_mask_detection_rate": 1.0,
+  "aligned_control_missed_pairs": 0,
+  "sanity_check_demonstrates_mask_capability": true
+}
