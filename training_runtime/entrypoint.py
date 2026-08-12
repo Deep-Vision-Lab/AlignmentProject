@@ -58,6 +58,7 @@ from scripts.train import train_optimized as optimized
 import model_backend
 from distributed_runtime_guard import install_distributed_runtime_guard
 from epoch_subset_sampling import install_epoch_subset_sampling
+from extra_real_training import install as install_extra_real_training
 from training_stability import install_training_stability
 from unified_line_geometry import install_training_geometry
 
@@ -102,6 +103,13 @@ model_backend.install_training_backend(optimized.base)
 optimized.base.build_image_embedding = _branch_build_image_embedding
 optimized.prepare_raw_model = model_backend.prepare_visual_model
 install_distributed_runtime_guard(optimized.base)
+if os.environ.get("REAL_USE_EXTRA_NO_SHARED", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}:
+    install_extra_real_training(optimized.base)
 install_epoch_subset_sampling(optimized.base)
 
 # Validate the freshly constructed architecture before attempting to load any
@@ -164,6 +172,14 @@ def _branch_model_config(stride, args):
             ),
             "explicit_real_split_manifests": os.environ.get(
                 "REAL_USE_EXPLICIT_SPLIT_MANIFESTS", "0"
+            ).strip().lower()
+            in {"1", "true", "yes", "on"},
+            "use_extra_no_shared_real_lines": os.environ.get(
+                "REAL_USE_EXTRA_NO_SHARED", "0"
+            ).strip().lower()
+            in {"1", "true", "yes", "on"},
+            "extra_real_exclude_eval_pages": os.environ.get(
+                "REAL_EXTRA_EXCLUDE_EVAL_PAGES", "1"
             ).strip().lower()
             in {"1", "true", "yes", "on"},
         }
