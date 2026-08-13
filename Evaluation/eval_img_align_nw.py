@@ -72,20 +72,40 @@ _sw_dataset._group_split_pairs = _diverse_group_split
 
 from Evaluation import nw_runner as _implementation
 from Evaluation.nw_component_regions import install as install_component_regions
+from Evaluation.nw_discontinuous_regions import install as install_discontinuous_regions
 from Evaluation.nw_physical_mapping import install as install_physical_mapping
+
+
+def _requested_dataset_type() -> str:
+    """Read --dataset-type early so region extraction matches the dataset."""
+    for index, argument in enumerate(sys.argv):
+        if argument == "--dataset-type" and index + 1 < len(sys.argv):
+            return str(sys.argv[index + 1]).strip().lower()
+        if argument.startswith("--dataset-type="):
+            return argument.split("=", 1)[1].strip().lower()
+    return "synthetic"
+
 
 # The canonical synthetic NW launcher displays the accumulated DP-score heatmap.
 # The physical-mapping patch historically replaced that with match-score only for
 # real inputs, so real and synthetic figures were visually comparing different
-# matrices even when both launchers requested dp-score.  Keep the requested DP
+# matrices even when both launchers requested dp-score. Keep the requested DP
 # view by default so the real figure has the same heatmap semantics as synthetic.
 # Users can still request match-score or cosine explicitly with --heatmap-source.
 os.environ.setdefault("NW_REAL_KEEP_DP_HEATMAP", "1")
 
-# Keep the fixed global NW DP/component extraction unchanged, then make plotting
-# and real-data defaults use physical line coordinates and synthetic-equivalent
-# raw scoring.
-install_component_regions(_implementation)
+# Synthetic evaluation uses the strict component-aware selector because its
+# generator explicitly contains 1/2/3 shared regions. Real manuscript pairs do
+# not obey those synthetic component-size/percentile/quality priors. Applying
+# them to real data can erase the entire predicted region even when the global
+# NW traceback contains many valid diagonal correspondences. For real inputs,
+# derive masks directly from sustained positive runs on that fixed NW traceback;
+# the physical-mapping layer then converts those logical Arabic window ranges to
+# exact line-image pixels.
+if _requested_dataset_type() == "real":
+    install_discontinuous_regions(_implementation)
+else:
+    install_component_regions(_implementation)
 install_physical_mapping(_implementation)
 
 globals().update(
