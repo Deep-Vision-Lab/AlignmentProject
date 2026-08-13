@@ -58,7 +58,7 @@ from scripts.train import train_optimized as optimized
 import model_backend
 from distributed_runtime_guard import install_distributed_runtime_guard
 from epoch_subset_sampling import install_epoch_subset_sampling
-from extra_real_training import install as install_extra_real_training
+from extra_real_training_v2 import install as install_extra_real_training
 from training_stability import install_training_stability
 from unified_line_geometry import install_training_geometry
 
