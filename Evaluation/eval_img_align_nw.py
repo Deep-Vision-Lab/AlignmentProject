@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+import os
 from pathlib import Path
 import random
 import sys
@@ -72,6 +73,14 @@ _sw_dataset._group_split_pairs = _diverse_group_split
 from Evaluation import nw_runner as _implementation
 from Evaluation.nw_component_regions import install as install_component_regions
 from Evaluation.nw_physical_mapping import install as install_physical_mapping
+
+# The canonical synthetic NW launcher displays the accumulated DP-score heatmap.
+# The physical-mapping patch historically replaced that with match-score only for
+# real inputs, so real and synthetic figures were visually comparing different
+# matrices even when both launchers requested dp-score.  Keep the requested DP
+# view by default so the real figure has the same heatmap semantics as synthetic.
+# Users can still request match-score or cosine explicitly with --heatmap-source.
+os.environ.setdefault("NW_REAL_KEEP_DP_HEATMAP", "1")
 
 # Keep the fixed global NW DP/component extraction unchanged, then make plotting
 # and real-data defaults use physical line coordinates and synthetic-equivalent
