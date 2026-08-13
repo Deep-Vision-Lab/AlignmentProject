@@ -1,0 +1,6 @@
+experiment,configuration,algorithm,feature,control,score_mode,samples,mean_path_cosine,matched_fraction,bbox_precision,bbox_recall,bbox_f1,bbox_specificity,mean_bbox_interval_iou,mean_bbox_pixel_iou
+A,A_nw_local_mutualz,Needleman-Wunsch,local,positive,mutual-z,20,0.8379270194894769,0.5768,,,,,,
+B,B_sw_local_mutualz,Smith-Waterman,local,positive,mutual-z,20,0.7345550376462961,0.5835999999999999,,,,,,
+C,C_sw_grouped_mutualz,Smith-Waterman,grouped,positive,mutual-z,20,0.6343299062467486,0.5811999999999998,,,,,,
+D,D_sw_contextual_mutualz,Smith-Waterman,contextual,positive,mutual-z,20,0.5622587298971428,0.4896000000000001,,,,,,
+E,E_sw_local_mutualz_no_shared,Smith-Waterman,local,no_shared_content,mutual-z,20,0.7252470930559257,0.5838000000000002,,,,,,
