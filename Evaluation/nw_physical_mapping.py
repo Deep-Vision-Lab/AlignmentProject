@@ -1,9 +1,9 @@
 """Physical-coordinate visualization fixes for Needleman-Wunsch evaluation.
 
 The Arabic visual encoder reverses its sliding-window sequence so logical window
-0 is the rightmost physical window.  NW operates correctly in that logical
+0 is the rightmost physical window. NW operates correctly in that logical
 sequence, but visualizations must map those logical indices back to the physical
-left-to-right line coordinates.  This module keeps the NW DP/traceback itself
+left-to-right line coordinates. This module keeps the NW DP/traceback itself
 unchanged and fixes only score-mode defaults, plotting orientation, and
 window-to-pixel conversion.
 """
@@ -37,10 +37,22 @@ def patch_range_to_pixels(
     image_width: int,
     flipped: bool,
 ) -> tuple[float, float]:
-    """Map a logical window interval to the exact covered input pixels.
+    """Map a logical window interval into physical line-image coordinates.
 
-    ``window_end`` is exclusive.  When Arabic flipping is enabled, logical
+    ``window_end`` is exclusive. When Arabic flipping is enabled, logical
     window 0 corresponds to physical window ``n_windows - 1``.
+
+    Two mappings are supported:
+
+    ``footprint`` (legacy)
+        Draw the union of the complete sliding-window receptive fields.
+
+    ``cell``
+        Draw the heatmap cells themselves: boundaries lie halfway between
+        neighboring window centers. This is the appropriate visualization when
+        a red interval is meant to show which heatmap/window indices were
+        selected. It also avoids inflating a region by the 75%-overlapping
+        receptive fields used by the real CNN model.
     """
     n_windows = int(n_windows)
     image_width = int(image_width)
@@ -63,8 +75,31 @@ def patch_range_to_pixels(
         physical_first = start
         physical_last = end - 1
 
-    x0 = float(physical_first * stride)
-    x1 = float(physical_last * stride + window_size)
+    mode = os.environ.get("NW_VIS_REGION_MAPPING", "footprint").strip().lower()
+    if mode in {"cell", "heatmap", "center", "centers"}:
+        first_center = float(physical_first * stride) + 0.5 * float(window_size)
+        last_center = float(physical_last * stride) + 0.5 * float(window_size)
+        half_cell = 0.5 * float(stride)
+        x0 = first_center - half_cell
+        x1 = last_center + half_cell
+        # The first/last heatmap cells also represent the unsampled edge tail.
+        if physical_first <= 0:
+            x0 = 0.0
+        if physical_last >= n_windows - 1:
+            x1 = float(image_width)
+    elif mode in {"footprint", "patch", "receptive-field", "receptive_field"}:
+        x0 = float(physical_first * stride)
+        x1 = float(physical_last * stride + window_size)
+    elif mode in {"proportional", "legacy"}:
+        return _ORIGINAL_PATCH_RANGE_TO_PIXELS(
+            start, end, n_windows, image_width, bool(flipped)
+        )
+    else:
+        raise ValueError(
+            "NW_VIS_REGION_MAPPING must be cell, footprint, or proportional; "
+            f"got {mode!r}"
+        )
+
     x0 = max(0.0, min(float(image_width), x0))
     x1 = max(0.0, min(float(image_width), x1))
     return min(x0, x1), max(x0, x1)
@@ -93,7 +128,7 @@ def _physical_matrix(matrix: np.ndarray, use_flip: bool) -> np.ndarray:
     value = np.asarray(matrix)
     if not use_flip:
         return value
-    # Both logical axes run right-to-left for Arabic.  Reverse rows and columns
+    # Both logical axes run right-to-left for Arabic. Reverse rows and columns
     # so displayed index 0 is the physical leftmost window on each line.
     return value[::-1, ::-1]
 
@@ -217,11 +252,12 @@ def save_visualization(
     window_size = _int_env("NW_VIS_WINDOW_SIZE", 0)
     stride = _int_env("NW_VIS_WINDOW_STRIDE", 0)
     geometry = f" | window={window_size} stride={stride}" if window_size and stride else ""
+    region_mapping = os.environ.get("NW_VIS_REGION_MAPPING", "footprint")
     fig.suptitle(
         f"Needleman-Wunsch global image alignment | score={score:.4f} | "
         f"normalized={normalized_score:.4f} | score_mode={score_mode} | "
         f"gaps={total_gaps} | red=supported runs; holes=unsupported | "
-        f"{input_label}{metadata}{geometry}",
+        f"{input_label}{metadata}{geometry} | region-map={region_mapping}",
         fontsize=11,
         fontweight="bold",
     )
@@ -310,12 +346,8 @@ def save_visualization(
             f"{heatmap_label}: physical line coordinates; global path retained",
             fontsize=10,
         )
-        if use_flip:
-            ax.set_xlabel("line B physical x (px): left → right")
-            ax.set_ylabel("line A physical x (px): left → right, top → bottom")
-        else:
-            ax.set_xlabel("line B physical x (px): left → right")
-            ax.set_ylabel("line A physical x (px): left → right, top → bottom")
+        ax.set_xlabel("line B physical x (px): left → right")
+        ax.set_ylabel("line A physical x (px): left → right, top → bottom")
         _set_physical_ticks(ax, n1, n2)
         ax.legend(loc="upper left", fontsize=7)
         fig.colorbar(image, ax=ax, fraction=0.025, pad=0.015, label=heatmap_label)
@@ -335,7 +367,7 @@ def install(runner) -> None:
     original_resolve_score_mode = runner.resolve_score_mode
 
     def resolve_score_mode(score_mode: str, dataset_type: str) -> str:
-        # The synthetic NW reference path resolves auto -> raw.  Make real NW use
+        # The synthetic NW reference path resolves auto -> raw. Make real NW use
         # that same default; explicit centered/mutual-z requests are preserved.
         value = str(score_mode).strip().lower().replace("_", "-")
         if value == "auto" and str(dataset_type).lower() == "real":
@@ -353,9 +385,9 @@ def install(runner) -> None:
         if dataset_type is None and len(args) >= 3:
             dataset_type = args[2]
         if str(dataset_type).lower() == "real":
-            # For localization inspection, show the actual NW diagonal reward,
-            # not the accumulated DP table. Set NW_REAL_KEEP_DP_HEATMAP=1 to
-            # explicitly retain a requested dp-score heatmap.
+            # Set by eval_img_align_nw.py for canonical real evaluation. Keep a
+            # defensive default here for direct callers of nw_runner.
+            os.environ.setdefault("NW_VIS_REGION_MAPPING", "cell")
             current = kwargs.get("heatmap_source")
             if current is None and len(args) >= 13:
                 current = args[12]
