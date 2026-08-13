@@ -70,10 +70,37 @@ def _diverse_group_split(pairs, seed):
 _sw_dataset.group_split_pairs = _diverse_group_split
 _sw_dataset._group_split_pairs = _diverse_group_split
 
+from Evaluation import _eval_utils
 from Evaluation import nw_runner as _implementation
 from Evaluation.nw_component_regions import install as install_component_regions
 from Evaluation.nw_discontinuous_regions import install as install_discontinuous_regions
 from Evaluation.nw_physical_mapping import install as install_physical_mapping
+
+
+# Keep checkpoint geometry as the default, but allow an explicit NW-only stride
+# ablation. This changes how densely the same trained CNN/BiLSTM samples the line;
+# it does not modify checkpoint weights or training configuration.
+_original_compute_stride = _eval_utils._compute_stride
+
+
+def _compute_stride_with_eval_override(config: dict) -> int:
+    requested = os.environ.get("EVAL_WINDOW_STRIDE", "").strip()
+    if not requested:
+        return _original_compute_stride(config)
+    try:
+        stride = int(requested)
+    except ValueError as exc:
+        raise ValueError(
+            f"EVAL_WINDOW_STRIDE must be a positive integer, got {requested!r}"
+        ) from exc
+    if stride <= 0:
+        raise ValueError(
+            f"EVAL_WINDOW_STRIDE must be a positive integer, got {stride}"
+        )
+    return stride
+
+
+_eval_utils._compute_stride = _compute_stride_with_eval_override
 
 
 def _requested_dataset_type() -> str:
