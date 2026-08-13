@@ -94,6 +94,20 @@ def _requested_dataset_type() -> str:
 # Users can still request match-score or cosine explicitly with --heatmap-source.
 os.environ.setdefault("NW_REAL_KEEP_DP_HEATMAP", "1")
 
+dataset_type = _requested_dataset_type()
+
+# Synthetic evaluation deliberately reconnects small holes between neighboring
+# supported pieces (three traceback steps in the canonical component launcher).
+# Use the same tolerance for real manuscripts: a one/two/three-step wobble in an
+# otherwise continuous NW path is not evidence for a genuinely different phrase.
+# Longer unsupported valleys still split the predicted aligned regions.
+if dataset_type == "real":
+    os.environ.setdefault("NW_REGION_MAX_BRIDGE_STEPS", "3")
+    # A red region is a visualization of selected heatmap/window cells, not the
+    # union of their heavily-overlapping 32-pixel receptive fields. Map each
+    # selected cell through neighboring window-center boundaries instead.
+    os.environ.setdefault("NW_VIS_REGION_MAPPING", "cell")
+
 # Synthetic evaluation uses the strict component-aware selector because its
 # generator explicitly contains 1/2/3 shared regions. Real manuscript pairs do
 # not obey those synthetic component-size/percentile/quality priors. Applying
@@ -101,8 +115,8 @@ os.environ.setdefault("NW_REAL_KEEP_DP_HEATMAP", "1")
 # NW traceback contains many valid diagonal correspondences. For real inputs,
 # derive masks directly from sustained positive runs on that fixed NW traceback;
 # the physical-mapping layer then converts those logical Arabic window ranges to
-# exact line-image pixels.
-if _requested_dataset_type() == "real":
+# line-image pixels.
+if dataset_type == "real":
     install_discontinuous_regions(_implementation)
 else:
     install_component_regions(_implementation)
