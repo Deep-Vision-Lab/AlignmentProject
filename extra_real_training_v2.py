@@ -3,6 +3,7 @@
 ``absolute`` preserves the fixed-cosine ablation.
 ``ranking`` preserves the transcript-group relative ranking ablation.
 ``sequence_ranking`` trains directly on local-window sequence alignment.
+``joint_real`` is the clean Stage-1 -> original+online-augmented real curriculum.
 """
 from __future__ import annotations
 
@@ -13,6 +14,11 @@ from extra_real_training_v2_absolute import _eligible_groups, _positive_pair_los
 
 def install(base) -> None:
     objective = os.environ.get("NO_SHARED_IMAGE_OBJECTIVE", "absolute").strip().lower()
+    if objective in {"joint", "joint_real", "joint_discrimination"}:
+        from joint_real_training_v5 import install as install_joint_real
+
+        install_joint_real(base)
+        return
     if objective in {"sequence", "sequence_ranking", "sw_ranking"}:
         from extra_real_training_v4 import install as install_sequence_ranking
 
@@ -29,6 +35,6 @@ def install(base) -> None:
         install_absolute(base)
         return
     raise ValueError(
-        "NO_SHARED_IMAGE_OBJECTIVE must be 'absolute', 'ranking', or "
-        f"'sequence_ranking', got {objective!r}."
+        "NO_SHARED_IMAGE_OBJECTIVE must be 'absolute', 'ranking', "
+        f"'sequence_ranking', or 'joint_real', got {objective!r}."
     )
