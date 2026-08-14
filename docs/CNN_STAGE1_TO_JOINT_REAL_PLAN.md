@@ -22,9 +22,9 @@ Do **not** use the pre-generated `ArabicDatasetRealAug10K` dataset for this expe
 - Default split: 80% train / 10% validation / 10% test.
 - No-shared rows whose pair/page touches validation or test are excluded from training.
 - Validation and test are clean only.
-- Training exposure ratio: 1 clean view : 2 online-augmented views (~33/67).
-- Effective epoch length: 6x the clean training pool by default.
-- Therefore an underlying row receives roughly two clean and four fresh augmented exposures per epoch on average.
+- Training class exposure is balanced 50/50 positive vs no-shared so sequence ranking is active reliably.
+- Within each class, training view exposure is 1 clean : 2 online-augmented (~33/67).
+- Effective epoch length: 6x the clean positive+no-shared training pool by default.
 - Online augmentation uses `RealDataAugmentation.py` / `AugmentedRealDataLoader.py`; no offline augmented dataset is read.
 - Initial run uses appearance/ink/scan augmentation only; line stitching stays disabled for a clean first ablation.
 
@@ -38,7 +38,7 @@ git pull --ff-only origin agent/training-speed-optimization
 git rev-parse --short HEAD
 ```
 
-Use the commit printed in the current project instructions as the expected head.
+Expected head after this plan is committed: `HEAD_FROM_FINAL_RESPONSE` (use the final response as source of truth).
 
 ## Stage 1 - pretrained model
 
@@ -94,6 +94,8 @@ Expected data line should report approximately:
 
 ```text
 split=0.80/0.10/0.10
+positive_ratio=0.500
+no_shared_ratio=0.500
 clean_ratio=0.333
 augmented_ratio=0.667
 online_augmentation=True
