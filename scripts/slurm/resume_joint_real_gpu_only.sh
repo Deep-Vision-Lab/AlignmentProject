@@ -42,10 +42,12 @@ echo "Using pilot checkpoint:    ${PILOT_CHECKPOINT}"
 echo "Using Phase-3 baseline:    ${BASELINE_CHECKPOINT}"
 echo "Diagnostic manifests will be built automatically from DataSet/ArabicDataset if absent."
 
-BASELINE_ROOT="Results/Evaluation/Representation_Diagnostics/${BASELINE_NAME}"
-PILOT_ROOT="Results/Evaluation/Representation_Diagnostics/${PILOT_NAME}"
-CONT_ROOT="Results/Evaluation/Representation_Diagnostics/${CONT_NAME}"
-FINAL_ROOT="Results/Evaluation/Representation_Diagnostics/${CONT_NAME}_full"
+# run_real_discrimination_sweep.sh appends _discrimination to every RUN_NAME.
+# Keep the gate/summarizer paths exactly aligned with the directories it creates.
+BASELINE_ROOT="Results/Evaluation/Representation_Diagnostics/${BASELINE_NAME}_discrimination"
+PILOT_ROOT="Results/Evaluation/Representation_Diagnostics/${PILOT_NAME}_discrimination"
+CONT_ROOT="Results/Evaluation/Representation_Diagnostics/${CONT_NAME}_discrimination"
+FINAL_ROOT="Results/Evaluation/Representation_Diagnostics/${CONT_NAME}_full_discrimination"
 
 # 1) Build held-out fixed manifests (inside the sweep), evaluate Phase 3 and the
 #    completed 5-epoch pilot on exactly the same 20+20 rows, then gate relative
