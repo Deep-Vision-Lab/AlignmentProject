@@ -9,15 +9,37 @@ cd "${PROJECT_DIR}"
 RUN_NAME="${RUN_NAME:-$(basename "$(dirname "${CHECKPOINT}")")}_discrimination"
 N_SAMPLES="${N_SAMPLES:-20}"
 
-BASELINE_ROOT="${BASELINE_ROOT:-${PROJECT_DIR}/Results/Evaluation/Alignment_Diagnostics/cnn_phase3_alignment_diagnostics_nobox}"
-POS_MANIFEST="${POS_MANIFEST:-${BASELINE_ROOT}/manifests/diagnostic_positive_rows.jsonl}"
-NEG_MANIFEST="${NEG_MANIFEST:-${BASELINE_ROOT}/manifests/diagnostic_no_shared_rows.jsonl}"
+DIAGNOSTIC_ROOT="${DIAGNOSTIC_ROOT:-${PROJECT_DIR}/Results/Evaluation/Alignment_Diagnostics/joint_real_fixed_diagnostics}"
+MANIFEST_DIR="${MANIFEST_DIR:-${DIAGNOSTIC_ROOT}/manifests}"
+POS_MANIFEST="${POS_MANIFEST:-${MANIFEST_DIR}/diagnostic_positive_rows.jsonl}"
+NEG_MANIFEST="${NEG_MANIFEST:-${MANIFEST_DIR}/diagnostic_no_shared_rows.jsonl}"
 OUT="${OUT:-${PROJECT_DIR}/Results/Evaluation/Representation_Diagnostics/${RUN_NAME}}"
+CANONICAL_MANIFEST="${PROJECT_DIR}/DataSet/ArabicDataset/dataset_manifest.jsonl"
 
-for path in "${CHECKPOINT}" "${POS_MANIFEST}" "${NEG_MANIFEST}"; do
+[[ -f "${CHECKPOINT}" ]] || { echo "ERROR: missing ${CHECKPOINT}" >&2; exit 2; }
+[[ -f "${CANONICAL_MANIFEST}" ]] || { echo "ERROR: missing ${CANONICAL_MANIFEST}" >&2; exit 2; }
+
+if [[ ! -f "${POS_MANIFEST}" || ! -f "${NEG_MANIFEST}" ]]; then
+  echo "Fixed diagnostic manifests are missing; building deterministic leakage-safe manifests."
+  python scripts/eval/build_joint_real_diagnostic_manifests.py \
+    --manifest "${CANONICAL_MANIFEST}" \
+    --output-dir "${MANIFEST_DIR}" \
+    --train-fraction "${REAL_TRAIN_FRACTION:-0.80}" \
+    --valid-fraction "${REAL_VALID_FRACTION:-0.10}" \
+    --seed "${DATASET_SPLIT_SEED:-42}" \
+    --max-per-class "${DIAGNOSTIC_MAX_PER_CLASS:-100}" \
+    --min-per-class "${DIAGNOSTIC_MIN_PER_CLASS:-20}"
+fi
+
+for path in "${POS_MANIFEST}" "${NEG_MANIFEST}"; do
   [[ -f "${path}" ]] || { echo "ERROR: missing ${path}" >&2; exit 2; }
 done
 mkdir -p "${OUT}"
+
+echo "Diagnostic manifests:"
+echo "  positive=${POS_MANIFEST}"
+echo "  negative=${NEG_MANIFEST}"
+echo "  n_samples=${N_SAMPLES}"
 
 export LINE_HEIGHT=128
 export LINE_WIDTH=1024
