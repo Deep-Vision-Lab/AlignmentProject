@@ -14,6 +14,8 @@ from sklearn.metrics import roc_auc_score
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("root", type=Path)
+    p.add_argument("--baseline-root", type=Path, default=None,
+                   help="Optional baseline evaluation root on the SAME manifests.")
     p.add_argument("--baseline-steps-auc", type=float, default=0.6800)
     p.add_argument("--baseline-matched-auc", type=float, default=0.6725)
     p.add_argument("--min-positive-steps", type=float, default=8.0)
@@ -61,20 +63,41 @@ def main():
         print(f"GATE ERROR: no usable evaluation outputs under {args.root}", file=sys.stderr)
         return 2
 
+    baseline_by_threshold = {}
+    if args.baseline_root is not None:
+        for threshold in args.thresholds:
+            base_row = metrics(args.baseline_root, threshold)
+            if base_row is not None:
+                baseline_by_threshold[threshold] = base_row
+        if not baseline_by_threshold:
+            print(
+                f"GATE ERROR: no usable baseline outputs under {args.baseline_root}",
+                file=sys.stderr,
+            )
+            return 2
+
     for row in rows:
+        baseline_row = baseline_by_threshold.get(row["threshold"])
+        if baseline_row is None:
+            baseline_steps = args.baseline_steps_auc
+            baseline_matched = args.baseline_matched_auc
+        else:
+            baseline_steps = baseline_row["steps_auc"]
+            baseline_matched = baseline_row["matched_auc"]
         structural_improvement = (
-            row["steps_auc"] > args.baseline_steps_auc
-            or row["matched_auc"] > args.baseline_matched_auc
+            row["steps_auc"] > baseline_steps
+            or row["matched_auc"] > baseline_matched
         )
         healthy_paths = (
             row["positive_steps"] >= args.min_positive_steps
             and row["step_gap"] >= args.min_step_gap
         )
+        row["baseline_steps_auc"] = baseline_steps
+        row["baseline_matched_auc"] = baseline_matched
         row["structural_improvement"] = structural_improvement
         row["healthy_paths"] = healthy_paths
         row["pass"] = structural_improvement and healthy_paths
 
-    # Prefer a passing threshold; otherwise report the strongest structural one.
     passing = [row for row in rows if row["pass"]]
     pool = passing or rows
     best = max(pool, key=lambda r: (max(r["steps_auc"], r["matched_auc"]), r["step_gap"]))
@@ -82,9 +105,10 @@ def main():
 
     result = {
         "pass": verdict,
+        "baseline_root": str(args.baseline_root) if args.baseline_root else None,
         "reference": {
-            "steps_auc": args.baseline_steps_auc,
-            "matched_auc": args.baseline_matched_auc,
+            "fallback_steps_auc": args.baseline_steps_auc,
+            "fallback_matched_auc": args.baseline_matched_auc,
             "min_positive_steps": args.min_positive_steps,
             "min_step_gap": args.min_step_gap,
         },
@@ -96,14 +120,21 @@ def main():
 
     print("=== REAL DISCRIMINATION GATE ===")
     print(f"root={args.root}")
+    if args.baseline_root:
+        print(f"baseline_root={args.baseline_root} (same diagnostic manifests)")
+    else:
+        print(
+            "fallback reference: "
+            f"steps_AUC>{args.baseline_steps_auc:.4f} OR matched_AUC>{args.baseline_matched_auc:.4f}"
+        )
     print(
-        "reference: "
-        f"steps_AUC>{args.baseline_steps_auc:.4f} OR matched_AUC>{args.baseline_matched_auc:.4f}; "
-        f"positive_steps>={args.min_positive_steps:.2f}; step_gap>={args.min_step_gap:.2f}"
+        f"healthy path requirements: positive_steps>={args.min_positive_steps:.2f}; "
+        f"step_gap>={args.min_step_gap:.2f}"
     )
     print(
         f"best T={best['threshold']} score_AUC={best['score_auc']:.4f} "
-        f"steps_AUC={best['steps_auc']:.4f} matched_AUC={best['matched_auc']:.4f} "
+        f"steps_AUC={best['steps_auc']:.4f} (baseline={best['baseline_steps_auc']:.4f}) "
+        f"matched_AUC={best['matched_auc']:.4f} (baseline={best['baseline_matched_auc']:.4f}) "
         f"positive_steps={best['positive_steps']:.2f} negative_steps={best['negative_steps']:.2f} "
         f"step_gap={best['step_gap']:.2f}"
     )
