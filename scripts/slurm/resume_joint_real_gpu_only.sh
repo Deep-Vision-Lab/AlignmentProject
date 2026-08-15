@@ -46,10 +46,10 @@ TRAIN10_JOB_ID="$(sbatch --parsable \
   --tasks=1 --cpus-per-task=16 --mem=96G --time=1-00:00:00 \
   --mail-type=ALL --mail-user="${MAIL_USER}" \
   --export=ALL,JOB_ID="${CONT_NAME}",PRETRAINED_WEIGHTS="${PILOT_CHECKPOINT}",EPOCHS=10,LEARNING_RATE=5e-6,NUM_GPUS=2,EFFECTIVE_GLOBAL_BATCH_SIZE=64,REAL_TRAIN_FRACTION=0.80,REAL_VALID_FRACTION=0.10,REAL_CLEAN_VIEWS_PER_CYCLE=1,REAL_AUG_VIEWS_PER_CYCLE=2,REAL_EFFECTIVE_EPOCH_MULTIPLIER=6,NUM_NEGATIVES=10,SPAN_DTW_ACTIVE_NEGATIVES_PER_SAMPLE=4 \
-  "${PROJECT_DIR}/scripts/train/run_stage1_joint_real_discrimination.sh")"
+  --wrap="bash '${PROJECT_DIR}/scripts/train/run_stage1_joint_real_discrimination.sh'")"
 
 # 3) Check the continuation log, evaluate N=20, and gate in one GPU job.
-#    grep -m is used instead of grep|head under pipefail.
+#    Avoid all early-closing pipelines under pipefail.
 CHECK_EVAL10_GATE_JOB_ID="$(sbatch --parsable \
   --dependency="afterok:${TRAIN10_JOB_ID}" \
   --job-name=check_eval_gate_joint_real_10ep \
@@ -59,7 +59,7 @@ CHECK_EVAL10_GATE_JOB_ID="$(sbatch --parsable \
   --gpus="${GPU_RESOURCE}:1" \
   --tasks=1 --cpus-per-task=8 --mem=48G --time=05:00:00 \
   --mail-type=ALL --mail-user="${MAIL_USER}" \
-  --wrap="set -euo pipefail; source \"\$(conda info --base)/etc/profile.d/conda.sh\"; conda activate '${CONDA_ENV}'; cd '${PROJECT_DIR}'; test -f '${CONT_CHECKPOINT}'; LOG=\$(ls -t out/${CONT_NAME}_*.out | head -1); echo \"CONT_LOG=\$LOG\"; grep -m 20 -E 'Joint real training dataset|Joint real objective installed|objective=sequence_ranking' \"\$LOG\"; test \$(grep -c 'sequence_batch' \"\$LOG\" || true) -gt 0; echo '=== FIRST SEQUENCE BATCHES ==='; grep -m 10 'sequence_batch' \"\$LOG\"; echo '=== LAST SEQUENCE BATCHES ==='; grep 'sequence_batch' \"\$LOG\" | tail -10; CHECKPOINT='${CONT_CHECKPOINT}' RUN_NAME='${CONT_NAME}' N_SAMPLES=20 bash scripts/eval/run_real_discrimination_sweep.sh; python scripts/eval/check_real_discrimination_gate.py 'Results/Evaluation/Representation_Diagnostics/${CONT_NAME}'")"
+  --wrap="set -euo pipefail; source \"\$(conda info --base)/etc/profile.d/conda.sh\"; conda activate '${CONDA_ENV}'; cd '${PROJECT_DIR}'; test -f '${CONT_CHECKPOINT}'; LOG=\$(ls -t out/${CONT_NAME}_*.out 2>/dev/null | sed -n '1p'); test -n \"\$LOG\"; echo \"CONT_LOG=\$LOG\"; grep -m 20 -E 'Joint real training dataset|Joint real objective installed|objective=sequence_ranking' \"\$LOG\"; test \$(grep -c 'sequence_batch' \"\$LOG\" || true) -gt 0; echo '=== FIRST SEQUENCE BATCHES ==='; grep -m 10 'sequence_batch' \"\$LOG\"; echo '=== LAST SEQUENCE BATCHES ==='; grep 'sequence_batch' \"\$LOG\" | tail -10; CHECKPOINT='${CONT_CHECKPOINT}' RUN_NAME='${CONT_NAME}' N_SAMPLES=20 bash scripts/eval/run_real_discrimination_sweep.sh; python scripts/eval/check_real_discrimination_gate.py 'Results/Evaluation/Representation_Diagnostics/${CONT_NAME}'")"
 
 # 4) Larger final fixed-manifest evaluation and final summaries.
 FINAL_JOB_ID="$(sbatch --parsable \
