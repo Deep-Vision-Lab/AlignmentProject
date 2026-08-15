@@ -25,10 +25,38 @@ fi
 
 echo "Pilot training job: ${TRAIN5_JOB_ID}"
 
+# A dependency cannot be attached reliably to an old job after it has already
+# left Slurm's live job table. If the pilot is already COMPLETED successfully,
+# start CHECK5 immediately. Otherwise keep the normal afterok dependency.
+PILOT_STATE="$(sacct -j "${TRAIN5_JOB_ID}" -X -n -P --format=State 2>/dev/null | head -1 | cut -d'|' -f1 | xargs || true)"
+PILOT_EXIT="$(sacct -j "${TRAIN5_JOB_ID}" -X -n -P --format=ExitCode 2>/dev/null | head -1 | cut -d'|' -f1 | xargs || true)"
+CHECK5_DEPENDENCY="${TRAIN5_JOB_ID}"
+case "${PILOT_STATE}" in
+  COMPLETED*)
+    if [[ "${PILOT_EXIT}" != "0:0" ]]; then
+      echo "ERROR: pilot ${TRAIN5_JOB_ID} is COMPLETED but ExitCode=${PILOT_EXIT}; refusing continuation." >&2
+      exit 2
+    fi
+    CHECK5_DEPENDENCY=""
+    echo "Pilot already completed successfully; CHECK5 will be submitted immediately (no dependency on old job)."
+    ;;
+  FAILED*|CANCELLED*|TIMEOUT*|OUT_OF_MEMORY*|NODE_FAIL*)
+    echo "ERROR: pilot ${TRAIN5_JOB_ID} ended in state ${PILOT_STATE}; refusing continuation." >&2
+    exit 2
+    ;;
+  *)
+    echo "Pilot state=${PILOT_STATE:-live/unknown}; CHECK5 will depend on afterok:${TRAIN5_JOB_ID}."
+    ;;
+esac
+
 submit_cpu() {
   local dependency="$1" name="$2" wrap="$3"
+  local dependency_args=()
+  if [[ -n "${dependency}" ]]; then
+    dependency_args+=(--dependency="afterok:${dependency}")
+  fi
   sbatch --parsable \
-    --dependency="afterok:${dependency}" \
+    "${dependency_args[@]}" \
     --job-name="${name}" \
     --output="${PROJECT_DIR}/out/%x_%J.out" \
     --chdir="${PROJECT_DIR}" \
@@ -38,8 +66,8 @@ submit_cpu() {
     --wrap="${wrap}"
 }
 
-CHECK5_WRAP="set -euo pipefail; cd '${PROJECT_DIR}'; git fetch origin; git switch '${BRANCH}'; git pull --ff-only origin '${BRANCH}'; test -f 'Weights/${PILOT_NAME}/model_latest.pth'; LOG=\$(ls -t out/${PILOT_NAME}_*.out | head -1); echo \"PILOT_LOG=\$LOG\"; grep -E 'Joint real training dataset|Joint real objective installed|objective=sequence_ranking' \"\$LOG\" | head -20; test \$(grep -c 'sequence_batch' \"\$LOG\" || true) -gt 0; echo '=== FIRST SEQUENCE BATCHES ==='; grep 'sequence_batch' \"\$LOG\" | head -10; echo '=== LAST SEQUENCE BATCHES ==='; grep 'sequence_batch' \"\$LOG\" | tail -10"
-CHECK5_JOB_ID="$(submit_cpu "${TRAIN5_JOB_ID}" check_joint_real_5ep "${CHECK5_WRAP}")"
+CHECK5_WRAP="set -euo pipefail; cd '${PROJECT_DIR}'; test -f 'Weights/${PILOT_NAME}/model_latest.pth'; LOG=\$(ls -t out/${PILOT_NAME}_*.out | head -1); echo \"PILOT_LOG=\$LOG\"; grep -E 'Joint real training dataset|Joint real objective installed|objective=sequence_ranking' \"\$LOG\" | head -20; test \$(grep -c 'sequence_batch' \"\$LOG\" || true) -gt 0; echo '=== FIRST SEQUENCE BATCHES ==='; grep 'sequence_batch' \"\$LOG\" | head -10; echo '=== LAST SEQUENCE BATCHES ==='; grep 'sequence_batch' \"\$LOG\" | tail -10"
+CHECK5_JOB_ID="$(submit_cpu "${CHECK5_DEPENDENCY}" check_joint_real_5ep "${CHECK5_WRAP}")"
 
 EVAL5_JOB_ID="$(sbatch --parsable \
   --dependency="afterok:${CHECK5_JOB_ID}" \
@@ -93,7 +121,7 @@ FINAL_CHECK_JOB_ID="$(submit_cpu "${FULL_EVAL_JOB_ID}" final_check_joint_real "s
 
 cat <<EOF
 Submitted full dependency chain:
-  TRAIN5      ${TRAIN5_JOB_ID}  ${PILOT_NAME}
+  TRAIN5      ${TRAIN5_JOB_ID}  ${PILOT_NAME}  state=${PILOT_STATE:-unknown}
   CHECK5      ${CHECK5_JOB_ID}
   EVAL5       ${EVAL5_JOB_ID}
   GATE5       ${GATE5_JOB_ID}
