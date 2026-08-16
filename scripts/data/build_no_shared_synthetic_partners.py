@@ -2,13 +2,13 @@
 """Build train-only synthetic partners for clean no_shared_content real lines.
 
 For every leakage-safe no-shared training row, one original side is kept completely
-unchanged as an anchor.  The opposite original side becomes the base distractor
+unchanged as an anchor. The opposite original side becomes the base distractor
 canvas, and 1--3 bbox-exact complete-subword strips are replaced by different-
-handwriting donor strips whose text occurs in the anchor.  The resulting partner
-therefore contains one or more true aligned islands plus real unmatched content.
+handwriting donor strips whose canonical text occurs in the anchor.
 
-No canonical high/medium image is augmented by this script.  Validation and test
-are never used as anchors, mates, or donors.
+No canonical high/medium image is augmented. Validation and test are never used
+as anchors, mates, or donors. Matching is by canonical Arabic text; anchor and
+donor are allowed to use different bbox segmentation counts for the same text.
 """
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ from scripts.data.augment_real_bbox_strip_injection import (
 from SyntheticPartnerRealAugmentation import (
     PartnerSynthesisConfig,
     build_training_donor_index,
+    donor_index_diagnostics,
     synthesize_partner,
 )
 
@@ -51,10 +52,10 @@ def parse_args():
     parser.add_argument("--min-regions", type=int, default=1)
     parser.add_argument("--max-regions", type=int, default=3)
     parser.add_argument("--max-run-boxes", type=int, default=3)
-    parser.add_argument("--min-chars", type=int, default=4)
+    parser.add_argument("--min-chars", type=int, default=3)
     parser.add_argument("--max-chars", type=int, default=28)
-    parser.add_argument("--width-ratio-min", type=float, default=0.50)
-    parser.add_argument("--width-ratio-max", type=float, default=2.00)
+    parser.add_argument("--width-ratio-min", type=float, default=0.40)
+    parser.add_argument("--width-ratio-max", type=float, default=2.50)
     parser.add_argument("--multi-region-prob", type=float, default=0.65)
     parser.add_argument("--three-region-prob", type=float, default=0.15)
     parser.add_argument("--max-attempts", type=int, default=120)
@@ -140,7 +141,6 @@ def main():
         shutil.rmtree(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    # Force the same clean real-data semantics as Stage 2.
     os.environ["REAL_MANIFEST_NAME"] = manifest.name
     os.environ["REAL_AUGMENT"] = "0"
     os.environ.setdefault("REAL_EXTRA_EXCLUDE_EVAL_PAGES", "1")
@@ -167,8 +167,6 @@ def main():
         "synthetic_partner_train_no_shared",
     )
 
-    # Load bbox-valid training lines only.  This is an offline builder, so keeping
-    # normalized source images in memory is acceptable and avoids repeated I/O.
     line_cache: dict[Path, SourceLine] = {}
     rejected: Counter[str] = Counter()
     for dataset, indices in (
@@ -201,8 +199,30 @@ def main():
         max_attempts=int(args.max_attempts),
     )
     donor_index = build_training_donor_index(line_cache.values(), config)
-    if not donor_index:
-        raise RuntimeError("No repeated bbox-exact donor spans exist in the training-only pool")
+    donor_diag = donor_index_diagnostics(donor_index)
+    preflight = {
+        "clean_positive_train_rows": len(train_positive),
+        "safe_no_shared_train_rows": len(extra_train),
+        "bbox_valid_training_lines": len(line_cache),
+        "bbox_rejected_line_loads": int(sum(rejected.values())),
+        "donor_index": donor_diag,
+        "min_chars": int(args.min_chars),
+        "max_chars": int(args.max_chars),
+        "max_run_boxes": int(args.max_run_boxes),
+    }
+    print("=== SYNTHETIC PARTNER DONOR PREFLIGHT ===")
+    print(json.dumps(preflight, ensure_ascii=False, indent=2), flush=True)
+    (output_root / "donor_preflight.json").write_text(
+        json.dumps({**preflight, "bbox_rejections": dict(rejected)}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    if not donor_index or donor_diag["multi_image_text_keys"] <= 0:
+        top_rejections = dict(rejected.most_common(10))
+        raise RuntimeError(
+            "No canonical Arabic text span is available in two distinct bbox-valid "
+            "training images. See donor_preflight.json. Top bbox load rejections: "
+            f"{top_rejections}"
+        )
 
     rng = random.Random(int(args.seed))
     output_manifest = output_root / "dataset_manifest.jsonl"
@@ -224,7 +244,6 @@ def main():
                 failures["missing_bbox_side"] += 1
                 continue
 
-            # Balance which original no-shared side becomes the untouched anchor.
             preferred_anchor = "A" if ordinal % 2 == 0 else "B"
             orientations = [preferred_anchor, "B" if preferred_anchor == "A" else "A"]
             requested = _choose_region_count(rng, args)
@@ -233,19 +252,19 @@ def main():
             chosen_mate = None
             used_regions = None
 
-            for anchor_side in orientations:
-                mate_side = "B" if anchor_side == "A" else "A"
+            for anchor_side_name in orientations:
+                mate_side = "B" if anchor_side_name == "A" else "A"
                 for regions in range(requested, int(args.min_regions) - 1, -1):
                     result = synthesize_partner(
                         rng,
-                        loaded[anchor_side],
+                        loaded[anchor_side_name],
                         loaded[mate_side],
                         donor_index,
                         regions,
                         config,
                     )
                     if result is not None:
-                        chosen_anchor = anchor_side
+                        chosen_anchor = anchor_side_name
                         chosen_mate = mate_side
                         used_regions = regions
                         break
@@ -260,7 +279,7 @@ def main():
             output_index = generated + 1
             pair_root = output_root / "pairs" / f"partner_{output_index:06d}"
             saved_partner = _save_side(pair_root, "synthetic_partner", partner_state)
-            anchor_side = _absolute_original_side(dataset_root, record[chosen_anchor])
+            clean_anchor_side = _absolute_original_side(dataset_root, record[chosen_anchor])
 
             synthetic_record = {
                 "pair_id": f"{source_pair_id}__synthetic_partner_{output_index:06d}",
@@ -277,7 +296,7 @@ def main():
                     "coverage_A": 0.5,
                     "coverage_B": 0.5,
                 },
-                "A": anchor_side,
+                "A": clean_anchor_side,
                 "B": {
                     **saved_partner,
                     "line_idx": int(record[chosen_mate].get("line_idx", -1)),
@@ -298,7 +317,7 @@ def main():
         "generated_synthetic_partner_rows": generated,
         "generation_coverage": generated / max(1, len(extra_train)),
         "bbox_valid_training_lines": len(line_cache),
-        "donor_span_keys": len(donor_index),
+        "donor_index": donor_diag,
         "region_histogram": {str(k): v for k, v in sorted(region_histogram.items())},
         "anchor_orientation_histogram": dict(orientation_histogram),
         "excluded_nontrain_pair_rows": excluded_pair,
@@ -309,15 +328,18 @@ def main():
         "generation_failures": dict(failures),
         "anchor_policy": "original canonical image/text, never modified",
         "partner_policy": "original unrelated mate with 1-3 bbox-exact matching donor strips",
-        "donor_policy": "different training-only real image; validation/test excluded",
+        "donor_policy": "same canonical Arabic text, different training-only real image; bbox counts may differ",
         "online_augmentation": False,
     }
     (output_root / "synthetic_partner_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    print("=== SYNTHETIC PARTNER BUILD SUMMARY ===")
+    print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
     if generated == 0:
-        raise SystemExit("ERROR: generated zero synthetic partners")
+        raise SystemExit(
+            "ERROR: generated zero synthetic partners. Inspect generation_failures and donor_preflight.json"
+        )
 
 
 if __name__ == "__main__":
