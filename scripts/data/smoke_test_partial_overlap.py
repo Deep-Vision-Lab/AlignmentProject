@@ -38,7 +38,9 @@ def main():
     os.environ.setdefault("REAL_PARTIAL_OVERLAP_THREE_ISLAND_PROB", "0.25")
 
     import AugmentedRealDataLoader as augmented_loader
-    from PartialOverlapRealAugmentation import PartialOverlapRealPairDataset
+    from partial_overlap_runtime_fix import (
+        FeasiblePartialOverlapRealPairDataset as PartialOverlapRealPairDataset,
+    )
     import extra_real_training as legacy
     import joint_real_training_v5 as joint
 
@@ -86,6 +88,11 @@ def main():
     counts = {1: 0, 2: 0, 3: 0}
     print("=== PARTIAL OVERLAP SMOKE TEST ===")
     print(f"positive_train_rows={len(train_positive)}")
+    print(f"partial_overlap_feasible_positive_anchors={len(dataset.positive_indices)}")
+    print(
+        "partial_overlap_rejected_long_positive_anchors="
+        f"{dataset.partial_overlap_rejected_long_positive_anchors}"
+    )
     print(f"no_shared_train_rows={len(extra_train)}")
     for index in range(max(1, int(args.samples))):
         sample = dataset[index]
