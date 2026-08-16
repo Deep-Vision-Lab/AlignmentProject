@@ -1,22 +1,18 @@
 """Create one-sided synthetic partners for clean no-shared real lines.
 
-The anchor line is NEVER modified.  Its original ``no_shared_content`` mate is
-used as a realistic distractor canvas.  One to three complete subword strips in
-that mate are replaced by donor strips whose exact canonical text occurs in the
-anchor.  Donors come from different leakage-safe real training images, so each
+The anchor line is NEVER modified. Its original ``no_shared_content`` mate is
+used as a realistic distractor canvas. One to three complete subword strips in
+that mate are replaced by donor strips whose canonical Arabic text occurs in the
+anchor. Donors come from different leakage-safe real training images, so each
 inserted aligned island has genuine different-handwriting pixels.
 
-This deliberately differs from generic real-data augmentation:
-
-* canonical high/medium real pairs stay completely untouched;
-* the no-shared anchor stays completely untouched;
-* only the newly created partner is synthetic;
-* every injected region is bbox-exact and contains complete subwords;
-* multiple aligned regions preserve RTL reading order;
-* unmatched content from the original no-shared mate remains in the partner.
+Important: donor lookup is keyed by TEXT ONLY, not by bbox count. Different
+writers/annotations may segment the same Arabic text into a different number of
+connected-subword boxes; that is still a valid aligned region.
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 import random
 from typing import Iterable
@@ -25,7 +21,6 @@ from scripts.data.augment_real_bbox_strip_injection import (
     DonorRun,
     LineState,
     SourceLine,
-    _build_donor_index,
     _canonical,
     _compact,
     _copy_source,
@@ -43,31 +38,16 @@ class PartnerSynthesisConfig:
     min_regions: int = 1
     max_regions: int = 3
     max_run_boxes: int = 3
-    min_chars: int = 4
+    min_chars: int = 3
     max_chars: int = 28
-    width_ratio_min: float = 0.50
-    width_ratio_max: float = 2.00
+    width_ratio_min: float = 0.40
+    width_ratio_max: float = 2.50
     max_attempts: int = 120
 
 
-def build_training_donor_index(
-    lines: Iterable[SourceLine], config: PartnerSynthesisConfig
-):
-    return _build_donor_index(
-        lines,
-        max_run_boxes=int(config.max_run_boxes),
-        min_chars=int(config.min_chars),
-        max_chars=int(config.max_chars),
-    )
-
-
-def _anchor_runs(
-    anchor: SourceLine,
-    donor_index: dict[tuple[int, str], list[DonorRun]],
-    config: PartnerSynthesisConfig,
-) -> list[DonorRun]:
+def _all_valid_runs(line: SourceLine, config: PartnerSynthesisConfig) -> list[DonorRun]:
     runs: list[DonorRun] = []
-    boxes = anchor.boxes
+    boxes = line.boxes
     max_boxes = min(int(config.max_run_boxes), len(boxes))
     for size in range(1, max_boxes + 1):
         for start in range(0, len(boxes) - size + 1):
@@ -81,12 +61,56 @@ def _anchor_runs(
                 int(config.min_chars) <= compact_len <= int(config.max_chars)
             ):
                 continue
-            key = (size, canonical)
-            donors = donor_index.get(key, [])
-            if not any(run.line.image_path != anchor.image_path for run in donors):
-                continue
             x0, x1 = _x_bounds(selected)
-            runs.append(DonorRun(anchor, start, size, text, canonical, x0, x1))
+            runs.append(DonorRun(line, start, size, text, canonical, x0, x1))
+    return runs
+
+
+def build_training_donor_index(
+    lines: Iterable[SourceLine], config: PartnerSynthesisConfig
+) -> dict[str, list[DonorRun]]:
+    """Index every valid training donor by canonical text only.
+
+    We intentionally do NOT require two donor images at index-build time and do
+    NOT require anchor/donor bbox counts to agree. The per-anchor selection later
+    enforces that the chosen donor is from a different image.
+    """
+    index: dict[str, list[DonorRun]] = defaultdict(list)
+    for line in lines:
+        for run in _all_valid_runs(line, config):
+            index[run.canonical_text].append(run)
+    return dict(index)
+
+
+def donor_index_diagnostics(donor_index: dict[str, list[DonorRun]]) -> dict:
+    repeated_texts = 0
+    multi_image_texts = 0
+    total_runs = 0
+    for runs in donor_index.values():
+        total_runs += len(runs)
+        if len(runs) >= 2:
+            repeated_texts += 1
+        if len({run.line.image_path for run in runs}) >= 2:
+            multi_image_texts += 1
+    return {
+        "text_keys": len(donor_index),
+        "total_runs": total_runs,
+        "repeated_text_keys": repeated_texts,
+        "multi_image_text_keys": multi_image_texts,
+    }
+
+
+def _anchor_runs(
+    anchor: SourceLine,
+    donor_index: dict[str, list[DonorRun]],
+    config: PartnerSynthesisConfig,
+) -> list[DonorRun]:
+    runs: list[DonorRun] = []
+    for anchor_run in _all_valid_runs(anchor, config):
+        donors = donor_index.get(anchor_run.canonical_text, [])
+        if not any(run.line.image_path != anchor.image_path for run in donors):
+            continue
+        runs.append(anchor_run)
     return runs
 
 
@@ -126,12 +150,12 @@ def _choose_anchor_runs(
 def _choose_donor(
     rng: random.Random,
     anchor_run: DonorRun,
-    donor_index: dict[tuple[int, str], list[DonorRun]],
+    donor_index: dict[str, list[DonorRun]],
     forbidden_images: set,
 ) -> DonorRun | None:
     donors = [
         run
-        for run in donor_index.get((anchor_run.size, anchor_run.canonical_text), [])
+        for run in donor_index.get(anchor_run.canonical_text, [])
         if run.line.image_path not in forbidden_images
     ]
     if not donors:
@@ -143,16 +167,11 @@ def synthesize_partner(
     rng: random.Random,
     anchor: SourceLine,
     unrelated_mate: SourceLine,
-    donor_index: dict[tuple[int, str], list[DonorRun]],
+    donor_index: dict[str, list[DonorRun]],
     regions: int,
     config: PartnerSynthesisConfig,
 ) -> tuple[LineState, dict] | None:
-    """Return a synthetic mate containing ``regions`` anchor-matching islands.
-
-    The original anchor is returned only through metadata and is never mutated.
-    Target replacement positions are constrained to the same semantic RTL order
-    as the selected anchor spans so the aligned islands form a monotonic path.
-    """
+    """Return a synthetic mate containing ``regions`` anchor-matching islands."""
     regions = int(regions)
     if regions < int(config.min_regions) or regions > int(config.max_regions):
         return None
@@ -187,12 +206,8 @@ def synthesize_partner(
                 float(config.width_ratio_min),
                 float(config.width_ratio_max),
             )
-            # Preserve the same RTL sequence order as the anchor runs and avoid
-            # replacing any previously inserted island.
             target_starts = [
-                start
-                for start in target_starts
-                if start >= previous_target_end
+                start for start in target_starts if start >= previous_target_end
             ]
             if not target_starts:
                 success = False
@@ -225,6 +240,7 @@ def synthesize_partner(
                     "shared_text": anchor_run.canonical_text,
                     "anchor_box_start": int(anchor_run.start),
                     "anchor_box_count": int(anchor_run.size),
+                    "donor_box_count": int(donor.size),
                     "partner_target_box_start": int(placed_start),
                     "donor_image": str(donor.line.image_path),
                     "donor_pair_id": str(donor.line.pair_id),
@@ -243,6 +259,7 @@ def synthesize_partner(
                 "partner_modified": True,
                 "order_policy": "aligned islands preserve anchor RTL order",
                 "text_policy": "partner transcript rebuilt from final bbox sequence",
+                "matching_policy": "canonical Arabic text; bbox counts may differ across writers",
                 "complete_subword_policy": "bbox-exact full-height strips only",
             }
 
