@@ -20,7 +20,10 @@ def install(base) -> None:
         "partial_overlap",
         "multi_island",
     }:
-        from joint_real_training_partial_overlap import install as install_partial_overlap
+        # Guard the online composite pool against canonical positives whose own
+        # transcript already exceeds the composite text cap. Those rows remain
+        # available to canonical training; they are excluded only from synthesis.
+        from partial_overlap_runtime_fix import install as install_partial_overlap
 
         install_partial_overlap(base)
         return
