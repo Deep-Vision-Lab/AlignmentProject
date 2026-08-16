@@ -4,6 +4,7 @@
 ``ranking`` preserves the transcript-group relative ranking ablation.
 ``sequence_ranking`` trains directly on local-window sequence alignment.
 ``joint_real`` is the clean Stage-1 -> original+online-augmented real curriculum.
+``joint_partial_overlap`` adds train-only multi-island partial-overlap positives.
 """
 from __future__ import annotations
 
@@ -14,6 +15,15 @@ from extra_real_training_v2_absolute import _eligible_groups, _positive_pair_los
 
 def install(base) -> None:
     objective = os.environ.get("NO_SHARED_IMAGE_OBJECTIVE", "absolute").strip().lower()
+    if objective in {
+        "joint_partial_overlap",
+        "partial_overlap",
+        "multi_island",
+    }:
+        from joint_real_training_partial_overlap import install as install_partial_overlap
+
+        install_partial_overlap(base)
+        return
     if objective in {"joint", "joint_real", "joint_discrimination"}:
         from joint_real_training_v5 import install as install_joint_real
 
@@ -36,5 +46,6 @@ def install(base) -> None:
         return
     raise ValueError(
         "NO_SHARED_IMAGE_OBJECTIVE must be 'absolute', 'ranking', "
-        f"'sequence_ranking', or 'joint_real', got {objective!r}."
+        "'sequence_ranking', 'joint_real', or 'joint_partial_overlap', "
+        f"got {objective!r}."
     )
