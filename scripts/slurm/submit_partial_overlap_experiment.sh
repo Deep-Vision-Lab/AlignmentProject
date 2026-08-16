@@ -17,24 +17,40 @@ python scripts/data/build_full_line_pair_manifest.py \
   --root "${PROJECT_DIR}/DataSet/ArabicDataset" \
   --output "${FULL_MANIFEST}"
 
-# Prefer the most conservative successful parent from the staged adaptation run.
+# Parent policy:
+# - explicit PARENT_CHECKPOINT always wins;
+# - otherwise use R1 only when its scientific gate explicitly passed;
+# - otherwise fall back to the known-good Stage-1 synthetic checkpoint.
+# This avoids selecting a half-written checkpoint merely because model_latest.pth
+# exists while a training job is still running or after a failed gate.
 PARENT_NAME="${PARENT_NAME:-}"
 PARENT_CHECKPOINT="${PARENT_CHECKPOINT:-}"
 if [[ -z "${PARENT_CHECKPOINT}" ]]; then
-  for candidate_name in \
-    cnn_real_r1_positive_pairs \
-    cnn_real_r0_image_text \
-    cnn_bilstm_augmented_fixed63_27k; do
-    candidate="${PROJECT_DIR}/Weights/${candidate_name}/model_latest.pth"
-    if [[ -f "${candidate}" ]]; then
-      PARENT_NAME="${candidate_name}"
-      PARENT_CHECKPOINT="${candidate}"
-      break
-    fi
-  done
+  R1_NAME=cnn_real_r1_positive_pairs
+  R1_CHECKPOINT="${PROJECT_DIR}/Weights/${R1_NAME}/model_latest.pth"
+  R1_GATE="${PROJECT_DIR}/Results/Evaluation/Representation_Diagnostics/${R1_NAME}_discrimination/gate_result.json"
+  R1_PASSED=0
+  if [[ -f "${R1_CHECKPOINT}" && -f "${R1_GATE}" ]]; then
+    R1_PASSED="$(python - "${R1_GATE}" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+    print(1 if bool(data.get("pass")) else 0)
+except Exception:
+    print(0)
+PY
+)"
+  fi
+  if [[ "${R1_PASSED}" == 1 ]]; then
+    PARENT_NAME="${R1_NAME}"
+    PARENT_CHECKPOINT="${R1_CHECKPOINT}"
+  else
+    PARENT_NAME=cnn_bilstm_augmented_fixed63_27k
+    PARENT_CHECKPOINT="${PROJECT_DIR}/Weights/${PARENT_NAME}/model_latest.pth"
+  fi
 fi
 [[ -n "${PARENT_CHECKPOINT}" && -f "${PARENT_CHECKPOINT}" ]] || {
-  echo "ERROR: no usable R1/R0/Stage1 parent checkpoint found." >&2
+  echo "ERROR: no usable passed-R1 or Stage1 parent checkpoint found." >&2
   exit 2
 }
 [[ -n "${PARENT_NAME}" ]] || PARENT_NAME="$(basename "$(dirname "${PARENT_CHECKPOINT}")")"
