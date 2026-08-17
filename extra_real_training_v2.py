@@ -25,6 +25,15 @@ def install(base) -> None:
         from bridge_mask_runtime import install as install_bridge_masks
         from bridge_multi_island_runtime import install as install_multi_island_runtime
 
+        # Bridge V2 positives deliberately contain unrelated distractor regions.
+        # The old generic sequence-ranking objective assumes the entire positive
+        # line should align and would therefore reward alignment through those
+        # distractors. Disable it inside the runtime, independent of launcher env.
+        # The bridge-specific direct ranking installed below still trains on the
+        # exact 1-3 shared islands only.
+        base.P.use_sequence_alignment_ranking = False
+        base.P.sequence_ranking_weight = 0.0
+
         install_bridge_text_policy(base)
         install_bridge_masks(legacy)
         install_multi_island_runtime(bridge_training)
