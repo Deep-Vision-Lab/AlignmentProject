@@ -8,10 +8,12 @@ cd "${PROJECT_DIR}"
 DATA_DIR="${DATA_DIR:-${PROJECT_DIR}/DataSet/ArabicDataset}"
 OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_DIR}/DataSet/RealSyntheticBridge_v1}"
 NEGATIVES_PER_ANCHOR="${NEGATIVES_PER_ANCHOR:-4}"
-# Default to the stronger guarantee: no normalized three-character sequence is
-# shared with the real anchor. Individual letters/bigrams may still repeat.
+# Hard content-negative defaults:
+#   1) no complete normalized word may be shared with the real anchor; and
+#   2) no normalized three-character sequence may be shared.
+# Individual letters/bigrams may repeat so negatives remain realistic Arabic.
 NEGATIVE_NGRAM="${NEGATIVE_NGRAM:-3}"
-MIN_OVERLAP_WORD_CHARS="${MIN_OVERLAP_WORD_CHARS:-3}"
+MIN_OVERLAP_WORD_CHARS="${MIN_OVERLAP_WORD_CHARS:-1}"
 SEED="${SEED:-42}"
 MAX_ANCHORS="${MAX_ANCHORS:-0}"
 

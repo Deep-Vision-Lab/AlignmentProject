@@ -1,10 +1,15 @@
-"""Freeze the complete text encoder for real-conditioned bridge training.
+"""Keep AraBERT frozen while training the bridge text projection head.
 
-The normal Arabic span encoder freezes AraBERT but intentionally leaves its
-projection and learned special embeddings trainable.  The bridge hypothesis is
-stronger and cleaner if text is a fixed teacher: positive/negative synthetic text
-vectors must not move to accommodate the image encoder.  This installer therefore
-freezes every text-side parameter before the optimizer is built.
+The Arabic span encoder intentionally uses a frozen AraBERT backbone followed by a
+small trainable adapter into the shared image/text embedding dimension.  For bridge
+training we preserve that design: the language backbone stays fixed, while the
+projection, LayerNorm, and learned special-token embeddings remain trainable.
+
+This is preferable to freezing the whole text encoder because the projection is the
+learned coordinate transform from AraBERT's hidden size into the AlignmentProject
+128/256-D space.  The bridge fine-tuning learning rate is already very small, so v1
+keeps the adapter on the normal optimizer LR rather than introducing another
+confounding hyperparameter.
 """
 from __future__ import annotations
 
@@ -12,22 +17,35 @@ from __future__ import annotations
 def install(base) -> None:
     original_build_text_encoder = base.build_text_encoder
 
-    def build_frozen_text_encoder():
+    def build_bridge_text_encoder():
         encoder = original_build_text_encoder()
-        total = 0
-        previously_trainable = 0
-        for parameter in encoder.parameters():
-            total += parameter.numel()
+
+        # Enforce a frozen language-model backbone even if a future global setting
+        # changes, but preserve the trainable projection-head policy.
+        backbone = getattr(encoder, "backbone", None)
+        if backbone is not None:
+            for parameter in backbone.parameters():
+                parameter.requires_grad_(False)
+            backbone.eval()
+
+        trainable_names = []
+        trainable_parameters = 0
+        total_parameters = 0
+        for name, parameter in encoder.named_parameters():
+            total_parameters += parameter.numel()
             if parameter.requires_grad:
-                previously_trainable += parameter.numel()
-            parameter.requires_grad_(False)
-        encoder.eval()
+                trainable_parameters += parameter.numel()
+                trainable_names.append(name)
+
         if getattr(base.CTX, "is_main", True):
             print(
-                "bridge_text_teacher frozen=1 "
-                f"parameters={total} previously_trainable={previously_trainable}",
+                "bridge_text_policy "
+                "arabert_frozen=1 projection_trainable=1 "
+                f"trainable_parameters={trainable_parameters} "
+                f"total_parameters={total_parameters} "
+                f"trainable_names={','.join(trainable_names)}",
                 flush=True,
             )
         return encoder
 
-    base.build_text_encoder = build_frozen_text_encoder
+    base.build_text_encoder = build_bridge_text_encoder
