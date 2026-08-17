@@ -6,10 +6,16 @@ groups together, uses only positive rows for internal validation/test, and balan
 positive vs no-shared rows 50/50 during training regardless of how many negatives
 were generated per anchor.
 
-The actual loss plumbing is delegated to ``extra_real_training_v4`` so the same
-normalized local image embeddings and differentiable local-alignment objective used
-by real evaluation remain active.  v4 also adds the bridge-specific cross-text loss
-when ``REAL_SYNTHETIC_BRIDGE=1``.
+Bridge v1 deliberately reuses the established losses instead of adding another
+cross-text term:
+- real A <-> its genuine transcript (image-text);
+- synthetic B <-> its exactly known transcript (image-text);
+- positive real A <-> synthetic B image-pair/sequence attraction; and
+- negative real A <-> synthetic B sequence rejection.
+
+That triangle tests the bridge-data hypothesis itself without confounding it with a
+new loss. A direct real-image/synthetic-text objective can be evaluated separately
+in a later ablation if v1 is promising.
 """
 from __future__ import annotations
 
@@ -130,7 +136,7 @@ def build_bridge_dataloaders(data_dir):
 
 def install(base) -> None:
     # v4 calls legacy.install(), and legacy.install() consults this module-global
-    # builder at runtime. Replace it first so no online real augmentation is used.
+    # builder at runtime. Replace it first so no online rendering/augmentation is used.
     legacy.build_dataloaders = build_bridge_dataloaders
     sequence.install(base)
 
@@ -144,12 +150,7 @@ def install(base) -> None:
                 "bridge_offline_rendering": True,
                 "bridge_class_balance_positive": 0.5,
                 "bridge_class_balance_negative": 0.5,
-                "bridge_cross_text_weight": float(
-                    os.environ.get("BRIDGE_CROSS_TEXT_WEIGHT", "0.10")
-                ),
-                "bridge_cross_text_threshold": float(
-                    os.environ.get("BRIDGE_CROSS_TEXT_THRESHOLD", "0.50")
-                ),
+                "bridge_direct_cross_text_loss": False,
             }
         )
         return config
@@ -159,6 +160,6 @@ def install(base) -> None:
         print(
             "Real-conditioned synthetic bridge installed: offline 50/50 positive/"
             "negative pairs + image-text supervision + positive image-pair loss + "
-            "sequence ranking + real-anchor/synthetic-text ranking.",
+            "sequence ranking; no extra cross-text loss in v1.",
             flush=True,
         )
