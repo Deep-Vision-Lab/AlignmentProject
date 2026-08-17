@@ -1,19 +1,16 @@
-"""Branch-selected visual model backend.
+"""Meta DINOv3 ConvNeXt branch backend.
 
-This branch supports the two CNN modes used by the project:
-- CNN only (``USE_BILSTM=0``)
-- CNN + BiLSTM (``USE_BILSTM=1``)
-
-New CNN experiments default to ResNet-18.  Historical ResNet-34 checkpoints remain
-supported through ``CNN_BACKBONE=resnet34``; checkpoint-aware launchers/evaluation
-resolve that legacy setting automatically.
+The shared data/loss/training runtime is unchanged.  Only the visual window encoder
+is replaced by the official DINOv3 ConvNeXt-Tiny foundation model plus a projection
+into the project's embedding dimension. ``USE_BILSTM=0/1`` remains available as a
+controlled sequence-context ablation on top of the same ConvNeXt windows.
 """
 from __future__ import annotations
 
 import os
 
-MODEL_NAME = "cnn_bilstm"
-VISUAL_ENCODER_TYPE = "cnn_bilstm"
+MODEL_NAME = "dinov3_convnext"
+VISUAL_ENCODER_TYPE = "dinov3_convnext"
 
 
 def _flag(name: str, default: bool) -> bool:
@@ -44,14 +41,9 @@ def build_visual_model(
     local_group_size=3,
     **_ignored,
 ):
-    # Configure before EmbeddingModel.__init__, which looks up its CNN constructor
-    # at runtime.  This keeps all sequence/local-grouping code shared.
-    from cnn_backbone_runtime import configure_embedding_model_backbone
+    from dinov3_convnext_embedding_model import build_dinov3_from_environment
 
-    backbone = configure_embedding_model_backbone(default="resnet18")
-    from embeddingModel import EmbeddingModel
-
-    model = EmbeddingModel(
+    return build_dinov3_from_environment(
         window_size=window_size,
         stride=stride,
         vector_size=vector_size,
@@ -63,12 +55,9 @@ def build_visual_model(
         use_local_grouping=use_local_grouping,
         local_group_size=local_group_size,
     )
-    model.cnn_backbone_name = backbone
-    return model
 
 
 def install_training_backend(base_module) -> None:
-    """Install this branch's constructor into the shared train.py module."""
     os.environ["VISUAL_ENCODER_TYPE"] = VISUAL_ENCODER_TYPE
 
     def constructor(
@@ -92,19 +81,19 @@ def install_training_backend(base_module) -> None:
 
 
 def prepare_visual_model(model) -> None:
-    from training_optimizations import prepare_raw_model
+    from dinov3_convnext_embedding_model import prepare_dinov3_model
 
-    prepare_raw_model(model)
+    prepare_dinov3_model(model)
 
 
 def visual_model_config() -> dict:
-    from cnn_backbone_runtime import selected_cnn_backbone
-
     return {
         "model_backend": MODEL_NAME,
         "visual_encoder_type": VISUAL_ENCODER_TYPE,
-        "cnn_backbone": selected_cnn_backbone(default="resnet18"),
-        "cnn_chunk_size": _integer("CNN_CHUNK_SIZE", 1024),
-        "use_channels_last": _flag("USE_CHANNELS_LAST", True),
-        "torch_compile_visual": _flag("TORCH_COMPILE_VISUAL", False),
+        "dinov3_arch": "dinov3_convnext_tiny",
+        "dinov3_freeze_backbone": _flag("DINOV3_FREEZE_BACKBONE", True),
+        "dinov3_window_chunk_size": _integer("DINOV3_WINDOW_CHUNK_SIZE", 256),
+        "use_bilstm": _flag("USE_BILSTM", True),
+        "use_local_window_grouping": _flag("USE_LOCAL_WINDOW_GROUPING", True),
+        "torch_compile_visual": False,
     }
