@@ -85,16 +85,31 @@ JOB_ID=my_bridge_v1 \
 bash scripts/train/run_real_synthetic_bridge.sh
 ```
 
-Bridge v1 keeps the experiment controlled. It reuses established losses:
+Bridge v1 uses four complementary signals:
 
 - real image <-> genuine real transcript;
 - synthetic image <-> its exactly known synthetic transcript;
-- positive real/synthetic image attraction;
-- negative real/synthetic sequence rejection.
+- positive/negative real-image <-> synthetic-image sequence discrimination;
+- **direct real-image <-> synthetic-text sequence ranking**: text from a positive
+  rendered sample must form a stronger/longer local path in the real anchor than
+  text from a guaranteed-negative rendered sample.
 
-It does **not** add a new direct real-image/synthetic-text loss in v1. Training is
-50/50 positive/no-shared and preserves `checkpoint_best_val.pth` whenever validation
-improves.
+The direct term detaches the text embeddings, so its gradients update the visual
+representation rather than moving the semantic target space. It deliberately
+penalizes a coherent negative text sequence, not every isolated negative character,
+because unrelated Arabic lines can still contain legitimate repeated letters.
+Training is 50/50 positive/no-shared and preserves `checkpoint_best_val.pth` whenever
+validation improves.
+
+Useful bridge knobs include:
+
+```bash
+BRIDGE_CROSS_TEXT_WEIGHT=0.10
+BRIDGE_CROSS_TEXT_THRESHOLD=0.50
+BRIDGE_CROSS_TEXT_PATH_MARGIN=0.10
+BRIDGE_CROSS_TEXT_POSITIVE_FLOOR=0.20
+BRIDGE_CROSS_TEXT_NEGATIVE_CEILING=0.15
+```
 
 ## DINOv3 ConvNeXt setup
 
