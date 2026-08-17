@@ -2,8 +2,8 @@
 """Internal branch-aware entrypoint for the optimized trainer.
 
 Users should run ``scripts/train/run_real_finetune.sh`` rather than invoking this
-module directly. ``model_backend.py`` remains the only active model difference between
-the CNN+BiLSTM and ViT branches.
+module directly. ``model_backend.py`` selects the visual architecture while the
+training/data/loss runtime remains shared.
 """
 from __future__ import annotations
 
@@ -133,15 +133,22 @@ def _load_initial_states_checked(args, model, text_encoder):
     has_vit = any(key.startswith("vit_encoder.") for key in keys)
     has_cnn = any(key.startswith("cnn_encoder.") for key in keys)
     has_bilstm = any(key.startswith("sequence_encoder.bilstm.") for key in keys)
+    expects_bilstm = bool(getattr(optimized.base.P, "use_bilstm", True))
 
     if backend == "vit" and (not has_vit or has_cnn or has_bilstm):
         raise RuntimeError(
             "ViT backend constructed the wrong visual model before checkpoint load: "
             f"has_vit={has_vit} has_cnn={has_cnn} has_bilstm={has_bilstm}."
         )
-    if backend == "cnn_bilstm" and (not has_cnn or not has_bilstm or has_vit):
+    if backend == "cnn_bilstm" and (
+        not has_cnn
+        or has_vit
+        or (expects_bilstm and not has_bilstm)
+        or (not expects_bilstm and has_bilstm)
+    ):
+        mode = "cnn_bilstm" if expects_bilstm else "cnn_only"
         raise RuntimeError(
-            "CNN+BiLSTM backend constructed the wrong visual model before checkpoint load: "
+            f"CNN backend constructed the wrong {mode} visual model before checkpoint load: "
             f"has_vit={has_vit} has_cnn={has_cnn} has_bilstm={has_bilstm}."
         )
 
@@ -149,6 +156,7 @@ def _load_initial_states_checked(args, model, text_encoder):
         print(
             "visual_builder "
             f"backend={backend} model_class={model.__class__.__name__} "
+            f"cnn_mode={'bilstm' if expects_bilstm else 'cnn_only'} "
             f"has_vit={int(has_vit)} has_cnn={int(has_cnn)} "
             f"has_bilstm={int(has_bilstm)}",
             flush=True,
