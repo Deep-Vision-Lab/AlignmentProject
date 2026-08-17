@@ -21,7 +21,7 @@ TRACKER_JSON="${PROJECT_DIR}/logs/experiments/${RUN_PREFIX}.json"
 TRACKER_MD="${PROJECT_DIR}/logs/experiments/${RUN_PREFIX}.md"
 TRACKER_TOOL="${PROJECT_DIR}/scripts/pipeline/experiment_tracker.py"
 TRACKED_WRAPPER="${PROJECT_DIR}/scripts/pipeline/run_tracked_stage.sh"
-STAGE_SCRIPT="${PROJECT_DIR}/scripts/data/prepare_real_synthetic_bridge_v2.sh"
+STAGE_SCRIPT="${PROJECT_DIR}/scripts/data/prepare_real_synthetic_bridge_v3.sh"
 JOB_NAME="build_real_synthetic_bridge_v3"
 
 [[ -s "${REAL_DATA_DIR}/dataset_manifest.jsonl" ]] || { echo "ERROR: missing real manifest" >&2; exit 2; }
