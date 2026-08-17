@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=build_real_synth_bridge
+#SBATCH --job-name=build_real_synth_bridge_v2
 #SBATCH --partition=main
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -18,10 +18,13 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV:-manucripts_align}"
 
 export DATA_DIR="${DATA_DIR:-${ROOT}/DataSet/ArabicDataset}"
-export OUTPUT_DIR="${OUTPUT_DIR:-${ROOT}/DataSet/RealSyntheticBridge_v1}"
+export OUTPUT_DIR="${OUTPUT_DIR:-${ROOT}/DataSet/RealSyntheticBridge_v2}"
 export NEGATIVES_PER_ANCHOR="${NEGATIVES_PER_ANCHOR:-4}"
 export NEGATIVE_NGRAM="${NEGATIVE_NGRAM:-3}"
 export MIN_OVERLAP_WORD_CHARS="${MIN_OVERLAP_WORD_CHARS:-1}"
+export MAX_SHARED_ISLANDS="${MAX_SHARED_ISLANDS:-3}"
+export SEGMENT_GAP_MIN_PX="${SEGMENT_GAP_MIN_PX:-12}"
+export SEGMENT_GAP_MAX_PX="${SEGMENT_GAP_MAX_PX:-28}"
 export SEED="${SEED:-42}"
 export MAX_ANCHORS="${MAX_ANCHORS:-0}"
 export OVERWRITE="${OVERWRITE:-0}"
