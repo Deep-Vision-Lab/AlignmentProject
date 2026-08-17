@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Train the current branch on the validated 27,000-pair fixed-63 Arabic dataset.
-# This wrapper does not change the underlying Slurm resource configuration.
+# New CNN runs default to ResNet-18; set CNN_BACKBONE=resnet34 only for a legacy
+# architecture run. This wrapper does not change the underlying Slurm resources.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -72,11 +73,17 @@ WINDOW_OVERLAP_MODE="${WINDOW_OVERLAP_MODE:-custom}"
 MAX_TEXT_SPAN_CHARS="${MAX_TEXT_SPAN_CHARS:-3}"
 SPAN_MAX_CORE_CHARS_CAP="${SPAN_MAX_CORE_CHARS_CAP:-${MAX_TEXT_SPAN_CHARS}}"
 SPAN_CONNECTED_MAX_UNITS_PER_SPAN="${SPAN_CONNECTED_MAX_UNITS_PER_SPAN:-${MAX_TEXT_SPAN_CHARS}}"
+# CNN branch: new training uses the smaller backbone by default. ViT/DINO branches
+# ignore this variable through their own model_backend.py implementations.
+CNN_BACKBONE="${CNN_BACKBONE:-resnet18}"
 
 export DATA_DIR NUM_SAMPLES EXPECTED_TEXT_CHARS
 export DATASET_TYPE SYNTHETIC_MANUSCRIPT_AUGMENT REAL_AUGMENT
 export WINDOW_SIZE STRIDE_RATIO WINDOW_OVERLAP_MODE
 export MAX_TEXT_SPAN_CHARS SPAN_MAX_CORE_CHARS_CAP SPAN_CONNECTED_MAX_UNITS_PER_SPAN
+export CNN_BACKBONE
+
+echo "fixed63_visual_config CNN_BACKBONE=${CNN_BACKBONE} USE_BILSTM=${USE_BILSTM:-1}"
 
 has_gpu_allocation() {
   local name value
