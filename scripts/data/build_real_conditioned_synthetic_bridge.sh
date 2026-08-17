@@ -17,8 +17,7 @@ MAX_PHRASE_CHARS="${MAX_PHRASE_CHARS:-6}"
 MAX_PHRASE_WORDS="${MAX_PHRASE_WORDS:-2}"
 
 # Readable-line policy: never squeeze a long sentence into tiny glyphs.
-# The positive line adds 1..3 shared islands to this base sentence, therefore the
-# base itself is deliberately bounded well below the full 1024px capacity.
+# Oversized/sparse candidates are resampled by the resilient Python builder.
 SENTENCE_MIN_WORDS="${SENTENCE_MIN_WORDS:-5}"
 SENTENCE_MAX_WORDS="${SENTENCE_MAX_WORDS:-7}"
 MIN_SENTENCE_CHARS="${MIN_SENTENCE_CHARS:-22}"
@@ -79,7 +78,7 @@ args=(
 if [[ "${OVERWRITE:-0}" == "1" ]]; then args+=(--overwrite); fi
 if [[ -n "${BRIDGE_FONTS:-}" ]]; then args+=(--fonts "${BRIDGE_FONTS}"); fi
 
-python scripts/data/build_real_conditioned_synthetic_bridge_v3.py "${args[@]}"
+python scripts/data/build_real_conditioned_synthetic_bridge_v3_resilient.py "${args[@]}"
 
 [[ -s "${OUTPUT_DIR}/dataset_manifest.jsonl" ]] || { echo "ERROR: missing bridge manifest" >&2; exit 2; }
 [[ -s "${OUTPUT_DIR}/metadata.json" ]] || { echo "ERROR: missing bridge metadata" >&2; exit 2; }
@@ -94,6 +93,7 @@ python scripts/data/validate_bridge_v3_font_size.py \
   --min-font-size "${MIN_FONT_SIZE}"
 
 echo "Bridge V3 dataset ready: ${OUTPUT_DIR}"
+echo "Layout overflow policy: resample candidate; never shrink below ${MIN_FONT_SIZE}px"
 echo "Human index: ${OUTPUT_DIR}/README_DATASET.md"
 echo "Anchor index: ${OUTPUT_DIR}/anchor_index.jsonl"
 echo "Real-line scrape index: ${OUTPUT_DIR}/real_lines_index.jsonl"
