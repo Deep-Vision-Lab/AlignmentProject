@@ -19,7 +19,9 @@ in a later ablation if v1 is promising.
 """
 from __future__ import annotations
 
+import math
 import os
+import shutil
 
 from torch.utils.data import Dataset, Subset
 
@@ -97,7 +99,7 @@ def build_bridge_dataloaders(data_dir):
     )
 
     # Default: expose every generated negative once per epoch and repeat positives
-    # as needed to preserve exact 50/50 class balance.  The public launcher may cap
+    # as needed to preserve exact 50/50 class balance. The public launcher may cap
     # this with BRIDGE_TRAIN_SAMPLES_PER_EPOCH for fast pilots.
     natural_target = 2 * len(train_negative)
     requested_target = _env_int("BRIDGE_TRAIN_SAMPLES_PER_EPOCH", 0)
@@ -134,11 +136,61 @@ def build_bridge_dataloaders(data_dir):
     )
 
 
+def _install_best_validation_checkpoint(base) -> None:
+    """Keep the best validated epoch so a longer max run cannot erase it."""
+    state = {"last_val": float("nan"), "best_val": float("inf"), "best_epoch": 0}
+    previous_log = base.wandb_log_epoch_metrics
+    previous_save = base.save_checkpoint
+
+    def log_epoch(run, epoch, train_loss, val_loss, train_stats):
+        state["last_val"] = float(val_loss)
+        state["epoch"] = int(epoch)
+        return previous_log(run, epoch, train_loss, val_loss, train_stats)
+
+    def save_checkpoint(
+        model,
+        text_encoder,
+        optimizer,
+        scheduler,
+        scaler,
+        epoch,
+        job_id,
+        config,
+    ):
+        result = previous_save(
+            model,
+            text_encoder,
+            optimizer,
+            scheduler,
+            scaler,
+            epoch,
+            job_id,
+            config,
+        )
+        val_loss = float(state.get("last_val", float("nan")))
+        if math.isfinite(val_loss) and val_loss < float(state["best_val"]):
+            state["best_val"] = val_loss
+            state["best_epoch"] = int(epoch) + 1
+            source = os.path.join(base.weights_dir(job_id), "checkpoint_latest.pth")
+            target = os.path.join(base.weights_dir(job_id), "checkpoint_best_val.pth")
+            shutil.copy2(source, target)
+            print(
+                "bridge_best_checkpoint "
+                f"epoch={state['best_epoch']} val_loss={val_loss:.6f} path={target}",
+                flush=True,
+            )
+        return result
+
+    base.wandb_log_epoch_metrics = log_epoch
+    base.save_checkpoint = save_checkpoint
+
+
 def install(base) -> None:
     # v4 calls legacy.install(), and legacy.install() consults this module-global
     # builder at runtime. Replace it first so no online rendering/augmentation is used.
     legacy.build_dataloaders = build_bridge_dataloaders
     sequence.install(base)
+    _install_best_validation_checkpoint(base)
 
     previous_model_config = base.model_config
 
@@ -151,6 +203,7 @@ def install(base) -> None:
                 "bridge_class_balance_positive": 0.5,
                 "bridge_class_balance_negative": 0.5,
                 "bridge_direct_cross_text_loss": False,
+                "bridge_best_validation_checkpoint": True,
             }
         )
         return config
@@ -160,6 +213,7 @@ def install(base) -> None:
         print(
             "Real-conditioned synthetic bridge installed: offline 50/50 positive/"
             "negative pairs + image-text supervision + positive image-pair loss + "
-            "sequence ranking; no extra cross-text loss in v1.",
+            "sequence ranking; no extra cross-text loss in v1; best validation "
+            "checkpoint is preserved.",
             flush=True,
         )
