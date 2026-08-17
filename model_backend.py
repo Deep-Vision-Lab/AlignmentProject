@@ -1,8 +1,12 @@
 """Branch-selected visual model backend.
 
-This file is intentionally the only active model difference between the two
-canonical branches. Training, DDP, losses, data loading, evaluation, scripts,
-and optimization code remain shared.
+This branch supports the two CNN modes used by the project:
+- CNN only (``USE_BILSTM=0``)
+- CNN + BiLSTM (``USE_BILSTM=1``)
+
+New CNN experiments default to ResNet-18.  Historical ResNet-34 checkpoints remain
+supported through ``CNN_BACKBONE=resnet34``; checkpoint-aware launchers/evaluation
+resolve that legacy setting automatically.
 """
 from __future__ import annotations
 
@@ -40,9 +44,14 @@ def build_visual_model(
     local_group_size=3,
     **_ignored,
 ):
+    # Configure before EmbeddingModel.__init__, which looks up its CNN constructor
+    # at runtime.  This keeps all sequence/local-grouping code shared.
+    from cnn_backbone_runtime import configure_embedding_model_backbone
+
+    backbone = configure_embedding_model_backbone(default="resnet18")
     from embeddingModel import EmbeddingModel
 
-    return EmbeddingModel(
+    model = EmbeddingModel(
         window_size=window_size,
         stride=stride,
         vector_size=vector_size,
@@ -54,6 +63,8 @@ def build_visual_model(
         use_local_grouping=use_local_grouping,
         local_group_size=local_group_size,
     )
+    model.cnn_backbone_name = backbone
+    return model
 
 
 def install_training_backend(base_module) -> None:
@@ -87,9 +98,12 @@ def prepare_visual_model(model) -> None:
 
 
 def visual_model_config() -> dict:
+    from cnn_backbone_runtime import selected_cnn_backbone
+
     return {
         "model_backend": MODEL_NAME,
         "visual_encoder_type": VISUAL_ENCODER_TYPE,
+        "cnn_backbone": selected_cnn_backbone(default="resnet18"),
         "cnn_chunk_size": _integer("CNN_CHUNK_SIZE", 1024),
         "use_channels_last": _flag("USE_CHANNELS_LAST", True),
         "torch_compile_visual": _flag("TORCH_COMPILE_VISUAL", False),
