@@ -20,7 +20,7 @@ REBUILD_BRIDGE="${REBUILD_BRIDGE:-0}"
   exit 2
 }
 
-JOB_ID=$(sbatch --parsable \
+RAW_JOB_ID=$(sbatch --parsable \
   --partition="${CPU_PARTITION}" \
   --job-name="build_real_synthetic_bridge_v2" \
   --output="${PROJECT_DIR}/out/%x_%J.out" \
@@ -33,6 +33,7 @@ JOB_ID=$(sbatch --parsable \
   --mail-user="${MAIL_USER}" \
   --export="ALL,PROJECT_DIR=${PROJECT_DIR},REAL_DATA_DIR=${REAL_DATA_DIR},BRIDGE_DATA_DIR=${BRIDGE_DATA_DIR},REBUILD_BRIDGE=${REBUILD_BRIDGE},MAX_ANCHORS=${MAX_ANCHORS:-0},NEGATIVES_PER_ANCHOR=${NEGATIVES_PER_ANCHOR:-4},NEGATIVE_NGRAM=${NEGATIVE_NGRAM:-3},SEED=${SEED:-42}" \
   "${PROJECT_DIR}/scripts/data/prepare_real_synthetic_bridge_v2.sh")
+JOB_ID="${RAW_JOB_ID%%;*}"
 
 echo "Bridge V2 dataset job submitted: ${JOB_ID}"
 echo "Dataset target: ${BRIDGE_DATA_DIR}"
