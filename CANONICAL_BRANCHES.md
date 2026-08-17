@@ -1,74 +1,137 @@
 # Canonical model branches
 
-Only these two branches are active development branches:
+Three architecture branches are maintained for controlled comparisons:
 
-- `agent/training-speed-optimization` — CNN + BiLSTM visual encoder
-- `agent/use-vit-encoder` — ViT visual encoder
+- `agent/training-speed-optimization` — CNN window encoder. New runs default to
+  ResNet-18; historical ResNet-34 checkpoints remain supported. Use
+  `USE_BILSTM=0` for CNN-only and `USE_BILSTM=1` for CNN + BiLSTM.
+- `agent/use-vit-encoder` — pure patch-projection + Transformer visual encoder.
+- `agent/use-dinov3-convnext` — Meta DINOv3 ConvNeXt-Tiny window encoder, with
+  optional BiLSTM sequence context through `USE_BILSTM=0/1`.
 
-They intentionally share the same project tree, datasets, preprocessing,
-Span-D3TW losses, negative sampling, DDP implementation, SLURM resources,
-NCCL workarounds, AMP, validation, checkpoint format, evaluation scripts,
-zero-shot preprocessing, tests, and runtime optimizations.
+The branches intentionally share datasets, preprocessing, frozen Arabic text
+encoder, Span-D3TW/image-text objectives, negative sampling, DDP runtime, SLURM
+resources, validation/checkpoint format, and real Smith-Waterman diagnostics.
+Architecture-specific construction lives behind `model_backend.py` plus the selected
+encoder implementation.
 
-The only active branch-specific file is:
+## CNN backbone compatibility
 
-```text
-model_backend.py
-```
-
-That file selects the visual model, applies model-specific preparation, and
-adds the model architecture fields to the otherwise shared checkpoint config.
-
-## Shared multi-GPU training command
-
-Run the same command on either branch:
+New CNN experiments use:
 
 ```bash
-DATASET_TYPE=synthetic \
-NUM_SAMPLES=8000 \
-NUM_GPUS=2 \
-BATCH_SIZE=32 \
-JOB_ID=my_experiment \
-bash scripts/train/run_model_full_quality.sh
+CNN_BACKBONE=resnet18
 ```
 
-For the real dataset:
+The strong historical Stage-1/R0/R1/R2 checkpoints were built with the modified
+ResNet-34. Launchers/evaluation resolve those checkpoints as `resnet34` rather than
+trying to load them into ResNet-18. This lets us compare the new smaller backbone
+without invalidating prior results.
+
+CNN-only and CNN+BiLSTM are modes of the same branch, not separate source branches:
 
 ```bash
-DATASET_TYPE=real \
-DATA_DIR="$PWD/DataSet/ArabicDataset" \
-REAL_AUGMENT=1 \
-REAL_TRAIN_SAMPLES_PER_EPOCH=10000 \
-NUM_GPUS=2 \
-BATCH_SIZE=32 \
-JOB_ID=my_real_experiment \
-bash scripts/train/run_model_full_quality.sh
+# CNN only
+CNN_BACKBONE=resnet18 USE_BILSTM=0 ...
+
+# CNN + BiLSTM
+CNN_BACKBONE=resnet18 USE_BILSTM=1 ...
 ```
 
-`BATCH_SIZE` is per GPU. With two GPUs and `BATCH_SIZE=32`, the global batch is
-64. The launcher retains the optimized RTX 4090 defaults:
+## Branch-aware fixed-63 synthetic training
+
+Use the same public command on the active architecture branch:
 
 ```bash
-NCCL_P2P_DISABLE=1
-NCCL_SHM_DISABLE=0
-DDP_STATIC_GRAPH=1
+JOB_ID=my_fixed63_run \
+bash scripts/train/run_augmented_synthetic_27k_fixed63.sh
 ```
 
-## Shared real-dataset evaluation command
+The wrapper validates the 27k fixed-63 corpus and enters
+`training_runtime/entrypoint.py`, so the checked-out branch actually controls model
+construction. Do not use a legacy direct `train.py` launcher for architecture
+comparisons.
 
-Both branches use the same evaluation entry points under `Evaluation/`,
-including:
+## Offline real-conditioned synthetic bridge
+
+The bridge corpus is generated once on CPU. No Arabic rendering occurs in the GPU
+training loop.
 
 ```bash
-bash Evaluation/run_real_dataset_evaluations.sh
+sbatch scripts/data/build_real_conditioned_synthetic_bridge.sbatch
 ```
 
-Checkpoints record `visual_encoder_type`, so shared evaluation reconstructs the
-correct visual model.
+Default per leakage-safe real anchor:
+
+- 1 positive synthetic line containing an exact contiguous span from its transcript;
+- 4 negative synthetic lines from other training transcripts;
+- negatives are rejected if they share a normalized word of length >=3 or a
+  normalized character 4-gram with the full anchor transcript.
+
+The builder automatically runs:
+
+```bash
+python scripts/data/smoke_test_real_synthetic_bridge.py \
+  --data-dir DataSet/RealSyntheticBridge_v1
+```
+
+before declaring the offline corpus ready.
+
+Fine-tune a checkpoint from the currently checked-out architecture with:
+
+```bash
+PRETRAINED_WEIGHTS=/absolute/path/to/model_latest.pth \
+JOB_ID=my_bridge_v1 \
+bash scripts/train/run_real_synthetic_bridge.sh
+```
+
+Bridge v1 keeps the experiment controlled. It reuses established losses:
+
+- real image <-> genuine real transcript;
+- synthetic image <-> its exactly known synthetic transcript;
+- positive real/synthetic image attraction;
+- negative real/synthetic sequence rejection.
+
+It does **not** add a new direct real-image/synthetic-text loss in v1. Training is
+50/50 positive/no-shared and preserves `checkpoint_best_val.pth` whenever validation
+improves.
+
+## DINOv3 ConvNeXt setup
+
+The DINO branch uses Meta's official DINOv3 repository locally. Set:
+
+```bash
+export DINOV3_REPO_DIR=/absolute/path/to/dinov3
+export DINOV3_WEIGHTS=/absolute/path/to/the-authorized-convnext-tiny-checkpoint
+```
+
+The original DINOv3 weights are required for the initial foundation-model training
+run. A later AlignmentProject checkpoint contains the complete DINO state, so its
+evaluation/fine-tuning only needs the local official architecture source.
+
+The DINO backbone is frozen by default for the first controlled experiment:
+
+```bash
+DINOV3_FREEZE_BACKBONE=1
+```
+
+Unfreezing is a separate ablation, not mixed into the first comparison.
+
+## Shared real discrimination evaluation
+
+The no-PNG fixed-manifest sweep remains the common scientific comparison:
+
+```bash
+CHECKPOINT=/absolute/path/to/checkpoint.pth \
+RUN_NAME=my_run_discrimination \
+bash scripts/eval/run_real_discrimination_sweep.sh
+```
+
+It measures the same positive/no-shared real pairs at thresholds
+`0.40, 0.50, 0.60, 0.65, 0.70`.
 
 ## Synchronization rule
 
-When shared training, evaluation, preprocessing, loss, optimization, test, or
-script code changes, apply the identical change to both canonical branches.
-Only model implementation/configuration changes belong exclusively in
-`model_backend.py` or the selected encoder implementation.
+Shared data, loss, training, evaluation, preprocessing, and script changes must be
+kept synchronized across the three architecture branches. Architecture-specific
+changes belong in `model_backend.py` or the selected encoder implementation.

@@ -40,4 +40,8 @@ python scripts/data/build_real_conditioned_synthetic_bridge.py "${args[@]}"
   exit 2
 }
 
+python scripts/data/smoke_test_real_synthetic_bridge.py \
+  --data-dir "${OUTPUT_DIR}" \
+  --expected-negatives "${NEGATIVES_PER_ANCHOR}"
+
 echo "Bridge dataset ready: ${OUTPUT_DIR}"

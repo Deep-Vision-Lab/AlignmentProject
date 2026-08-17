@@ -1,7 +1,7 @@
 """Balanced training on an offline real-conditioned synthetic bridge manifest.
 
 The manifest contains one positive synthetic span and several guaranteed-negative
-synthetic spans for every real anchor.  This loader keeps entire anchor ``pair_id``
+synthetic spans for every real anchor. This loader keeps complete anchor ``pair_id``
 groups together, uses only positive rows for internal validation/test, and balances
 positive vs no-shared rows 50/50 during training regardless of how many negatives
 were generated per anchor.
@@ -12,10 +12,6 @@ cross-text term:
 - synthetic B <-> its exactly known transcript (image-text);
 - positive real A <-> synthetic B image-pair/sequence attraction; and
 - negative real A <-> synthetic B sequence rejection.
-
-That triangle tests the bridge-data hypothesis itself without confounding it with a
-new loss. A direct real-image/synthetic-text objective can be evaluated separately
-in a later ablation if v1 is promising.
 """
 from __future__ import annotations
 
@@ -25,9 +21,9 @@ import shutil
 
 from torch.utils.data import Dataset, Subset
 
+from bridge_group_split import group_split
 import extra_real_training as legacy
 import extra_real_training_v4 as sequence
-from joint_real_training_v5 import _group_split
 
 
 def _env_int(name: str, default: int) -> int:
@@ -69,7 +65,7 @@ def _pair_ids(dataset, subset: Subset) -> set[str]:
 
 def build_bridge_dataloaders(data_dir):
     positive_dataset = legacy._manifest_dataset(data_dir, legacy.POSITIVE_LABELS)
-    train_raw, valid_raw, test_raw = _group_split(positive_dataset)
+    train_raw, valid_raw, test_raw = group_split(positive_dataset)
 
     train_positive, train_stats = legacy._filter_feasible(
         positive_dataset, train_raw, "bridge_train_positive"
@@ -98,9 +94,8 @@ def build_bridge_dataloaders(data_dir):
         negative_dataset, negative_raw, "bridge_train_negative"
     )
 
-    # Default: expose every generated negative once per epoch and repeat positives
-    # as needed to preserve exact 50/50 class balance. The public launcher may cap
-    # this with BRIDGE_TRAIN_SAMPLES_PER_EPOCH for fast pilots.
+    # Expose every generated negative once per epoch by default and repeat
+    # positives as needed to preserve exact 50/50 class balance.
     natural_target = 2 * len(train_negative)
     requested_target = _env_int("BRIDGE_TRAIN_SAMPLES_PER_EPOCH", 0)
     target_length = requested_target if requested_target > 0 else natural_target
@@ -187,7 +182,7 @@ def _install_best_validation_checkpoint(base) -> None:
 
 def install(base) -> None:
     # v4 calls legacy.install(), and legacy.install() consults this module-global
-    # builder at runtime. Replace it first so no online rendering/augmentation is used.
+    # builder at runtime. Replace it first so no online rendering/augmentation runs.
     legacy.build_dataloaders = build_bridge_dataloaders
     sequence.install(base)
     _install_best_validation_checkpoint(base)
