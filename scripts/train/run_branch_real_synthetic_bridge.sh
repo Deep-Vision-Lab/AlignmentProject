@@ -8,9 +8,9 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${PROJECT_DIR}"
 mkdir -p out logs
 
-DATA_DIR="${DATA_DIR:-${PROJECT_DIR}/DataSet/RealSyntheticBridge_v1}"
+DATA_DIR="${DATA_DIR:-${PROJECT_DIR}/DataSet/RealSyntheticBridge_v2}"
 PRETRAINED_WEIGHTS="${PRETRAINED_WEIGHTS:-}"
-JOB_ID="${JOB_ID:-$(git branch --show-current | tr '/' '-')-real-synthetic-bridge-v1}"
+JOB_ID="${JOB_ID:-$(git branch --show-current | tr '/' '-')-real-synthetic-bridge-v2}"
 
 [[ -s "${DATA_DIR}/dataset_manifest.jsonl" ]] || {
   echo "ERROR: offline bridge dataset missing: ${DATA_DIR}/dataset_manifest.jsonl" >&2
@@ -27,8 +27,6 @@ print(model_backend.MODEL_NAME)
 PY
 )"
 
-# Resolve checkpoint architecture before requesting GPUs. Old checkpoints without a
-# recorded backend are the historical CNN+BiLSTM/ResNet-34 line.
 read -r CKPT_BACKEND CKPT_BACKBONE CKPT_BILSTM < <(
   python - "${PRETRAINED_WEIGHTS}" <<'PY'
 import sys, torch
@@ -73,9 +71,6 @@ case "${MODEL_BACKEND}" in
     ;;
   dinov3_convnext)
     export USE_BILSTM="${USE_BILSTM:-${CKPT_BILSTM}}"
-    # Full DINOv3 parameters are stored inside the Alignment checkpoint, so the
-    # official local architecture may be constructed without re-reading original
-    # pretrained weights before load_state_dict. The local DINOv3 repo is still needed.
     export DINOV3_ALLOW_RANDOM_INIT="${DINOV3_ALLOW_RANDOM_INIT:-1}"
     : "${DINOV3_REPO_DIR:?Set DINOV3_REPO_DIR to the local official DINOv3 repository.}"
     DEFAULT_ACCUM=4
@@ -98,10 +93,11 @@ export IMAGE_TEXT_LOSS_ON_BOTH_LINES=1
 export REAL_TRAIN_SAMPLES_PER_EPOCH=0
 export BRIDGE_TRAIN_SAMPLES_PER_EPOCH="${BRIDGE_TRAIN_SAMPLES_PER_EPOCH:-0}"
 
-# Longer maximum than the old three-epoch pilots. The bridge runtime preserves
-# checkpoint_best_val.pth whenever validation improves.
-export EPOCHS="${EPOCHS:-8}"
-export LEARNING_RATE="${LEARNING_RATE:-7.5e-7}"
+# Bridge V2 is now the direct real-domain adaptation stage. Give it a longer
+# maximum run, validate every epoch, and let checkpoint_best_val.pth select the
+# checkpoint used by downstream evaluation rather than assuming the last epoch wins.
+export EPOCHS="${EPOCHS:-15}"
+export LEARNING_RATE="${LEARNING_RATE:-1e-6}"
 export VALID_EVERY_N_EPOCHS="${VALID_EVERY_N_EPOCHS:-1}"
 export VALID_MAX_BATCHES="${VALID_MAX_BATCHES:-20}"
 
@@ -119,8 +115,11 @@ export LOCAL_HARD_NEGATIVE_WEIGHT="${LOCAL_HARD_NEGATIVE_WEIGHT:-0.10}"
 export USE_IMAGE_PAIR_CONTRASTIVE=1
 export IMAGE_PAIR_LOSS_WEIGHT="${IMAGE_PAIR_LOSS_WEIGHT:-0.10}"
 export SEQUENCE_CONSISTENCY_LOSS_WEIGHT=0
-export USE_SEQUENCE_ALIGNMENT_RANKING=1
-export SEQUENCE_RANKING_WEIGHT="${SEQUENCE_RANKING_WEIGHT:-0.08}"
+# IMPORTANT for Bridge V2: respect the public wrapper/default instead of forcing
+# generic whole-line sequence ranking back on. V2 positives contain distractors;
+# shared-island-aware bridge ranking is installed separately by the bridge runtime.
+export USE_SEQUENCE_ALIGNMENT_RANKING="${USE_SEQUENCE_ALIGNMENT_RANKING:-0}"
+export SEQUENCE_RANKING_WEIGHT="${SEQUENCE_RANKING_WEIGHT:-0.0}"
 export SEQUENCE_RANKING_THRESHOLD="${SEQUENCE_RANKING_THRESHOLD:-0.50}"
 export SEQUENCE_RANKING_GAP="${SEQUENCE_RANKING_GAP:--0.30}"
 export SEQUENCE_RANKING_POSITIVE_FRACTION_FLOOR="${SEQUENCE_RANKING_POSITIVE_FRACTION_FLOOR:-0.08}"
@@ -142,18 +141,20 @@ GPU_RESOURCE="${GPU_RESOURCE:-rtx_4090}"
 PARTITION="${PARTITION:-rtx4090}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-$((8 * NUM_GPUS))}"
 MEMORY="${MEMORY:-96G}"
-TIME_LIMIT="${TIME_LIMIT:-1-00:00:00}"
+TIME_LIMIT="${TIME_LIMIT:-2-00:00:00}"
 MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   cat <<EOF
-=== SUBMIT REAL-SYNTHETIC BRIDGE ===
+=== SUBMIT REAL-SYNTHETIC BRIDGE V2 ===
 backend=${MODEL_BACKEND}
 checkpoint=${PRETRAINED_WEIGHTS}
 job=${JOB_ID}
 epochs_max=${EPOCHS} lr=${LEARNING_RATE}
 positive_negative_balance=50/50
+whole_line_sequence_ranking=${USE_SEQUENCE_ALIGNMENT_RANKING}
+shared_island_bridge_ranking=ON
 online_rendering=NO
 best_checkpoint=Weights/${JOB_ID}/checkpoint_best_val.pth
 EOF

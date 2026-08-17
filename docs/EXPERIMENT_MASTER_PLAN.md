@@ -44,7 +44,16 @@ For every real anchor group, create:
 - four guaranteed synthetic negatives by default;
 - negatives may not share a complete normalized word or normalized 3-character sequence with the real anchor.
 
-Output: `DataSet/RealSyntheticBridge_v2/` containing `images/`, `texts/`, `masks/`, `dataset_manifest.jsonl`, and `metadata.json`.
+Output:
+
+`DataSet/RealSyntheticBridge_v2/`
+
+containing:
+- `images/`
+- `texts/`
+- `masks/`
+- `dataset_manifest.jsonl`
+- `metadata.json`
 
 Required audit before models are submitted:
 - all files exist and load;
@@ -65,6 +74,8 @@ Required audit before models are submitted:
 
 Input: `DataSet/AugmentedArabicDataset63`.
 
+Purpose: learn generic Arabic visual/text alignment before adapting to scarce real handwriting.
+
 Default settings:
 - maximum 20 epochs;
 - learning rate `1e-4`;
@@ -79,21 +90,59 @@ Output: `Weights/<prefix>_synth/checkpoint_latest.pth`.
 
 ## S2 — Qualitative zero-shot real evaluation
 
-Use the S1 checkpoint on fixed examples from `high_match`, `medium_match`, `low_match`, and `no_shared_content`. Save line pairs, similarity/DP heatmaps, Smith-Waterman paths, path length, matched fraction, score, and mean path cosine.
+Use the S1 checkpoint on unseen real handwriting before any Bridge training.
+
+Inspect fixed examples from:
+- `high_match`;
+- `medium_match`;
+- `low_match`;
+- `no_shared_content`.
+
+Save line pairs, similarity/DP heatmaps, Smith-Waterman paths, path length, matched fraction, score, and mean path cosine.
+
+Questions:
+- Are high/medium paths coherent?
+- Are no-shared paths short/broken?
+- Does the model focus on ink rather than blank margins?
+- Are partial matches localized rather than stretched across unrelated regions?
 
 ## S3 — Quantitative zero-shot real evaluation
 
-This is the synthetic-only real baseline. Run held-out real bbox/localization metrics where annotations exist and the fixed positive-vs-no-shared threshold sweep at `0.40, 0.50, 0.60, 0.65, 0.70`.
+This is the synthetic-only real baseline.
+
+Run:
+1. held-out real bbox/localization metrics where annotations exist;
+2. fixed positive-vs-no-shared discrimination sweeps at thresholds `0.40, 0.50, 0.60, 0.65, 0.70`.
+
+Primary metrics:
+- score;
+- path steps;
+- matched fraction;
+- mean path cosine;
+- region IoU and start/end error where available;
+- ROC-AUC and average precision for positive vs no-shared discrimination.
 
 ## S4 — Bridge V2 evaluation before fine-tuning
 
 Input checkpoint: S1 synthetic checkpoint.
 
-Evaluate real anchor vs Bridge positive and real anchor vs guaranteed negative before training on Bridge V2. Report score distributions, path steps, matched fractions, ROC-AUC/AP, and mask/localization diagnostics where available.
+Purpose: measure how the synthetic-only model behaves on the frozen augmentation dataset **before learning from it**.
+
+Evaluate:
+- real anchor vs Bridge-V2 positive;
+- real anchor vs guaranteed negative;
+- positive/negative score distributions;
+- path steps and matched fractions;
+- ROC-AUC / AP;
+- mask-overlap/localization diagnostics on positive shared islands when available.
+
+This stage separates dataset quality from training effects.
 
 ## S5 — Direct Bridge V2 fine-tuning
 
 Input checkpoint: S1 synthetic checkpoint. There is no intermediate standalone real fine-tuning stage.
+
+Bridge V2 provides the real-domain adaptation signal because every group contains a genuine real anchor.
 
 Training composition:
 - 50% Bridge positive rows;
@@ -101,9 +150,13 @@ Training composition:
 - real anchor image-text supervision;
 - synthetic image-text supervision;
 - image-image positive/negative discrimination;
-- real-image/synthetic-text ranking restricted to actual shared islands;
+- direct real-image/synthetic-text ranking restricted to actual shared islands;
 - generic whole-positive-line sequence ranking disabled;
-- masks retained for diagnostics/future ablations but no new mask loss in this baseline.
+- mask carried for diagnostics/future mask-loss ablations, but no new mask loss in this baseline.
+
+Text policy:
+- AraBERT backbone frozen;
+- shared projection/normalization/special embeddings remain trainable according to the existing bridge runtime.
 
 Default settings:
 - **maximum 15 epochs**;
@@ -111,17 +164,22 @@ Default settings:
 - validation every epoch;
 - 10 image-text negatives per positive;
 - 4 active hardest Span-DTW negatives;
+- balanced positive/negative Bridge sampling;
 - preserve and use `checkpoint_best_val.pth`.
 
-If the best validation checkpoint is still at epoch 15 and validation is still improving, continuation to 20 total epochs is a controlled follow-up rather than silently changing the first protocol.
+The 15 epochs are a maximum, not an instruction to use the last epoch. All later evaluations use the best validation checkpoint. If the best validation checkpoint is still at epoch 15 and validation is still improving, a controlled continuation to 20 total epochs can be run as a follow-up rather than changing the first comparison protocol.
 
 ## S6 — Qualitative evaluation after Bridge fine-tuning
 
-Use S5 `checkpoint_best_val.pth` and repeat S2 exactly.
+Use S5 `checkpoint_best_val.pth` and repeat the exact qualitative real protocol from S2.
+
+Direct comparison: **S2 vs S6**.
 
 ## S7 — Quantitative evaluation after Bridge fine-tuning
 
-Use S5 `checkpoint_best_val.pth` and repeat S3 plus the Bridge-specific positive-vs-negative evaluation from S4.
+Use S5 `checkpoint_best_val.pth` and repeat:
+- the exact real quantitative protocol from S3;
+- the Bridge-specific positive-vs-negative evaluation from S4.
 
 Key comparisons:
 - **S3 vs S7:** total improvement caused by direct Bridge-V2 adaptation;
@@ -129,9 +187,21 @@ Key comparisons:
 
 ## S8 — Final complete-real evaluation
 
-Freeze the S5 best-validation checkpoint and evaluate every relationship in `DataSet/ArabicDataset/dataset_manifest.jsonl`, separated into `high_match`, `medium_match`, `low_match`, and `no_shared_content`.
+Freeze the S5 best-validation checkpoint and evaluate every relationship in `DataSet/ArabicDataset/dataset_manifest.jsonl`, separated into:
+- `high_match`;
+- `medium_match`;
+- `low_match`;
+- `no_shared_content`.
 
-Report exact sample counts, score/path/matched-fraction statistics, path cosine, bbox metrics where available, and positive (`high+medium`) vs negative (`no_shared`) AUC/AP. `low_match` remains a separate partial/ambiguous class.
+Report:
+- exact sample count per class;
+- mean/std score;
+- mean path steps;
+- mean matched fraction;
+- mean path cosine;
+- bbox/localization metrics where annotations exist;
+- positive (`high+medium`) vs negative (`no_shared`) ROC-AUC and AP for score, path steps, and matched fraction;
+- `low_match` separately as the ambiguous partial-overlap class.
 
 No model or threshold changes are made after S8.
 

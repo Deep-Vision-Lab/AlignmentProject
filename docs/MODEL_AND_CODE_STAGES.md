@@ -2,121 +2,93 @@
 
 Branch: `agent/use-vit-encoder`
 
-Active backend: `vit` selected by `model_backend.py`.
+Backend: `vit` selected by `model_backend.py`.
 
-The training curriculum, datasets, text encoder, losses, evaluation manifests, and SLURM stage order are intentionally shared with the CNN and DINOv3 branches. The controlled architecture difference is the visual encoder.
+## Model
 
-## 1. Input and local sequence
+### Input and local sequence
 
-Each manuscript line is normalized to the common `128 x 1024` canvas and represented as an ordered sequence of horizontal local observations. Standard window width is 32 px; stride is configured per training/evaluation stage.
+Every manuscript line is normalized to the shared `128 x 1024` canvas and represented as an ordered sequence of overlapping horizontal observations. The standard local window width is 32 px. `unified_line_geometry.py`, `DataLoader.py`, `RealDataSet.py`, and `training_runtime/entrypoint.py` keep training/evaluation geometry consistent.
 
-Core shared code:
-- `unified_line_geometry.py`;
-- `DataLoader.py` / `RealDataSet.py`;
-- `training_runtime/entrypoint.py`.
+### ViT visual encoder
 
-## 2. ViT visual encoder
+`model_backend.py` constructs the visual model through `vit_embedding_model.py`.
 
-`model_backend.py` builds the model through `vit_embedding_model.py`.
+The ViT branch replaces the CNN/BiLSTM visual encoder with the branch Transformer representation while keeping the same training data, text supervision, loss family, and evaluation protocol. Window/patch observations are projected into the project's shared image/text embedding dimension and contextualized by Transformer layers. The controlled comparison therefore asks whether Transformer visual sequence modeling learns better local manuscript alignment geometry than the CNN+BiLSTM baseline.
 
-Canonical defaults recorded by the backend:
-- input height: 128;
-- transformer layers: 4;
-- attention heads: 4;
-- MLP dimension: 512;
-- dropout: 0.10;
-- maximum tokens: 256;
-- positional base tokens: 63;
-- output projected into the shared visual/text embedding dimension.
+### Arabic text side
 
-For this branch:
-- `USE_BILSTM=0`;
-- `USE_LOCAL_WINDOW_GROUPING=0`.
+The text encoder is the same as in the other branches: frozen AraBERT-v02 backbone features plus the existing shared-space projection/normalization and learned special embeddings. Text spans are enumerated over visible Arabic units and compared to visual observations.
 
-Sequence context therefore comes from transformer self-attention rather than an additional recurrent encoder. This keeps the ViT experiment interpretable: the visual transformer itself is responsible for contextualizing the ordered line representation.
+Main code: `arabic_span_text_encoder.py`, `arabic_span_text_encoder_legacy.py`, and `bridge_frozen_text.py`.
 
-Main code:
-- `model_backend.py`;
-- `vit_embedding_model.py`;
-- `Evaluation/vit_evaluation.py` for checkpoint-aware evaluation reconstruction.
+### Image-text alignment
 
-## 3. Arabic text encoder
+For each line:
+1. extract ViT visual embeddings;
+2. encode Arabic spans;
+3. normalize both sides;
+4. build the image-span similarity matrix;
+5. apply differentiable Span-DTW;
+6. use 10 negative text sequences by default;
+7. use the hardest four negative candidates for the expensive Span-DTW negative computation;
+8. optionally apply local hard-negative and variance regularization shared with the other branches.
 
-The text side is shared across branches and uses `ArabicSpanTextEncoder`:
-- AraBERT v02 backbone;
-- frozen backbone features;
-- trainable projection into the shared space;
-- trainable special-space/blank representations;
-- cached frozen surface features.
+Main code: `train.py`, `LossFunctionWithHelpers.py`, `Parameters.py`, and `training_runtime/`.
 
-Main code:
-- `arabic_span_text_encoder.py`;
-- `bridge_frozen_text.py`.
+## RealSyntheticBridge V2
 
-## 4. Training objective
+Bridge V2 is the **only real-domain adaptation stage** after synthetic pretraining in the active protocol. There is no separate canonical-real fine-tuning block.
 
-For each image line the ViT produces normalized local/contextual visual embeddings. Arabic span embeddings are normalized into the same space. Their similarity matrix is optimized by differentiable Span-DTW.
-
-Standard negative policy in the research pipeline:
-- 10 negative texts per positive;
-- 4 active hardest Span-DTW negatives;
-- local hard negatives available in addition to sequence negatives.
-
-Canonical real positive pairs add cross-writer image-image supervision while keeping image-text supervision on both real lines.
-
-Main code:
-- `train.py`;
-- `LossFunctionWithHelpers.py`;
-- `Parameters.py`;
-- `extra_real_training*.py`.
-
-## 5. RealSyntheticBridge V2
-
-The augmentation is architecture-independent. Each group contains:
-- real anchor;
-- synthetic positive containing 1-3 aligned islands plus unrelated distractors;
-- white/black alignment mask for aligned/unaligned positive regions;
+Each Bridge group contains:
+- a genuine real manuscript anchor;
+- a synthetic positive with 1-3 ordered shared islands;
+- unrelated positive distractor content;
+- a white/black shared-region mask;
 - guaranteed no-shared synthetic negatives.
 
-The bridge-specific real-image/synthetic-text ranking is computed only on true shared islands. Full-line positive sequence ranking is not used for the V2 baseline because the synthetic positive deliberately contains unaligned distractors. The mask is propagated for diagnostics and later ablations, without adding a mask loss in the baseline.
+Training signals:
+- real anchor ↔ its own transcript;
+- synthetic line ↔ its own transcript;
+- image-image positive/negative discrimination;
+- real-image ↔ synthetic-text ranking restricted to the actual shared islands.
 
-Main code:
+Generic whole-positive-line sequence ranking is disabled because Bridge V2 positives intentionally contain distractors. Bridge training defaults to a maximum of 15 epochs at `1e-6`, validates every epoch, and all later evaluations use `checkpoint_best_val.pth`.
+
+Main Bridge code:
 - `scripts/data/build_real_conditioned_synthetic_bridge.py`;
+- `scripts/data/prepare_real_synthetic_bridge_v2.sh`;
 - `bridge_mask_runtime.py`;
 - `bridge_multi_island_runtime.py`;
-- `real_synthetic_bridge_training.py`.
+- `real_synthetic_bridge_training.py`;
+- `scripts/train/run_real_synthetic_bridge.sh`.
 
-## 6. Evaluation
+## Image-only evaluation
 
-Evaluation is image-to-image and does not require OCR:
-- extract visual embeddings from both lines;
-- compute image-window cosine similarity;
-- run Smith-Waterman local alignment;
-- save qualitative heatmaps/tracebacks;
-- record score, path steps, matched fraction, path cosine, and bbox/localization metrics when available.
+Evaluation uses only the visual branch:
+1. preprocess both manuscript lines;
+2. extract ViT local/contextual features;
+3. compute image-window × image-window cosine similarity;
+4. run Smith-Waterman local alignment;
+5. save qualitative heatmaps/path overlays;
+6. compute score, path steps, matched fraction, path cosine, discrimination AUC/AP, and bbox/localization metrics where available.
 
-Main code:
-- `Evaluation/eval_img_align_sw.py`;
-- `Evaluation/eval_img_align_sw_no_png.py`;
-- `Evaluation/sw_runner.py`.
+Main code: `Evaluation/eval_img_align_sw.py`, `Evaluation/eval_img_align_sw_no_png.py`, `Evaluation/sw_runner.py`, and `scripts/eval/`.
 
 ---
 
-# Code curriculum
+# Active code curriculum
 
-| Stage | Purpose | Input | Main command/code | Output |
+| Stage | Purpose | Input | Main code | Output |
 |---|---|---|---|---|
-| S0 | preflight | branch/data | `submit_full_research_pipeline.sh` | frozen run metadata |
-| S1 | synthetic pretraining | synthetic corpus | `run_branch_fixed63_synthetic.sh` | `<prefix>_synth` |
-| S2 | qualitative real zero-shot | S1 | `run_stage_qualitative.sh` | heatmaps |
-| S3 | quantitative real zero-shot | S1 | `run_stage_quantitative.sh` | baseline metrics |
-| S4 | real FT without augmentation | S1 | `run_stage_real_finetune.sh` | `<prefix>_real` |
-| S5 | qualitative post-real | S4 | `run_stage_qualitative.sh` | heatmaps |
-| S6 | quantitative post-real | S4 | `run_stage_quantitative.sh` | metrics |
-| S7 | build/audit Bridge V2 | real train-safe data | `prepare_real_synthetic_bridge_v2.sh` | augmentation corpus |
-| S8 | bridge zero-shot evaluation | S4 | `run_stage_bridge_eval.sh` | pre-FT bridge metrics |
-| S9 | bridge FT | S4 | `run_real_synthetic_bridge.sh` | best bridge checkpoint |
-| S10 | post-bridge evaluations | S9 best | stage evaluation scripts | comparison metrics |
-| S11 | all-real final | S9 best | `run_stage_final_all_real.sh` | complete-real summary |
+| D0 | build/freeze Bridge V2 before models | real train anchors | `submit_bridge_v2_dataset.sh`, `prepare_real_synthetic_bridge_v2.sh` | frozen `RealSyntheticBridge_v2` |
+| S1 | synthetic pretraining | synthetic fixed-63 corpus | `run_branch_fixed63_synthetic.sh` | synthetic checkpoint |
+| S2 | qualitative zero-shot real | S1 | `run_stage_qualitative.sh` | heatmaps/paths |
+| S3 | quantitative zero-shot real | S1 | `run_stage_quantitative.sh` | baseline real metrics |
+| S4 | Bridge pre-finetune evaluation | S1 + frozen Bridge V2 | `run_stage_bridge_eval.sh` | pre-training Bridge metrics |
+| S5 | direct Bridge V2 adaptation | S1 | `run_real_synthetic_bridge.sh` | `checkpoint_best_val.pth` |
+| S6 | post-Bridge qualitative real | S5 best | `run_stage_qualitative.sh` | heatmaps/paths |
+| S7 | post-Bridge quantitative + Bridge eval | S5 best | quantitative + Bridge eval scripts | comparison metrics |
+| S8 | final complete-real evaluation | S5 best | `run_stage_final_all_real.sh` | full-real CSVs + `final_summary.json` |
 
-For architecture comparison, do not change ViT depth/heads or data/evaluation protocol mid-pipeline unless the run is explicitly labeled as a separate architecture ablation.
+The same frozen Bridge V2 dataset must be reused for CNN, ViT, and DINOv3 architecture comparisons.
