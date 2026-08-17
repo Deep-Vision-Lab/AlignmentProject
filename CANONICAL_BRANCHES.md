@@ -9,11 +9,23 @@ Three architecture branches are maintained for controlled comparisons:
 - `agent/use-dinov3-convnext` — Meta DINOv3 ConvNeXt-Tiny window encoder, with
   optional BiLSTM sequence context through `USE_BILSTM=0/1`.
 
-The branches intentionally share datasets, preprocessing, frozen Arabic text
-encoder, Span-D3TW/image-text objectives, negative sampling, DDP runtime, SLURM
-resources, validation/checkpoint format, and real Smith-Waterman diagnostics.
-Architecture-specific construction lives behind `model_backend.py` plus the selected
-encoder implementation.
+The branches intentionally share datasets, preprocessing, frozen Arabic language
+backbone, trainable shared-space text projection head, Span-D3TW/image-text
+objectives, negative sampling, DDP runtime, SLURM resources, validation/checkpoint
+format, and real Smith-Waterman diagnostics. Architecture-specific construction
+lives behind `model_backend.py` plus the selected encoder implementation.
+
+The complete controlled curriculum is documented in:
+
+- `docs/EXPERIMENT_MASTER_PLAN.md`
+- `docs/MODEL_AND_CODE_STAGES.md`
+- `docs/STAGE_COMMANDS_AND_DEPENDENCIES.md`
+
+Submit the whole dependency chain from any canonical branch with:
+
+```bash
+bash scripts/slurm/submit_full_research_pipeline.sh
+```
 
 ## CNN backbone compatibility
 
@@ -40,76 +52,68 @@ CNN_BACKBONE=resnet18 USE_BILSTM=1 ...
 
 ## Branch-aware fixed-63 synthetic training
 
-Use the same public command on the active architecture branch:
+Use the same public branch-aware launcher on the active architecture branch:
 
 ```bash
 JOB_ID=my_fixed63_run \
-bash scripts/train/run_augmented_synthetic_27k_fixed63.sh
+bash scripts/train/run_branch_fixed63_synthetic.sh
 ```
 
-The wrapper validates the 27k fixed-63 corpus and enters
-`training_runtime/entrypoint.py`, so the checked-out branch actually controls model
-construction. Do not use a legacy direct `train.py` launcher for architecture
-comparisons.
+The launcher enters `training_runtime/entrypoint.py`, so `model_backend.py` in the
+checked-out branch controls model construction. Do not use a legacy direct
+`train.py` launcher for architecture comparisons.
 
-## Offline real-conditioned synthetic bridge
+## RealSyntheticBridge V2
 
-The bridge corpus is generated once on CPU. No Arabic rendering occurs in the GPU
-training loop.
+The bridge corpus is generated once on CPU and reused across architectures. No
+Arabic rendering occurs in the GPU training loop.
+
+Build/validate it with:
 
 ```bash
-sbatch scripts/data/build_real_conditioned_synthetic_bridge.sbatch
+BRIDGE_DATA_DIR=$PWD/DataSet/RealSyntheticBridge_v2 \
+bash scripts/data/prepare_real_synthetic_bridge_v2.sh
 ```
 
-Default per leakage-safe real anchor:
+Default per leakage-safe real anchor group:
 
-- 1 positive synthetic line containing an exact contiguous span from its transcript;
-- 4 negative synthetic lines from other training transcripts;
-- negatives are rejected if they share a normalized word of length >=3 or a
-  normalized character 4-gram with the full anchor transcript.
+- one genuine real manuscript anchor;
+- one synthetic positive containing 1, 2, or 3 shared transcript islands in their
+  original order;
+- guaranteed-unrelated synthetic distractor content before, between, or after the
+  shared islands;
+- one `128 x 1024` alignment mask: white shared regions and black unaligned regions;
+- four synthetic negative lines by default;
+- no negative or positive distractor may share a complete normalized word with the
+  real anchor;
+- no negative or positive distractor may share a normalized character trigram with
+  the real anchor;
+- isolated letters and bigrams may repeat, keeping negatives realistic rather than
+  creating an alphabet-level shortcut.
 
-The builder automatically runs:
+The builder writes `images/`, `texts/`, `masks/`, `dataset_manifest.jsonl`, and
+`metadata.json`, then runs `scripts/data/smoke_test_real_synthetic_bridge.py`.
+
+Fine-tune the active architecture with:
 
 ```bash
-python scripts/data/smoke_test_real_synthetic_bridge.py \
-  --data-dir DataSet/RealSyntheticBridge_v1
-```
-
-before declaring the offline corpus ready.
-
-Fine-tune a checkpoint from the currently checked-out architecture with:
-
-```bash
-PRETRAINED_WEIGHTS=/absolute/path/to/model_latest.pth \
-JOB_ID=my_bridge_v1 \
+PRETRAINED_WEIGHTS=/absolute/path/to/checkpoint_latest.pth \
+DATA_DIR=$PWD/DataSet/RealSyntheticBridge_v2 \
+JOB_ID=my_bridge_v2 \
 bash scripts/train/run_real_synthetic_bridge.sh
 ```
 
-Bridge v1 uses four complementary signals:
+Bridge V2 training keeps the AraBERT backbone frozen while preserving the
+trainable projection/normalization/special embeddings that map text into the shared
+representation. Full image-text supervision remains valid for each line's own
+transcript. The bridge-specific real-image/synthetic-text ranking term is restricted
+to the actual shared islands. The older generic whole-positive-line sequence ranking
+is disabled because the positive intentionally contains unaligned distractors.
+Alignment masks are propagated for diagnostics/future ablations; the canonical V2
+baseline does not add a separate mask loss.
 
-- real image <-> genuine real transcript;
-- synthetic image <-> its exactly known synthetic transcript;
-- positive/negative real-image <-> synthetic-image sequence discrimination;
-- **direct real-image <-> synthetic-text sequence ranking**: text from a positive
-  rendered sample must form a stronger/longer local path in the real anchor than
-  text from a guaranteed-negative rendered sample.
-
-The direct term detaches the text embeddings, so its gradients update the visual
-representation rather than moving the semantic target space. It deliberately
-penalizes a coherent negative text sequence, not every isolated negative character,
-because unrelated Arabic lines can still contain legitimate repeated letters.
-Training is 50/50 positive/no-shared and preserves `checkpoint_best_val.pth` whenever
-validation improves.
-
-Useful bridge knobs include:
-
-```bash
-BRIDGE_CROSS_TEXT_WEIGHT=0.10
-BRIDGE_CROSS_TEXT_THRESHOLD=0.50
-BRIDGE_CROSS_TEXT_PATH_MARGIN=0.10
-BRIDGE_CROSS_TEXT_POSITIVE_FLOOR=0.20
-BRIDGE_CROSS_TEXT_NEGATIVE_CEILING=0.15
-```
+Training is balanced 50/50 positive/no-shared and preserves
+`checkpoint_best_val.pth` whenever bridge validation improves.
 
 ## DINOv3 ConvNeXt setup
 
@@ -132,9 +136,9 @@ DINOV3_FREEZE_BACKBONE=1
 
 Unfreezing is a separate ablation, not mixed into the first comparison.
 
-## Shared real discrimination evaluation
+## Shared real evaluation
 
-The no-PNG fixed-manifest sweep remains the common scientific comparison:
+The fixed positive/no-shared sweep remains the common discrimination diagnostic:
 
 ```bash
 CHECKPOINT=/absolute/path/to/checkpoint.pth \
@@ -142,11 +146,24 @@ RUN_NAME=my_run_discrimination \
 bash scripts/eval/run_real_discrimination_sweep.sh
 ```
 
-It measures the same positive/no-shared real pairs at thresholds
+It measures the same deterministic positive/no-shared real pairs at thresholds
 `0.40, 0.50, 0.60, 0.65, 0.70`.
+
+The final frozen all-real stage is:
+
+```bash
+CHECKPOINT=/absolute/path/to/checkpoint_best_val.pth \
+RUN_TAG=my_final_run \
+bash scripts/eval/run_stage_final_all_real.sh
+```
+
+It evaluates every canonical manifest row, reporting `high_match`, `medium_match`,
+`low_match`, and `no_shared_content` separately and high+medium vs no-shared binary
+discrimination. `low_match` remains a separate ambiguous/partial class.
 
 ## Synchronization rule
 
-Shared data, loss, training, evaluation, preprocessing, and script changes must be
-kept synchronized across the three architecture branches. Architecture-specific
-changes belong in `model_backend.py` or the selected encoder implementation.
+Shared data, loss, training, evaluation, preprocessing, documentation, and script
+changes must be kept synchronized across the three architecture branches.
+Architecture-specific changes belong in `model_backend.py`, the selected encoder
+implementation, or the branch-specific `docs/MODEL_AND_CODE_STAGES.md`.
