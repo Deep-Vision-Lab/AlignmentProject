@@ -2,152 +2,106 @@
 
 Branch: `agent/use-dinov3-convnext`
 
-Active backend: `dinov3_convnext` selected by `model_backend.py`.
+Backend: `dinov3_convnext` selected by `model_backend.py`.
 
-The data, Arabic text encoder, losses, curriculum, evaluation manifests, and SLURM stage order are shared with the CNN+BiLSTM and ViT branches. The controlled architectural difference is the visual window encoder.
+## Model
 
-## 1. Input and line representation
+### Input and local sequence
 
-Every manuscript line is normalized to the common `128 x 1024` canvas and converted into an ordered sequence of overlapping horizontal observations. The standard window width is 32 px; stride is configured by the stage.
+Every manuscript line is normalized to the shared `128 x 1024` canvas and represented as an ordered sequence of overlapping horizontal observations. The standard local window width is 32 px. `unified_line_geometry.py`, `DataLoader.py`, `RealDataSet.py`, and `training_runtime/entrypoint.py` keep geometry identical to the CNN and ViT branches.
 
-Shared code:
-- `unified_line_geometry.py`;
-- `DataLoader.py` / `RealDataSet.py`;
-- `training_runtime/entrypoint.py`.
+### DINOv3 ConvNeXt visual encoder
 
-## 2. DINOv3 ConvNeXt visual encoder
+`model_backend.py` constructs the visual encoder through `dinov3_convnext_embedding_model.py`.
 
-`model_backend.py` builds the visual model through `dinov3_convnext_embedding_model.py`.
+Canonical design:
+- official Meta DINOv3 ConvNeXt-Tiny local visual backbone;
+- projection from foundation-model features into the project's shared image/text embedding dimension;
+- `DINOV3_FREEZE_BACKBONE=1` for the first controlled comparison;
+- optional `USE_BILSTM=0/1` sequence context on top of DINOv3 local features;
+- optional local neighboring-window grouping;
+- window chunking to control GPU memory.
 
-Canonical branch design:
-- official Meta DINOv3 ConvNeXt-Tiny architecture as the local visual window foundation model;
-- projection from DINOv3 features into the project's shared image/text embedding dimension;
-- default `DINOV3_FREEZE_BACKBONE=1` so the pretrained foundation representation remains fixed unless a separate ablation explicitly unfreezes it;
-- default window chunk size 256 to control memory;
-- `USE_BILSTM` remains available as a controlled sequence-context layer on top of DINOv3 window features;
-- `USE_LOCAL_WINDOW_GROUPING` remains available for neighboring-window aggregation.
-
-The AlignmentProject checkpoint stores the DINOv3 parameters needed for reconstruction. Training/evaluation still requires the local official DINOv3 repository to construct the architecture, supplied through:
+For initial S1 training set both:
 
 ```bash
 export DINOV3_REPO_DIR=/path/to/local/dinov3
+export DINOV3_WEIGHTS=/path/to/authorized/dinov3_convnext_tiny_weights
 ```
 
-Main code:
-- `model_backend.py`;
-- `dinov3_convnext_embedding_model.py`;
-- `training_runtime/entrypoint.py`.
+Later AlignmentProject checkpoints contain the learned DINO state, but the local official DINO repository is still needed to construct the architecture.
 
-## 3. Optional sequence context
+### Arabic text side
 
-Unlike the ViT branch, DINOv3 ConvNeXt itself processes local visual content rather than providing the project's full ordered-line sequence model. Therefore the canonical branch can place a BiLSTM over the sequence of DINOv3 window embeddings.
+The text encoder is shared with the other branches: frozen AraBERT-v02 backbone features plus the existing shared-space projection/normalization and learned special embeddings. Arabic spans are compared with DINOv3 visual observations through the same shared-space objective.
 
-With `USE_BILSTM=1`:
-- DINOv3 encodes each window;
-- the projection maps it into the shared dimensionality;
-- the bidirectional LSTM lets each window use left/right line context;
-- local/grouped/contextual features remain available to the common alignment/evaluation code.
-
-With `USE_BILSTM=0`, the experiment becomes a DINOv3-window-only ablation.
-
-## 4. Arabic text encoder
-
-The text side is identical to the other branches:
-- AraBERT v02 backbone (`aubmindlab/bert-base-arabertv02`);
-- frozen AraBERT backbone;
-- trainable projection into the shared visual/text space;
-- trainable learned special-space/blank embeddings;
-- Arabic span enumeration and frozen-surface caching.
-
-Main code:
-- `arabic_span_text_encoder.py`;
-- `bridge_frozen_text.py`.
-
-## 5. Synthetic image-text training
+### Image-text alignment
 
 For each line:
+1. extract DINOv3 local/contextual embeddings;
+2. encode Arabic spans;
+3. normalize image/text vectors;
+4. build the similarity matrix;
+5. apply differentiable Span-DTW;
+6. use 10 negative text sequences by default;
+7. keep the hardest four candidates active for expensive negative Span-DTW;
+8. use the same optional local hard-negative and variance regularization as the other branches.
 
-1. DINOv3 ConvNeXt extracts local visual features from overlapping windows.
-2. Optional BiLSTM/grouping adds line context.
-3. The Arabic span encoder creates candidate transcript-span embeddings.
-4. Image and text features are normalized into one space.
-5. A cosine/dot-product similarity matrix is formed.
-6. differentiable Span-DTW optimizes the positive transcript alignment.
-7. Ten negative text sequences are generated by default; the hardest four are active in the expensive Span-DTW negative path.
-8. local hard-negative and variance objectives regularize the visual geometry.
+Main code: `train.py`, `LossFunctionWithHelpers.py`, `Parameters.py`, and `training_runtime/`.
 
-Main code:
-- `train.py`;
-- `LossFunctionWithHelpers.py`;
-- `Parameters.py`;
-- `scripts/train/run_branch_fixed63_synthetic.sh`.
+## RealSyntheticBridge V2
 
-## 6. Canonical real fine-tuning
+Bridge V2 is the **only real-domain adaptation stage** after synthetic pretraining in the active protocol. There is no separate canonical-real fine-tuning block.
 
-After synthetic pretraining, the same DINOv3 visual model is adapted on train-safe real `high_match` and `medium_match` pairs with augmentation disabled first.
+Each Bridge group contains:
+- a genuine real manuscript anchor;
+- a synthetic positive with 1-3 ordered shared islands;
+- unrelated positive distractor regions;
+- a white/black shared-region mask;
+- guaranteed no-shared synthetic negatives.
 
-Signals:
-- image-text alignment for both real lines;
-- positive cross-writer image-image correspondence;
-- local hard negatives;
-- the same frozen AraBERT target space.
+Training signals:
+- real anchor ↔ its own transcript;
+- synthetic line ↔ its own transcript;
+- image-image positive/negative discrimination;
+- real-image ↔ synthetic-text ranking restricted to actual shared islands.
 
-The stage-specific launcher `scripts/train/run_stage_real_finetune.sh` supports DINOv3 directly and validates `DINOV3_REPO_DIR` before the GPU job runs.
+Generic whole-positive-line sequence ranking is disabled because Bridge V2 positives intentionally contain distractors. Bridge training defaults to a maximum of 15 epochs at `1e-6`, validates every epoch, and all later evaluations use `checkpoint_best_val.pth`.
 
-## 7. RealSyntheticBridge V2 augmentation
-
-Each bridge group contains:
-- one real anchor line;
-- one synthetic positive with 1-3 true shared islands in original transcript order;
-- unrelated distractor regions between/beside shared islands;
-- a `128 x 1024` white/black shared-region mask;
-- guaranteed synthetic no-shared negatives.
-
-Training semantics:
-- full image-text supervision remains valid for each image's own transcript;
-- bridge-specific real-image/synthetic-text ranking uses only true shared islands;
-- generic whole-positive-line sequence ranking is disabled because distractors are intentionally unaligned;
-- alignment masks are delivered in the batch for diagnostics and future mask-loss ablations, but the baseline does not add a mask loss.
-
-Main code:
+Main Bridge code:
 - `scripts/data/build_real_conditioned_synthetic_bridge.py`;
+- `scripts/data/prepare_real_synthetic_bridge_v2.sh`;
 - `bridge_mask_runtime.py`;
 - `bridge_multi_island_runtime.py`;
 - `real_synthetic_bridge_training.py`;
 - `scripts/train/run_real_synthetic_bridge.sh`.
 
-## 8. Image-image evaluation
+## Image-only evaluation
 
-Evaluation remains OCR-free:
-- extract visual embeddings from both real line images;
-- compute image-window x image-window cosine similarity;
-- run Smith-Waterman local alignment;
-- save qualitative cosine/DP heatmaps and traceback paths;
-- record score, path steps, matched fractions, path cosine, and bbox/localization metrics where ground truth exists.
+Evaluation does not use OCR/text inference:
+1. preprocess both real manuscript lines;
+2. extract DINOv3 local/contextual visual features;
+3. compute image-window × image-window cosine similarity;
+4. run Smith-Waterman local alignment;
+5. save qualitative heatmaps/path overlays;
+6. compute score, path steps, matched fraction, path cosine, discrimination AUC/AP, and bbox/localization metrics where available.
 
-Main code:
-- `Evaluation/eval_img_align_sw.py`;
-- `Evaluation/eval_img_align_sw_no_png.py`;
-- `Evaluation/sw_runner.py`;
-- `scripts/eval/run_real_discrimination_sweep.sh`.
+Main code: `Evaluation/eval_img_align_sw.py`, `Evaluation/eval_img_align_sw_no_png.py`, `Evaluation/sw_runner.py`, and `scripts/eval/`.
 
 ---
 
-# Code curriculum
+# Active code curriculum
 
-| Stage | Purpose | Input | Main command/code | Output |
+| Stage | Purpose | Input | Main code | Output |
 |---|---|---|---|---|
-| S0 | preflight | branch/data/DINO repo | `submit_full_research_pipeline.sh` | frozen run metadata |
-| S1 | synthetic pretraining | synthetic corpus | `run_branch_fixed63_synthetic.sh` | `<prefix>_synth` |
+| D0 | build/freeze Bridge V2 before models | real train anchors | `submit_bridge_v2_dataset.sh`, `prepare_real_synthetic_bridge_v2.sh` | frozen `RealSyntheticBridge_v2` |
+| S1 | synthetic pretraining | synthetic fixed-63 corpus | `run_branch_fixed63_synthetic.sh` | synthetic checkpoint |
 | S2 | qualitative zero-shot real | S1 | `run_stage_qualitative.sh` | heatmaps/paths |
-| S3 | quantitative zero-shot real | S1 | `run_stage_quantitative.sh` | baseline metrics |
-| S4 | canonical real FT, no augmentation | S1 | `run_stage_real_finetune.sh` | `<prefix>_real` |
-| S5 | qualitative post-real | S4 | `run_stage_qualitative.sh` | heatmaps/paths |
-| S6 | quantitative post-real | S4 | `run_stage_quantitative.sh` | real metrics |
-| S7 | build/audit Bridge V2 | train-safe real anchors | `prepare_real_synthetic_bridge_v2.sh` | augmentation corpus |
-| S8 | bridge evaluation before bridge FT | S4 | `run_stage_bridge_eval.sh` | zero-shot bridge metrics |
-| S9 | bridge augmentation FT | S4 | `run_real_synthetic_bridge.sh` | best bridge checkpoint |
-| S10 | post-bridge evaluations | S9 best | qualitative + quantitative + bridge eval | comparison metrics |
-| S11 | final all-real | S9 best | `run_stage_final_all_real.sh` | complete-real CSVs + summary |
+| S3 | quantitative zero-shot real | S1 | `run_stage_quantitative.sh` | baseline real metrics |
+| S4 | Bridge pre-finetune evaluation | S1 + frozen Bridge V2 | `run_stage_bridge_eval.sh` | pre-training Bridge metrics |
+| S5 | direct Bridge V2 adaptation | S1 | `run_real_synthetic_bridge.sh` | `checkpoint_best_val.pth` |
+| S6 | post-Bridge qualitative real | S5 best | `run_stage_qualitative.sh` | heatmaps/paths |
+| S7 | post-Bridge quantitative + Bridge eval | S5 best | quantitative + Bridge eval scripts | comparison metrics |
+| S8 | final complete-real evaluation | S5 best | `run_stage_final_all_real.sh` | full-real CSVs + `final_summary.json` |
 
-For a fair architecture comparison, DINO backbone freezing, BiLSTM use, data splits, negative counts, and evaluation thresholds must be declared before the run and must not be changed in response to final-test results.
+The same frozen Bridge V2 dataset must be reused for CNN, ViT, and DINOv3 architecture comparisons.
