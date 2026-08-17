@@ -51,8 +51,6 @@ def _validate_pinned_checkout() -> None:
 
 _validate_pinned_checkout()
 
-# Import the optimized runtime only after verifying that the checkout is still
-# the exact branch/commit captured by the public launcher.
 from scripts.train import train_optimized as optimized
 
 import model_backend
@@ -75,15 +73,9 @@ def _validate_backend_identity() -> None:
 
 
 _validate_backend_identity()
-
-# Install one deterministic canvas/ink geometry for synthetic and real data
-# before the optimized trainer constructs any train/validation/test loaders.
 _GEOMETRY_CONFIG = install_training_geometry()
 
-# Do not rely only on replacing train.EmbeddingModel. The generic trainer owns a
-# build_image_embedding() helper and that indirection allowed a CNN constructor
-# to survive in a ViT run. Replace the builder itself with the active branch
-# backend so model construction is unambiguous.
+
 def _branch_build_image_embedding(stride):
     P = optimized.base.P
     return model_backend.build_visual_model(
@@ -121,9 +113,6 @@ elif _extra_real:
     install_extra_real_training(optimized.base)
 install_epoch_subset_sampling(optimized.base)
 
-# Validate the freshly constructed architecture before attempting to load any
-# pretrained/resume checkpoint. This converts a huge load_state_dict mismatch
-# into an immediate, precise backend-construction error.
 _original_load_initial_states = optimized.base._load_initial_states
 
 
@@ -132,33 +121,47 @@ def _load_initial_states_checked(args, model, text_encoder):
     keys = tuple(model.state_dict().keys())
     has_vit = any(key.startswith("vit_encoder.") for key in keys)
     has_cnn = any(key.startswith("cnn_encoder.") for key in keys)
+    has_dino = any(key.startswith("dinov3_encoder.") for key in keys)
     has_bilstm = any(key.startswith("sequence_encoder.bilstm.") for key in keys)
     expects_bilstm = bool(getattr(optimized.base.P, "use_bilstm", True))
 
-    if backend == "vit" and (not has_vit or has_cnn or has_bilstm):
+    if backend == "vit" and (not has_vit or has_cnn or has_dino or has_bilstm):
         raise RuntimeError(
             "ViT backend constructed the wrong visual model before checkpoint load: "
-            f"has_vit={has_vit} has_cnn={has_cnn} has_bilstm={has_bilstm}."
+            f"vit={has_vit} cnn={has_cnn} dino={has_dino} bilstm={has_bilstm}."
         )
     if backend == "cnn_bilstm" and (
         not has_cnn
         or has_vit
+        or has_dino
         or (expects_bilstm and not has_bilstm)
         or (not expects_bilstm and has_bilstm)
     ):
         mode = "cnn_bilstm" if expects_bilstm else "cnn_only"
         raise RuntimeError(
             f"CNN backend constructed the wrong {mode} visual model before checkpoint load: "
-            f"has_vit={has_vit} has_cnn={has_cnn} has_bilstm={has_bilstm}."
+            f"vit={has_vit} cnn={has_cnn} dino={has_dino} bilstm={has_bilstm}."
+        )
+    if backend == "dinov3_convnext" and (
+        not has_dino
+        or has_cnn
+        or has_vit
+        or (expects_bilstm and not has_bilstm)
+        or (not expects_bilstm and has_bilstm)
+    ):
+        mode = "dino_bilstm" if expects_bilstm else "dino_only"
+        raise RuntimeError(
+            f"DINOv3 backend constructed the wrong {mode} visual model: "
+            f"vit={has_vit} cnn={has_cnn} dino={has_dino} bilstm={has_bilstm}."
         )
 
     if optimized.base.CTX.is_main:
         print(
             "visual_builder "
             f"backend={backend} model_class={model.__class__.__name__} "
-            f"cnn_mode={'bilstm' if expects_bilstm else 'cnn_only'} "
+            f"sequence_mode={'bilstm' if expects_bilstm else 'none'} "
             f"has_vit={int(has_vit)} has_cnn={int(has_cnn)} "
-            f"has_bilstm={int(has_bilstm)}",
+            f"has_dino={int(has_dino)} has_bilstm={int(has_bilstm)}",
             flush=True,
         )
     return _original_load_initial_states(args, model, text_encoder)
