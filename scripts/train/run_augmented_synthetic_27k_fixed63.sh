@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Train the current branch on the validated 27,000-pair fixed-63 Arabic dataset.
-# New CNN runs default to ResNet-18; set CNN_BACKBONE=resnet34 only for a legacy
-# architecture run. This wrapper does not change the underlying Slurm resources.
+# Model construction is delegated to the branch-aware runtime.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,14 +11,8 @@ DATA_DIR="${DATA_DIR:-${HOME}/BGU-Lab/AlignmentProject/DataSet/AugmentedArabicDa
 NUM_SAMPLES="${NUM_SAMPLES:-27000}"
 EXPECTED_TEXT_CHARS="${EXPECTED_TEXT_CHARS:-63}"
 
-[[ "${NUM_SAMPLES}" =~ ^[1-9][0-9]*$ ]] || {
-  echo "ERROR: NUM_SAMPLES must be a positive integer." >&2
-  exit 2
-}
-[[ "${EXPECTED_TEXT_CHARS}" =~ ^[1-9][0-9]*$ ]] || {
-  echo "ERROR: EXPECTED_TEXT_CHARS must be a positive integer." >&2
-  exit 2
-}
+[[ "${NUM_SAMPLES}" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: NUM_SAMPLES must be a positive integer." >&2; exit 2; }
+[[ "${EXPECTED_TEXT_CHARS}" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: EXPECTED_TEXT_CHARS must be a positive integer." >&2; exit 2; }
 
 DATA_DIR="$(readlink -f "${DATA_DIR}")"
 [[ -d "${DATA_DIR}/images" && -d "${DATA_DIR}/texts" ]] || {
@@ -30,78 +23,34 @@ DATA_DIR="$(readlink -f "${DATA_DIR}")"
 python - "${DATA_DIR}/texts" "${NUM_SAMPLES}" "${EXPECTED_TEXT_CHARS}" <<'PY'
 from pathlib import Path
 import sys
-
-texts_dir = Path(sys.argv[1])
-num_samples = int(sys.argv[2])
-expected = int(sys.argv[3])
-missing = []
-invalid = []
+texts_dir = Path(sys.argv[1]); num_samples = int(sys.argv[2]); expected = int(sys.argv[3])
+missing = []; invalid = []
 for index in range(1, num_samples + 1):
     for side in (1, 2):
         path = texts_dir / f"text{side}_{index}.txt"
         if not path.is_file():
             missing.append(path.name)
-            if len(missing) >= 10:
-                break
+            if len(missing) >= 10: break
             continue
         length = len(path.read_text(encoding="utf-8").strip())
         if length != expected:
             invalid.append((path.name, length))
-            if len(invalid) >= 10:
-                break
-    if len(missing) >= 10 or len(invalid) >= 10:
-        break
-if missing:
-    raise SystemExit("Missing transcript files: " + ", ".join(missing))
+            if len(invalid) >= 10: break
+    if len(missing) >= 10 or len(invalid) >= 10: break
+if missing: raise SystemExit("Missing transcript files: " + ", ".join(missing))
 if invalid:
     details = ", ".join(f"{name}={length}" for name, length in invalid)
-    raise SystemExit(
-        f"Expected every transcript to contain exactly {expected} characters; {details}"
-    )
-print(
-    f"Fixed-length dataset validation passed: {2 * num_samples} transcripts, "
-    f"each exactly {expected} characters."
-)
+    raise SystemExit(f"Expected every transcript to contain exactly {expected} characters; {details}")
+print(f"Fixed-length dataset validation passed: {2 * num_samples} transcripts, each exactly {expected} characters.")
 PY
 
-DATASET_TYPE=synthetic
-SYNTHETIC_MANUSCRIPT_AUGMENT=0
-REAL_AUGMENT=0
-WINDOW_SIZE="${WINDOW_SIZE:-32}"
-STRIDE_RATIO="${STRIDE_RATIO:-0.5}"
-WINDOW_OVERLAP_MODE="${WINDOW_OVERLAP_MODE:-custom}"
-MAX_TEXT_SPAN_CHARS="${MAX_TEXT_SPAN_CHARS:-3}"
-SPAN_MAX_CORE_CHARS_CAP="${SPAN_MAX_CORE_CHARS_CAP:-${MAX_TEXT_SPAN_CHARS}}"
-SPAN_CONNECTED_MAX_UNITS_PER_SPAN="${SPAN_CONNECTED_MAX_UNITS_PER_SPAN:-${MAX_TEXT_SPAN_CHARS}}"
-# CNN branch: new training uses the smaller backbone by default. ViT/DINO branches
-# ignore this variable through their own model_backend.py implementations.
-CNN_BACKBONE="${CNN_BACKBONE:-resnet18}"
-
 export DATA_DIR NUM_SAMPLES EXPECTED_TEXT_CHARS
-export DATASET_TYPE SYNTHETIC_MANUSCRIPT_AUGMENT REAL_AUGMENT
-export WINDOW_SIZE STRIDE_RATIO WINDOW_OVERLAP_MODE
-export MAX_TEXT_SPAN_CHARS SPAN_MAX_CORE_CHARS_CAP SPAN_CONNECTED_MAX_UNITS_PER_SPAN
-export CNN_BACKBONE
+export DATASET_TYPE=synthetic SYNTHETIC_MANUSCRIPT_AUGMENT=0 REAL_AUGMENT=0
+export WINDOW_SIZE="${WINDOW_SIZE:-32}"
+export STRIDE_RATIO="${STRIDE_RATIO:-0.5}"
+export WINDOW_OVERLAP_MODE="${WINDOW_OVERLAP_MODE:-custom}"
+export MAX_TEXT_SPAN_CHARS="${MAX_TEXT_SPAN_CHARS:-3}"
+export SPAN_MAX_CORE_CHARS_CAP="${SPAN_MAX_CORE_CHARS_CAP:-${MAX_TEXT_SPAN_CHARS}}"
+export SPAN_CONNECTED_MAX_UNITS_PER_SPAN="${SPAN_CONNECTED_MAX_UNITS_PER_SPAN:-${MAX_TEXT_SPAN_CHARS}}"
 
-echo "fixed63_visual_config CNN_BACKBONE=${CNN_BACKBONE} USE_BILSTM=${USE_BILSTM:-1}"
-
-has_gpu_allocation() {
-  local name value
-  for name in CUDA_VISIBLE_DEVICES SLURM_STEP_GPUS SLURM_JOB_GPUS SLURM_GPU_INDEX; do
-    value="${!name:-}"
-    if [[ -n "${value}" && "${value}" != "NoDevFiles" && "${value}" != "(null)" ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-# An interactive CPU Slurm session also defines SLURM_JOB_ID. The underlying
-# launcher must not mistake that for the requested GPU batch allocation.
-if [[ -n "${SLURM_JOB_ID:-}" ]] && ! has_gpu_allocation; then
-  echo "Detected CPU-only Slurm context ${SLURM_JOB_ID}; submitting the GPU batch job instead of starting torchrun locally."
-  unset SLURM_JOB_ID SLURM_STEP_ID SLURM_STEP_GPUS SLURM_JOB_GPUS \
-    SLURM_GPU_INDEX CUDA_VISIBLE_DEVICES
-fi
-
-exec bash "${PROJECT_DIR}/scripts/train/run_augmented_synthetic_27k.sh"
+exec bash "${PROJECT_DIR}/scripts/train/run_branch_fixed63_synthetic.sh"
