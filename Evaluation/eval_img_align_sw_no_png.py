@@ -2,6 +2,7 @@
 """Run the canonical real Smith-Waterman evaluator without saving PNG files."""
 from __future__ import annotations
 
+import os
 import sys
 
 
@@ -21,6 +22,12 @@ if weights:
     backbone = configure_for_checkpoint(weights)
     if backbone:
         print(f"evaluation_cnn_backbone={backbone}", flush=True)
+
+# A trained AlignmentProject DINO checkpoint already contains the complete DINOv3
+# state_dict. For evaluation we only need the official local architecture source;
+# construct it without downloading the original foundation checkpoint, then load the
+# saved project state immediately afterward.
+os.environ.setdefault("DINOV3_ALLOW_RANDOM_INIT", "1")
 
 from Evaluation import eval_img_align_sw as evaluation
 import Evaluation._eval_utils as eval_utils
