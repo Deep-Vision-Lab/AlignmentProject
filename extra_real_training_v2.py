@@ -6,7 +6,8 @@
 ``joint_real`` is the clean Stage-1 -> original+online-augmented real curriculum.
 ``joint_partial_overlap`` adds train-only multi-island partial-overlap positives.
 ``synthetic_bridge`` trains on an offline real-conditioned synthetic bridge corpus
-with AraBERT frozen and the shared-space text projection head trainable.
+with AraBERT frozen, the shared-space text projection head trainable, and optional
+positive alignment masks exposed in the training batch.
 """
 from __future__ import annotations
 
@@ -18,10 +19,13 @@ from extra_real_training_v2_absolute import _eligible_groups, _positive_pair_los
 def install(base) -> None:
     objective = os.environ.get("NO_SHARED_IMAGE_OBJECTIVE", "absolute").strip().lower()
     if objective in {"synthetic_bridge", "real_synthetic_bridge", "bridge"}:
+        import extra_real_training as legacy
         from bridge_frozen_text import install as install_bridge_text_policy
+        from bridge_mask_runtime import install as install_bridge_masks
         from real_synthetic_bridge_training import install as install_bridge
 
         install_bridge_text_policy(base)
+        install_bridge_masks(legacy)
         install_bridge(base)
         return
     if objective in {
@@ -29,9 +33,6 @@ def install(base) -> None:
         "partial_overlap",
         "multi_island",
     }:
-        # Guard the online composite pool against canonical positives whose own
-        # transcript already exceeds the composite text cap. Those rows remain
-        # available to canonical training; they are excluded only from synthesis.
         from partial_overlap_runtime_fix import install as install_partial_overlap
 
         install_partial_overlap(base)

@@ -1,18 +1,9 @@
 """Manifest-based loader for the real Arabic Quran line-pair dataset.
 
-The dataset layout is documented in ``DATASET_README.md``.  This class reads
-``DataSet/ArabicDataset/dataset_manifest.jsonl`` and exposes the same sample
-shape used by the synthetic ``TextLineModern`` dataset:
-
-    {
-        "text1": str,
-        "image1": Tensor,
-        "text2": str,
-        "image2": Tensor,
-    }
-
-Extra manifest metadata is retained in the sample for debugging, but the
-existing contrastive collate function can ignore it safely.
+The dataset layout is documented in ``DATASET_README.md``. This class reads a
+``dataset_manifest.jsonl`` and exposes the paired image/text contract used by
+training. Optional bridge alignment masks are loaded only when a manifest side
+provides ``alignment_mask_path``; ordinary real datasets remain unchanged.
 """
 from __future__ import annotations
 
@@ -20,39 +11,13 @@ import json
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
+import numpy as np
+import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
 
 class ArabicManifestLinePairDataset(Dataset):
-    """Load paired real Arabic line images from ``dataset_manifest.jsonl``.
-
-    Parameters
-    ----------
-    manifest_path:
-        Path to the global dataset manifest.
-    transform:
-        Image transform applied independently to line A and line B.
-    text_key:
-        Manifest key inside each side.  Use ``text_original_path`` for text
-        without tashkeel or ``text_tashkeel_path`` to retain diacritics.
-    allowed_labels:
-        Pair labels kept as positive image pairs.  The default training setup
-        uses ``high_match`` and ``medium_match``.  ``no_shared_content`` must
-        not be used as a positive image-image pair.
-    max_samples:
-        Optional deterministic cap applied after filtering.
-    paired:
-        When true, return the paired dictionary expected by the current
-        image-pair training.  When false, return ``(text, image)`` from side A,
-        matching the old single-line synthetic dataset interface.
-    min_text_score:
-        Optional lower bound for ``scores.text_score``.
-    validate_paths:
-        Check all referenced image/text files during initialization.  This is
-        useful for debugging but can make startup slower on network storage.
-    """
-
     def __init__(
         self,
         manifest_path,
@@ -67,7 +32,6 @@ class ArabicManifestLinePairDataset(Dataset):
         self.manifest_path = Path(manifest_path).expanduser().resolve()
         if not self.manifest_path.is_file():
             raise FileNotFoundError(f"Real-dataset manifest not found: {self.manifest_path}")
-
         self.root = self.manifest_path.parent
         self.transform = transform
         self.text_key = str(text_key)
@@ -91,21 +55,17 @@ class ArabicManifestLinePairDataset(Dataset):
                     raise ValueError(
                         f"Invalid JSON in {self.manifest_path} at line {line_number}: {exc}"
                     ) from exc
-
                 label = str(sample.get("label_type", ""))
                 if self.allowed_labels is not None and label not in self.allowed_labels:
                     continue
-
                 text_score = float((sample.get("scores") or {}).get("text_score", 0.0))
                 if text_score < self.min_text_score:
                     continue
-
                 self._validate_manifest_row(sample, line_number)
                 samples.append(sample)
 
         if max_samples is not None and int(max_samples) > 0:
             samples = samples[: min(len(samples), int(max_samples))]
-
         if not samples:
             labels = "all" if self.allowed_labels is None else sorted(self.allowed_labels)
             raise ValueError(
@@ -113,9 +73,7 @@ class ArabicManifestLinePairDataset(Dataset):
                 f"manifest={self.manifest_path}, labels={labels}, "
                 f"min_text_score={self.min_text_score}"
             )
-
         self.samples = samples
-
         if validate_paths:
             self._validate_all_paths()
 
@@ -140,15 +98,8 @@ class ArabicManifestLinePairDataset(Dataset):
         if path.is_absolute():
             yield path
             return
-
-        # Most manifests store paths relative to the ArabicDataset directory.
         yield self.root / path
-
-        # Some generated manifests store paths relative to the repository root.
         yield Path.cwd() / path
-
-        # Also support paths beginning with ArabicDataset/... while the manifest
-        # itself is already inside DataSet/ArabicDataset.
         yield self.root.parent / path
 
     def _resolve(self, path_value) -> Path:
@@ -166,8 +117,6 @@ class ArabicManifestLinePairDataset(Dataset):
     def _read_text(self, path_value) -> str:
         path = self._resolve(path_value)
         with path.open("r", encoding="utf-8") as handle:
-            # Match the synthetic dataset behavior: boundary spaces give the
-            # sequence model explicit left/right text edges.
             return " " + handle.read().strip() + " "
 
     def _read_image(self, path_value):
@@ -178,6 +127,19 @@ class ArabicManifestLinePairDataset(Dataset):
                 return self.transform(image)
             return image.copy()
 
+    def _read_alignment_mask(self, path_value, image2):
+        """Load a binary 0/1 mask at exactly the post-transform image geometry."""
+        path = self._resolve(path_value)
+        if torch.is_tensor(image2):
+            height, width = int(image2.shape[-2]), int(image2.shape[-1])
+        else:
+            width, height = image2.size
+        with Image.open(path) as image:
+            image = image.convert("L").resize((width, height), Image.Resampling.NEAREST)
+            values = np.asarray(image, dtype=np.uint8).copy()
+        binary = torch.from_numpy((values >= 128).astype(np.float32)).unsqueeze(0)
+        return binary
+
     def _validate_all_paths(self) -> None:
         for sample_idx, sample in enumerate(self.samples):
             for side_name in ("A", "B"):
@@ -185,6 +147,8 @@ class ArabicManifestLinePairDataset(Dataset):
                 try:
                     self._resolve(side["line_image_path"])
                     self._resolve(side[self.text_key])
+                    if side.get("alignment_mask_path"):
+                        self._resolve(side["alignment_mask_path"])
                 except FileNotFoundError as exc:
                     raise FileNotFoundError(
                         f"Invalid paths in real dataset sample index {sample_idx}, "
@@ -193,21 +157,19 @@ class ArabicManifestLinePairDataset(Dataset):
 
     def __getitem__(self, idx):
         sample = self.samples[int(idx)]
-        side_a = sample["A"]
-        side_b = sample["B"]
-
+        side_a, side_b = sample["A"], sample["B"]
         image1 = self._read_image(side_a["line_image_path"])
         text1 = self._read_text(side_a[self.text_key])
-
         if not self.paired:
             return text1, image1
 
+        image2 = self._read_image(side_b["line_image_path"])
         scores = sample.get("scores") or {}
-        return {
+        result = {
             "text1": text1,
             "image1": image1,
             "text2": self._read_text(side_b[self.text_key]),
-            "image2": self._read_image(side_b["line_image_path"]),
+            "image2": image2,
             "pair_id": str(sample.get("pair_id", idx)),
             "label_type": str(sample.get("label_type", "")),
             "text_score": float(scores.get("text_score", 0.0)),
@@ -217,3 +179,15 @@ class ArabicManifestLinePairDataset(Dataset):
             "line1_index": int(side_a.get("line_idx", -1)),
             "line2_index": int(side_b.get("line_idx", -1)),
         }
+        mask_path = side_b.get("alignment_mask_path")
+        if mask_path:
+            result["alignment_mask2"] = self._read_alignment_mask(mask_path, image2)
+            result["alignment_mask2_path"] = str(mask_path)
+        bridge = sample.get("bridge") or {}
+        if bridge:
+            result["bridge_shared_island_count"] = int(
+                bridge.get("shared_island_count", 0) or 0
+            )
+            result["bridge_shared_texts"] = list(bridge.get("shared_texts") or [])
+            result["bridge_shared_boxes_px"] = list(bridge.get("shared_boxes_px") or [])
+        return result
