@@ -7,8 +7,9 @@ if command -v conda >/dev/null 2>&1; then source "$(conda info --base)/etc/profi
 if [[ -s "${BRIDGE_DATA_DIR}/dataset_manifest.jsonl" && "${REBUILD_BRIDGE}" != "1" ]]; then
   if python scripts/data/smoke_test_real_synthetic_bridge_v3.py --data-dir "${BRIDGE_DATA_DIR}" --expected-negatives "${EXPECTED_NEGATIVES}" \
     && python scripts/data/validate_bridge_v3_font_size.py --data-dir "${BRIDGE_DATA_DIR}" --min-font-size "${MIN_FONT_SIZE}" \
-    && python scripts/data/validate_bridge_v3_dense_layout.py --data-dir "${BRIDGE_DATA_DIR}" --min-recorded-fill "${MIN_LINE_FILL_RATIO}" --min-pixel-span 0.84 --expected-negatives "${EXPECTED_NEGATIVES}"; then
-      echo "Existing dense Bridge V3 is valid; reusing ${BRIDGE_DATA_DIR}"; exit 0
+    && python scripts/data/validate_bridge_v3_dense_layout.py --data-dir "${BRIDGE_DATA_DIR}" --min-recorded-fill "${MIN_LINE_FILL_RATIO}" --min-pixel-span 0.84 --expected-negatives "${EXPECTED_NEGATIVES}" \
+    && python scripts/data/validate_bridge_v3_real_augmentation.py --data-dir "${BRIDGE_DATA_DIR}"; then
+      echo "Existing dense Bridge V3 with augmented real anchors is valid; reusing ${BRIDGE_DATA_DIR}"; exit 0
   fi
 fi
-DATA_DIR="${REAL_DATA_DIR}" OUTPUT_DIR="${BRIDGE_DATA_DIR}" OVERWRITE=1 MAX_ANCHORS="${MAX_ANCHORS:-0}" NEGATIVES_PER_ANCHOR="${EXPECTED_NEGATIVES}" MIN_FONT_SIZE="${MIN_FONT_SIZE}" MIN_LINE_FILL_RATIO="${MIN_LINE_FILL_RATIO}" bash scripts/data/build_real_conditioned_synthetic_bridge.sh
+DATA_DIR="${REAL_DATA_DIR}" OUTPUT_DIR="${BRIDGE_DATA_DIR}" OVERWRITE=1 MAX_ANCHORS="${MAX_ANCHORS:-0}" NEGATIVES_PER_ANCHOR="${EXPECTED_NEGATIVES}" MIN_FONT_SIZE="${MIN_FONT_SIZE}" MIN_LINE_FILL_RATIO="${MIN_LINE_FILL_RATIO}" REAL_AUG_SEED="${REAL_AUG_SEED:-4242}" REAL_BLUR_MIN_RADIUS="${REAL_BLUR_MIN_RADIUS:-0.15}" REAL_BLUR_MAX_RADIUS="${REAL_BLUR_MAX_RADIUS:-1.00}" REAL_NOISE_MIN_SIGMA="${REAL_NOISE_MIN_SIGMA:-2.0}" REAL_NOISE_MAX_SIGMA="${REAL_NOISE_MAX_SIGMA:-8.0}" bash scripts/data/build_real_conditioned_synthetic_bridge.sh
