@@ -7,5 +7,9 @@ def main():
     if args.max_font_size<args.font_size: args.font_size=args.max_font_size
     if args.font_size<args.min_font_size: args.font_size=args.min_font_size
     if args.max_font_size<args.min_font_size: raise ValueError('max_font_size < min_font_size')
+    original=core.choose_safe_sentences
+    def choose_many(anchor_index,anchor_text,texts,pool,fonts,needed,rng,inner_args):
+        return original(anchor_index,anchor_text,texts,pool,fonts,max(int(needed),32),rng,inner_args)
+    core.choose_safe_sentences=choose_many
     resilient.build(args)
 if __name__=='__main__': main()
