@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 """Create deterministic non-geometric augmentation variants for Bridge V3 real anchors.
 
-The source ArabicDataset is never modified.  The self-contained copied real line is
-preserved as ``real_original.*`` and several appearance-only variants are created
-under ``images/real/<anchor_id>/``.
-
-The manifest continues to point to one stable training-facing ``real.*`` image.  That
-image uses a moderate combined contrast/gamma + Gaussian blur + Gaussian noise recipe.
-Additional variants are stored for inspection/future sampling without multiplying
-positive/negative manifest rows.
+The source ArabicDataset is never modified. The self-contained copied real line is
+preserved as ``real_original.*`` and appearance-only variants are created under
+``images/real/<anchor_id>/``. Real anchors are processed concurrently using the same
+BRIDGE_BUILD_WORKERS/SLURM_CPUS_PER_TASK budget as synthetic generation.
 
 No crop, translation, rotation, resize, warp, perspective, elastic transform, or
 character/stroke deletion is used.
@@ -16,8 +12,10 @@ character/stroke deletion is used.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -114,6 +112,86 @@ def _save_variant(root: Path, real_path: Path, name: str, image: Image.Image, op
     }
 
 
+def _augment_one(record: dict, root: Path, args) -> tuple[str, dict]:
+    anchor_id = str(record["anchor_id"])
+    real = record["real"]
+    real_path = _resolve(root, real["image"])
+    if not real_path.is_file():
+        raise FileNotFoundError(f"{anchor_id}: missing copied real image {real_path}")
+
+    suffix = real_path.suffix.lower() or ".png"
+    original_path = real_path.with_name(f"real_original{suffix}")
+    if not original_path.exists():
+        shutil.copy2(real_path, original_path)
+
+    with Image.open(original_path) as src:
+        original = src.convert("RGB")
+    original_size = original.size
+
+    seed = _anchor_seed(args.seed, anchor_id)
+    rng = np.random.default_rng(seed)
+    blur_radius = float(rng.uniform(args.blur_min_radius, args.blur_max_radius))
+    noise_sigma = float(rng.uniform(args.noise_min_sigma, args.noise_max_sigma))
+    contrast = float(rng.uniform(args.contrast_min, args.contrast_max))
+    gamma = float(rng.uniform(args.gamma_min, args.gamma_max))
+    salt_pepper_prob = float(rng.uniform(args.salt_pepper_min_prob, args.salt_pepper_max_prob))
+    noise_seed = int(rng.integers(0, 2**32 - 1))
+    combo_noise_seed = int(rng.integers(0, 2**32 - 1))
+    binary_noise_seed = int(rng.integers(0, 2**32 - 1))
+    salt_pepper_seed = int(rng.integers(0, 2**32 - 1))
+
+    binary, otsu_threshold = _binarize(original)
+    gaussian_noise = _gaussian_noise(original, noise_sigma, noise_seed)
+    gaussian_blur = original.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    blur_noise = _gaussian_noise(gaussian_blur, noise_sigma, combo_noise_seed)
+    binarized_noise = _gaussian_noise(binary, max(1.0, noise_sigma * 0.65), binary_noise_seed)
+    contrast_gamma = _gamma(ImageEnhance.Contrast(original).enhance(contrast), gamma)
+    salt_pepper = _salt_pepper(original, salt_pepper_prob, salt_pepper_seed)
+
+    training_image = _gamma(ImageEnhance.Contrast(original).enhance(contrast), gamma)
+    training_image = training_image.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    training_image = _gaussian_noise(training_image, noise_sigma, combo_noise_seed)
+    if training_image.size != original_size:
+        raise RuntimeError(f"{anchor_id}: appearance augmentation changed geometry")
+    training_image.save(real_path)
+
+    variants = [
+        _save_variant(root, real_path, "binarized", binary, ["otsu_binarization"], {"otsu_threshold": otsu_threshold}),
+        _save_variant(root, real_path, "gaussian_noise", gaussian_noise, ["gaussian_noise"], {"sigma": round(noise_sigma, 5), "seed": noise_seed}),
+        _save_variant(root, real_path, "gaussian_blur", gaussian_blur, ["gaussian_blur"], {"radius": round(blur_radius, 5)}),
+        _save_variant(root, real_path, "blur_noise", blur_noise, ["gaussian_blur", "gaussian_noise"], {"radius": round(blur_radius, 5), "sigma": round(noise_sigma, 5), "seed": combo_noise_seed}),
+        _save_variant(root, real_path, "binarized_noise", binarized_noise, ["otsu_binarization", "gaussian_noise"], {"otsu_threshold": otsu_threshold, "sigma": round(max(1.0, noise_sigma * 0.65), 5), "seed": binary_noise_seed}),
+        _save_variant(root, real_path, "contrast_gamma", contrast_gamma, ["contrast", "gamma"], {"contrast": round(contrast, 5), "gamma": round(gamma, 5)}),
+        _save_variant(root, real_path, "salt_pepper", salt_pepper, ["salt_pepper_noise"], {"probability": round(salt_pepper_prob, 6), "seed": salt_pepper_seed}),
+    ]
+
+    aug = {
+        "geometric_transform": False,
+        "training_variant": "combined_contrast_gamma_blur_gaussian_noise",
+        "training_image": real_path.relative_to(root).as_posix(),
+        "original_image": original_path.relative_to(root).as_posix(),
+        "gaussian_blur_radius": round(blur_radius, 5),
+        "gaussian_noise_sigma": round(noise_sigma, 5),
+        "gaussian_noise_seed": combo_noise_seed,
+        "contrast": round(contrast, 5),
+        "gamma": round(gamma, 5),
+        "base_seed": int(args.seed),
+        "variants": variants,
+    }
+    real["original_image"] = aug["original_image"]
+    real["appearance_augmentation"] = aug
+    real["augmentation_variants"] = variants
+
+    anchor_json = root / "anchors" / anchor_id / "anchor.json"
+    if anchor_json.is_file():
+        payload = json.loads(anchor_json.read_text(encoding="utf-8"))
+        payload["real"]["original_image"] = aug["original_image"]
+        payload["real"]["appearance_augmentation"] = aug
+        payload["real"]["augmentation_variants"] = variants
+        _write_json(anchor_json, payload)
+    return anchor_id, aug
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", required=True)
@@ -149,89 +227,18 @@ def main() -> None:
         raise FileNotFoundError("Bridge V3 must be organized before real-line augmentation")
 
     anchors = [json.loads(line) for line in anchor_index_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    requested_workers = int(os.environ.get("BRIDGE_BUILD_WORKERS", os.environ.get("SLURM_CPUS_PER_TASK", str(os.cpu_count() or 1))))
+    workers = max(1, min(requested_workers, len(anchors)))
     augmentation_by_anchor: dict[str, dict] = {}
 
-    for record in anchors:
-        anchor_id = str(record["anchor_id"])
-        real = record["real"]
-        real_path = _resolve(root, real["image"])
-        if not real_path.is_file():
-            raise FileNotFoundError(f"{anchor_id}: missing copied real image {real_path}")
-
-        suffix = real_path.suffix.lower() or ".png"
-        original_path = real_path.with_name(f"real_original{suffix}")
-        if not original_path.exists():
-            shutil.copy2(real_path, original_path)
-
-        with Image.open(original_path) as src:
-            original = src.convert("RGB")
-        original_size = original.size
-
-        seed = _anchor_seed(args.seed, anchor_id)
-        rng = np.random.default_rng(seed)
-        blur_radius = float(rng.uniform(args.blur_min_radius, args.blur_max_radius))
-        noise_sigma = float(rng.uniform(args.noise_min_sigma, args.noise_max_sigma))
-        contrast = float(rng.uniform(args.contrast_min, args.contrast_max))
-        gamma = float(rng.uniform(args.gamma_min, args.gamma_max))
-        salt_pepper_prob = float(rng.uniform(args.salt_pepper_min_prob, args.salt_pepper_max_prob))
-        noise_seed = int(rng.integers(0, 2**32 - 1))
-        combo_noise_seed = int(rng.integers(0, 2**32 - 1))
-        binary_noise_seed = int(rng.integers(0, 2**32 - 1))
-        salt_pepper_seed = int(rng.integers(0, 2**32 - 1))
-
-        binary, otsu_threshold = _binarize(original)
-        gaussian_noise = _gaussian_noise(original, noise_sigma, noise_seed)
-        gaussian_blur = original.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-        blur_noise = _gaussian_noise(gaussian_blur, noise_sigma, combo_noise_seed)
-        binarized_noise = _gaussian_noise(binary, max(1.0, noise_sigma * 0.65), binary_noise_seed)
-        contrast_gamma = _gamma(ImageEnhance.Contrast(original).enhance(contrast), gamma)
-        salt_pepper = _salt_pepper(original, salt_pepper_prob, salt_pepper_seed)
-
-        # Stable training-facing variant: moderate exposure change + blur + Gaussian
-        # sensor/scan noise.  Binarization remains an additional variant because using
-        # only binary anchors for every pair would discard useful manuscript texture.
-        training_image = _gamma(ImageEnhance.Contrast(original).enhance(contrast), gamma)
-        training_image = training_image.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-        training_image = _gaussian_noise(training_image, noise_sigma, combo_noise_seed)
-        if training_image.size != original_size:
-            raise RuntimeError(f"{anchor_id}: appearance augmentation changed geometry")
-        training_image.save(real_path)
-
-        variants = [
-            _save_variant(root, real_path, "binarized", binary, ["otsu_binarization"], {"otsu_threshold": otsu_threshold}),
-            _save_variant(root, real_path, "gaussian_noise", gaussian_noise, ["gaussian_noise"], {"sigma": round(noise_sigma, 5), "seed": noise_seed}),
-            _save_variant(root, real_path, "gaussian_blur", gaussian_blur, ["gaussian_blur"], {"radius": round(blur_radius, 5)}),
-            _save_variant(root, real_path, "blur_noise", blur_noise, ["gaussian_blur", "gaussian_noise"], {"radius": round(blur_radius, 5), "sigma": round(noise_sigma, 5), "seed": combo_noise_seed}),
-            _save_variant(root, real_path, "binarized_noise", binarized_noise, ["otsu_binarization", "gaussian_noise"], {"otsu_threshold": otsu_threshold, "sigma": round(max(1.0, noise_sigma * 0.65), 5), "seed": binary_noise_seed}),
-            _save_variant(root, real_path, "contrast_gamma", contrast_gamma, ["contrast", "gamma"], {"contrast": round(contrast, 5), "gamma": round(gamma, 5)}),
-            _save_variant(root, real_path, "salt_pepper", salt_pepper, ["salt_pepper_noise"], {"probability": round(salt_pepper_prob, 6), "seed": salt_pepper_seed}),
-        ]
-
-        aug = {
-            "geometric_transform": False,
-            "training_variant": "combined_contrast_gamma_blur_gaussian_noise",
-            "training_image": real_path.relative_to(root).as_posix(),
-            "original_image": original_path.relative_to(root).as_posix(),
-            "gaussian_blur_radius": round(blur_radius, 5),
-            "gaussian_noise_sigma": round(noise_sigma, 5),
-            "gaussian_noise_seed": combo_noise_seed,
-            "contrast": round(contrast, 5),
-            "gamma": round(gamma, 5),
-            "base_seed": int(args.seed),
-            "variants": variants,
-        }
-        augmentation_by_anchor[anchor_id] = aug
-        real["original_image"] = aug["original_image"]
-        real["appearance_augmentation"] = aug
-        real["augmentation_variants"] = variants
-
-        anchor_json = root / "anchors" / anchor_id / "anchor.json"
-        if anchor_json.is_file():
-            payload = json.loads(anchor_json.read_text(encoding="utf-8"))
-            payload["real"]["original_image"] = aug["original_image"]
-            payload["real"]["appearance_augmentation"] = aug
-            payload["real"]["augmentation_variants"] = variants
-            _write_json(anchor_json, payload)
+    print(f"real_augmentation_workers={workers}", flush=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(_augment_one, record, root, args) for record in anchors]
+        for index, future in enumerate(futures, start=1):
+            anchor_id, aug = future.result()
+            augmentation_by_anchor[anchor_id] = aug
+            if index % 100 == 0 or index == len(futures):
+                print(f"real_augmentation_progress={index}/{len(futures)}", flush=True)
 
     with anchor_index_path.open("w", encoding="utf-8") as handle:
         for record in anchors:
@@ -288,6 +295,7 @@ def main() -> None:
         "seed": args.seed,
         "originals_preserved": True,
         "variants_per_anchor": 7,
+        "parallel_workers": workers,
     }
     metadata["real_augmented_count"] = len(anchors)
     _write_json(metadata_path, metadata)
@@ -295,6 +303,7 @@ def main() -> None:
     print("=== BRIDGE V3 REAL-LINE AUGMENTATION BUNDLE ===")
     print(f"root={root}")
     print(f"real_lines_augmented={len(anchors)}")
+    print(f"parallel_workers={workers}")
     print("training_variant=combined_contrast_gamma_blur_gaussian_noise")
     print("variants=binarized,gaussian_noise,gaussian_blur,blur_noise,binarized_noise,contrast_gamma,salt_pepper")
     print(f"blur_radius_range={[args.blur_min_radius, args.blur_max_radius]}")
