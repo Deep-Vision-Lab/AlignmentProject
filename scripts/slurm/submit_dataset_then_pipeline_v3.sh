@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Submit Bridge V3 D0 and the synthetic S1 branch concurrently.
-# Independent evaluations are parallelized; only true data/weight prerequisites use
-# afterok dependencies.
+# Independent training/evaluation work is parallelized; only true data/weight
+# prerequisites use afterok dependencies.
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -50,9 +50,9 @@ if [[ -z "${D0_JOB_ID}" || ! "${D0_JOB_ID}" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 
-# S1 is submitted immediately and is independent of D0. The V3 pipeline wrapper
-# makes S2/S3 siblings after S1, S4 depend on S1+D0, S5 depend on S4, and the three
-# post-Bridge evaluations siblings after S5. S8 is the join/final stage.
+# S1 is submitted immediately and is independent of D0. The V3 wrapper makes:
+# S2/S3 siblings after S1; S4/S5 siblings after S1+D0; S6/S7A/S7B siblings after
+# S5; S8 waits for every evaluation branch.
 PIPELINE_OUTPUT="$({
   DEFER_BRIDGE_VALIDATION=1 \
   BRIDGE_READY_JOB_ID="${D0_JOB_ID}" \
@@ -89,25 +89,25 @@ tracker=${TRACKER}
 ledger=${LEDGER}
 
 Dependency graph:
-
-                      D0: parallel Bridge V3 build
-                     /                         \
-START --------------                             S4 Bridge pre-eval -> S5 Bridge train
-                     \\                         /                         |     |     |
-                      S1 synthetic train -------------------------------  |     |     |
-                         |             |                                  |     |     |
-                         +-> S2 qual   +-> S3 quant                       S6   S7A   S7B
-                                  (S2/S3 parallel)                         \     |     /
-                                                                            S8 final
+  START -> D0 Bridge V3 build
+  START -> S1 synthetic train
+  S1 -> S2 qualitative
+  S1 -> S3 quantitative
+  D0 + S1 -> S4 Bridge pre-eval
+  D0 + S1 -> S5 Bridge train
+  S5 -> S6 post qualitative
+  S5 -> S7A post quantitative
+  S5 -> S7B Bridge post-eval
+  S2 + S3 + S4 + S6 + S7A + S7B -> S8 final
 
 Concurrency rules:
   * D0 and S1 can run at the same time.
-  * S2 and S3 both depend only on S1, so they can run at the same time.
-  * S4 depends on BOTH D0 and S1, not on S2/S3.
-  * S5 starts after S4 and may overlap S2/S3 if those evaluations are still running.
+  * S2 and S3 both depend only on S1 and can run together.
+  * Once D0 and S1 finish, S4 and S5 can run together; S5 does not wait for pre-eval.
+  * S5 may overlap S2/S3 if those synthetic evaluations are still running.
   * S6, S7A, and S7B all depend only on S5 and can run concurrently.
-  * S8 waits for S2, S3, S6, S7A, and S7B so it is genuinely the final stage.
-  * Any failed prerequisite blocks only the branch that depends on it.
+  * S8 waits for every planned evaluation branch so it is genuinely the final stage.
+  * Any failed prerequisite blocks only the downstream branch that needs it.
 
 Monitor all jobs and their dependencies:
   squeue -u "$USER" -o '%.18i %.42j %.2t %.10M %.25E %.45R'

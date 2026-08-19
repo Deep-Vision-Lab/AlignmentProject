@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Canonical model pipeline using RealSyntheticBridge V3.
-# When DEFER_BRIDGE_VALIDATION=1, D0 and S1 run independently. This V3 wrapper also
-# removes artificial ordering between evaluation-only stages so real Bridge training
-# can overlap the synthetic evaluations without violating weight/data dependencies.
+# With DEFER_BRIDGE_VALIDATION=1, D0 and S1 run independently. Evaluation-only
+# stages do not unnecessarily serialize training: after D0+S1, Bridge pre-eval and
+# Bridge training are siblings; after S5, all post-Bridge evaluations are siblings.
 set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${PROJECT_DIR}"
@@ -35,14 +35,15 @@ sed \
   -e 's/J3=$(submit_gpu_eval S3 "$J2"/J3=$(submit_gpu_eval S3 "$J1"/' \
   -e 's/J4_DEP="$J3"/J4_DEP="$J1"/' \
   -e 's/J4_DEP="${J3}:${BRIDGE_READY_JOB_ID}"/J4_DEP="${J1}:${BRIDGE_READY_JOB_ID}"/' \
+  -e 's/J5=$(submit_gpu_train S5 "$J4"/J5=$(submit_gpu_train S5 "$J4_DEP"/' \
   -e 's/J7=$(submit_gpu_eval S7A "$J6"/J7=$(submit_gpu_eval S7A "$J5"/' \
   -e 's/J8=$(submit_gpu_eval S7B "$J7"/J8=$(submit_gpu_eval S7B "$J5"/' \
-  -e 's/J9=$(submit_gpu_eval S8 "$J8"/J9=$(submit_gpu_eval S8 "${J2}:${J3}:${J6}:${J7}:${J8}"/' \
+  -e 's/J9=$(submit_gpu_eval S8 "$J8"/J9=$(submit_gpu_eval S8 "${J2}:${J3}:${J4}:${J6}:${J7}:${J8}"/' \
   -e 's/S1 -> S2 -> S3/S1 -> S2 and S1 -> S3 (parallel evaluations)/' \
   -e 's/S3 + D0(/S1 + D0(/' \
-  -e 's/S4 -> S5 -> S6 -> S7A -> S7B -> S8/S4 -> S5 -> {S6,S7A,S7B}; all evaluation branches -> S8/' \
+  -e 's/S4 -> S5 -> S6 -> S7A -> S7B -> S8/{S4,S5} after join; S5 -> {S6,S7A,S7B}; all evaluations -> S8/' \
   "${SOURCE}" > "${TMP}"
 chmod +x "${TMP}"
 
-echo "V3 dependency policy: D0 || S1; after S1, S2 || S3; after D0+S1, S4->S5; after S5, S6 || S7A || S7B; S8 waits for all evaluations."
+echo "V3 dependency policy: D0 || S1; after S1, S2 || S3; after D0+S1, S4 || S5; after S5, S6 || S7A || S7B; S8 waits for every evaluation."
 bash "${TMP}"
