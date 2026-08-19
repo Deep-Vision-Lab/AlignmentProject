@@ -55,6 +55,9 @@ REAL_SALT_PEPPER_MAX_PROB="${REAL_SALT_PEPPER_MAX_PROB:-0.006}"
 
 SEED="${SEED:-42}"
 MAX_ANCHORS="${MAX_ANCHORS:-0}"
+# Use all CPUs allocated by SLURM for the expensive rendering stage. Separate
+# worker processes avoid the Python GIL; each worker is internally single-threaded.
+export BRIDGE_BUILD_WORKERS="${BRIDGE_BUILD_WORKERS:-${SLURM_CPUS_PER_TASK:-$(nproc)}}"
 
 args=(
   --data-dir "${DATA_DIR}"
@@ -92,7 +95,7 @@ args=(
 if [[ "${OVERWRITE:-0}" == "1" ]]; then args+=(--overwrite); fi
 if [[ -n "${BRIDGE_FONTS:-}" ]]; then args+=(--fonts "${BRIDGE_FONTS}"); fi
 
-python scripts/data/build_real_conditioned_synthetic_bridge_v3_dense.py "${args[@]}"
+python scripts/data/build_real_conditioned_synthetic_bridge_v3_parallel.py "${args[@]}"
 
 [[ -s "${OUTPUT_DIR}/dataset_manifest.jsonl" ]] || { echo "ERROR: missing bridge manifest" >&2; exit 2; }
 [[ -s "${OUTPUT_DIR}/metadata.json" ]] || { echo "ERROR: missing bridge metadata" >&2; exit 2; }
@@ -129,6 +132,7 @@ python scripts/data/validate_bridge_v3_real_augmentation.py \
   --data-dir "${OUTPUT_DIR}"
 
 echo "Bridge V3 dataset ready: ${OUTPUT_DIR}"
+echo "Parallel generation workers: ${BRIDGE_BUILD_WORKERS}"
 echo "Dense line policy: recorded_fill>=${MIN_LINE_FILL_RATIO}, pixel_span>=0.84"
 echo "Readable font policy: preferred=${FONT_SIZE}px min=${MIN_FONT_SIZE}px max=${MAX_FONT_SIZE}px"
 echo "Real training variant: combined contrast+gamma+Gaussian blur+Gaussian noise"

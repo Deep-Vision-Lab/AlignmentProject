@@ -5,10 +5,15 @@ This uses the scientific/rendering primitives from the canonical V3 builder but
 changes candidate selection semantics: a single sentence that cannot satisfy the
 readable-font/full-width constraints is rejected and resampled instead of aborting
 the complete offline dataset job.
+
+For parallel offline generation, ``BRIDGE_NUM_SHARDS`` and ``BRIDGE_SHARD_INDEX``
+select a deterministic disjoint subset of anchors while every shard still builds the
+same full sentence/phrase pool.  This keeps negative-generation semantics unchanged.
 """
 from __future__ import annotations
 
 import json
+import os
 import random
 import shutil
 from pathlib import Path
@@ -72,7 +77,6 @@ def _choose_positive(
 ):
     max_islands = min(3, int(args.max_shared_islands))
     attempts = 0
-    # Each candidate gets several independently sampled island configurations.
     for base_sentence in _ordered_candidate_sentences(candidate_sentences, args):
         island_counts = list(range(1, max_islands + 1))
         rng.shuffle(island_counts)
@@ -158,9 +162,6 @@ def _render_negatives(
             break
         try_sentence(candidate)
 
-    # If natural/precomposed candidates were exhausted, compose additional safe
-    # sentences one at a time. Each new sentence is still checked by the canonical
-    # no-overlap and glyph-safe construction before rendering.
     compose_attempts = 0
     while len(results) < needed and compose_attempts < 160:
         compose_attempts += 1
@@ -174,6 +175,17 @@ def _render_negatives(
     if len(results) != needed:
         return None, render_attempts, compose_attempts
     return results, render_attempts, compose_attempts
+
+
+def _shard_configuration(total: int) -> tuple[int, int, list[int]]:
+    num_shards = max(1, int(os.environ.get("BRIDGE_NUM_SHARDS", "1")))
+    shard_index = int(os.environ.get("BRIDGE_SHARD_INDEX", "0"))
+    if not 0 <= shard_index < num_shards:
+        raise ValueError(
+            f"BRIDGE_SHARD_INDEX must be in [0,{num_shards}); got {shard_index}"
+        )
+    selected = [index for index in range(total) if index % num_shards == shard_index]
+    return shard_index, num_shards, selected
 
 
 def build(args) -> None:
@@ -214,15 +226,19 @@ def build(args) -> None:
     if not usable:
         raise RuntimeError("No leakage-safe usable anchors with glyph-safe shared spans")
 
-    rng = random.Random(args.seed)
+    # Every shard sees exactly the same full clean sentence pool. Only the anchors
+    # written by that shard differ.
     pool = core.phrase_pool(texts, fonts)
-    rng.shuffle(pool)
+    pool_rng = random.Random(args.seed)
+    pool_rng.shuffle(pool)
+    shard_index, num_shards, selected_indices = _shard_configuration(len(usable))
 
     stats = {
         "dataset_version": core.DATASET_VERSION,
         "dataset_revision": core.DATASET_REVISION,
         "dataset_semantics": "full_sentence_multi_island_mixed_font_white_on_black_glyphsafe_fullwidth_resampled",
-        "anchors_considered": len(records),
+        "anchors_considered": len(selected_indices),
+        "anchors_available_full_pool": len(usable),
         "anchors_written": 0,
         "positive_rows": 0,
         "negative_rows": 0,
@@ -236,6 +252,8 @@ def build(args) -> None:
         "negative_render_attempts": 0,
         "negative_compose_attempts": 0,
         "layout_resampling": True,
+        "parallel_shard_index": shard_index,
+        "parallel_num_shards": num_shards,
         "negatives_per_anchor": args.negatives_per_anchor,
         "negative_ngram": args.negative_ngram,
         "min_overlap_word_chars": args.min_overlap_word_chars,
@@ -267,9 +285,16 @@ def build(args) -> None:
 
     manifest_path = output_dir / "dataset_manifest.jsonl"
     with manifest_path.open("w", encoding="utf-8") as manifest:
-        for anchor_index, (record, anchor_text, span_records) in enumerate(zip(usable, texts, spans)):
-            # Ask for extra safe candidates. choose_safe_sentences may return fewer if
-            # the source pool is small; the negative stage can compose more later.
+        for local_index, anchor_index in enumerate(selected_indices):
+            record = usable[anchor_index]
+            anchor_text = texts[anchor_index]
+            span_records = spans[anchor_index]
+            # Per-anchor deterministic RNG prevents two parallel workers from using
+            # identical random streams and makes output stable for a given seed.
+            rng = random.Random(
+                (int(args.seed) * 1000003 + int(anchor_index) * 9176 + 97) % (2**32 - 1)
+            )
+
             desired_candidates = 1 + int(args.negatives_per_anchor) + 8
             candidate_sentences = core.choose_safe_sentences(
                 anchor_index, anchor_text, texts, pool, fonts,
@@ -416,8 +441,12 @@ def build(args) -> None:
                     stats["mixed_font_negative_rows"] += 1
 
             stats["anchors_written"] += 1
-            if (anchor_index + 1) % 100 == 0:
-                print(f"bridge_v3 anchors={anchor_index + 1}/{len(usable)}", flush=True)
+            if (local_index + 1) % 50 == 0 or local_index + 1 == len(selected_indices):
+                print(
+                    f"bridge_v3 shard={shard_index + 1}/{num_shards} "
+                    f"anchors={local_index + 1}/{len(selected_indices)}",
+                    flush=True,
+                )
 
     (output_dir / "metadata.json").write_text(
         json.dumps(stats, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

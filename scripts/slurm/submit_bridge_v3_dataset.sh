@@ -9,8 +9,10 @@ mkdir -p out logs/experiments
 BRIDGE_DATA_DIR="${BRIDGE_DATA_DIR:-${PROJECT_DIR}/DataSet/RealSyntheticBridge_v3}"
 REAL_DATA_DIR="${REAL_DATA_DIR:-${PROJECT_DIR}/DataSet/ArabicDataset}"
 CPU_PARTITION="${CPU_PARTITION:-main}"
-CPUS_PER_TASK="${CPUS_PER_TASK:-8}"
-MEMORY="${MEMORY:-32G}"
+# The generator launches one process per allocated CPU by default.
+CPUS_PER_TASK="${CPUS_PER_TASK:-32}"
+BRIDGE_BUILD_WORKERS="${BRIDGE_BUILD_WORKERS:-${CPUS_PER_TASK}}"
+MEMORY="${MEMORY:-64G}"
 TIME_LIMIT="${TIME_LIMIT:-1-00:00:00}"
 MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"
 REBUILD_BRIDGE="${REBUILD_BRIDGE:-0}"
@@ -31,7 +33,7 @@ python "${TRACKER_TOOL}" init \
   --branch "${BRANCH}" --commit "${COMMIT}" --backend dataset-preparation \
   --bridge-dataset "${BRIDGE_DATA_DIR}" >/dev/null
 python "${TRACKER_TOOL}" register \
-  --tracker "${TRACKER_JSON}" --stage D0 --description "Build and audit frozen RealSyntheticBridge V3" \
+  --tracker "${TRACKER_JSON}" --stage D0 --description "Parallel build and audit frozen RealSyntheticBridge V3" \
   --kind dataset --job-name "${JOB_NAME}" --artifact "${BRIDGE_DATA_DIR}" >/dev/null
 
 RAW_JOB_ID=$(sbatch --parsable \
@@ -40,13 +42,13 @@ RAW_JOB_ID=$(sbatch --parsable \
   --output="${PROJECT_DIR}/out/%x_%J.out" \
   --chdir="${PROJECT_DIR}" --ntasks=1 --cpus-per-task="${CPUS_PER_TASK}" \
   --mem="${MEMORY}" --time="${TIME_LIMIT}" --mail-type=ALL --mail-user="${MAIL_USER}" \
-  --export="ALL,PROJECT_DIR=${PROJECT_DIR},REAL_DATA_DIR=${REAL_DATA_DIR},BRIDGE_DATA_DIR=${BRIDGE_DATA_DIR},REBUILD_BRIDGE=${REBUILD_BRIDGE},MAX_ANCHORS=${MAX_ANCHORS:-0},NEGATIVES_PER_ANCHOR=${NEGATIVES_PER_ANCHOR:-8},NEGATIVE_NGRAM=${NEGATIVE_NGRAM:-3},SEED=${SEED:-42},PIPELINE_TRACKER_JSON=${TRACKER_JSON},PIPELINE_STAGE=D0,TRACKED_STAGE_SCRIPT=${STAGE_SCRIPT}" \
+  --export="ALL,PROJECT_DIR=${PROJECT_DIR},REAL_DATA_DIR=${REAL_DATA_DIR},BRIDGE_DATA_DIR=${BRIDGE_DATA_DIR},REBUILD_BRIDGE=${REBUILD_BRIDGE},MAX_ANCHORS=${MAX_ANCHORS:-0},NEGATIVES_PER_ANCHOR=${NEGATIVES_PER_ANCHOR:-8},NEGATIVE_NGRAM=${NEGATIVE_NGRAM:-3},SEED=${SEED:-42},BRIDGE_BUILD_WORKERS=${BRIDGE_BUILD_WORKERS},PIPELINE_TRACKER_JSON=${TRACKER_JSON},PIPELINE_STAGE=D0,TRACKED_STAGE_SCRIPT=${STAGE_SCRIPT}" \
   "${TRACKED_WRAPPER}")
 JOB_ID="${RAW_JOB_ID%%;*}"
 LOG_PATH="${PROJECT_DIR}/out/${JOB_NAME}_${JOB_ID}.out"
 
 python "${TRACKER_TOOL}" register \
-  --tracker "${TRACKER_JSON}" --stage D0 --description "Build and audit frozen RealSyntheticBridge V3" \
+  --tracker "${TRACKER_JSON}" --stage D0 --description "Parallel build and audit frozen RealSyntheticBridge V3" \
   --kind dataset --job-id "${JOB_ID}" --job-name "${JOB_NAME}" \
   --log-path "${LOG_PATH}" --artifact "${BRIDGE_DATA_DIR}" >/dev/null
 
@@ -55,6 +57,9 @@ cat <<EOF
 job_name=${JOB_NAME}
 job_id=${JOB_ID}
 dataset=${BRIDGE_DATA_DIR}
+cpus=${CPUS_PER_TASK}
+parallel_workers=${BRIDGE_BUILD_WORKERS}
+memory=${MEMORY}
 negatives_per_anchor=${NEGATIVES_PER_ANCHOR:-8}
 log=${LOG_PATH}
 tracker=${TRACKER_MD}
@@ -66,5 +71,5 @@ Open tracker:
 Monitor:
   squeue -j ${JOB_ID} -o '%.18i %.35j %.2t %.10M %.55R'
 
-Only after D0 shows ✅ COMPLETED / PASS should model training be submitted.
+Synthetic S1-S3 may run in parallel with D0. Bridge-dependent S4+ must depend on D0 success.
 EOF
