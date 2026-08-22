@@ -15,6 +15,16 @@ experiments cannot silently change ordinary training jobs.
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
+
+# torchrun executes this file by path, which makes sys.path[0] point at
+# training_runtime/ rather than the repository root.  Add the root explicitly
+# before importing the training_runtime package so scratch-clone execution works
+# identically to imports from the login-node checkout.
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
 
 from training_runtime import entrypoint as branch_runtime
 from zero_shot_preprocessing import (
