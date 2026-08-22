@@ -2,15 +2,10 @@
 """July-2026 recovery training entrypoint.
 
 This keeps the branch-selected visual architecture intact while restoring the
-training-time behavior that distinguished the stronger July CNN+BiLSTM runs:
-
-* local/grouped feature blending for local hard-negative supervision;
-* frozen BatchNorm running statistics/affine parameters where BatchNorm exists;
-* explicit recovery metadata in every checkpoint.
-
-The public launcher sets the historical window/stride and loss weights.  This
-entrypoint is intentionally separate from the canonical runtime so recovery
-experiments cannot silently change ordinary training jobs.
+training-time behavior that distinguished the stronger July runs. The public
+launcher sets the historical window/stride and loss weights; this entrypoint is
+kept separate from the canonical runtime so recovery experiments cannot silently
+change ordinary jobs.
 """
 from __future__ import annotations
 
@@ -18,13 +13,31 @@ import os
 import sys
 from pathlib import Path
 
-# torchrun executes this file by path, which makes sys.path[0] point at
-# training_runtime/ rather than the repository root.  Add the root explicitly
-# before importing the training_runtime package so scratch-clone execution works
-# identically to imports from the login-node checkout.
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
+
+
+def _install_recovery_span_capacity() -> None:
+    """Synchronize feasibility filtering with the active visual lattice."""
+    line_width = int(os.environ.get("LINE_WIDTH", "1024"))
+    window_size = int(os.environ.get("WINDOW_SIZE", "32"))
+    stride_ratio = float(os.environ.get("STRIDE_RATIO", "0.5"))
+    if line_width <= 0 or window_size <= 0 or stride_ratio <= 0:
+        raise RuntimeError(
+            "Recovery geometry requires positive LINE_WIDTH, WINDOW_SIZE, and STRIDE_RATIO"
+        )
+    if window_size > line_width:
+        raise RuntimeError(
+            f"Recovery WINDOW_SIZE={window_size} exceeds LINE_WIDTH={line_width}"
+        )
+    stride = max(1, int(window_size * stride_ratio))
+    windows = ((line_width - window_size) // stride) + 1
+    os.environ["REAL_MAX_ALIGNMENT_WINDOWS"] = str(windows)
+    os.environ["RECOVERY_STRIDE_PIXELS"] = str(stride)
+
+
+_install_recovery_span_capacity()
 
 from training_runtime import entrypoint as branch_runtime
 from zero_shot_preprocessing import (
@@ -81,6 +94,10 @@ def _july_model_config(stride, args):
             "july_bridge_cross_text_weight": float(
                 os.environ.get("BRIDGE_CROSS_TEXT_WEIGHT", "0.0")
             ),
+            "july_alignment_capacity_windows": int(
+                os.environ.get("REAL_MAX_ALIGNMENT_WINDOWS", "0")
+            ),
+            "july_stride_pixels": int(os.environ.get("RECOVERY_STRIDE_PIXELS", "0")),
         }
     )
     if _NORMALIZATION_CONFIG:
