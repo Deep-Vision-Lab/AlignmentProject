@@ -5,8 +5,7 @@
 # 1) Slurm executes a copied spool script, so PROJECT_DIR must be pinned to the
 #    real checkout rather than inferred from BASH_SOURCE on the compute node.
 # 2) Hugging Face is offline on compute nodes, so resolve one complete AraBERT
-#    snapshot (config + weights + tokenizer) and force Transformers to load that
-#    exact local directory instead of relying on ambiguous cache lookup.
+#    snapshot (config + weights + tokenizer) and expose that exact local path.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
@@ -30,8 +29,8 @@ ARABIC_TEXT_MODEL_RESOLVED_PATH="$(printf '%s\n' "${HF_RESOLUTION}" | sed -n '2p
 }
 
 export ARABIC_TEXT_MODEL_ID
+export ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_ID}"
 export ARABIC_TEXT_MODEL_RESOLVED_PATH
-export ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_RESOLVED_PATH}"
 export HF_HOME
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
