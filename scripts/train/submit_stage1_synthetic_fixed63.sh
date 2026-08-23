@@ -1,20 +1,44 @@
 #!/usr/bin/env bash
 # Controlled Stage-1 synthetic->synthetic training for CNN+BiLSTM or ViT.
-# The two architecture branches use the same data, geometry, loss weights,
-# optimizer schedule, effective batch size, and validation settings. Only the
-# visual backend selected by model_backend.py is intentionally different.
+# Both architecture branches use the same data, geometry, losses, optimizer,
+# effective batch size, and validation. Only model_backend.py differs.
 set -euo pipefail
 set -a
 
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 if [[ -n "${PROJECT_DIR:-}" ]]; then
-  SHARED_PROJECT_DIR="$(readlink -f "${TRAIN_SHARED_PROJECT_DIR:-${PROJECT_DIR}}")"
+  CODE_PROJECT_DIR="$(readlink -f "${PROJECT_DIR}")"
 else
   SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
-  SHARED_PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+  CODE_PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 fi
-cd "${SHARED_PROJECT_DIR}"
-mkdir -p out logs
+SHARED_PROJECT_DIR="$(readlink -f "${TRAIN_SHARED_PROJECT_DIR:-${CODE_PROJECT_DIR}}")"
+
+# A queued Slurm job must not inspect the mutable shared checkout. Clone the exact
+# submitted commit first, then re-enter this script from the immutable scratch tree.
+if [[ -n "${SLURM_JOB_ID:-}" && "${STAGE1_RUNTIME_CLONE_ACTIVE:-0}" != "1" ]]; then
+  : "${TRAIN_EXPECTED_COMMIT:?missing TRAIN_EXPECTED_COMMIT in submitted job}"
+  : "${TRAIN_EXPECTED_BRANCH:?missing TRAIN_EXPECTED_BRANCH in submitted job}"
+  : "${TRAIN_SHARED_PROJECT_DIR:?missing TRAIN_SHARED_PROJECT_DIR in submitted job}"
+  RUNTIME_PARENT="${SLURM_SCRATCH_DIR:-${TMPDIR:-/tmp}}"
+  RUNTIME_PROJECT_DIR="${RUNTIME_PARENT}/AlignmentProject-stage1-${SLURM_JOB_ID}-${TRAIN_EXPECTED_COMMIT:0:12}"
+  rm -rf "${RUNTIME_PROJECT_DIR}"
+  GIT_LFS_SKIP_SMUDGE=1 git clone --quiet --shared --no-checkout "${TRAIN_SHARED_PROJECT_DIR}" "${RUNTIME_PROJECT_DIR}"
+  GIT_LFS_SKIP_SMUDGE=1 git -C "${RUNTIME_PROJECT_DIR}" checkout --quiet -B "${TRAIN_EXPECTED_BRANCH}" "${TRAIN_EXPECTED_COMMIT}"
+  for name in DataSet Weights out logs .jax_cache wandb; do
+    source_path="${TRAIN_SHARED_PROJECT_DIR}/${name}"
+    target_path="${RUNTIME_PROJECT_DIR}/${name}"
+    if [[ -e "${source_path}" || -L "${source_path}" ]]; then
+      rm -rf "${target_path}"
+      ln -s "${source_path}" "${target_path}"
+    fi
+  done
+  exec env PROJECT_DIR="${RUNTIME_PROJECT_DIR}" TRAIN_SHARED_PROJECT_DIR="${TRAIN_SHARED_PROJECT_DIR}" STAGE1_RUNTIME_CLONE_ACTIVE=1 \
+    bash "${RUNTIME_PROJECT_DIR}/scripts/train/submit_stage1_synthetic_fixed63.sh"
+fi
+
+cd "${CODE_PROJECT_DIR}"
+mkdir -p "${SHARED_PROJECT_DIR}/out" "${SHARED_PROJECT_DIR}/logs"
 
 DATA_DIR="${DATA_DIR:-${SHARED_PROJECT_DIR}/DataSet/AugmentedArabicDataset63}"
 DATA_DIR="$(readlink -f "${DATA_DIR}")"
@@ -28,6 +52,10 @@ import model_backend
 print(model_backend.MODEL_NAME)
 PY
 )"
+if [[ -n "${TRAIN_EXPECTED_BACKEND:-}" && "${MODEL_BACKEND}" != "${TRAIN_EXPECTED_BACKEND}" ]]; then
+  echo "ERROR: pinned Stage-1 backend mismatch expected=${TRAIN_EXPECTED_BACKEND} actual=${MODEL_BACKEND}" >&2
+  exit 2
+fi
 case "${MODEL_BACKEND}" in
   cnn_bilstm)
     DEFAULT_JOB_ID="cnn_bilstm_stage1_fixed63_27k"
@@ -64,8 +92,8 @@ STRIDE_RATIO="${STRIDE_RATIO:-0.5}"
 WINDOW_OVERLAP_MODE="${WINDOW_OVERLAP_MODE:-custom}"
 VECTOR_SIZE="${VECTOR_SIZE:-128}"
 
-# Historical successful fixed63 synthetic objective. Keep this identical across
-# CNN+BiLSTM and ViT so the architecture is the only intended model difference.
+# Historical successful fixed63 synthetic objective, held identical across the
+# CNN+BiLSTM and ViT branches.
 MAX_TEXT_SPAN_CHARS=2
 MAX_TEXT_TOKEN_CHARS=2
 MAX_WINDOWS_PER_SPAN=3
@@ -87,8 +115,8 @@ IMAGE_VARIANCE_LOSS_WEIGHT="${IMAGE_VARIANCE_LOSS_WEIGHT:-0.01}"
 IMAGE_VARIANCE_TARGET_STD="${IMAGE_VARIANCE_TARGET_STD:-0.05}"
 IMAGE_TEXT_LOSS_ON_BOTH_LINES=1
 
-# Stage 1 is synthetic only. Explicitly defeat stale real/bridge flags inherited
-# from an interactive shell so bridge modules cannot leak into this experiment.
+# Stage 1 is synthetic-only. Clear every real/bridge switch explicitly so stale
+# exported shell state cannot leak a later training stage into this run.
 DATASET_TYPE=synthetic
 SYNTHETIC_MANUSCRIPT_AUGMENT=0
 REAL_AUGMENT=0
@@ -120,11 +148,11 @@ MEMORY="${MEMORY:-96G}"
 TIME_LIMIT="${TIME_LIMIT:-3-00:00:00}"
 MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"
 
-# Resolve one complete AraBERT snapshot BEFORE requesting GPUs. General synthetic
-# training does not install bridge_frozen_text.py, so use the exact local snapshot
-# as the Transformers load target for this job.
+# Resolve one complete AraBERT snapshot on the login node. The absolute snapshot
+# path is exported to Slurm so synthetic training never performs an HF cache guess.
 ARABIC_TEXT_MODEL_ID="${ARABIC_TEXT_MODEL_ID:-aubmindlab/bert-base-arabertv02}"
-HF_RESOLUTION="$(python - "${SHARED_PROJECT_DIR}" "${ARABIC_TEXT_MODEL_ID}" <<'PY'
+if [[ -z "${ARABIC_TEXT_MODEL_RESOLVED_PATH:-}" ]]; then
+  HF_RESOLUTION="$(python - "${SHARED_PROJECT_DIR}" "${ARABIC_TEXT_MODEL_ID}" <<'PY'
 import sys
 from hf_offline_runtime import resolve_hf_model_snapshot
 root, model_id = sys.argv[1:3]
@@ -133,20 +161,22 @@ print(str(r.cache_root))
 print(str(r.snapshot_path))
 PY
 )"
-HF_HOME="$(printf '%s\n' "${HF_RESOLUTION}" | sed -n '1p')"
-ARABIC_TEXT_MODEL_RESOLVED_PATH="$(printf '%s\n' "${HF_RESOLUTION}" | sed -n '2p')"
-[[ -n "${HF_HOME}" && -n "${ARABIC_TEXT_MODEL_RESOLVED_PATH}" ]] || {
-  echo "ERROR: AraBERT offline preflight returned an empty path." >&2
+  HF_HOME="$(printf '%s\n' "${HF_RESOLUTION}" | sed -n '1p')"
+  ARABIC_TEXT_MODEL_RESOLVED_PATH="$(printf '%s\n' "${HF_RESOLUTION}" | sed -n '2p')"
+fi
+[[ -d "${ARABIC_TEXT_MODEL_RESOLVED_PATH}" ]] || {
+  echo "ERROR: resolved AraBERT snapshot is unavailable: ${ARABIC_TEXT_MODEL_RESOLVED_PATH}" >&2
   exit 2
 }
+HF_HOME="${HF_HOME:-$(dirname "$(dirname "$(dirname "$(dirname "${ARABIC_TEXT_MODEL_RESOLVED_PATH}")")")")}" 
 ARABIC_TEXT_MODEL_NAME="${ARABIC_TEXT_MODEL_RESOLVED_PATH}"
 HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 TOKENIZERS_PARALLELISM=false
 
-# The fixed63 dataset should really be fixed63. Check all requested transcripts on
-# the login node so a malformed sample cannot waste a GPU allocation later.
-python - "${DATA_DIR}/texts" "${NUM_SAMPLES}" <<'PY'
+# Full fixed63 validation is intentionally login-node-only.
+if [[ -z "${SLURM_JOB_ID:-}" ]]; then
+  python - "${DATA_DIR}/texts" "${NUM_SAMPLES}" <<'PY'
 from pathlib import Path
 import sys
 texts = Path(sys.argv[1])
@@ -169,10 +199,11 @@ if problems:
     raise SystemExit("ERROR: fixed63 transcript preflight failed: " + ", ".join(problems))
 print(f"fixed63_preflight_ok transcripts={2*count} chars=63")
 PY
+fi
 
 TRAIN_EXPECTED_BRANCH="${TRAIN_EXPECTED_BRANCH:-$(git branch --show-current)}"
 TRAIN_EXPECTED_COMMIT="${TRAIN_EXPECTED_COMMIT:-$(git rev-parse HEAD)}"
-TRAIN_EXPECTED_BACKEND="${MODEL_BACKEND}"
+TRAIN_EXPECTED_BACKEND="${TRAIN_EXPECTED_BACKEND:-${MODEL_BACKEND}}"
 TRAIN_SHARED_PROJECT_DIR="${TRAIN_SHARED_PROJECT_DIR:-${SHARED_PROJECT_DIR}}"
 JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-${TRAIN_SHARED_PROJECT_DIR}/.jax_cache/stage1_fixed63}"
 mkdir -p "${JAX_COMPILATION_CACHE_DIR}"
@@ -224,33 +255,13 @@ PY
   exit 0
 fi
 
-# Run the exact submitted commit from node-local scratch so switching the shared
-# checkout to submit the other architecture cannot alter a queued/running job.
-if [[ "${STAGE1_RUNTIME_CLONE_ACTIVE:-0}" != "1" ]]; then
-  RUNTIME_PARENT="${SLURM_SCRATCH_DIR:-${TMPDIR:-/tmp}}"
-  RUNTIME_PROJECT_DIR="${RUNTIME_PARENT}/AlignmentProject-stage1-${SLURM_JOB_ID}-${TRAIN_EXPECTED_COMMIT:0:12}"
-  rm -rf "${RUNTIME_PROJECT_DIR}"
-  GIT_LFS_SKIP_SMUDGE=1 git clone --quiet --shared --no-checkout "${TRAIN_SHARED_PROJECT_DIR}" "${RUNTIME_PROJECT_DIR}"
-  GIT_LFS_SKIP_SMUDGE=1 git -C "${RUNTIME_PROJECT_DIR}" checkout --quiet -B "${TRAIN_EXPECTED_BRANCH}" "${TRAIN_EXPECTED_COMMIT}"
-  for name in DataSet Weights out logs .jax_cache wandb; do
-    source_path="${TRAIN_SHARED_PROJECT_DIR}/${name}"
-    target_path="${RUNTIME_PROJECT_DIR}/${name}"
-    if [[ -e "${source_path}" || -L "${source_path}" ]]; then
-      rm -rf "${target_path}"
-      ln -s "${source_path}" "${target_path}"
-    fi
-  done
-  exec env PROJECT_DIR="${RUNTIME_PROJECT_DIR}" TRAIN_SHARED_PROJECT_DIR="${TRAIN_SHARED_PROJECT_DIR}" STAGE1_RUNTIME_CLONE_ACTIVE=1 \
-    bash "${RUNTIME_PROJECT_DIR}/scripts/train/submit_stage1_synthetic_fixed63.sh"
-fi
-
-cd "${PROJECT_DIR}"
+cd "${CODE_PROJECT_DIR}"
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 export PYTHONUNBUFFERED=1 XLA_PYTHON_CLIENT_PREALLOCATE=false NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}" NCCL_ASYNC_ERROR_HANDLING=1
 
 ARGS=(
-  training_runtime/entrypoint.py
+  training_runtime/stage1_synthetic_entrypoint.py
   --job_id "${JOB_ID}"
   --dataset_type synthetic
   --data_dir "${DATA_DIR}"
