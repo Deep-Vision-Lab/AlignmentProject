@@ -123,45 +123,67 @@ def _load_initial_states_checked(args, model, text_encoder):
     has_cnn = any(key.startswith("cnn_encoder.") for key in keys)
     has_dino = any(key.startswith("dinov3_encoder.") for key in keys)
     has_bilstm = any(key.startswith("sequence_encoder.bilstm.") for key in keys)
+    has_window_transformer = any(
+        key.startswith("sequence_encoder.position_embedding")
+        or key.startswith("sequence_encoder.encoder.")
+        for key in keys
+    )
     expects_bilstm = bool(getattr(optimized.base.P, "use_bilstm", True))
+    sequence_mode = str(
+        getattr(
+            model,
+            "sequence_mode",
+            "bilstm" if expects_bilstm else "none",
+        )
+    ).strip().lower()
 
-    if backend == "vit" and (not has_vit or has_cnn or has_dino or has_bilstm):
+    if backend == "vit" and (
+        not has_vit or has_cnn or has_dino or has_bilstm or has_window_transformer
+    ):
         raise RuntimeError(
             "ViT backend constructed the wrong visual model before checkpoint load: "
-            f"vit={has_vit} cnn={has_cnn} dino={has_dino} bilstm={has_bilstm}."
+            f"vit={has_vit} cnn={has_cnn} dino={has_dino} "
+            f"bilstm={has_bilstm} dino_transformer={has_window_transformer}."
         )
     if backend == "cnn_bilstm" and (
         not has_cnn
         or has_vit
         or has_dino
+        or has_window_transformer
         or (expects_bilstm and not has_bilstm)
         or (not expects_bilstm and has_bilstm)
     ):
         mode = "cnn_bilstm" if expects_bilstm else "cnn_only"
         raise RuntimeError(
             f"CNN backend constructed the wrong {mode} visual model before checkpoint load: "
-            f"vit={has_vit} cnn={has_cnn} dino={has_dino} bilstm={has_bilstm}."
+            f"vit={has_vit} cnn={has_cnn} dino={has_dino} "
+            f"bilstm={has_bilstm} dino_transformer={has_window_transformer}."
         )
-    if backend == "dinov3_convnext" and (
-        not has_dino
-        or has_cnn
-        or has_vit
-        or (expects_bilstm and not has_bilstm)
-        or (not expects_bilstm and has_bilstm)
-    ):
-        mode = "dino_bilstm" if expects_bilstm else "dino_only"
-        raise RuntimeError(
-            f"DINOv3 backend constructed the wrong {mode} visual model: "
-            f"vit={has_vit} cnn={has_cnn} dino={has_dino} bilstm={has_bilstm}."
-        )
+    if backend == "dinov3_convnext":
+        invalid = not has_dino or has_cnn or has_vit
+        if sequence_mode == "bilstm":
+            invalid = invalid or not has_bilstm or has_window_transformer
+        elif sequence_mode == "transformer":
+            invalid = invalid or has_bilstm or not has_window_transformer
+        elif sequence_mode == "none":
+            invalid = invalid or has_bilstm or has_window_transformer
+        else:
+            raise RuntimeError(f"Unsupported DINO sequence mode: {sequence_mode!r}")
+        if invalid:
+            raise RuntimeError(
+                "DINOv3 backend constructed the wrong visual sequence model: "
+                f"mode={sequence_mode} vit={has_vit} cnn={has_cnn} dino={has_dino} "
+                f"bilstm={has_bilstm} transformer={has_window_transformer}."
+            )
 
     if optimized.base.CTX.is_main:
         print(
             "visual_builder "
             f"backend={backend} model_class={model.__class__.__name__} "
-            f"sequence_mode={'bilstm' if expects_bilstm else 'none'} "
+            f"sequence_mode={sequence_mode} "
             f"has_vit={int(has_vit)} has_cnn={int(has_cnn)} "
-            f"has_dino={int(has_dino)} has_bilstm={int(has_bilstm)}",
+            f"has_dino={int(has_dino)} has_bilstm={int(has_bilstm)} "
+            f"has_dino_transformer={int(has_window_transformer)}",
             flush=True,
         )
     return _original_load_initial_states(args, model, text_encoder)

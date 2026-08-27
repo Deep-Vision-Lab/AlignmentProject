@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Fine-tune the DINOv3 ConvNeXt visual backend on the OFFLINE Bridge V3 corpus.
-# The synthetic checkpoint is authoritative: reconstruct its window geometry and
-# optional sequence stack before loading weights so real adaptation cannot drift.
+# Fine-tune a synthetic DINOv3 ConvNeXt checkpoint on OFFLINE Bridge V3 data.
+# The checkpoint is authoritative: this launcher reconstructs its fixed63 geometry,
+# sequence mode (legacy BiLSTM / Transformer / none), grouping state, and attention
+# dimensions before strict state-dict loading.
 set -euo pipefail
 set -a
 
@@ -18,10 +19,10 @@ JOB_ID="${JOB_ID:-$(git branch --show-current | tr '/' '-')-bridge-v3-finetune}"
   exit 2
 }
 [[ -n "${PRETRAINED_WEIGHTS}" && -f "${PRETRAINED_WEIGHTS}" ]] || {
-  echo "ERROR: PRETRAINED_WEIGHTS must point to the synthetic DINOv3 checkpoint." >&2
+  echo "ERROR: PRETRAINED_WEIGHTS must point to a synthetic DINO checkpoint." >&2
   exit 2
 }
-: "${DINOV3_REPO_DIR:?Set DINOV3_REPO_DIR to the local official Meta DINOv3 repository.}"
+: "${DINOV3_REPO_DIR:?Set DINOV3_REPO_DIR to the local official DINOv3 repository.}"
 [[ -f "${DINOV3_REPO_DIR}/hubconf.py" ]] || {
   echo "ERROR: DINOV3_REPO_DIR has no hubconf.py: ${DINOV3_REPO_DIR}" >&2
   exit 2
@@ -33,12 +34,13 @@ print(model_backend.MODEL_NAME)
 PY
 )"
 [[ "${MODEL_BACKEND}" == "dinov3_convnext" ]] || {
-  echo "ERROR: this launcher expects the dinov3_convnext branch backend, got ${MODEL_BACKEND}" >&2
+  echo "ERROR: this launcher expects the DINOv3 ConvNeXt branch; got ${MODEL_BACKEND}" >&2
   exit 2
 }
 
-# Restore the exact synthetic checkpoint architecture. In particular, do not
-# silently re-enable BiLSTM/local grouping if the synthetic DINO run disabled it.
+# Reconstruct every structural choice from the synthetic checkpoint. Old DINO+
+# BiLSTM checkpoints remain loadable; new DINO+Transformer checkpoints are detected
+# from metadata or state-dict keys and cannot be accidentally loaded as BiLSTM.
 eval "$(python - "${PRETRAINED_WEIGHTS}" <<'PY'
 from __future__ import annotations
 import shlex
@@ -61,51 +63,85 @@ def strip(key):
         key = key[len("module."):]
     return key
 
-keys = [strip(key) for key in state]
+state = {strip(k): v for k, v in state.items()}
+keys = tuple(state)
 backend = str(config.get("model_backend", config.get("visual_encoder_type", ""))).strip().lower()
-if not backend and any(key.startswith("dinov3_encoder.") for key in keys):
-    backend = "dinov3_convnext"
+if not backend:
+    backend = "dinov3_convnext" if any(k.startswith("dinov3_encoder.") for k in keys) else "unknown"
 if backend != "dinov3_convnext":
-    raise SystemExit(f"checkpoint/backend mismatch: expected dinov3_convnext, got {backend or '<missing>'}")
-if not any(key.startswith("dinov3_encoder.") for key in keys):
-    raise SystemExit("checkpoint does not contain DINOv3 encoder weights")
+    raise SystemExit(f"checkpoint is not DINOv3 ConvNeXt: backend={backend}")
 
 window = int(config.get("window_size", 32))
 stride = int(config.get("stride", round(window * float(config.get("stride_ratio", 0.5)))))
 vector = int(config.get("vector_size", 128))
-if window != 32 or stride != 16 or ((1024 - window) // stride + 1) != 63:
+if window != 32 or stride != 16 or (1024 - window) // stride + 1 != 63:
     raise SystemExit(
-        "Bridge V3 fine-tuning is pinned to the synthetic fixed63 geometry; "
+        "Bridge V3 fine-tuning is pinned to the synthetic-good fixed63 geometry; "
         f"checkpoint has window={window}, stride={stride}."
     )
 
-use_bilstm = bool(config.get("use_bilstm", True))
-use_grouping = bool(config.get("use_local_window_grouping", True))
+mode = str(config.get("dinov3_sequence_mode", "")).strip().lower().replace("-", "_")
+if not mode:
+    if any(k.startswith("sequence_encoder.bilstm.") for k in keys):
+        mode = "bilstm"
+    elif any(k.startswith("sequence_encoder.position_embedding") or k.startswith("sequence_encoder.encoder.") for k in keys):
+        mode = "transformer"
+    else:
+        mode = "none"
+if mode not in {"bilstm", "transformer", "none"}:
+    raise SystemExit(f"unsupported checkpoint DINO sequence mode: {mode}")
+
+if "use_local_window_grouping" in config:
+    grouping = bool(config["use_local_window_grouping"])
+elif "_use_local_grouping_state" in state:
+    grouping = bool(int(state["_use_local_grouping_state"].item()))
+else:
+    grouping = mode == "bilstm"
+if mode == "transformer" and grouping:
+    raise SystemExit(
+        "Invalid DINO transformer checkpoint: global Transformer mode must not use "
+        "three-window LocalWindowGrouping."
+    )
+
 values = {
     "WINDOW_SIZE": window,
     "STRIDE_RATIO": stride / window,
     "WINDOW_OVERLAP_MODE": "custom",
     "VECTOR_SIZE": vector,
-    "USE_BILSTM": int(use_bilstm),
-    "USE_LOCAL_WINDOW_GROUPING": int(use_grouping),
+    "DINOV3_SEQUENCE_MODE": mode,
+    "USE_BILSTM": 1 if mode == "bilstm" else 0,
+    "USE_LOCAL_WINDOW_GROUPING": 1 if grouping else 0,
     "BILSTM_LAYERS": int(config.get("bilstm_layers", 2)),
     "BILSTM_HIDDEN_DIM": int(config.get("bilstm_hidden_dim") or vector),
     "LOCAL_GROUP_SIZE": int(config.get("local_group_size", config.get("local_window_group_size", 3))),
-    "DINOV3_FREEZE_BACKBONE": int(bool(config.get("dinov3_freeze_backbone", True))),
-    # Build the official architecture locally; the project checkpoint then loads
-    # the complete trained DINO state. This avoids requiring a second weights file.
-    "DINOV3_ALLOW_RANDOM_INIT": 1,
+    "DINOV3_FREEZE_BACKBONE": 1 if bool(config.get("dinov3_freeze_backbone", True)) else 0,
+    "DINOV3_WINDOW_CHUNK_SIZE": int(config.get("dinov3_window_chunk_size", 256)),
+    "DINOV3_TRANSFORMER_LAYERS": int(config.get("dinov3_transformer_layers", 4)),
+    "DINOV3_TRANSFORMER_HEADS": int(config.get("dinov3_transformer_heads", 4)),
+    "DINOV3_TRANSFORMER_MLP_DIM": int(config.get("dinov3_transformer_mlp_dim", 512)),
+    "DINOV3_TRANSFORMER_DROPOUT": float(config.get("dinov3_transformer_dropout", 0.10)),
+    "DINOV3_TRANSFORMER_MAX_TOKENS": int(config.get("dinov3_transformer_max_tokens", 256)),
+    "DINOV3_TRANSFORMER_POSITION_BASE_TOKENS": int(
+        config.get("dinov3_transformer_position_base_tokens", 63)
+    ),
 }
 for name, value in values.items():
     print(f"export {name}={shlex.quote(str(value))}")
-print("echo " + shlex.quote(
-    "checkpoint_visual_config "
-    f"backend=dinov3_convnext window={window} stride={stride} vector={vector} "
-    f"bilstm={int(use_bilstm)} grouping={int(use_grouping)} "
-    f"freeze_backbone={values['DINOV3_FREEZE_BACKBONE']}"
-))
+print(
+    "echo " + shlex.quote(
+        "checkpoint_visual_config "
+        f"backend=dinov3_convnext window={window} stride={stride} vector={vector} "
+        f"sequence_mode={mode} grouping={int(grouping)} "
+        f"freeze_backbone={values['DINOV3_FREEZE_BACKBONE']}"
+    )
+)
 PY
 )"
+
+# The full project checkpoint contains the DINO backbone state. If DINOV3_WEIGHTS
+# is omitted, permit constructor initialization and then immediately overwrite it
+# with PRETRAINED_WEIGHTS during strict checkpoint loading.
+export DINOV3_ALLOW_RANDOM_INIT="${DINOV3_ALLOW_RANDOM_INIT:-1}"
 
 export DATA_DIR PRETRAINED_WEIGHTS JOB_ID
 export REAL_MANIFEST_NAME=dataset_manifest.jsonl
@@ -124,13 +160,12 @@ export LEARNING_RATE="${LEARNING_RATE:-1e-5}"
 export VALID_EVERY_N_EPOCHS="${VALID_EVERY_N_EPOCHS:-1}"
 export VALID_MAX_BATCHES="${VALID_MAX_BATCHES:-20}"
 
-# Keep the corrected visible-span recipe used by the fixed63 synthetic recovery.
+# Preserve the corrected synthetic supervision semantics during domain adaptation.
 export MAX_TEXT_SPAN_CHARS="${MAX_TEXT_SPAN_CHARS:-2}"
 export REAL_MAX_TEXT_SPAN_CHARS="${REAL_MAX_TEXT_SPAN_CHARS:-${MAX_TEXT_SPAN_CHARS}}"
 export SPAN_MAX_CORE_CHARS_CAP="${SPAN_MAX_CORE_CHARS_CAP:-${MAX_TEXT_SPAN_CHARS}}"
 export SPAN_CONNECTED_MAX_UNITS_PER_SPAN="${SPAN_CONNECTED_MAX_UNITS_PER_SPAN:-${MAX_TEXT_SPAN_CHARS}}"
 export MAX_WINDOWS_PER_SPAN="${MAX_WINDOWS_PER_SPAN:-3}"
-
 export NUM_NEGATIVES="${NUM_NEGATIVES:-10}"
 export SPAN_DTW_ACTIVE_NEGATIVES_PER_SAMPLE="${SPAN_DTW_ACTIVE_NEGATIVES_PER_SAMPLE:-4}"
 export USE_LOCAL_HARD_NEGATIVES=1
@@ -138,7 +173,6 @@ export LOCAL_HARD_NEGATIVE_WEIGHT="${LOCAL_HARD_NEGATIVE_WEIGHT:-0.10}"
 export USE_IMAGE_PAIR_CONTRASTIVE=1
 export IMAGE_PAIR_LOSS_WEIGHT="${IMAGE_PAIR_LOSS_WEIGHT:-0.10}"
 export SEQUENCE_CONSISTENCY_LOSS_WEIGHT=0
-# Bridge V3 positives have distractor context; do not force whole-line alignment.
 export USE_SEQUENCE_ALIGNMENT_RANKING="${USE_SEQUENCE_ALIGNMENT_RANKING:-0}"
 export SEQUENCE_RANKING_WEIGHT="${SEQUENCE_RANKING_WEIGHT:-0.0}"
 export SEQUENCE_RANKING_THRESHOLD="${SEQUENCE_RANKING_THRESHOLD:-0.50}"
@@ -167,14 +201,14 @@ SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   cat <<EOF
-=== SUBMIT DINOV3 CONVNEXT BRIDGE V3 FINE-TUNE ===
+=== SUBMIT DINOV3 BRIDGE V3 FINE-TUNE ===
 backend=${MODEL_BACKEND}
 checkpoint=${PRETRAINED_WEIGHTS}
 job=${JOB_ID}
-geometry=window${WINDOW_SIZE}/stride$((WINDOW_SIZE * 1 / 2))/fixed63
+geometry=window${WINDOW_SIZE}/fixed63
+sequence_mode=${DINOV3_SEQUENCE_MODE} grouping=${USE_LOCAL_WINDOW_GROUPING} bilstm=${USE_BILSTM}
 epochs_max=${EPOCHS} lr=${LEARNING_RATE} samples_per_epoch=${BRIDGE_TRAIN_SAMPLES_PER_EPOCH}
-bilstm=${USE_BILSTM} local_grouping=${USE_LOCAL_WINDOW_GROUPING} freeze_dino=${DINOV3_FREEZE_BACKBONE}
-whole_line_sequence_ranking=${USE_SEQUENCE_ALIGNMENT_RANKING}
+positive_negative_balance=50/50
 shared_island_bridge_ranking=ON
 best_checkpoint=Weights/${JOB_ID}/checkpoint_best_val.pth
 EOF
