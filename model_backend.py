@@ -1,6 +1,6 @@
 """Meta DINOv3 ConvNeXt branch backend.
 
-The shared data/loss/training runtime is unchanged.  Only the visual window encoder
+The shared data/loss/training runtime is unchanged. Only the visual window encoder
 is replaced by the official DINOv3 ConvNeXt-Tiny foundation model plus a projection
 into the project's embedding dimension. ``USE_BILSTM=0/1`` remains available as a
 controlled sequence-context ablation on top of the same ConvNeXt windows.
@@ -87,6 +87,7 @@ def prepare_visual_model(model) -> None:
 
 
 def visual_model_config() -> dict:
+    """Persist every architecture choice needed to reconstruct a DINO checkpoint."""
     return {
         "model_backend": MODEL_NAME,
         "visual_encoder_type": VISUAL_ENCODER_TYPE,
@@ -94,6 +95,9 @@ def visual_model_config() -> dict:
         "dinov3_freeze_backbone": _flag("DINOV3_FREEZE_BACKBONE", True),
         "dinov3_window_chunk_size": _integer("DINOV3_WINDOW_CHUNK_SIZE", 256),
         "use_bilstm": _flag("USE_BILSTM", True),
+        "bilstm_layers": _integer("BILSTM_LAYERS", 2),
+        "bilstm_hidden_dim": _integer("BILSTM_HIDDEN_DIM", 128),
         "use_local_window_grouping": _flag("USE_LOCAL_WINDOW_GROUPING", True),
+        "local_group_size": _integer("LOCAL_GROUP_SIZE", 3),
         "torch_compile_visual": False,
     }
