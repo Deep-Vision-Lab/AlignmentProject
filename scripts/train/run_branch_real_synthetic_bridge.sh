@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Fine-tune the active visual backend on the OFFLINE Bridge V3 corpus.
-# For ViT this launcher reconstructs the exact synthetic checkpoint architecture
-# before loading weights so window geometry / RTL direction / Transformer shape
-# cannot silently drift during real-domain adaptation.
+# Train the ViT visual backend on the OFFLINE Bridge V3 corpus.
+# Fine-tune mode reconstructs the exact synthetic checkpoint architecture.
+# Scratch mode uses random ViT initialization with the fixed63 geometry.
 set -euo pipefail
 set -a
 
@@ -12,14 +11,16 @@ mkdir -p out logs
 
 DATA_DIR="${DATA_DIR:-${PROJECT_DIR}/DataSet/RealSyntheticBridge_v3}"
 PRETRAINED_WEIGHTS="${PRETRAINED_WEIGHTS:-}"
-JOB_ID="${JOB_ID:-$(git branch --show-current | tr '/' '-')-bridge-v3-finetune}"
+TRAIN_FROM_SCRATCH="${TRAIN_FROM_SCRATCH:-0}"
+JOB_ID="${JOB_ID:-$(git branch --show-current | tr '/' '-')-bridge-v3-train}"
+
+case "${TRAIN_FROM_SCRATCH}" in
+  0|1) ;;
+  *) echo "ERROR: TRAIN_FROM_SCRATCH must be 0 or 1, got ${TRAIN_FROM_SCRATCH}." >&2; exit 2 ;;
+esac
 
 [[ -s "${DATA_DIR}/dataset_manifest.jsonl" ]] || {
   echo "ERROR: Bridge V3 dataset missing: ${DATA_DIR}/dataset_manifest.jsonl" >&2
-  exit 2
-}
-[[ -n "${PRETRAINED_WEIGHTS}" && -f "${PRETRAINED_WEIGHTS}" ]] || {
-  echo "ERROR: PRETRAINED_WEIGHTS must point to the synthetic checkpoint to fine-tune." >&2
   exit 2
 }
 
@@ -28,10 +29,58 @@ import model_backend
 print(model_backend.MODEL_NAME)
 PY
 )"
+[[ "${MODEL_BACKEND}" == "vit" ]] || {
+  echo "ERROR: this launcher expects the ViT branch backend, got ${MODEL_BACKEND}." >&2
+  exit 2
+}
 
-# The synthetic checkpoint is authoritative. Rebuild the same token geometry and
-# Transformer dimensions instead of relying on branch defaults that may change.
-eval "$(python - "${PRETRAINED_WEIGHTS}" "${MODEL_BACKEND}" <<'PY'
+if [[ "${TRAIN_FROM_SCRATCH}" == "1" ]]; then
+  [[ -z "${PRETRAINED_WEIGHTS}" ]] || {
+    echo "ERROR: TRAIN_FROM_SCRATCH=1 must not be combined with PRETRAINED_WEIGHTS." >&2
+    exit 2
+  }
+
+  # Match the synthetic-good fixed63 ViT architecture, but initialize all visual
+  # parameters randomly. This keeps the sequence geometry controlled while asking
+  # whether Bridge V3 alone is sufficient to learn the visual representation.
+  export WINDOW_SIZE="${WINDOW_SIZE:-32}"
+  export STRIDE_RATIO="${STRIDE_RATIO:-0.5}"
+  export WINDOW_OVERLAP_MODE="${WINDOW_OVERLAP_MODE:-custom}"
+  export VECTOR_SIZE="${VECTOR_SIZE:-128}"
+  export USE_BILSTM=0
+  export USE_LOCAL_WINDOW_GROUPING=0
+  export VIT_INPUT_HEIGHT="${VIT_INPUT_HEIGHT:-128}"
+  export VIT_LAYERS="${VIT_LAYERS:-4}"
+  export VIT_HEADS="${VIT_HEADS:-4}"
+  export VIT_MLP_DIM="${VIT_MLP_DIM:-512}"
+  export VIT_DROPOUT="${VIT_DROPOUT:-0.10}"
+  export VIT_MAX_TOKENS="${VIT_MAX_TOKENS:-256}"
+  export VIT_POSITION_BASE_TOKENS="${VIT_POSITION_BASE_TOKENS:-63}"
+
+  read -r _scratch_stride _scratch_windows < <(
+    python - "${WINDOW_SIZE}" "${STRIDE_RATIO}" <<'PY'
+import sys
+window = int(sys.argv[1])
+ratio = float(sys.argv[2])
+stride = max(1, int(window * ratio))
+windows = ((1024 - window) // stride) + 1
+print(stride, windows)
+PY
+  )
+  if [[ "${WINDOW_SIZE}" != "32" || "${_scratch_stride}" != "16" || "${_scratch_windows}" != "63" ]]; then
+    echo "ERROR: scratch Bridge V3 ViT is pinned to window=32 stride=16 fixed63; got window=${WINDOW_SIZE} stride=${_scratch_stride} windows=${_scratch_windows}." >&2
+    exit 2
+  fi
+  echo "visual_initialization random_vit backend=vit window=${WINDOW_SIZE} stride=${_scratch_stride} vector=${VECTOR_SIZE} layers=${VIT_LAYERS} heads=${VIT_HEADS} mlp=${VIT_MLP_DIM}"
+else
+  [[ -n "${PRETRAINED_WEIGHTS}" && -f "${PRETRAINED_WEIGHTS}" ]] || {
+    echo "ERROR: set PRETRAINED_WEIGHTS to the synthetic ViT checkpoint, or set TRAIN_FROM_SCRATCH=1." >&2
+    exit 2
+  }
+
+  # The synthetic checkpoint is authoritative in fine-tune mode. Rebuild the same
+  # token geometry and Transformer dimensions instead of relying on branch defaults.
+  eval "$(python - "${PRETRAINED_WEIGHTS}" "${MODEL_BACKEND}" <<'PY'
 from __future__ import annotations
 import shlex
 import sys
@@ -70,10 +119,7 @@ if backend != expected_backend:
         f"checkpoint/backend mismatch: checkpoint={backend} branch={expected_backend}"
     )
 if backend != "vit":
-    raise SystemExit(
-        "This branch is expected to fine-tune the ViT synthetic model; "
-        f"got backend={backend}."
-    )
+    raise SystemExit(f"Expected ViT checkpoint, got backend={backend}.")
 
 window = int(config.get("window_size", 32))
 stride = int(config.get("stride", round(window * float(config.get("stride_ratio", 0.5)))))
@@ -112,9 +158,10 @@ print(
     )
 )
 PY
-)"
+  )"
+fi
 
-export DATA_DIR PRETRAINED_WEIGHTS JOB_ID
+export DATA_DIR PRETRAINED_WEIGHTS JOB_ID TRAIN_FROM_SCRATCH
 export REAL_MANIFEST_NAME=dataset_manifest.jsonl
 export REAL_USE_EXTRA_NO_SHARED=1
 export REAL_UNIQUE_LINE_ADAPTATION=0
@@ -126,10 +173,13 @@ export IMAGE_TEXT_LOSS_ON_BOTH_LINES=1
 export REAL_TRAIN_SAMPLES_PER_EPOCH=0
 export BRIDGE_TRAIN_SAMPLES_PER_EPOCH="${BRIDGE_TRAIN_SAMPLES_PER_EPOCH:-6000}"
 
-# Real adaptation is deliberately conservative relative to the 1e-4 synthetic run.
-# Validate every epoch and preserve checkpoint_best_val.pth.
-export EPOCHS="${EPOCHS:-20}"
-export LEARNING_RATE="${LEARNING_RATE:-1e-5}"
+if [[ "${TRAIN_FROM_SCRATCH}" == "1" ]]; then
+  export EPOCHS="${EPOCHS:-40}"
+  export LEARNING_RATE="${LEARNING_RATE:-1e-4}"
+else
+  export EPOCHS="${EPOCHS:-20}"
+  export LEARNING_RATE="${LEARNING_RATE:-1e-5}"
+fi
 export VALID_EVERY_N_EPOCHS="${VALID_EVERY_N_EPOCHS:-1}"
 export VALID_MAX_BATCHES="${VALID_MAX_BATCHES:-20}"
 
@@ -176,16 +226,22 @@ MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
+  if [[ "${TRAIN_FROM_SCRATCH}" == "1" ]]; then
+    INIT_DESC="random ViT initialization"
+  else
+    INIT_DESC="checkpoint=${PRETRAINED_WEIGHTS}"
+  fi
   cat <<EOF
-=== SUBMIT VIT BRIDGE V3 FINE-TUNE ===
+=== SUBMIT VIT BRIDGE V3 TRAINING ===
 backend=${MODEL_BACKEND}
-checkpoint=${PRETRAINED_WEIGHTS}
+initialization=${INIT_DESC}
 job=${JOB_ID}
-geometry=window${WINDOW_SIZE}/fixed63
+data=${DATA_DIR}
+geometry=window${WINDOW_SIZE}/stride16/fixed63
 epochs_max=${EPOCHS} lr=${LEARNING_RATE} samples_per_epoch=${BRIDGE_TRAIN_SAMPLES_PER_EPOCH}
 vit=${VIT_LAYERS}layers/${VIT_HEADS}heads/mlp${VIT_MLP_DIM}
 local_grouping=OFF bilstm=OFF
-positive_negative_balance=50/50
+negatives=${NUM_NEGATIVES} active_negatives=${SPAN_DTW_ACTIVE_NEGATIVES_PER_SAMPLE}
 whole_line_sequence_ranking=${USE_SEQUENCE_ALIGNMENT_RANKING}
 shared_island_bridge_ranking=ON
 best_checkpoint=Weights/${JOB_ID}/checkpoint_best_val.pth
@@ -220,7 +276,6 @@ ARGS=(
   --job_id "${JOB_ID}"
   --dataset_type real
   --data_dir "${DATA_DIR}"
-  --pretrained_weights "${PRETRAINED_WEIGHTS}"
   --epochs "${EPOCHS}"
   --learning_rate "${LEARNING_RATE}"
   --window_size "${WINDOW_SIZE}"
@@ -229,6 +284,10 @@ ARGS=(
   --num_negatives "${NUM_NEGATIVES}"
   --no-augment
 )
+if [[ "${TRAIN_FROM_SCRATCH}" == "0" ]]; then
+  ARGS+=(--pretrained_weights "${PRETRAINED_WEIGHTS}")
+fi
+
 if (( NUM_GPUS > 1 )); then
   exec torchrun --standalone --nnodes=1 --nproc_per_node="${NUM_GPUS}" --max_restarts=0 "${ARGS[@]}"
 fi
