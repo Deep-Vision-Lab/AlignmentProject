@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# The only public real-data training command.
-# Run from the login node with:
+# Public real-data training command.
+# Fine-tune:
 #   JOB_ID=<name> PRETRAINED_WEIGHTS=<checkpoint> bash scripts/train/run_real_finetune.sh
+# ViT from scratch on real data:
+#   JOB_ID=<name> TRAIN_FROM_SCRATCH=1 bash scripts/train/run_real_finetune.sh
 set -euo pipefail
 set -a
 
 if [[ "$#" -ne 0 ]]; then
   echo "Usage: configure with environment variables, then run:" >&2
-  echo "  JOB_ID=<name> PRETRAINED_WEIGHTS=<path> bash scripts/train/run_real_finetune.sh" >&2
+  echo "  Fine-tune: JOB_ID=<name> PRETRAINED_WEIGHTS=<path> bash scripts/train/run_real_finetune.sh" >&2
+  echo "  Scratch:   JOB_ID=<name> TRAIN_FROM_SCRATCH=1 bash scripts/train/run_real_finetune.sh" >&2
   exit 2
 fi
 
@@ -22,11 +25,12 @@ cd "${PROJECT_DIR}"
 mkdir -p out logs
 
 : "${JOB_ID:?Set JOB_ID to the output weights-folder name.}"
-: "${PRETRAINED_WEIGHTS:?Set PRETRAINED_WEIGHTS to model_latest.pth.}"
-[[ -f "${PRETRAINED_WEIGHTS}" ]] || {
-  echo "ERROR: pretrained checkpoint not found: ${PRETRAINED_WEIGHTS}" >&2
-  exit 2
-}
+TRAIN_FROM_SCRATCH="${TRAIN_FROM_SCRATCH:-0}"
+case "${TRAIN_FROM_SCRATCH}" in
+  0|1) ;;
+  *) echo "ERROR: TRAIN_FROM_SCRATCH must be 0 or 1, got ${TRAIN_FROM_SCRATCH}." >&2; exit 2 ;;
+esac
+PRETRAINED_WEIGHTS="${PRETRAINED_WEIGHTS:-}"
 
 AUGMENT="${AUGMENT:-1}"
 case "${AUGMENT}" in
@@ -39,6 +43,26 @@ import model_backend
 print(model_backend.MODEL_NAME)
 PY
 )"
+
+if [[ "${TRAIN_FROM_SCRATCH}" == "1" ]]; then
+  [[ "${MODEL_BACKEND}" == "vit" ]] || {
+    echo "ERROR: TRAIN_FROM_SCRATCH=1 in this branch is intended for the ViT backend, got ${MODEL_BACKEND}." >&2
+    exit 2
+  }
+  [[ -z "${PRETRAINED_WEIGHTS}" ]] || {
+    echo "ERROR: TRAIN_FROM_SCRATCH=1 must not be combined with PRETRAINED_WEIGHTS." >&2
+    exit 2
+  }
+else
+  [[ -n "${PRETRAINED_WEIGHTS}" ]] || {
+    echo "ERROR: set PRETRAINED_WEIGHTS, or set TRAIN_FROM_SCRATCH=1 for random ViT initialization." >&2
+    exit 2
+  }
+  [[ -f "${PRETRAINED_WEIGHTS}" ]] || {
+    echo "ERROR: pretrained checkpoint not found: ${PRETRAINED_WEIGHTS}" >&2
+    exit 2
+  }
+fi
 
 # ---------------------------------------------------------------------------
 # Canonical experiment settings
@@ -70,7 +94,13 @@ MICRO_GLOBAL_BATCH_SIZE=$((BATCH_SIZE * NUM_GPUS))
 LINE_HEIGHT="${LINE_HEIGHT:-128}"
 LINE_WIDTH="${LINE_WIDTH:-1024}"
 WINDOW_SIZE="${WINDOW_SIZE:-32}"
-STRIDE_RATIO="${STRIDE_RATIO:-0.25}"
+# Keep real-only ViT training on the same fixed63 sequence geometry used by the
+# successful synthetic ViT experiment: 32px windows, 16px stride, 63 tokens.
+if [[ "${MODEL_BACKEND}" == "vit" ]]; then
+  STRIDE_RATIO="${STRIDE_RATIO:-0.5}"
+else
+  STRIDE_RATIO="${STRIDE_RATIO:-0.25}"
+fi
 WINDOW_OVERLAP_MODE="${WINDOW_OVERLAP_MODE:-custom}"
 read -r STRIDE_PIXELS COMPUTED_ALIGNMENT_WINDOWS < <(
   python - "${LINE_WIDTH}" "${WINDOW_SIZE}" "${STRIDE_RATIO}" "${WINDOW_OVERLAP_MODE}" <<'PY'
@@ -94,6 +124,23 @@ else:
 print(stride, ((line_width - window_size) // stride) + 1)
 PY
 )
+
+if [[ "${MODEL_BACKEND}" == "vit" && "${TRAIN_FROM_SCRATCH}" == "1" ]]; then
+  if [[ "${WINDOW_SIZE}" != "32" || "${STRIDE_PIXELS}" != "16" || "${COMPUTED_ALIGNMENT_WINDOWS}" != "63" ]]; then
+    echo "ERROR: scratch ViT real training is pinned to window=32, stride=16, 63 windows; got ${WINDOW_SIZE}/${STRIDE_PIXELS}/${COMPUTED_ALIGNMENT_WINDOWS}." >&2
+    exit 2
+  fi
+  export USE_BILSTM=0
+  export USE_LOCAL_WINDOW_GROUPING=0
+  export VECTOR_SIZE="${VECTOR_SIZE:-128}"
+  export VIT_INPUT_HEIGHT="${VIT_INPUT_HEIGHT:-128}"
+  export VIT_LAYERS="${VIT_LAYERS:-4}"
+  export VIT_HEADS="${VIT_HEADS:-4}"
+  export VIT_MLP_DIM="${VIT_MLP_DIM:-512}"
+  export VIT_DROPOUT="${VIT_DROPOUT:-0.10}"
+  export VIT_MAX_TOKENS="${VIT_MAX_TOKENS:-256}"
+  export VIT_POSITION_BASE_TOKENS="${VIT_POSITION_BASE_TOKENS:-63}"
+fi
 
 REAL_MAX_TEXT_SPAN_CHARS="${REAL_MAX_TEXT_SPAN_CHARS:-2}"
 [[ "${REAL_MAX_TEXT_SPAN_CHARS}" =~ ^[12]$ ]] || {
@@ -119,8 +166,10 @@ MANIFEST_PATH="${DATA_DIR}/${REAL_MANIFEST_NAME}"
   exit 2
 }
 
-# Verify checkpoint/backend compatibility before requesting GPUs.
-python - "${PRETRAINED_WEIGHTS}" "${WINDOW_SIZE}" <<'PY'
+# Verify checkpoint/backend compatibility only when fine-tuning. Scratch mode
+# intentionally skips all visual checkpoint loading.
+if [[ "${TRAIN_FROM_SCRATCH}" == "0" ]]; then
+  python - "${PRETRAINED_WEIGHTS}" "${WINDOW_SIZE}" <<'PY'
 import sys
 import torch
 import model_backend
@@ -139,6 +188,7 @@ if actual and actual != expected:
 if checkpoint_window is not None and int(checkpoint_window) != requested_window:
     raise SystemExit(f"Checkpoint/window mismatch: expected WINDOW_SIZE={checkpoint_window}")
 PY
+fi
 
 # ---------------------------------------------------------------------------
 # Complete training configuration exported to Slurm and torchrun ranks
@@ -214,8 +264,14 @@ USE_LOCAL_HARD_NEGATIVES="${USE_LOCAL_HARD_NEGATIVES:-1}"
 USE_IMAGE_PAIR_CONTRASTIVE="${USE_IMAGE_PAIR_CONTRASTIVE:-1}"
 IMAGE_TEXT_LOSS_ON_BOTH_LINES="${IMAGE_TEXT_LOSS_ON_BOTH_LINES:-1}"
 
-EPOCHS="${EPOCHS:-30}"
-LEARNING_RATE="${LEARNING_RATE:-2e-5}"
+# Scratch ViT needs a synthetic-training-scale learning rate and longer runway.
+if [[ "${TRAIN_FROM_SCRATCH}" == "1" ]]; then
+  EPOCHS="${EPOCHS:-40}"
+  LEARNING_RATE="${LEARNING_RATE:-1e-4}"
+else
+  EPOCHS="${EPOCHS:-30}"
+  LEARNING_RATE="${LEARNING_RATE:-2e-5}"
+fi
 VALID_EVERY_N_EPOCHS="${VALID_EVERY_N_EPOCHS:-1}"
 VALID_MAX_BATCHES="${VALID_MAX_BATCHES:-20}"
 TRAIN_SEED="${TRAIN_SEED:-42}"
@@ -277,24 +333,38 @@ export HF_HOME
 unset TRANSFORMERS_CACHE
 
 print_config() {
+  local init_desc
+  if [[ "${TRAIN_FROM_SCRATCH}" == "1" ]]; then
+    init_desc="random ViT initialization"
+  else
+    init_desc="pretrained: ${PRETRAINED_WEIGHTS}"
+  fi
   printf '%s\n' \
-    "Canonical real fine-tuning" \
+    "Canonical real training" \
     "  branch                 = $(git branch --show-current)" \
     "  model backend          = ${MODEL_BACKEND}" \
+    "  initialization         = ${init_desc}" \
     "  job id                 = ${JOB_ID}" \
-    "  checkpoint             = ${PRETRAINED_WEIGHTS}" \
+    "  data                    = ${DATA_DIR}" \
     "  GPUs                   = ${GPU_RESOURCE}:${NUM_GPUS}" \
     "  per-GPU micro-batch    = ${BATCH_SIZE}" \
     "  micro global batch     = ${MICRO_GLOBAL_BATCH_SIZE}" \
     "  accumulation steps     = ${GRADIENT_ACCUMULATION_STEPS}" \
     "  effective global batch = ${EFFECTIVE_GLOBAL_BATCH_SIZE}" \
     "  epochs                 = ${EPOCHS}" \
+    "  learning rate          = ${LEARNING_RATE}" \
     "  train samples/epoch    = ${REAL_TRAIN_SAMPLES_PER_EPOCH}" \
     "  window/stride          = ${WINDOW_SIZE}/${STRIDE_PIXELS}" \
     "  visual windows         = ${COMPUTED_ALIGNMENT_WINDOWS}" \
+    "  negatives/active       = ${NUM_NEGATIVES}/${SPAN_DTW_ACTIVE_NEGATIVES_PER_SAMPLE}" \
     "  JAX text bucket        = ${SPAN_DTW_TEXT_BUCKET_SIZE}" \
     "  JAX batch bucket       = ${SPAN_DTW_BATCH_BUCKET_MODE}" \
     "  DDP timeout seconds    = ${DIST_TIMEOUT_SECONDS}"
+  if [[ "${MODEL_BACKEND}" == "vit" ]]; then
+    printf '%s\n' \
+      "  ViT                    = ${VIT_LAYERS:-4} layers / ${VIT_HEADS:-4} heads / mlp ${VIT_MLP_DIM:-512}" \
+      "  BiLSTM/grouping        = OFF/OFF"
+  fi
 }
 
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
@@ -334,8 +404,10 @@ TRAIN_ARGS=(
   --learning_rate "${LEARNING_RATE}"
   --negative_mode "${NEGATIVE_MODE}"
   --num_negatives "${NUM_NEGATIVES}"
-  --pretrained_weights "${PRETRAINED_WEIGHTS}"
 )
+if [[ "${TRAIN_FROM_SCRATCH}" == "0" ]]; then
+  TRAIN_ARGS+=(--pretrained_weights "${PRETRAINED_WEIGHTS}")
+fi
 
 print_config
 nvidia-smi -L || true
