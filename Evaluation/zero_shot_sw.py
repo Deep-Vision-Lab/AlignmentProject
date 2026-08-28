@@ -94,20 +94,70 @@ def display_image(path: str | Path, dataset_type: str) -> np.ndarray:
         return np.asarray(image.convert("RGB"))
 
 
+def _integer_env_score(name: str, default: int) -> int:
+    value = env_float(name, float(default))
+    rounded = int(round(value))
+    if not np.isfinite(value) or abs(value - rounded) > 1e-8:
+        raise ValueError(f"{name} must be an integer-valued score, got {value}")
+    return rounded
+
+
+def discrete_scoring_config() -> dict:
+    """Return the explicit integer match/mismatch configuration."""
+    match_score = _integer_env_score("ALIGN_MATCH_SCORE", 2)
+    mismatch_score = _integer_env_score("ALIGN_MISMATCH_SCORE", -3)
+    if match_score <= 0:
+        raise ValueError(f"ALIGN_MATCH_SCORE must be positive, got {match_score}")
+    if mismatch_score >= 0:
+        raise ValueError(
+            f"ALIGN_MISMATCH_SCORE must be negative, got {mismatch_score}"
+        )
+    return {
+        "enabled": env_flag("DISCRETE_ALIGNMENT_SCORES", False),
+        "match_score": match_score,
+        "mismatch_score": mismatch_score,
+    }
+
+
 def ink_aware_match_scores(match_scores, ink1, ink2):
-    """Suppress blank-window matches that otherwise create long false paths."""
+    """Apply optional discrete threshold scoring and suppress blank matches.
+
+    In discrete mode the caller must use raw cosine scoring. ``build_match_scores``
+    has already computed ``raw_cosine - threshold``; therefore a non-negative
+    value means ``cosine >= threshold``.  We map that decision to an integer
+    reward and map every lower-cosine cell to one integer mismatch penalty.
+    No row/column normalization or fractional reward shaping is used.
+    """
     scores = np.asarray(match_scores, dtype=np.float32).copy()
+    config = discrete_scoring_config()
+    if config["enabled"]:
+        scores = np.where(
+            scores >= 0.0,
+            float(config["match_score"]),
+            float(config["mismatch_score"]),
+        ).astype(np.float32)
+
     if not env_flag("SW_INK_AWARE", True):
         return scores
+
     minimum = env_float("SW_MIN_INK", 0.02)
-    blank_blank_score = env_float("SW_BLANK_BLANK_SCORE", -0.20)
-    blank_ink_score = env_float("SW_BLANK_INK_SCORE", -0.50)
     left_blank = np.asarray(ink1, dtype=np.float32) < minimum
     right_blank = np.asarray(ink2, dtype=np.float32) < minimum
     both_blank = np.outer(left_blank, right_blank)
     one_blank = np.logical_xor(left_blank[:, None], right_blank[None, :])
-    scores[both_blank] = np.minimum(scores[both_blank], blank_blank_score)
-    scores[one_blank] = np.minimum(scores[one_blank], blank_ink_score)
+
+    if config["enabled"]:
+        # Keep the entire DP scoring alphabet integer-valued.  A blank-involved
+        # pair is never allowed to become a positive match even when its cosine
+        # exceeds the threshold.
+        mismatch = float(config["mismatch_score"])
+        scores[both_blank] = mismatch
+        scores[one_blank] = mismatch
+    else:
+        blank_blank_score = env_float("SW_BLANK_BLANK_SCORE", -0.20)
+        blank_ink_score = env_float("SW_BLANK_INK_SCORE", -0.50)
+        scores[both_blank] = np.minimum(scores[both_blank], blank_blank_score)
+        scores[one_blank] = np.minimum(scores[one_blank], blank_ink_score)
     return scores
 
 
@@ -137,6 +187,9 @@ _COMPONENT_FIELDS = [
     "matrix_csv_cosine",
     "matrix_csv_match",
     "evidence_json",
+    "discrete_scoring",
+    "discrete_match_score",
+    "discrete_mismatch_score",
 ]
 
 
@@ -218,6 +271,17 @@ def install_runner_patches(runner) -> None:
             ).cpu().numpy()
 
             resolved_mode = runner.resolve_score_mode(score_mode, dataset_type)
+            discrete = discrete_scoring_config()
+            if discrete["enabled"] and resolved_mode != "raw":
+                raise ValueError(
+                    "DISCRETE_ALIGNMENT_SCORES=1 requires SCORE_MODE=raw so the "
+                    "threshold is applied directly to cosine similarity"
+                )
+            if discrete["enabled"] and abs(float(gap) - round(float(gap))) > 1e-8:
+                raise ValueError(
+                    f"Discrete alignment requires an integer-valued GAP, got {gap}"
+                )
+
             match_scores = runner.build_match_scores(
                 raw_similarity, resolved_mode, score_clip, threshold
             )
@@ -227,8 +291,9 @@ def install_runner_patches(runner) -> None:
                 features2.ink.detach().cpu().numpy(),
             )
 
-            # This is the unchanged Smith-Waterman algorithm.  Its traceback
-            # starts at the maximum accumulated DP cell and stops at zero.
+            # True Smith-Waterman: fill a local DP table, start at the maximum
+            # accumulated DP value anywhere in the table, then traceback until
+            # the accumulated score reaches the zero local boundary.
             full_path, score, dp_score, traceback = runner.smith_waterman(
                 raw_similarity,
                 threshold=threshold,
@@ -236,6 +301,28 @@ def install_runner_patches(runner) -> None:
                 return_traceback=True,
                 match_scores=match_scores,
             )
+
+            # Runtime invariant: SW must never silently become an NW-style
+            # terminal traceback.  The first traceback boundary is argmax(DP),
+            # and the final boundary has an accumulated score of exactly zero.
+            max_row, max_col = map(
+                int, np.unravel_index(np.argmax(dp_score), dp_score.shape)
+            )
+            if traceback.size:
+                start_col, start_row = map(int, np.rint(traceback[0]))
+                end_col, end_row = map(int, np.rint(traceback[-1]))
+                if (start_row, start_col) != (max_row, max_col):
+                    raise RuntimeError(
+                        "Invalid SW traceback start: "
+                        f"trace starts {(start_row, start_col)} but DP maximum is "
+                        f"{(max_row, max_col)}"
+                    )
+                if float(dp_score[end_row, end_col]) != 0.0:
+                    raise RuntimeError(
+                        "Invalid SW traceback end: local traceback must stop at "
+                        f"DP score 0, got {dp_score[end_row, end_col]} at "
+                        f"{(end_row, end_col)}"
+                    )
 
             use_components = binarized and env_flag("TRACE_COMPONENTS", True)
             component_path = (
@@ -256,7 +343,10 @@ def install_runner_patches(runner) -> None:
                 dp_score,
                 heatmap_source,
                 match_scores=match_scores,
-                score_mode=resolved_mode + "+ink",
+                score_mode=(
+                    f"raw-thresholded[{discrete['match_score']}/{discrete['mismatch_score']}]"
+                    if discrete["enabled"] else resolved_mode + "+ink"
+                ),
             )
 
             window_size = getattr(models.image_model, "window_size", None)
@@ -270,6 +360,11 @@ def install_runner_patches(runner) -> None:
                 bool(models.image_model.use_flip), window_size=window_size, stride=stride,
             )
 
+            display_score_mode = (
+                f"raw cosine threshold={threshold:g}: "
+                f"match={discrete['match_score']}, mismatch={discrete['mismatch_score']}"
+                if discrete["enabled"] else resolved_mode + "+ink"
+            )
             if show_heatmap or use_components:
                 save_alignment_visualization(
                     arr1=arr1,
@@ -285,11 +380,11 @@ def install_runner_patches(runner) -> None:
                     output=output,
                     use_flip=bool(models.image_model.use_flip),
                     pair=pair,
-                    score_mode=resolved_mode + "+ink",
+                    score_mode=display_score_mode,
                     algorithm="Smith-Waterman",
-                    traceback_label="SW traceback: maximum DP → zero",
-                    traceback_start_label="local DP maximum",
-                    traceback_end_label="zero-score boundary",
+                    traceback_label="SW traceback: maximum accumulated DP → zero",
+                    traceback_start_label="maximum accumulated SW DP score",
+                    traceback_end_label="zero-score local boundary",
                     binarized=binarized,
                     annotate_values=bool(annotate_values),
                     value_decimals=value_decimals,
@@ -302,7 +397,7 @@ def install_runner_patches(runner) -> None:
                     arr1, arr2, features1, features2, full_path, traceback,
                     displayed_matrix, displayed_label, score, output,
                     models.image_model.use_flip, binarized, pair,
-                    resolved_mode + "+ink", show_heatmap=False,
+                    display_score_mode, show_heatmap=False,
                     annotate_values=False,
                 )
 
@@ -328,7 +423,6 @@ def install_runner_patches(runner) -> None:
         component_score = float(
             sum(max(0.0, float(match_scores[i, j])) for i, j in component_path)
         )
-        max_row, max_col = map(int, np.unravel_index(np.argmax(dp_score), dp_score.shape))
         region_metrics = component_metrics(component_path, raw_similarity.shape)
         mask_metrics = (
             _empty_mask_metrics()
@@ -379,6 +473,9 @@ def install_runner_patches(runner) -> None:
                 if binarized else "none"
             ),
             "flipped": bool(models.image_model.use_flip),
+            "discrete_scoring": bool(discrete["enabled"]),
+            "discrete_match_score": int(discrete["match_score"]),
+            "discrete_mismatch_score": int(discrete["mismatch_score"]),
             "image1": str(image1),
             "image2": str(image2),
             "binarized_image1": binary1,
@@ -388,9 +485,11 @@ def install_runner_patches(runner) -> None:
         }
         print(
             f"[{pair.index}] pair_id={pair.pair_id or '-'} label={pair.label_type or '-'} "
-            f"SW={score:.6f} start=DP-max components={row['component_count']} "
+            f"SW={score:.6f} start=DP-max({max_row},{max_col}) "
+            f"components={row['component_count']} "
             f"supported={row['path_steps']}/{row['full_match_steps']} "
             f"bridge<={row['component_bridge_limit']} "
+            f"discrete={row['discrete_scoring']} "
             f"mean_cosine={row['mean_path_cosine']:.4f} saved={output}",
             flush=True,
         )
