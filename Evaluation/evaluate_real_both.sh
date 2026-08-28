@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Run Smith-Waterman and Needleman-Wunsch on the same real-style dataset split.
 #
-# The feature/scoring evidence is identical for both algorithms.  Only the DP
-# constraint differs:
+# The visual evidence is identical for both algorithms.  By default evaluation
+# uses an explicit integer scoring alphabet derived only from raw cosine:
+#   cosine >= THRESHOLD -> MATCH_SCORE (default +2)
+#   cosine <  THRESHOLD -> MISMATCH_SCORE (default -3)
+#   gap                  -> GAP (default -2)
+#
+# The DP algorithms themselves are unchanged:
 #   SW: local traceback, maximum accumulated DP cell -> zero boundary.
 #   NW: global traceback, terminal (N,M) DP boundary -> origin (0,0).
 set -euo pipefail
@@ -31,24 +36,36 @@ RUN_TAG="${RUN_TAG% }"
 REAL_DATA_DIR="${REAL_DATA_DIR:-${PROJECT_DIR}/DataSet/ArabicDataset}"
 ARABIC_MANIFEST="${ARABIC_MANIFEST:-${REAL_DATA_DIR}/dataset_manifest.jsonl}"
 REAL_SPLIT="${REAL_SPLIT:-test}"
-LABELS="${LABELS:-all}"
+LABELS="${LABELS:-high_match,medium_match}"
 N_SAMPLES="${N_SAMPLES:-100}"
 START_INDEX="${START_INDEX:-1}"
 DATASET_SPLIT_SEED="${DATASET_SPLIT_SEED:-42}"
 REAL_TEXT_KEY="${REAL_TEXT_KEY:-text_original_path}"
 REAL_MIN_TEXT_SCORE="${REAL_MIN_TEXT_SCORE:-0.0}"
 FEATURE="${FEATURE:-contextual}"
-SCORE_MODE="${SCORE_MODE:-mutual-z}"
-SCORE_CLIP="${SCORE_CLIP:-4.0}"
-if [[ -z "${THRESHOLD+x}" ]]; then
-  case "${SCORE_MODE,,}" in
-    raw) THRESHOLD=0.45 ;;
-    *) THRESHOLD=0.0 ;;
-  esac
+
+# New discrete scoring mode.  We deliberately keep SCORE_MODE=raw because the
+# threshold must apply to cosine itself, not to centered or mutual-z scores.
+DISCRETE_ALIGNMENT_SCORES="${DISCRETE_ALIGNMENT_SCORES:-1}"
+SCORE_MODE="${SCORE_MODE:-raw}"
+THRESHOLD="${THRESHOLD:-0.45}"
+ALIGN_MATCH_SCORE="${ALIGN_MATCH_SCORE:-2}"
+ALIGN_MISMATCH_SCORE="${ALIGN_MISMATCH_SCORE:--3}"
+if [[ "${DISCRETE_ALIGNMENT_SCORES}" == "1" || "${DISCRETE_ALIGNMENT_SCORES,,}" == "true" ]]; then
+  [[ "${SCORE_MODE,,}" == "raw" ]] || {
+    echo "ERROR: discrete alignment scoring requires SCORE_MODE=raw." >&2
+    exit 2
+  }
+  GAP="${GAP:--2}"
+else
+  GAP="${GAP:--0.30}"
 fi
-GAP="${GAP:--0.30}"
-HEATMAP_SOURCE="${HEATMAP_SOURCE:-match-score}"
-RESULTS_ROOT="${RESULTS_ROOT:-${PROJECT_DIR}/Results/Evaluation/${MODEL_TAG}/Real_Experiments/${RUN_TAG}/SW_vs_NW}"
+SCORE_CLIP="${SCORE_CLIP:-4.0}"
+
+# DP-score is the clearest traceback diagnostic: on SW the green start marker
+# must visibly coincide with the largest accumulated DP value in the heatmap.
+HEATMAP_SOURCE="${HEATMAP_SOURCE:-dp-score}"
+RESULTS_ROOT="${RESULTS_ROOT:-${PROJECT_DIR}/Results/Evaluation/${MODEL_TAG}/Real_Experiments/${RUN_TAG}/SW_vs_NW_discrete}"
 
 [[ -d "${REAL_DATA_DIR}" ]] || { echo "ERROR: dataset not found: ${REAL_DATA_DIR}" >&2; exit 2; }
 [[ -f "${ARABIC_MANIFEST}" ]] || { echo "ERROR: manifest not found: ${ARABIC_MANIFEST}" >&2; exit 2; }
@@ -61,7 +78,7 @@ GPU_RESOURCE="${GPU_RESOURCE:-rtx_4090}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-4}"
 TIME_LIMIT="${TIME_LIMIT:-08:00:00}"
 MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"
-EVAL_JOB_NAME="${EVAL_JOB_NAME:-eval_${MODEL_TAG}_sw_nw}"
+EVAL_JOB_NAME="${EVAL_JOB_NAME:-eval_${MODEL_TAG}_sw_nw_discrete}"
 
 # Real-line preprocessing: Otsu identifies foreground; side whitespace is
 # physically removed; the cropped line is resized directly instead of being
@@ -77,27 +94,28 @@ export REAL_BINARIZE_AUTO_INVERT="${REAL_BINARIZE_AUTO_INVERT:-1}"
 export REAL_EVAL_BALANCED="${REAL_EVAL_BALANCED:-1}"
 export SW_INK_AWARE="${SW_INK_AWARE:-1}"
 export SW_MIN_INK="${SW_MIN_INK:-0.02}"
-export SW_BLANK_BLANK_SCORE="${SW_BLANK_BLANK_SCORE:--0.20}"
-export SW_BLANK_INK_SCORE="${SW_BLANK_INK_SCORE:--0.50}"
 
-# Shared post-trace interpretation.  These values do NOT alter either DP table.
-# They only decide which diagonal matches on the algorithm's own traceback are
-# rendered/scored as aligned components.  One or two missing/noisy trace cells
-# may be bridged; three or more open a real hole between regions.
+# Explicit integer score alphabet shared by SW and NW.
+export DISCRETE_ALIGNMENT_SCORES
+export ALIGN_MATCH_SCORE
+export ALIGN_MISMATCH_SCORE
+
+# Shared post-trace interpretation. These values do NOT alter either DP table.
+# One or two missing/noisy traceback/window steps may be bridged; three or more
+# open a real hole between predicted aligned regions.
 export TRACE_COMPONENTS="${TRACE_COMPONENTS:-1}"
 export TRACE_COMPONENT_SUPPORT_FLOOR="${TRACE_COMPONENT_SUPPORT_FLOOR:-0.0}"
 export TRACE_COMPONENT_MAX_BRIDGE_STEPS="${TRACE_COMPONENT_MAX_BRIDGE_STEPS:-2}"
 export TRACE_COMPONENT_MAX_WINDOW_GAP="${TRACE_COMPONENT_MAX_WINDOW_GAP:-2}"
 export TRACE_COMPONENT_MIN_MATCHES="${TRACE_COMPONENT_MIN_MATCHES:-3}"
 
-# Save the underlying 63x63 evidence so pushed results can be analyzed without
-# reverse-engineering values from a PNG heatmap.
+# Save exact matrices/trace JSON so pushed results are numerically inspectable.
 export SAVE_HEATMAP_CSV="${SAVE_HEATMAP_CSV:-1}"
 export ANNOTATE_HEATMAP_VALUES="${ANNOTATE_HEATMAP_VALUES:-0}"
 
 print_config() {
   printf '%s\n' \
-    "Real-style ViT SW + NW evaluation" \
+    "Real Arabic-line SW + NW evaluation" \
     "  branch       = $(git branch --show-current 2>/dev/null || true)" \
     "  checkpoint   = ${WEIGHTS}" \
     "  dataset      = ${REAL_DATA_DIR}" \
@@ -107,16 +125,17 @@ print_config() {
     "  samples      = ${N_SAMPLES}" \
     "  feature      = ${FEATURE}" \
     "  score mode   = ${SCORE_MODE}" \
-    "  threshold    = ${THRESHOLD}" \
-    "  gap          = ${GAP}" \
+    "  discrete     = ${DISCRETE_ALIGNMENT_SCORES}" \
+    "  cosine threshold = ${THRESHOLD}" \
+    "  match score      = ${ALIGN_MATCH_SCORE}" \
+    "  mismatch score   = ${ALIGN_MISMATCH_SCORE}" \
+    "  gap score        = ${GAP}" \
     "  heatmap      = ${HEATMAP_SOURCE}" \
-    "  component support floor = ${TRACE_COMPONENT_SUPPORT_FLOOR}" \
-    "  component bridge steps  = ${TRACE_COMPONENT_MAX_BRIDGE_STEPS}" \
-    "  component window gap    = ${TRACE_COMPONENT_MAX_WINDOW_GAP}" \
-    "  component min matches   = ${TRACE_COMPONENT_MIN_MATCHES}" \
-    "  save matrix CSV         = ${SAVE_HEATMAP_CSV}" \
-    "  SW trace      = maximum DP -> zero" \
-    "  NW trace      = terminal (N,M) -> origin (0,0)" \
+    "  component bridge steps = ${TRACE_COMPONENT_MAX_BRIDGE_STEPS}" \
+    "  component window gap   = ${TRACE_COMPONENT_MAX_WINDOW_GAP}" \
+    "  SW trace     = maximum accumulated DP -> zero" \
+    "  NW trace     = terminal (N,M) -> origin (0,0)" \
+    "  Arabic order = model logical windows are RTL when checkpoint use_flip=1" \
     "  output       = ${RESULTS_ROOT}"
 }
 
@@ -166,19 +185,19 @@ COMMON_ARGS=(
 
 mkdir -p "${RESULTS_ROOT}/SW" "${RESULTS_ROOT}/NW"
 
-echo "=== Smith-Waterman: traceback maximum DP -> zero ==="
+echo "=== Smith-Waterman: maximum accumulated DP -> zero ==="
 python -m Evaluation.eval_img_align_sw \
   "${COMMON_ARGS[@]}" \
   --no-save-binarized-images \
   --output-dir "${RESULTS_ROOT}/SW"
 
-echo "=== Needleman-Wunsch: traceback terminal (N,M) -> origin (0,0) ==="
+echo "=== Needleman-Wunsch: terminal (N,M) -> origin (0,0) ==="
 python -m Evaluation.eval_img_align_nw_real \
   "${COMMON_ARGS[@]}" \
   --output-dir "${RESULTS_ROOT}/NW"
 
 printf '%s\n' \
-  "SW + NW evaluation finished." \
+  "SW + NW discrete evaluation finished." \
   "  SW results = ${RESULTS_ROOT}/SW" \
   "  NW results = ${RESULTS_ROOT}/NW" \
   "  Each result folder also contains matrices/ and evidence/."
