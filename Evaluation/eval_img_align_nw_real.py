@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Checkpoint-compatible Needleman-Wunsch evaluation for real-style line-pair datasets.
+"""Needleman-Wunsch evaluation for real-style ViT line-pair datasets.
 
-This is deliberately the global-alignment counterpart of ``eval_img_align_sw``.
-It reuses the same checkpoint reconstruction, real-image preprocessing, manifest
-splitting, feature extraction, score normalization, and ink-aware suppression so
-SW and NW can be compared on exactly the same visual evidence.
+The global NW algorithm is unchanged.  Its traceback always starts at the
+terminal DP boundary (N, M) and continues to (0, 0).  Supported diagonal matches
+on that full global route are then split into disconnected mask components; up
+to two unsupported trace/window steps are bridged by default.
 """
 from __future__ import annotations
 
@@ -16,9 +16,6 @@ from pathlib import Path
 import sys
 import tempfile
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 
@@ -41,7 +38,7 @@ from Evaluation._eval_utils import (
     load_evaluation_models,
     needleman_wunsch,
 )
-from Evaluation.sw_core import ImagePair, build_match_scores, resolve_score_mode
+from Evaluation.sw_core import build_match_scores, resolve_score_mode
 from Evaluation.sw_dataset import (
     arabic_manifest_path,
     batch_pairs,
@@ -49,6 +46,14 @@ from Evaluation.sw_dataset import (
     load_arabic_dataset_pairs,
     load_pair_manifest,
     pair_for_index,
+)
+from Evaluation.trace_components import (
+    component_intervals_px,
+    component_metrics,
+    nw_component_path,
+    nw_traceback_boundaries,
+    save_alignment_visualization,
+    save_numeric_evidence,
 )
 
 
@@ -75,100 +80,18 @@ def _heatmap_matrix(raw_similarity, match_scores, result, source: str):
     if value == "cosine":
         return np.asarray(raw_similarity, dtype=np.float32), "raw cosine similarity"
     if value == "match-score":
-        return np.asarray(match_scores, dtype=np.float32), "NW match score"
+        return np.asarray(match_scores, dtype=np.float32), "NW diagonal match score"
     if value == "dp-score":
-        return np.asarray(result.score_matrix[1:, 1:], dtype=np.float32), "accumulated global NW DP score"
+        return (
+            np.asarray(result.score_matrix[1:, 1:], dtype=np.float32),
+            "accumulated global NW DP score",
+        )
     raise ValueError("heatmap source must be cosine, match-score, or dp-score")
-
-
-def _save_visualization(
-    arr1,
-    arr2,
-    heatmap,
-    heatmap_label,
-    result,
-    output: Path,
-    pair: ImagePair,
-    score_mode: str,
-):
-    n1, n2 = heatmap.shape
-    heatmap_height = max(8.0, min(24.0, 0.30 * n1))
-    figure_width = max(18.0, min(30.0, 0.34 * n2))
-    fig = plt.figure(figsize=(figure_width, 5.0 + heatmap_height))
-    grid = fig.add_gridspec(3, 1, height_ratios=[2.2, 2.2, heatmap_height], hspace=0.16)
-
-    axes = [fig.add_subplot(grid[0]), fig.add_subplot(grid[1])]
-    axes[0].imshow(arr1, aspect="auto")
-    axes[1].imshow(arr2, aspect="auto")
-    axes[0].set_ylabel("line A", rotation=0, labelpad=35, va="center")
-    axes[1].set_ylabel("line B", rotation=0, labelpad=35, va="center")
-    for ax in axes:
-        ax.set_xticks([])
-        ax.set_yticks([])
-
-    ax = fig.add_subplot(grid[2])
-    finite = heatmap[np.isfinite(heatmap)]
-    if finite.size and float(finite.min()) >= 0.0:
-        upper = max(1e-6, float(np.percentile(finite, 98)))
-        image = ax.imshow(
-            heatmap,
-            aspect="equal",
-            origin="upper",
-            vmin=0.0,
-            vmax=upper,
-            cmap="viridis",
-            interpolation="nearest",
-        )
-    else:
-        limit = max(
-            0.5,
-            float(np.percentile(np.abs(finite), 98)) if finite.size else 1.0,
-        )
-        image = ax.imshow(
-            heatmap,
-            aspect="equal",
-            origin="upper",
-            vmin=-limit,
-            vmax=limit,
-            cmap="coolwarm",
-            interpolation="nearest",
-        )
-
-    path = result.pairs
-    if path:
-        ax.plot(
-            [col for _, col in path],
-            [row for row, _ in path],
-            color="black",
-            linewidth=1.4,
-            marker=".",
-            markersize=2.5,
-            label="global NW path",
-        )
-        ax.legend(loc="upper left", fontsize=8)
-
-    ax.set_xlim(-0.5, n2 - 0.5)
-    ax.set_ylim(n1 - 0.5, -0.5)
-    ax.set_xlabel("line B windows")
-    ax.set_ylabel("line A windows")
-    ax.set_title(heatmap_label)
-    fig.colorbar(image, ax=ax, fraction=0.025, pad=0.015)
-
-    metadata = f" | pair_id={pair.pair_id}" if pair.pair_id else ""
-    fig.suptitle(
-        f"Needleman-Wunsch global image alignment | score={result.score:.4f} | "
-        f"normalized={result.normalized_score:.4f} | score_mode={score_mode}{metadata}",
-        fontsize=11,
-        fontweight="bold",
-    )
-    output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=180, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
 
 
 def evaluate_sample(
     models,
-    pair: ImagePair,
+    pair,
     *,
     dataset_type: str,
     feature: str,
@@ -218,32 +141,83 @@ def evaluate_sample(
             features1.ink.detach().cpu().numpy(),
             features2.ink.detach().cpu().numpy(),
         )
+
+        # Unchanged GLOBAL Needleman-Wunsch.  Unlike SW, the final score and
+        # traceback are anchored at the terminal DP state (N,M), not argmax(DP).
         result = needleman_wunsch(
             match_scores,
             gap_penalty=float(gap),
             similarity_offset=0.0,
         )
+        full_path = list(result.pairs)
+        global_traceback = nw_traceback_boundaries(result)
+        component_path = nw_component_path(result, match_scores)
 
         heatmap, heatmap_label = _heatmap_matrix(
             raw_similarity, match_scores, result, heatmap_source
         )
-        _save_visualization(
-            arr1,
-            arr2,
-            heatmap,
-            heatmap_label,
-            result,
-            output,
-            pair,
-            resolved_mode + "+ink",
+        window_size = getattr(models.image_model, "window_size", None)
+        stride = getattr(models.image_model, "stride", None)
+        intervals1 = component_intervals_px(
+            component_path, 0, raw_similarity.shape[0], arr1.shape[1],
+            bool(models.image_model.use_flip), window_size=window_size, stride=stride,
+        )
+        intervals2 = component_intervals_px(
+            component_path, 1, raw_similarity.shape[1], arr2.shape[1],
+            bool(models.image_model.use_flip), window_size=window_size, stride=stride,
         )
 
-        path = result.pairs
-        path_cosines = [float(raw_similarity[i, j]) for i, j in path]
+        save_alignment_visualization(
+            arr1=arr1,
+            arr2=arr2,
+            features1=features1,
+            features2=features2,
+            full_path=full_path,
+            component_path=component_path,
+            traceback=global_traceback,
+            heatmap_matrix=heatmap,
+            heatmap_label=heatmap_label,
+            score=float(result.score),
+            normalized_score=float(result.normalized_score),
+            output=output,
+            use_flip=bool(models.image_model.use_flip),
+            pair=pair,
+            score_mode=resolved_mode + "+ink",
+            algorithm="Needleman-Wunsch",
+            traceback_label="NW traceback: terminal (N,M) → origin (0,0)",
+            traceback_start_label="terminal DP boundary (N,M)",
+            traceback_end_label="global origin (0,0)",
+            binarized=str(dataset_type).lower() == "real",
+            annotate_values=os.environ.get("ANNOTATE_HEATMAP_VALUES", "0").lower()
+            in {"1", "true", "yes", "on"},
+            window_size=window_size,
+            stride=stride,
+        )
+
+        evidence_files = save_numeric_evidence(
+            output,
+            algorithm="Needleman-Wunsch",
+            raw_similarity=raw_similarity,
+            match_scores=match_scores,
+            component_path=component_path,
+            full_path=full_path,
+            traceback=global_traceback,
+            intervals1=intervals1,
+            intervals2=intervals2,
+        )
+
+        component_path_cosines = [
+            float(raw_similarity[i, j]) for i, j in component_path
+        ]
+        full_path_cosines = [float(raw_similarity[i, j]) for i, j in full_path]
         gap_steps = sum(
             1 for step in result.steps
             if step.index1 is None or step.index2 is None
         )
+        component_score = float(
+            sum(max(0.0, float(match_scores[i, j])) for i, j in component_path)
+        )
+        metrics = component_metrics(component_path, raw_similarity.shape)
         row = {
             "index": int(pair.index),
             "manifest_position": int(pair.manifest_position),
@@ -254,14 +228,24 @@ def evaluate_sample(
             "status": "ok",
             "nw_score": float(result.score),
             "normalized_nw_score": float(result.normalized_score),
-            "match_steps": int(len(path)),
+            **metrics,
+            "match_steps": int(len(full_path)),
             "gap_steps": int(gap_steps),
-            "mean_path_cosine": float(np.mean(path_cosines)) if path_cosines else 0.0,
+            "component_score": component_score,
+            "mean_path_cosine": (
+                float(np.mean(component_path_cosines)) if component_path_cosines else 0.0
+            ),
+            "mean_full_path_cosine": (
+                float(np.mean(full_path_cosines)) if full_path_cosines else 0.0
+            ),
             "positive_match_fraction": float(np.mean(match_scores > 0.0)),
             "line1_windows": int(raw_similarity.shape[0]),
             "line2_windows": int(raw_similarity.shape[1]),
+            "line1_component_intervals_px": json.dumps(intervals1, separators=(",", ":")),
+            "line2_component_intervals_px": json.dumps(intervals2, separators=(",", ":")),
             **_matrix_stats(raw_similarity, "cosine"),
             **_matrix_stats(match_scores, "match"),
+            **evidence_files,
             "feature": str(feature),
             "score_mode": resolved_mode,
             "score_clip": float(score_clip),
@@ -269,6 +253,14 @@ def evaluate_sample(
             "gap": float(gap),
             "heatmap_source": str(heatmap_source),
             "dataset_type": str(dataset_type),
+            "binarized": str(dataset_type).lower() == "real",
+            "binarization": (
+                os.environ.get("REAL_BINARIZE_METHOD", "otsu").lower()
+                if str(dataset_type).lower() == "real" else "none"
+            ),
+            "flipped": bool(models.image_model.use_flip),
+            "traceback_start": "terminal_nm",
+            "traceback_end": "origin_00",
             "image1": str(image1),
             "image2": str(image2),
             "output": str(output),
@@ -276,10 +268,11 @@ def evaluate_sample(
         }
         print(
             f"[{pair.index}] pair_id={pair.pair_id or '-'} "
-            f"nw={result.normalized_score:.4f} matches={len(path)} gaps={gap_steps} "
-            f"cosine=[{row['cosine_min']:.3f},{row['cosine_max']:.3f}] "
-            f"match=[{row['match_min']:.3f},{row['match_max']:.3f}] "
-            f"positive={row['positive_match_fraction']:.3f} saved={output}",
+            f"NW={result.normalized_score:.4f} trace=(N,M)->(0,0) "
+            f"components={row['component_count']} "
+            f"supported={row['path_steps']}/{row['full_match_steps']} "
+            f"gaps={gap_steps} bridge<={row['component_bridge_limit']} "
+            f"cos={row['mean_path_cosine']:.4f} saved={output}",
             flush=True,
         )
         return row
@@ -400,20 +393,33 @@ def main():
         writer.writerows(rows)
 
     successful = [row for row in rows if row.get("status") == "ok"]
+
+    def mean(key):
+        values = []
+        for row in successful:
+            try:
+                value = float(row.get(key))
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(value):
+                values.append(value)
+        return float(np.mean(values)) if values else None
+
     summary = {
         "algorithm": "needleman_wunsch",
+        "traceback": "terminal_(N,M)_to_origin_(0,0)",
         "samples": len(rows),
         "successful": len(successful),
         "failed": len(rows) - len(successful),
-        "mean_normalized_nw_score": float(np.mean([
-            row["normalized_nw_score"] for row in successful
-        ])) if successful else None,
-        "mean_path_cosine": float(np.mean([
-            row["mean_path_cosine"] for row in successful
-        ])) if successful else None,
-        "mean_positive_match_fraction": float(np.mean([
-            row["positive_match_fraction"] for row in successful
-        ])) if successful else None,
+        "mean_normalized_nw_score": mean("normalized_nw_score"),
+        "mean_component_count": mean("component_count"),
+        "mean_supported_component_matches": mean("path_steps"),
+        "mean_full_nw_matches": mean("full_match_steps"),
+        "mean_component_span_fraction_line1": mean("line1_matched_fraction"),
+        "mean_component_span_fraction_line2": mean("line2_matched_fraction"),
+        "mean_path_cosine": mean("mean_path_cosine"),
+        "mean_full_path_cosine": mean("mean_full_path_cosine"),
+        "mean_positive_match_fraction": mean("positive_match_fraction"),
     }
     (output_dir / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
