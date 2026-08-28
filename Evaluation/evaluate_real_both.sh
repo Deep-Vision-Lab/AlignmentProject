@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Run Smith-Waterman and Needleman-Wunsch on the same real-style dataset split.
+#
+# The feature/scoring evidence is identical for both algorithms.  Only the DP
+# constraint differs:
+#   SW: local traceback, maximum accumulated DP cell -> zero boundary.
+#   NW: global traceback, terminal (N,M) DP boundary -> origin (0,0).
 set -euo pipefail
 set -a
 
@@ -58,9 +63,9 @@ TIME_LIMIT="${TIME_LIMIT:-08:00:00}"
 MAIL_USER="${MAIL_USER:-ahmedmas@post.bgu.ac.il}"
 EVAL_JOB_NAME="${EVAL_JOB_NAME:-eval_${MODEL_TAG}_sw_nw}"
 
-# Real-line preprocessing: use Otsu to identify foreground, crop side whitespace,
-# and resize the cropped content directly instead of putting it back on a white
-# 1024-pixel canvas.
+# Real-line preprocessing: Otsu identifies foreground; side whitespace is
+# physically removed; the cropped line is resized directly instead of being
+# placed back on a 1024-pixel white canvas.
 export ZERO_SHOT_PREPROCESS="${ZERO_SHOT_PREPROCESS:-1}"
 export ZERO_SHOT_FOREGROUND_CROP="${ZERO_SHOT_FOREGROUND_CROP:-1}"
 export ZERO_SHOT_PRESERVE_ASPECT="${ZERO_SHOT_PRESERVE_ASPECT:-0}"
@@ -74,6 +79,21 @@ export SW_INK_AWARE="${SW_INK_AWARE:-1}"
 export SW_MIN_INK="${SW_MIN_INK:-0.02}"
 export SW_BLANK_BLANK_SCORE="${SW_BLANK_BLANK_SCORE:--0.20}"
 export SW_BLANK_INK_SCORE="${SW_BLANK_INK_SCORE:--0.50}"
+
+# Shared post-trace interpretation.  These values do NOT alter either DP table.
+# They only decide which diagonal matches on the algorithm's own traceback are
+# rendered/scored as aligned components.  One or two missing/noisy trace cells
+# may be bridged; three or more open a real hole between regions.
+export TRACE_COMPONENTS="${TRACE_COMPONENTS:-1}"
+export TRACE_COMPONENT_SUPPORT_FLOOR="${TRACE_COMPONENT_SUPPORT_FLOOR:-0.0}"
+export TRACE_COMPONENT_MAX_BRIDGE_STEPS="${TRACE_COMPONENT_MAX_BRIDGE_STEPS:-2}"
+export TRACE_COMPONENT_MAX_WINDOW_GAP="${TRACE_COMPONENT_MAX_WINDOW_GAP:-2}"
+export TRACE_COMPONENT_MIN_MATCHES="${TRACE_COMPONENT_MIN_MATCHES:-3}"
+
+# Save the underlying 63x63 evidence so pushed results can be analyzed without
+# reverse-engineering values from a PNG heatmap.
+export SAVE_HEATMAP_CSV="${SAVE_HEATMAP_CSV:-1}"
+export ANNOTATE_HEATMAP_VALUES="${ANNOTATE_HEATMAP_VALUES:-0}"
 
 print_config() {
   printf '%s\n' \
@@ -90,6 +110,13 @@ print_config() {
     "  threshold    = ${THRESHOLD}" \
     "  gap          = ${GAP}" \
     "  heatmap      = ${HEATMAP_SOURCE}" \
+    "  component support floor = ${TRACE_COMPONENT_SUPPORT_FLOOR}" \
+    "  component bridge steps  = ${TRACE_COMPONENT_MAX_BRIDGE_STEPS}" \
+    "  component window gap    = ${TRACE_COMPONENT_MAX_WINDOW_GAP}" \
+    "  component min matches   = ${TRACE_COMPONENT_MIN_MATCHES}" \
+    "  save matrix CSV         = ${SAVE_HEATMAP_CSV}" \
+    "  SW trace      = maximum DP -> zero" \
+    "  NW trace      = terminal (N,M) -> origin (0,0)" \
     "  output       = ${RESULTS_ROOT}"
 }
 
@@ -139,13 +166,13 @@ COMMON_ARGS=(
 
 mkdir -p "${RESULTS_ROOT}/SW" "${RESULTS_ROOT}/NW"
 
-echo "=== Smith-Waterman ==="
+echo "=== Smith-Waterman: traceback maximum DP -> zero ==="
 python -m Evaluation.eval_img_align_sw \
   "${COMMON_ARGS[@]}" \
   --no-save-binarized-images \
   --output-dir "${RESULTS_ROOT}/SW"
 
-echo "=== Needleman-Wunsch ==="
+echo "=== Needleman-Wunsch: traceback terminal (N,M) -> origin (0,0) ==="
 python -m Evaluation.eval_img_align_nw_real \
   "${COMMON_ARGS[@]}" \
   --output-dir "${RESULTS_ROOT}/NW"
@@ -153,4 +180,5 @@ python -m Evaluation.eval_img_align_nw_real \
 printf '%s\n' \
   "SW + NW evaluation finished." \
   "  SW results = ${RESULTS_ROOT}/SW" \
-  "  NW results = ${RESULTS_ROOT}/NW"
+  "  NW results = ${RESULTS_ROOT}/NW" \
+  "  Each result folder also contains matrices/ and evidence/."
