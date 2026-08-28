@@ -43,9 +43,20 @@ REAL_MIN_TEXT_SCORE="${REAL_MIN_TEXT_SCORE:-0.0}"
 FEATURE="${FEATURE:-contextual}"
 SCORE_MODE="${SCORE_MODE:-auto}"
 SCORE_CLIP="${SCORE_CLIP:-4.0}"
-THRESHOLD="${THRESHOLD:-0.45}"
+# Real SCORE_MODE=auto resolves to mutual-z.  A threshold of zero is the natural
+# neutral boundary for centered/z-normalized scores; 0.45 is retained only for
+# explicitly raw cosine scoring.
+if [[ -z "${THRESHOLD+x}" ]]; then
+  case "${SCORE_MODE,,}" in
+    raw) THRESHOLD=0.45 ;;
+    *) THRESHOLD=0.0 ;;
+  esac
+fi
 GAP="${GAP:--0.30}"
-HEATMAP_SOURCE="${HEATMAP_SOURCE:-dp-score}"
+# Show the matrix that Smith-Waterman actually consumes.  The accumulated DP
+# matrix is zero-clamped by local alignment and can therefore be entirely zero
+# when no positive path exists, hiding useful diagnostic structure.
+HEATMAP_SOURCE="${HEATMAP_SOURCE:-match-score}"
 RESULTS_ROOT="${RESULTS_ROOT:-${PROJECT_DIR}/Results/Evaluation/${MODEL_TAG}/Real_Experiments/${RUN_TAG}}"
 
 # Object-level quantitative localization from bbox.json.
@@ -96,6 +107,11 @@ print_config() {
     "  split        = ${REAL_SPLIT}" \
     "  labels       = ${LABELS}" \
     "  samples      = ${N_SAMPLES}" \
+    "  feature      = ${FEATURE}" \
+    "  score mode   = ${SCORE_MODE}" \
+    "  threshold    = ${THRESHOLD}" \
+    "  gap          = ${GAP}" \
+    "  heatmap      = ${HEATMAP_SOURCE}" \
     "  box scoring  = ${REAL_BOX_EVAL}" \
     "  box rule     = ${REAL_BOX_IN_MASK_RULE}" \
     "  bbox source  = ${REAL_BOX_JSON:-${REAL_BOX_ANNOTATIONS_ROOT}}" \
@@ -150,8 +166,8 @@ if [[ "${REAL_BOX_EVAL}" == "1" || "${REAL_BOX_EVAL,,}" == "true" ]]; then
   fi
 fi
 
-# Keep evaluation preprocessing identical to training. Model window/stride and
-# backend are reconstructed from the checkpoint configuration.
+# Keep evaluation preprocessing identical to training unless explicitly
+# overridden. Model window/stride and backend are reconstructed from checkpoint.
 export LINE_HEIGHT="${LINE_HEIGHT:-128}"
 export LINE_WIDTH="${LINE_WIDTH:-1024}"
 export TARGET_INK_HEIGHT_RATIO="${TARGET_INK_HEIGHT_RATIO:-0.72}"
