@@ -23,9 +23,9 @@ profile_training = False
 profile_max_batches = 0
 
 # 2. TRAINING / OPTIMIZATION
-batch_size = 8  # per GPU micro-batch
+batch_size = 16  # per GPU micro-batch
 gradient_accumulation_steps = 4
-epochs = 40
+epochs = 20
 learning_rate = 1e-4
 finetune_epochs = 30
 finetune_learning_rate = 2e-5
