@@ -28,6 +28,15 @@ def isolate_local_rank_cuda_device() -> RankDeviceSelection:
     selected = visible
 
     if world_size > 1:
+        # GeForce RTX 4090 nodes can expose two CUDA devices while CUDA peer
+        # access between them is unavailable. NCCL otherwise attempts a P2P
+        # transport and aborts during the first DDP collective with
+        # "peer access is not supported between these two devices". Disable
+        # NCCL P2P by default for multi-rank runs so NCCL falls back to shared
+        # host memory. Users can explicitly override this before launch on
+        # hardware where P2P is known to work.
+        os.environ.setdefault("NCCL_P2P_DISABLE", "1")
+
         if visible:
             devices = [token.strip() for token in visible.split(",") if token.strip()]
             if len(devices) > 1:
