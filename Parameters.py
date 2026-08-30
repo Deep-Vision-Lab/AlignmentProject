@@ -1,10 +1,4 @@
-"""Single source of truth for AlignmentProject experiments.
-
-Edit this file to change architecture, data, optimization, or loss settings.
-The user-facing trainer accepts only a dataset path and optional pretrained
-weights. ``export_environment`` mirrors these Python values to legacy helper
-modules that still read environment variables internally.
-"""
+"""Single source of truth for AlignmentProject experiments."""
 from __future__ import annotations
 
 import os
@@ -15,9 +9,7 @@ def _flag(value: bool) -> str:
     return "1" if bool(value) else "0"
 
 
-# ============================================================================
 # 1. EXPERIMENT / RUNTIME
-# ============================================================================
 device = "cuda" if torch.cuda.is_available() else "cpu"
 experiment_name = "vit_baseline"
 dataset_type = "auto"  # auto | real | synthetic
@@ -30,11 +22,8 @@ log_memory_every_n_batches = 25
 profile_training = False
 profile_max_batches = 0
 
-# ============================================================================
 # 2. TRAINING / OPTIMIZATION
-# ============================================================================
 batch_size = 8  # per GPU micro-batch
-# With 2 GPUs and accumulation=4 this gives effective global batch 64.
 gradient_accumulation_steps = 4
 epochs = 40
 learning_rate = 1e-4
@@ -53,10 +42,20 @@ use_channels_last = True
 torch_compile_visual = False
 torch_compile_mode = "reduce-overhead"
 
-# ============================================================================
-# 3. DATASET / REAL-DATA AUGMENTATION
-# ============================================================================
+# 3. DATASET / SYNTHETIC TRAINING
 num_samples = 10000
+synthetic_train_samples = 9000
+synthetic_augment = True
+synthetic_augment_probability = 0.30
+synthetic_aug_rotate_deg = 1.0
+synthetic_aug_translate_x = 0.015
+synthetic_aug_translate_y = 0.03
+synthetic_aug_scale_min = 0.95
+synthetic_aug_scale_max = 1.00
+synthetic_aug_brightness = 0.10
+synthetic_aug_contrast = 0.12
+
+# 3B. REAL-DATA AUGMENTATION
 real_manifest_name = "dataset_manifest.jsonl"
 real_train_samples_per_epoch = 6000
 real_augment = True
@@ -67,7 +66,6 @@ real_split_by_pair_id = True
 real_validate_paths = False
 real_filter_infeasible_span_dtw = True
 real_max_alignment_windows = 63
-
 real_aug_stitch_prob = 0.0
 real_aug_stitch_pool_size = 32
 real_aug_stitch_max_text_chars = 120
@@ -93,28 +91,23 @@ real_binarize_threshold = 180
 real_binarize_autocontrast = True
 real_binarize_auto_invert = True
 
-# ============================================================================
 # 4. IMAGE GEOMETRY / WINDOWING
-# ============================================================================
 line_height = 128
 line_width = 1024
 window_size = 32
 stride_ratio = 0.5
-window_overlap_mode = "custom"  # no_overlap | light_overlap | dense_overlap | custom
+window_overlap_mode = "custom"
 vector_size = 128
 lang = "Arabic"
 target_ink_height_ratio = 0.72
 ink_contrast_threshold = 0.15
 
-# ============================================================================
 # 5. VISUAL ENCODER (ViT BASELINE)
-# ============================================================================
 use_bilstm = False
 bilstm_layers = 2
 bilstm_hidden_dim = vector_size
 use_local_window_grouping = False
 local_group_size = 3
-
 vit_input_height = 128
 vit_layers = 4
 vit_heads = 4
@@ -123,9 +116,7 @@ vit_dropout = 0.10
 vit_max_tokens = 256
 vit_position_base_tokens = 63
 
-# ============================================================================
 # 6. TEXT ENCODER / SPAN SEMANTICS
-# ============================================================================
 text_encoder_type = "arabic_span"
 arabic_text_model_name = "aubmindlab/bert-base-arabertv02"
 max_text_token_chars = 2
@@ -141,15 +132,12 @@ span_use_blank_transitions = True
 span_blank_penalty = 0.35
 span_space_max_windows = 2
 span_extra_windows_per_core = 1
-
 span_feature_cache_size = 2048
 span_feature_cache_dtype = "float16"
 span_backbone_batch_size = 512
 clear_span_cache_each_epoch = True
 
-# ============================================================================
 # 7. SPAN-DTW / GLOBAL IMAGE-TEXT ALIGNMENT
-# ============================================================================
 contrastive_soft_dtw_gamma = 0.1
 contrastive_margin = 10.0
 contrastive_temperature = 0.07
@@ -162,16 +150,12 @@ span_dtw_batch_bucket_size = 32
 span_dtw_batch_bucket_mode = "power2"
 span_dtw_active_negatives_per_sample = 4
 
-# ============================================================================
 # 8. NEGATIVE TRANSCRIPTS
-# ============================================================================
 negative_mode = "mixed"
 num_negatives = 10
 span_negative_grad_mode = "hardest"
 
-# ============================================================================
 # 9. PRE-TRANSFORMER LOCAL HARD NEGATIVES
-# ============================================================================
 use_local_hard_negatives = True
 local_hard_negative_weight = 0.25
 local_hard_negative_margin = 0.35
@@ -181,9 +165,7 @@ local_hard_negative_min_ink = 0.01
 local_hard_negative_every_n_batches = 2
 local_hard_negative_max_samples_per_batch = 8
 
-# ============================================================================
 # 10. IMAGE-IMAGE PAIR LOSS
-# ============================================================================
 use_image_pair_contrastive = True
 image_pair_loss_weight = 0.40
 image_pair_margin = 0.40
@@ -199,24 +181,18 @@ order_monotonic_margin = 0.02
 order_position_component_weight = 1.0
 order_monotonic_component_weight = 1.0
 
-# ============================================================================
 # 11. ANTI-COLLAPSE / REGULARIZATION
-# ============================================================================
 image_variance_loss_weight = 0.01
 image_variance_target_std = 0.05
 
-# ============================================================================
 # 12. DOMAIN / ZERO-SHOT PREPROCESSING
-# ============================================================================
 zero_shot_profile = False
 zero_shot_preprocess = True
 zero_shot_preserve_aspect = True
 zero_shot_foreground_crop = True
 zero_shot_source_geometry = True
 
-# ============================================================================
 # 13. JAX / HUGGINGFACE / DATALOADER RUNTIME
-# ============================================================================
 hf_hub_offline = True
 transformers_offline = True
 tokenizers_parallelism = False
@@ -227,9 +203,7 @@ xla_python_client_preallocate = False
 dist_timeout_seconds = 7200
 dataloader_mp_context = "spawn"
 
-# ============================================================================
-# 14. EVALUATION DEFAULTS (used by run.md; evaluator CLI remains explicit)
-# ============================================================================
+# 14. EVALUATION DEFAULTS
 evaluation_feature = "contextual"
 evaluation_score_mode = "auto"
 evaluation_score_clip = 4.0
@@ -238,14 +212,13 @@ evaluation_gap = -0.30
 evaluation_n_samples = 100
 evaluation_real_split = "test"
 
-# Backward-compatible names retained for old helper modules.
+# Backward-compatible names retained for helper modules.
 finetune_lang = "Arabic"
 finetune_num_samples = num_samples
 finetune_data_dir = ""
 
 
 def export_environment() -> None:
-    """Export this file's settings for legacy modules that still read env vars."""
     values = {
         "BATCH_SIZE": batch_size,
         "EPOCHS": epochs,
@@ -272,6 +245,16 @@ def export_environment() -> None:
         "TORCH_COMPILE_VISUAL": _flag(torch_compile_visual),
         "TORCH_COMPILE_MODE": torch_compile_mode,
         "NUM_SAMPLES": num_samples,
+        "SYNTHETIC_TRAIN_SAMPLES": synthetic_train_samples,
+        "SYNTHETIC_AUGMENT": _flag(synthetic_augment),
+        "SYNTHETIC_AUGMENT_PROBABILITY": synthetic_augment_probability,
+        "SYNTHETIC_AUG_ROTATE_DEG": synthetic_aug_rotate_deg,
+        "SYNTHETIC_AUG_TRANSLATE_X": synthetic_aug_translate_x,
+        "SYNTHETIC_AUG_TRANSLATE_Y": synthetic_aug_translate_y,
+        "SYNTHETIC_AUG_SCALE_MIN": synthetic_aug_scale_min,
+        "SYNTHETIC_AUG_SCALE_MAX": synthetic_aug_scale_max,
+        "SYNTHETIC_AUG_BRIGHTNESS": synthetic_aug_brightness,
+        "SYNTHETIC_AUG_CONTRAST": synthetic_aug_contrast,
         "REAL_MANIFEST_NAME": real_manifest_name,
         "REAL_TRAIN_SAMPLES_PER_EPOCH": real_train_samples_per_epoch,
         "REAL_AUGMENT": _flag(real_augment),
