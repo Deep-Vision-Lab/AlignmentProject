@@ -33,12 +33,12 @@ profile_max_batches = 0
 # ============================================================================
 # 2. TRAINING / OPTIMIZATION
 # ============================================================================
-batch_size = 8  # per GPU micro-batch
+batch_size = 64  # per GPU micro-batch
 # With 2 GPUs and accumulation=4 this gives effective global batch 64.
-gradient_accumulation_steps = 4
-epochs = 40
+gradient_accumulation_steps = 2
+epochs = 20
 learning_rate = 1e-4
-finetune_epochs = 30
+finetune_epochs = 15
 finetune_learning_rate = 2e-5
 valid_every_n_epochs = 1
 valid_max_batches = 20
