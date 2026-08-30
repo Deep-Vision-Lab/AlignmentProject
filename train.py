@@ -86,6 +86,7 @@ import torch
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+import DataLoader as synthetic_data_loader
 import model_backend
 import span_alignment_loss
 from ddp_runtime_policy import resolve_ddp_static_graph
@@ -93,12 +94,14 @@ from distributed_runtime_guard import install_distributed_runtime_guard
 from epoch_subset_sampling import install_epoch_subset_sampling
 from fast_hard_alignment import hard_span_dtw_path_fast
 from jax_batch_bucketing import install_jax_batch_padding
+from synthetic_training_runtime import install as install_synthetic_training
 from training_optimizations import install as install_optimizations
 from training_stability import install_training_stability
 from unified_line_geometry import install_training_geometry
 
 span_alignment_loss.hard_span_dtw_path = hard_span_dtw_path_fast
 base.hard_span_dtw_path = hard_span_dtw_path_fast
+install_synthetic_training(synthetic_data_loader)
 install_jax_batch_padding()
 install_optimizations(base)
 install_distributed_runtime_guard(base)
@@ -139,6 +142,11 @@ def _model_config(stride, args):
             "initialization": "pretrained" if args.pretrained_weights else "scratch",
             "dataset_type": args.dataset_type,
             "dataset_path": args.data_dir,
+            "synthetic_train_samples": getattr(P, "synthetic_train_samples", 0),
+            "synthetic_augment": getattr(P, "synthetic_augment", False),
+            "synthetic_augment_probability": getattr(
+                P, "synthetic_augment_probability", 0.0
+            ),
         }
     )
     install_training_stability(base, config, args.job_id)
@@ -288,6 +296,19 @@ def main() -> None:
             print(f"  mode         = {mode}", flush=True)
             print(f"  dataset      = {args.data_dir}", flush=True)
             print(f"  dataset_type = {args.dataset_type}", flush=True)
+            if args.dataset_type == "synthetic":
+                augmented = int(
+                    round(
+                        int(P.synthetic_train_samples)
+                        * float(P.synthetic_augment_probability)
+                    )
+                ) if P.synthetic_augment else 0
+                print(
+                    f"  synthetic    = train={P.synthetic_train_samples} "
+                    f"augmented={augmented} clean={P.synthetic_train_samples - augmented} "
+                    f"aug_prob={P.synthetic_augment_probability:.2f}",
+                    flush=True,
+                )
             print(f"  weights      = {args.pretrained_weights or '<none>'}", flush=True)
             print(f"  output       = Weights/{args.job_id}", flush=True)
             print(f"  epochs/lr    = {args.epochs}/{args.learning_rate}", flush=True)
