@@ -94,6 +94,7 @@ from distributed_runtime_guard import install_distributed_runtime_guard
 from epoch_subset_sampling import install_epoch_subset_sampling
 from fast_hard_alignment import hard_span_dtw_path_fast
 from jax_batch_bucketing import install_jax_batch_padding
+from job_id_runtime import resolve_training_job_id
 from synthetic_training_runtime import install as install_synthetic_training
 from training_optimizations import install as install_optimizations
 from training_stability import install_training_stability
@@ -194,7 +195,7 @@ def _training_args(cli: argparse.Namespace) -> SimpleNamespace:
 
     finetune = weights is not None
     resolved_dataset_type = _resolve_dataset_type(dataset)
-    job_id = f"{P.experiment_name}_{'finetune' if finetune else 'scratch'}"
+    job_id = resolve_training_job_id(P.experiment_name, finetune=finetune)
     os.environ["DATASET_TYPE"] = resolved_dataset_type
 
     return SimpleNamespace(
