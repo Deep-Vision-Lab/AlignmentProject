@@ -4,6 +4,39 @@ This directory is intentionally limited to the evaluation paths still used by th
 
 ## Public commands
 
+### Unified Needleman-Wunsch diagnostic
+
+`eval_img_align_nw_diagnostic.py` is the single qualitative/debugging entry point when you want to inspect the actual image-image NW alignment. It reads evaluation defaults from `Parameters.py` and requires only the dataset and trained weights.
+
+Synthetic example:
+
+```bash
+python Evaluation/eval_img_align_nw_diagnostic.py \
+  --dataset "$PWD/DataSet/Synthetic63" \
+  --weights "$PWD/Weights/<job_id>/model_best.pth" \
+  --n-samples 1
+```
+
+Real ArabicDataset example:
+
+```bash
+python Evaluation/eval_img_align_nw_diagnostic.py \
+  --dataset "$PWD/DataSet/ArabicDataset" \
+  --weights "$PWD/Weights/<job_id>/model_best.pth" \
+  --n-samples 1
+```
+
+Native real-synthetic Bridge V3 example:
+
+```bash
+python Evaluation/eval_img_align_nw_diagnostic.py \
+  --dataset "$PWD/DataSet/RealSyntheticBridge_v3" \
+  --weights "$PWD/Weights/<job_id>/model_best.pth" \
+  --n-samples 1
+```
+
+The evaluator auto-detects synthetic, ordinary real, explicit real/injection split manifests, the native `RealSyntheticBridge_v3` layout, mixed roots, and generic pair manifests. For each pair it saves both masked lines, a value-annotated cosine matrix, a value-annotated NW match-score matrix, a value-annotated accumulated DP matrix, the terminal-to-origin NW traceback, predicted binary masks, numeric matrices, and per-trace window scores. Synthetic/Bridge masks are scored with IoU/Dice when ground truth is available.
+
 ### Fixed-63 synthetic Needleman-Wunsch
 
 Use the tuned component-aware NW wrapper for the held-out `AugmentedArabicDataset63` split:
