@@ -30,10 +30,10 @@ fi
 
 BRANCH="$(git branch --show-current)"
 COMMIT="$(git rev-parse --short HEAD)"
-export JOB_ID="${JOB_ID:-${SLURM_JOB_ID:-}}"
+export JOB_NAME="${JOB_NAME:-${SLURM_JOB_NAME:-}}"
 
-if [[ -z "${JOB_ID}" ]]; then
-  echo "ERROR: JOB_ID is empty and SLURM_JOB_ID is unavailable." >&2
+if [[ -z "${JOB_NAME}" ]]; then
+  echo "ERROR: JOB_NAME is empty and SLURM_JOB_NAME is unavailable." >&2
   exit 2
 fi
 
@@ -42,8 +42,9 @@ echo "AlignmentProject Synthetic63 training"
 echo "branch       = ${BRANCH}"
 echo "commit       = ${COMMIT}"
 echo "node         = $(hostname)"
-echo "job_id       = ${JOB_ID}"
-echo "weights_dir  = Weights/${JOB_ID}"
+echo "job_name     = ${JOB_NAME}"
+echo "slurm_job_id = ${SLURM_JOB_ID:-unknown}"
+echo "weights_dir  = Weights/${JOB_NAME}"
 echo "dataset      = ${DATASET}"
 echo "CUDA_VISIBLE_DEVICES = ${CUDA_VISIBLE_DEVICES:-unset}"
 echo "========================================"
