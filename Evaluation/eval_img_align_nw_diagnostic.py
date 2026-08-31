@@ -24,13 +24,8 @@ All evaluation defaults come from Parameters.py. The dataset resolver supports:
       <root>/valid_manifest.jsonl
       <root>/test_manifest.jsonl
 
-* native RealSyntheticBridge_v3::
-
-      <root>/images/real/<anchor_id>/real.*
-      <root>/images/positive/<anchor_id>/positive.png
-      <root>/masks/positive/<anchor_id>/positive_mask.png
-      <root>/dataset_manifest.jsonl
-      <root>/metadata.json
+* native RealSyntheticBridge V2/V3 datasets with ``dataset_manifest.jsonl``,
+  ``metadata.json``, and optional B-side ``alignment_mask_path``.
 
 * generic .jsonl/.json/.csv pair manifests. A generic manifest can describe a
   real-synthetic pair by setting per-side ``dataset_type``/``domain`` fields.
@@ -45,8 +40,12 @@ saves:
 * a value-annotated accumulated NW DP matrix + traceback;
 * binary predicted masks for both lines;
 * numeric CSV/NPY matrices and JSON traceback evidence;
-* synthetic-mask IoU/Dice/precision/recall when a ground-truth mask exists.
+* synthetic/Bridge mask IoU/Dice/precision/recall when ground truth exists.
 
+Bridge samples preserve their semantic domains (A=real, B=synthetic), but both
+sides intentionally use the real preprocessing pipeline because the manifest
+training loader applies the same real transform to A and B. This keeps evaluation
+preprocessing identical to training while still reporting the true pair domains.
 Arabic physical RTL display is preserved by the shared evaluation geometry.
 """
 from __future__ import annotations
@@ -122,6 +121,8 @@ class Pair:
     side1_type: str
     side2_type: str
     source_type: str
+    side1_preprocess: str = ""
+    side2_preprocess: str = ""
     pair_id: str = ""
     label_type: str = ""
     text_score: float = 0.0
@@ -129,6 +130,13 @@ class Pair:
     split: str = ""
     gt_mask1: Path | None = None
     gt_mask2: Path | None = None
+
+    def preprocess_domain(self, role: int) -> str:
+        if int(role) == 1:
+            return _domain(self.side1_preprocess, self.side1_type)
+        if int(role) == 2:
+            return _domain(self.side2_preprocess, self.side2_type)
+        raise ValueError("role must be 1 or 2")
 
 
 def _domain(value, default="synthetic") -> str:
@@ -182,21 +190,34 @@ def _explicit_split_manifest(root: Path, split: str) -> list[tuple[str, Path]]:
     return [(split, available[split])]
 
 
-def _bridge_v3_root(root: Path) -> bool:
+def _bridge_version(root: Path) -> int | None:
     if not root.is_dir() or not (root / "dataset_manifest.jsonl").is_file():
-        return False
+        return None
     metadata = root / "metadata.json"
     if metadata.is_file():
         try:
             payload = json.loads(metadata.read_text(encoding="utf-8"))
-            if int(payload.get("dataset_version", 0)) == 3:
-                return True
+            version = int(payload.get("dataset_version", 0) or 0)
+            if version in {2, 3}:
+                return version
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             pass
-    return (
+    try:
+        records = read_manifest_records(root / "dataset_manifest.jsonl")
+        if records:
+            bridge = records[0].get("bridge") if isinstance(records[0], dict) else None
+            if isinstance(bridge, dict):
+                version = int(bridge.get("dataset_version", 0) or 0)
+                if version in {2, 3}:
+                    return version
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    if (
         (root / "images" / "real").is_dir()
         and (root / "images" / "positive").is_dir()
-    )
+    ):
+        return 3
+    return None
 
 
 def _is_synthetic_flat(root: Path) -> bool:
@@ -216,13 +237,17 @@ def _find_matching_image(images: Path, role: int, index: int) -> Path | None:
 
 def _synthetic_mask(image: Path) -> Path | None:
     if image.name.startswith("img1_"):
-        name = "mask1_" + image.name[len("img1_") :]
+        mask_stem = "mask1_" + image.stem[len("img1_") :]
     elif image.name.startswith("img2_"):
-        name = "mask2_" + image.name[len("img2_") :]
+        mask_stem = "mask2_" + image.stem[len("img2_") :]
     else:
         return None
-    path = image.parent.parent / "masks" / name
-    return path if path.is_file() else None
+    masks = image.parent.parent / "masks"
+    for suffix in _IMAGE_SUFFIXES:
+        candidate = masks / f"{mask_stem}{suffix}"
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _synthetic_pairs(root: Path) -> list[Pair]:
@@ -249,6 +274,8 @@ def _synthetic_pairs(root: Path) -> list[Pair]:
                 side1_type="synthetic",
                 side2_type="synthetic",
                 source_type="synthetic",
+                side1_preprocess="synthetic",
+                side2_preprocess="synthetic",
                 pair_id=f"synthetic_{dataset_index}",
                 manifest_position=dataset_index,
                 gt_mask1=_synthetic_mask(image1),
@@ -278,6 +305,8 @@ def _real_pairs(manifest: Path, split: str) -> list[Pair]:
             side1_type="real",
             side2_type="real",
             source_type="real",
+            side1_preprocess="real",
+            side2_preprocess="real",
             pair_id=item.pair_id,
             label_type=item.label_type,
             text_score=float(item.text_score),
@@ -292,7 +321,7 @@ def _explicit_real_pairs(root: Path, split: str) -> list[Pair]:
     pairs: list[Pair] = []
     allowed = _allowed_labels()
     for split_name, manifest in _explicit_split_manifest(root, split):
-        for record in read_manifest_records(manifest):
+        for manifest_position, record in enumerate(read_manifest_records(manifest), 1):
             label = str(record.get("label_type", ""))
             if allowed is not None and label and label not in allowed:
                 continue
@@ -301,21 +330,25 @@ def _explicit_real_pairs(root: Path, split: str) -> list[Pair]:
                     f"Explicit split manifest must contain nested A/B records: {manifest}"
                 )
             a, b = record["A"], record["B"]
-            image1 = _resolve_path(_first(a, "line_image_path", "image_path", "image"), manifest)
-            image2 = _resolve_path(_first(b, "line_image_path", "image_path", "image"), manifest)
+            value1 = _first(a, "line_image_path", "image_path", "image")
+            value2 = _first(b, "line_image_path", "image_path", "image")
+            if value1 is None or value2 is None:
+                raise ValueError(f"Explicit split row {manifest_position} is missing A/B images")
             scores = record.get("scores") if isinstance(record.get("scores"), dict) else {}
             pairs.append(
                 Pair(
                     index=len(pairs) + 1,
-                    image1=image1,
-                    image2=image2,
+                    image1=_resolve_path(value1, manifest),
+                    image2=_resolve_path(value2, manifest),
                     side1_type="real",
                     side2_type="real",
                     source_type="real-synthetic-injection",
+                    side1_preprocess="real",
+                    side2_preprocess="real",
                     pair_id=str(record.get("pair_id", len(pairs) + 1)),
                     label_type=label,
                     text_score=float(scores.get("text_score", 0.0) or 0.0),
-                    manifest_position=len(pairs) + 1,
+                    manifest_position=manifest_position,
                     split=split_name,
                 )
             )
@@ -332,7 +365,7 @@ def _bridge_mask(record: dict, manifest: Path) -> Path | None:
     return path if path.is_file() else None
 
 
-def _bridge_v3_pairs(root: Path) -> list[Pair]:
+def _bridge_pairs(root: Path, version: int) -> list[Pair]:
     manifest = root / "dataset_manifest.jsonl"
     allowed = _allowed_labels()
     pairs = []
@@ -343,19 +376,23 @@ def _bridge_v3_pairs(root: Path) -> list[Pair]:
         if allowed is not None and label not in allowed:
             continue
         a, b = record["A"], record["B"]
-        image1_value = _first(a, "line_image_path", "image_path", "image")
-        image2_value = _first(b, "line_image_path", "image_path", "image")
-        if image1_value is None or image2_value is None:
-            raise ValueError(f"Bridge V3 row {position} is missing A/B image paths")
+        value1 = _first(a, "line_image_path", "image_path", "image")
+        value2 = _first(b, "line_image_path", "image_path", "image")
+        if value1 is None or value2 is None:
+            raise ValueError(f"Bridge row {position} is missing A/B image paths")
         scores = record.get("scores") if isinstance(record.get("scores"), dict) else {}
         pairs.append(
             Pair(
                 index=len(pairs) + 1,
-                image1=_resolve_path(image1_value, manifest),
-                image2=_resolve_path(image2_value, manifest),
+                image1=_resolve_path(value1, manifest),
+                image2=_resolve_path(value2, manifest),
                 side1_type="real",
                 side2_type="synthetic",
-                source_type="real-synthetic-bridge-v3",
+                source_type=f"real-synthetic-bridge-v{version}",
+                # ArabicManifestLinePairDataset applies one real transform to both
+                # sides during Bridge training, so evaluation must do the same.
+                side1_preprocess="real",
+                side2_preprocess="real",
                 pair_id=str(record.get("pair_id", position)),
                 label_type=label,
                 text_score=float(scores.get("text_score", 0.0) or 0.0),
@@ -387,6 +424,20 @@ def _infer_side_type(side: dict, record: dict, image: Path, role: int, fallback:
     return fallback
 
 
+def _infer_preprocess(side: dict, record: dict, role: int, semantic_type: str) -> str:
+    for mapping in (side, record):
+        for key in (
+            "preprocess",
+            "preprocessing",
+            "transform_domain",
+            f"side{role}_preprocess",
+            f"image{role}_preprocess",
+        ):
+            if mapping.get(key) not in (None, ""):
+                return _domain(mapping[key], semantic_type)
+    return semantic_type
+
+
 def _generic_manifest_pairs(manifest: Path) -> list[Pair]:
     pairs = []
     for position, record in enumerate(read_manifest_records(manifest), 1):
@@ -414,6 +465,8 @@ def _generic_manifest_pairs(manifest: Path) -> list[Pair]:
             text_score = float(record.get("text_score", 0.0) or 0.0)
         type1 = _infer_side_type(a, record, image1, 1, fallback)
         type2 = _infer_side_type(b, record, image2, 2, fallback)
+        preprocess1 = _infer_preprocess(a, record, 1, type1)
+        preprocess2 = _infer_preprocess(b, record, 2, type2)
         source_type = type1 if type1 == type2 else "real-synthetic"
         gt_mask1 = _synthetic_mask(image1) if type1 == "synthetic" else None
         gt_mask2 = _synthetic_mask(image2) if type2 == "synthetic" else None
@@ -427,6 +480,8 @@ def _generic_manifest_pairs(manifest: Path) -> list[Pair]:
                 side1_type=type1,
                 side2_type=type2,
                 source_type=source_type,
+                side1_preprocess=preprocess1,
+                side2_preprocess=preprocess2,
                 pair_id=str(record.get("pair_id", record.get("id", position))),
                 label_type=str(record.get("label_type", "")),
                 text_score=text_score,
@@ -440,8 +495,9 @@ def _generic_manifest_pairs(manifest: Path) -> list[Pair]:
 
 
 def _load_one_root(root: Path, real_split: str) -> tuple[str, list[Pair]]:
-    if _bridge_v3_root(root):
-        return "real-synthetic-bridge-v3", _bridge_v3_pairs(root)
+    bridge_version = _bridge_version(root)
+    if bridge_version is not None:
+        return f"real-synthetic-bridge-v{bridge_version}", _bridge_pairs(root, bridge_version)
     if _explicit_split_manifest(root, real_split):
         return "real-synthetic-injection", _explicit_real_pairs(root, real_split)
     manifest = _real_manifest(root)
@@ -465,8 +521,9 @@ def _load_one_root(root: Path, real_split: str) -> tuple[str, list[Pair]]:
 def load_pairs(dataset: Path, real_split: str) -> tuple[str, list[Pair]]:
     if dataset.is_file():
         parent = dataset.parent
-        if dataset.name == "dataset_manifest.jsonl" and _bridge_v3_root(parent):
-            return "real-synthetic-bridge-v3", _bridge_v3_pairs(parent)
+        bridge_version = _bridge_version(parent)
+        if dataset.name == "dataset_manifest.jsonl" and bridge_version is not None:
+            return f"real-synthetic-bridge-v{bridge_version}", _bridge_pairs(parent, bridge_version)
         if dataset.name in {"train_manifest.jsonl", "valid_manifest.jsonl", "test_manifest.jsonl"}:
             split_name = dataset.name.split("_", 1)[0]
             return "real-synthetic-injection", _explicit_real_pairs(parent, split_name)
@@ -486,7 +543,7 @@ def load_pairs(dataset: Path, real_split: str) -> tuple[str, list[Pair]]:
     if not groups:
         raise ValueError(
             "Unrecognized dataset layout. Expected a synthetic images/ folder, "
-            "ArabicDataset manifest, explicit split manifests, Bridge V3, or pair manifest."
+            "ArabicDataset manifest, explicit split manifests, Bridge V2/V3, or pair manifest."
         )
 
     combined = []
@@ -498,10 +555,10 @@ def load_pairs(dataset: Path, real_split: str) -> tuple[str, list[Pair]]:
     return (next(iter(kinds)) if len(kinds) == 1 else "real-synthetic-mixed-root"), combined
 
 
-def _prepare(path: Path, domain: str, temporary_root: Path, role: int):
+def _prepare(path: Path, preprocess_domain: str, temporary_root: Path, role: int):
     if not path.is_file():
         raise FileNotFoundError(f"Missing input image: {path}")
-    if domain == "real":
+    if preprocess_domain == "real":
         array = display_image(path, "real")
         model_path = temporary_root / f"line{role}.png"
         Image.fromarray(array).save(model_path)
@@ -610,7 +667,7 @@ def _visualize(
         traceback_label="NW traceback: terminal (N,M) → origin (0,0)",
         traceback_start_label="terminal DP boundary (N,M)",
         traceback_end_label="global origin (0,0)",
-        binarized=pair.side1_type == "real" or pair.side2_type == "real",
+        binarized=pair.preprocess_domain(1) == "real" or pair.preprocess_domain(2) == "real",
         annotate_values=True,
         window_size=getattr(models.image_model, "window_size", None),
         stride=getattr(models.image_model, "stride", None),
@@ -620,20 +677,20 @@ def _visualize(
 def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="nw_diag_") as temporary:
-        arr1, model_image1 = _prepare(pair.image1, pair.side1_type, Path(temporary), 1)
-        arr2, model_image2 = _prepare(pair.image2, pair.side2_type, Path(temporary), 2)
+        preprocess1 = pair.preprocess_domain(1)
+        preprocess2 = pair.preprocess_domain(2)
+        arr1, model_image1 = _prepare(pair.image1, preprocess1, Path(temporary), 1)
+        arr2, model_image2 = _prepare(pair.image2, preprocess2, Path(temporary), 2)
 
+        # Both inputs are already transformed into their training-equivalent
+        # display geometry. Using synthetic here applies only Resize+Normalize.
         features1 = get_image_features(models, model_image1, "synthetic")
         features2 = get_image_features(models, model_image2, "synthetic")
         cosine = compute_similarity(
             features1.select(args.feature), features2.select(args.feature)
         ).detach().cpu().numpy().astype(np.float32)
 
-        scoring_domain = (
-            "real"
-            if "real" in {pair.side1_type, pair.side2_type}
-            else "synthetic"
-        )
+        scoring_domain = "real" if "real" in {preprocess1, preprocess2} else "synthetic"
         resolved_mode = resolve_score_mode(args.score_mode, scoring_domain)
         match_scores = build_match_scores(
             cosine, resolved_mode, args.score_clip, args.threshold
@@ -675,53 +732,23 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
         )
 
         _visualize(
-            models,
-            pair,
-            arr1,
-            arr2,
-            features1,
-            features2,
-            full_path,
-            component_path,
-            traceback,
-            cosine,
+            models, pair, arr1, arr2, features1, features2,
+            full_path, component_path, traceback, cosine,
             "raw cosine similarity (every window-pair value shown)",
-            result,
-            resolved_mode,
-            output_dir / "cosine_similarity_values.png",
+            result, resolved_mode, output_dir / "cosine_similarity_values.png",
         )
         _visualize(
-            models,
-            pair,
-            arr1,
-            arr2,
-            features1,
-            features2,
-            full_path,
-            component_path,
-            traceback,
-            match_scores,
+            models, pair, arr1, arr2, features1, features2,
+            full_path, component_path, traceback, match_scores,
             "NW diagonal match score (every value shown)",
-            result,
-            resolved_mode,
-            output_dir / "nw_match_scores_values.png",
+            result, resolved_mode, output_dir / "nw_match_scores_values.png",
         )
         dp_scores = np.asarray(result.score_matrix[1:, 1:], dtype=np.float32)
         _visualize(
-            models,
-            pair,
-            arr1,
-            arr2,
-            features1,
-            features2,
-            full_path,
-            component_path,
-            traceback,
-            dp_scores,
+            models, pair, arr1, arr2, features1, features2,
+            full_path, component_path, traceback, dp_scores,
             "accumulated global NW DP score (every value shown)",
-            result,
-            resolved_mode,
-            output_dir / "nw_dp_trace_values.png",
+            result, resolved_mode, output_dir / "nw_dp_trace_values.png",
         )
 
         evidence = save_numeric_evidence(
@@ -757,9 +784,7 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
         supported_cosines = [float(cosine[i, j]) for i, j in component_path]
         full_cosines = [float(cosine[i, j]) for i, j in full_path]
         gap_steps = sum(
-            1
-            for step in result.steps
-            if step.index1 is None or step.index2 is None
+            1 for step in result.steps if step.index1 is None or step.index2 is None
         )
         row = {
             "index": int(pair.index),
@@ -767,6 +792,8 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
             "source_type": pair.source_type,
             "side1_type": pair.side1_type,
             "side2_type": pair.side2_type,
+            "side1_preprocess": preprocess1,
+            "side2_preprocess": preprocess2,
             "label_type": pair.label_type,
             "text_score": float(pair.text_score),
             "split": pair.split,
@@ -802,8 +829,7 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
             float(np.mean(available_ious)) if available_ious else None
         )
         (output_dir / "summary.json").write_text(
-            json.dumps(row, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+            json.dumps(row, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         return row
 
@@ -816,38 +842,31 @@ def parse_args():
     parser.add_argument("--device", default="auto")
     parser.add_argument("--start-index", type=int, default=1)
     parser.add_argument(
-        "--n-samples",
-        type=int,
+        "--n-samples", type=int,
         default=int(getattr(P, "evaluation_n_samples", 100)),
     )
     parser.add_argument(
-        "--real-split",
-        choices=("all", "train", "valid", "test"),
+        "--real-split", choices=("all", "train", "valid", "test"),
         default=str(getattr(P, "evaluation_real_split", "test")),
     )
     parser.add_argument(
-        "--feature",
-        choices=("contextual", "local", "grouped"),
+        "--feature", choices=("contextual", "local", "grouped"),
         default=str(getattr(P, "evaluation_feature", "contextual")),
     )
     parser.add_argument(
-        "--score-mode",
-        choices=("auto", "raw", "centered", "mutual-z"),
+        "--score-mode", choices=("auto", "raw", "centered", "mutual-z"),
         default=str(getattr(P, "evaluation_score_mode", "auto")),
     )
     parser.add_argument(
-        "--score-clip",
-        type=float,
+        "--score-clip", type=float,
         default=float(getattr(P, "evaluation_score_clip", 4.0)),
     )
     parser.add_argument(
-        "--threshold",
-        type=float,
+        "--threshold", type=float,
         default=float(getattr(P, "evaluation_threshold", 0.0)),
     )
     parser.add_argument(
-        "--gap",
-        type=float,
+        "--gap", type=float,
         default=float(getattr(P, "evaluation_gap", -0.30)),
     )
     return parser.parse_args()
@@ -925,6 +944,8 @@ def main():
             row["output"] = str(pair_dir)
             print(
                 f"[{pair.index}] type={pair.source_type} "
+                f"domains={pair.side1_type}->{pair.side2_type} "
+                f"preprocess={row['side1_preprocess']}->{row['side2_preprocess']} "
                 f"NW={row['normalized_nw_score']:.4f} "
                 f"components={row['component_count']} "
                 f"supported={row['path_steps']}/{row['full_match_steps']} "
@@ -978,8 +999,7 @@ def main():
         "real_split": args.real_split,
     }
     (output_dir / "summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print(f"Saved summary: {output_dir / 'summary.json'}", flush=True)
 
