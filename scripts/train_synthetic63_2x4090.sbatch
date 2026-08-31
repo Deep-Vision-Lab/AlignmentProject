@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=vit_synthetic63
+#SBATCH --job-name=vit_planA
 #SBATCH --partition=rtx4090
 #SBATCH --gpus=rtx_4090:2
 #SBATCH --ntasks=1
