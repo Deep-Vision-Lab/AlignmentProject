@@ -6,7 +6,7 @@ import os
 import torch
 
 from Evaluation import _eval_utils
-from vit_embedding_model import ViTEmbeddingModel
+from embeddingModel import EmbeddingModel
 
 
 def _bool(value, default=False) -> bool:
@@ -25,7 +25,7 @@ def _checkpoint_config(weights_path) -> dict:
 
 
 def install_vit_evaluation_loader() -> None:
-    """Dispatch checkpoint reconstruction to ViT only when recorded in config."""
+    """Reconstruct the canonical ViT with the architecture stored in a checkpoint."""
     if getattr(_eval_utils, "_vit_evaluation_loader_installed", False):
         return
 
@@ -34,7 +34,10 @@ def install_vit_evaluation_loader() -> None:
     def load_evaluation_models(weights_path, device="auto", load_text_model=True):
         config = _checkpoint_config(weights_path)
         encoder_type = str(
-            config.get("visual_encoder_type", os.environ.get("VISUAL_ENCODER_TYPE", "cnn_bilstm"))
+            config.get(
+                "visual_encoder_type",
+                os.environ.get("VISUAL_ENCODER_TYPE", "vit"),
+            )
         ).strip().lower()
         if encoder_type != "vit":
             return original_loader(weights_path, device, load_text_model)
@@ -49,7 +52,7 @@ def install_vit_evaluation_loader() -> None:
             use_flip=False,
             **_ignored,
         ):
-            return ViTEmbeddingModel(
+            return EmbeddingModel(
                 window_size=int(window_size),
                 stride=int(stride),
                 vector_size=int(vector_size),
