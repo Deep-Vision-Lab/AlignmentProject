@@ -1,11 +1,11 @@
 import torch
 
 from Evaluation.vit_evaluation import install_vit_evaluation_loader
-from vit_embedding_model import ViTEmbeddingModel
+from embeddingModel import EmbeddingModel
 
 
 def _model(use_flip=False):
-    return ViTEmbeddingModel(
+    return EmbeddingModel(
         window_size=32,
         stride=16,
         vector_size=64,
@@ -32,7 +32,6 @@ def test_vit_emits_one_token_per_existing_sliding_window():
             return_ink=True,
         )
 
-    # floor((1024 - 32) / 16) + 1 = 63
     assert contextual.shape == (1, 63, 64)
     assert local.shape == (1, 63, 64)
     assert grouped.shape == (1, 63, 64)
@@ -40,14 +39,32 @@ def test_vit_emits_one_token_per_existing_sliding_window():
     torch.testing.assert_close(grouped, local)
 
 
-def test_vit_replaces_cnn_and_bilstm_modules():
+def test_embedding_model_is_the_pure_vit_model():
     model = _model()
 
+    assert model.visual_encoder_type == "vit"
     assert model.use_bilstm is False
     assert model.use_local_grouping is False
+    assert hasattr(model, "vit_encoder")
+    assert not hasattr(model, "cnn_encoder")
+    assert not hasattr(model, "sequence_encoder")
     assert not any(isinstance(module, torch.nn.LSTM) for module in model.modules())
     assert model.model_config()["visual_encoder_type"] == "vit"
     assert model.model_config()["use_bilstm"] is False
+
+
+def test_shared_legacy_constructor_flags_work_when_disabled():
+    model = EmbeddingModel(
+        vector_size=64,
+        device="cpu",
+        vit_heads=4,
+        use_bilstm=False,
+        bilstm_layers=2,
+        bilstm_hidden_dim=64,
+        use_local_grouping=False,
+        local_group_size=3,
+    )
+    assert model.visual_encoder_type == "vit"
 
 
 def test_arabic_flip_reverses_local_window_token_order():
@@ -64,7 +81,7 @@ def test_arabic_flip_reverses_local_window_token_order():
 
 def test_vit_heads_must_divide_embedding_dimension():
     try:
-        ViTEmbeddingModel(
+        EmbeddingModel(
             vector_size=62,
             vit_heads=4,
             device="cpu",
@@ -109,6 +126,6 @@ def test_evaluation_reconstructs_vit_from_checkpoint_config(tmp_path):
         load_text_model=False,
     )
 
-    assert isinstance(loaded.image_model, ViTEmbeddingModel)
+    assert isinstance(loaded.image_model, EmbeddingModel)
     assert loaded.image_model.use_flip is True
     assert loaded.config["visual_encoder_type"] == "vit"
