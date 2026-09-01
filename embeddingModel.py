@@ -1,27 +1,59 @@
+"""Canonical patch-based Transformer visual encoder for line-image alignment.
+
+All ViT branches import :class:`EmbeddingModel` from this module.  It replaces
+the historical ResNet/BiLSTM implementation while preserving the shared model
+contract used by training and evaluation:
+- contextual window embeddings are returned by default;
+- ``return_local=True`` exposes pre-Transformer local patch tokens;
+- ``return_grouped=True`` returns local tokens (there is no separate grouping
+  stage in the pure-ViT architecture);
+- ``return_ink=True`` returns one foreground/ink ratio per horizontal window.
+
+The full-height patch projection is a ViT patch embedding, not a CNN feature
+hierarchy.  Existing ViT checkpoints remain state-dict compatible because the
+``vit_encoder.*`` and ``vision_norm.*`` parameter names are unchanged.
+"""
+from __future__ import annotations
+
 import os
 
 import torch
 import torch.nn as nn
-import torchvision
+import torch.nn.functional as F
 
 
 _IMAGENET_MEAN = (0.485, 0.456, 0.406)
 _IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
-def _env_flag(name, default=False):
+def _env_flag(name: str, default: bool = False) -> bool:
     value = os.environ.get(name)
     if value is None:
         return bool(default)
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def sliding_window(image, window_size, stride):
-    patches = image.unfold(dimension=3, size=window_size, step=stride)
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def sliding_window(image: torch.Tensor, window_size: int, stride: int) -> torch.Tensor:
+    """Return horizontal full-height windows as ``[B, S, C, H, W]``."""
+    patches = image.unfold(dimension=3, size=int(window_size), step=int(stride))
     return patches.permute(0, 3, 1, 2, 4).contiguous()
 
 
-def _denormalize_imagenet_patches(patches):
+def _denormalize_imagenet_patches(patches: torch.Tensor) -> torch.Tensor:
     if patches.ndim != 5:
         raise ValueError(
             "Expected patches with shape [B, S, C, H, W], "
@@ -37,7 +69,7 @@ def _denormalize_imagenet_patches(patches):
     return (patches.float() * std + mean).clamp(0.0, 1.0)
 
 
-def _patch_background_level(gray):
+def _patch_background_level(gray: torch.Tensor) -> torch.Tensor:
     height, width = int(gray.shape[-2]), int(gray.shape[-1])
     border_h = max(1, int(round(height * 0.05)))
     border_w = max(1, int(round(width * 0.05)))
@@ -53,12 +85,13 @@ def _patch_background_level(gray):
     return border.median(dim=-1).values.unsqueeze(-1).unsqueeze(-1)
 
 
-def window_ink_ratio_from_patches(patches, contrast_threshold=None):
-    """Estimate foreground coverage for either image polarity."""
+def window_ink_ratio_from_patches(
+    patches: torch.Tensor,
+    contrast_threshold: float | None = None,
+) -> torch.Tensor:
+    """Estimate foreground coverage for every window and either image polarity."""
     if contrast_threshold is None:
-        contrast_threshold = float(
-            os.environ.get("INK_CONTRAST_THRESHOLD", "0.15")
-        )
+        contrast_threshold = float(os.environ.get("INK_CONTRAST_THRESHOLD", "0.15"))
     contrast_threshold = max(0.0, min(1.0, float(contrast_threshold)))
     with torch.no_grad():
         rgb = _denormalize_imagenet_patches(patches.detach())
@@ -72,290 +105,143 @@ def window_ink_ratio_from_patches(patches, contrast_threshold=None):
         return ink.mean(dim=(2, 3))
 
 
-class LocalWindowGrouping(nn.Module):
-    """Fuse left/current/right windows through a conservative learned gate.
+class LineWindowViT(nn.Module):
+    """Convert overlapping full-height line windows into contextual tokens."""
 
-    The residual Conv1d starts at zero. A per-window/per-feature gate starts near
-    zero as well, so neighboring characters cannot immediately leak into the
-    current window representation. Training opens the gate only where the
-    neighboring evidence is useful.
-    """
-
-    def __init__(self, embed_dim, group_size=3):
+    def __init__(self, *, input_height: int, window_size: int, stride: int, embed_dim: int, num_layers: int, num_heads: int, mlp_dim: int, dropout: float, max_tokens: int, position_base_tokens: int) -> None:
         super().__init__()
-        group_size = int(group_size)
-        if group_size != 3:
-            raise ValueError(
-                "LOCAL_GROUP_SIZE currently supports exactly 3 windows"
-            )
-        self.group_size = group_size
-        self.conv = nn.Conv1d(
-            embed_dim,
-            embed_dim,
-            kernel_size=group_size,
-            padding=group_size // 2,
-            bias=False,
-        )
-        self.gate = nn.Linear(embed_dim * 2, embed_dim)
-        self.mix_logit = nn.Parameter(torch.tensor(0.0))
-        nn.init.zeros_(self.conv.weight)
-        nn.init.zeros_(self.gate.weight)
-        nn.init.constant_(self.gate.bias, -3.0)
+        input_height, window_size, stride, embed_dim = int(input_height), int(window_size), int(stride), int(embed_dim)
+        num_layers, num_heads, mlp_dim = int(num_layers), int(num_heads), int(mlp_dim)
+        max_tokens, position_base_tokens = int(max_tokens), int(position_base_tokens)
+        if input_height <= 0 or window_size <= 0 or stride <= 0:
+            raise ValueError("input_height, window_size, and stride must be positive")
+        if num_layers <= 0 or num_heads <= 0 or mlp_dim <= 0:
+            raise ValueError("ViT layers, heads, and MLP dimension must be positive")
+        if embed_dim % num_heads != 0:
+            raise ValueError(f"VIT_HEADS={num_heads} must divide VECTOR_SIZE={embed_dim}")
+        if max_tokens <= 0:
+            raise ValueError("VIT_MAX_TOKENS must be positive")
+        if position_base_tokens <= 0 or position_base_tokens > max_tokens:
+            raise ValueError("VIT_POSITION_BASE_TOKENS must be positive and no larger than " f"VIT_MAX_TOKENS={max_tokens}, got {position_base_tokens}")
+        self.input_height, self.window_size, self.stride = input_height, window_size, stride
+        self.embed_dim, self.max_tokens, self.position_base_tokens = embed_dim, max_tokens, position_base_tokens
+        self.patch_embedding = nn.Conv2d(3, embed_dim, kernel_size=(input_height, window_size), stride=(input_height, stride), padding=0, bias=True)
+        self.local_norm = nn.LayerNorm(embed_dim)
+        self.position_embedding = nn.Parameter(torch.zeros(1, max_tokens, embed_dim))
+        self.input_dropout = nn.Dropout(float(dropout))
+        layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, dim_feedforward=mlp_dim, dropout=float(dropout), activation="gelu", batch_first=True, norm_first=True)
+        self.encoder = nn.TransformerEncoder(layer, num_layers=num_layers, norm=nn.LayerNorm(embed_dim))
+        self._reset_parameters()
 
-    def _load_from_state_dict(
-        self,
-        state_dict,
-        prefix,
-        local_metadata,
-        strict,
-        missing_keys,
-        unexpected_keys,
-        error_msgs,
-    ):
-        # A checkpoint produced before the per-window gate already learned its
-        # ungated Conv1d. Preserve that behavior by opening the new gate on load.
-        legacy_grouping = (
-            prefix + "conv.weight" in state_dict
-            and prefix + "gate.weight" not in state_dict
-        )
-        if prefix + "gate.weight" not in state_dict:
-            state_dict[prefix + "gate.weight"] = self.gate.weight.detach().clone()
-        if prefix + "gate.bias" not in state_dict:
-            bias = self.gate.bias.detach().clone()
-            if legacy_grouping:
-                bias.fill_(8.0)
-            state_dict[prefix + "gate.bias"] = bias
-        if prefix + "mix_logit" not in state_dict:
-            state_dict[prefix + "mix_logit"] = self.mix_logit.detach().clone()
-        super()._load_from_state_dict(
-            state_dict,
-            prefix,
-            local_metadata,
-            strict,
-            missing_keys,
-            unexpected_keys,
-            error_msgs,
-        )
+    def _reset_parameters(self) -> None:
+        nn.init.trunc_normal_(self.position_embedding, std=0.02)
+        nn.init.xavier_uniform_(self.patch_embedding.weight)
+        if self.patch_embedding.bias is not None:
+            nn.init.zeros_(self.patch_embedding.bias)
 
-    def forward(self, x):
-        neighbor_delta = self.conv(x.transpose(1, 2)).transpose(1, 2)
-        gate = torch.sigmoid(self.gate(torch.cat([x, neighbor_delta], dim=-1)))
-        global_mix = torch.sigmoid(self.mix_logit)
-        return x + global_mix * gate * neighbor_delta
+    def _position_tokens(self, count: int) -> torch.Tensor:
+        count = int(count)
+        if count <= 0:
+            raise ValueError("position token count must be positive")
+        base = self.position_embedding[:, : self.position_base_tokens]
+        if count == self.position_base_tokens:
+            return base
+        return F.interpolate(base.transpose(1, 2), size=count, mode="linear", align_corners=False).transpose(1, 2)
 
-
-class BiLSTMEncoder(nn.Module):
-    def __init__(self, embed_dim, hidden_dim=None, lstm_layers=1):
-        super().__init__()
-        hidden_dim = hidden_dim or embed_dim // 2
-        self.bilstm = nn.LSTM(
-            input_size=embed_dim,
-            hidden_size=hidden_dim,
-            num_layers=lstm_layers,
-            batch_first=True,
-            bidirectional=True,
-        )
-        self.proj = nn.Linear(hidden_dim * 2, embed_dim)
-        self.norm = nn.LayerNorm(embed_dim)
-
-    def forward(self, x):
-        residual = x
-        self.bilstm.flatten_parameters()
-        x, _ = self.bilstm(x)
-        x = self.proj(x)
-        return self.norm(x + residual)
-
-
-class ModifiedOCRResNet34(nn.Module):
-    def __init__(self, vector_size=512):
-        super().__init__()
-        try:
-            base_resnet = torchvision.models.resnet34(
-                weights=torchvision.models.ResNet34_Weights.IMAGENET1K_V1
-            )
-        except Exception as exc:
-            print(
-                "[ModifiedOCRResNet34] ImageNet weights unavailable "
-                f"({exc}); using weights=None.",
-                flush=True,
-            )
-            base_resnet = torchvision.models.resnet34(weights=None)
-
-        base_resnet.layer3[0].conv1.stride = (2, 1)
-        base_resnet.layer3[0].downsample[0].stride = (2, 1)
-        base_resnet.layer4[0].conv1.stride = (2, 1)
-        base_resnet.layer4[0].downsample[0].stride = (2, 1)
-
-        self.backbone = nn.Sequential(
-            base_resnet.conv1,
-            base_resnet.bn1,
-            base_resnet.relu,
-            base_resnet.maxpool,
-            base_resnet.layer1,
-            base_resnet.layer2,
-            base_resnet.layer3,
-            base_resnet.layer4,
-        )
-        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.feature_proj = nn.Linear(512, vector_size)
-
-    def forward(self, x):
-        x = self.backbone(x)
-        x = self.adaptive_pool(x).flatten(1)
-        return self.feature_proj(x)
+    def forward(self, image: torch.Tensor, *, use_flip: bool) -> tuple[torch.Tensor, torch.Tensor]:
+        if image.ndim != 4 or image.shape[1] != 3:
+            raise ValueError("ViT input must have shape [B, 3, H, W], " f"got {tuple(image.shape)}")
+        if int(image.shape[2]) != self.input_height:
+            raise ValueError(f"ViT expects input height {self.input_height}, got {image.shape[2]}")
+        if int(image.shape[3]) < self.window_size:
+            raise ValueError(f"Input width {image.shape[3]} is smaller than window size {self.window_size}")
+        tokens = self.patch_embedding(image)
+        if tokens.shape[2] != 1:
+            raise RuntimeError("Full-height patch embedding should produce one vertical token row, " f"got shape {tuple(tokens.shape)}")
+        tokens = tokens.squeeze(2).transpose(1, 2).contiguous()
+        if use_flip:
+            tokens = torch.flip(tokens, dims=[1])
+        local_tokens = self.local_norm(tokens)
+        contextual = local_tokens + self._position_tokens(local_tokens.shape[1]).to(dtype=local_tokens.dtype, device=local_tokens.device)
+        contextual = self.encoder(self.input_dropout(contextual))
+        return contextual, local_tokens
 
 
 class EmbeddingModel(nn.Module):
-    CNN_CHUNK_SIZE = 512
+    """Pure-ViT image embedder used by every ViT branch."""
+    visual_encoder_type = "vit"
 
-    def __init__(
-        self,
-        window_size=128,
-        stride=64,
-        vector_size=512,
-        device="cuda",
-        use_flip=False,
-        use_bilstm=True,
-        bilstm_layers=1,
-        bilstm_hidden_dim=None,
-        use_local_grouping=None,
-        local_group_size=3,
-    ):
+    def __init__(self, window_size: int = 32, stride: int = 16, vector_size: int = 128, device: str | torch.device = "cuda", use_flip: bool = False, input_height: int | None = None, vit_layers: int | None = None, vit_heads: int | None = None, vit_mlp_dim: int | None = None, vit_dropout: float | None = None, vit_max_tokens: int | None = None, vit_position_base_tokens: int | None = None, *, use_bilstm: bool = False, bilstm_layers: int | None = None, bilstm_hidden_dim: int | None = None, use_local_grouping: bool | None = False, local_group_size: int | None = None, **_ignored) -> None:
         super().__init__()
-        self.device = device
-        self.window_size = window_size
-        self.stride = stride
-        self.vector_size = vector_size
-        self.use_bilstm = use_bilstm
-
-        # Persist sequence direction in the checkpoint. Previously the evaluator
-        # had to guess this independently from the training configuration.
-        self.register_buffer(
-            "_use_flip_state",
-            torch.tensor(1 if use_flip else 0, dtype=torch.uint8),
-        )
-
-        if use_local_grouping is None:
-            use_local_grouping = _env_flag("USE_LOCAL_WINDOW_GROUPING", True)
-        self.register_buffer(
-            "_use_local_grouping_state",
-            torch.tensor(1 if use_local_grouping else 0, dtype=torch.uint8),
-        )
-        self.local_group_encoder = LocalWindowGrouping(
-            embed_dim=vector_size,
-            group_size=local_group_size,
-        ).to(device)
-
-        self.cnn_encoder = ModifiedOCRResNet34(vector_size=vector_size).to(device)
-        self.sequence_encoder = None
-        if use_bilstm:
-            self.sequence_encoder = BiLSTMEncoder(
-                embed_dim=vector_size,
-                hidden_dim=bilstm_hidden_dim,
-                lstm_layers=bilstm_layers,
-            ).to(device)
-        self.vision_norm = nn.LayerNorm(vector_size).to(device)
+        if bool(use_bilstm):
+            raise ValueError("EmbeddingModel is the pure ViT encoder on ViT branches; use_bilstm=True is not supported.")
+        if bool(use_local_grouping):
+            raise ValueError("EmbeddingModel is the pure ViT encoder on ViT branches; use_local_grouping=True is not supported.")
+        del bilstm_layers, bilstm_hidden_dim, local_group_size
+        self.device, self.window_size, self.stride, self.vector_size = device, int(window_size), int(stride), int(vector_size)
+        self.input_height = int(_env_int("VIT_INPUT_HEIGHT", 128) if input_height is None else input_height)
+        self.use_bilstm = False
+        self.vit_layers = int(_env_int("VIT_LAYERS", 4) if vit_layers is None else vit_layers)
+        self.vit_heads = int(_env_int("VIT_HEADS", 4) if vit_heads is None else vit_heads)
+        self.vit_mlp_dim = int(_env_int("VIT_MLP_DIM", 512) if vit_mlp_dim is None else vit_mlp_dim)
+        self.vit_dropout = float(_env_float("VIT_DROPOUT", 0.10) if vit_dropout is None else vit_dropout)
+        self.vit_max_tokens = int(_env_int("VIT_MAX_TOKENS", 256) if vit_max_tokens is None else vit_max_tokens)
+        self.vit_position_base_tokens = int(_env_int("VIT_POSITION_BASE_TOKENS", 63) if vit_position_base_tokens is None else vit_position_base_tokens)
+        self.register_buffer("_use_flip_state", torch.tensor(1 if use_flip else 0, dtype=torch.uint8))
+        self.register_buffer("_use_local_grouping_state", torch.tensor(0, dtype=torch.uint8))
+        self.vit_encoder = LineWindowViT(input_height=self.input_height, window_size=self.window_size, stride=self.stride, embed_dim=self.vector_size, num_layers=self.vit_layers, num_heads=self.vit_heads, mlp_dim=self.vit_mlp_dim, dropout=self.vit_dropout, max_tokens=self.vit_max_tokens, position_base_tokens=self.vit_position_base_tokens).to(device)
+        self.vision_norm = nn.LayerNorm(self.vector_size).to(device)
 
     @property
-    def use_flip(self):
+    def use_flip(self) -> bool:
         return bool(int(self._use_flip_state.item()))
 
     @property
-    def use_local_grouping(self):
-        return bool(int(self._use_local_grouping_state.item()))
+    def use_local_grouping(self) -> bool:
+        return False
 
-    def _load_from_state_dict(
-        self,
-        state_dict,
-        prefix,
-        local_metadata,
-        strict,
-        missing_keys,
-        unexpected_keys,
-        error_msgs,
-    ):
-        flip_key = prefix + "_use_flip_state"
-        if flip_key not in state_dict:
-            state_dict[flip_key] = self._use_flip_state.detach().clone()
-
-        grouping_key = prefix + "_use_local_grouping_state"
-        force_grouping = _env_flag("FORCE_LOCAL_WINDOW_GROUPING", False)
-        if grouping_key not in state_dict:
-            self._use_local_grouping_state.fill_(1 if force_grouping else 0)
-            state_dict[grouping_key] = self._use_local_grouping_state.detach().clone()
-
-        # Conv/gate compatibility is also handled by LocalWindowGrouping, but
-        # strict parent loading expects every submodule key to be present.
-        for name, value in self.local_group_encoder.state_dict().items():
-            key = prefix + "local_group_encoder." + name
-            if key not in state_dict:
-                if (
-                    name == "gate.bias"
-                    and prefix + "local_group_encoder.conv.weight" in state_dict
-                ):
-                    value = value.detach().clone().fill_(8.0)
-                state_dict[key] = value.detach().clone()
-
-        super()._load_from_state_dict(
-            state_dict,
-            prefix,
-            local_metadata,
-            strict,
-            missing_keys,
-            unexpected_keys,
-            error_msgs,
-        )
-
-    def _process_patches(self, patches):
-        batch_size, windows_num, channels, height, width = patches.shape
-        total_patches = batch_size * windows_num
-        patches = patches.reshape(total_patches, channels, height, width)
-        chunks = []
-        for start in range(0, total_patches, self.CNN_CHUNK_SIZE):
-            end = min(start + self.CNN_CHUNK_SIZE, total_patches)
-            chunks.append(self.cnn_encoder(patches[start:end]))
-        encoded = torch.cat(chunks, dim=0)
-        return encoded.view(batch_size, windows_num, self.vector_size)
-
-    def forward(
-        self,
-        image,
-        show_dims=False,
-        return_local=False,
-        return_ink=False,
-        return_grouped=False,
-    ):
-        patches = sliding_window(image, self.window_size, self.stride)
-        if self.use_flip:
-            patches = torch.flip(patches, dims=[1])
-        ink_ratio = (
-            window_ink_ratio_from_patches(patches) if return_ink else None
-        )
-
-        local_features_raw = self._process_patches(patches)
-        grouped_features = local_features_raw
-        if self.use_local_grouping:
-            grouped_features = self.local_group_encoder(grouped_features)
-
-        contextual_features = grouped_features
-        if self.sequence_encoder is not None:
-            contextual_features = self.sequence_encoder(contextual_features)
-        contextual_features = self.vision_norm(contextual_features)
-
-        if show_dims:
-            print(
-                "image embeddings: "
-                f"contextual={tuple(contextual_features.shape)} "
-                f"flip={self.use_flip} "
-                f"local_grouping={self.use_local_grouping}",
-                flush=True,
-            )
-
-        outputs = [contextual_features]
-        if return_local:
-            outputs.append(self.vision_norm(local_features_raw))
-        if return_grouped:
-            outputs.append(self.vision_norm(grouped_features))
+    def forward(self, image: torch.Tensor, show_dims: bool = False, return_local: bool = False, return_ink: bool = False, return_grouped: bool = False):
+        contextual, local = self.vit_encoder(image, use_flip=self.use_flip)
+        ink_ratio = None
         if return_ink:
-            outputs.append(ink_ratio)
+            patches = sliding_window(image, self.window_size, self.stride)
+            if self.use_flip:
+                patches = torch.flip(patches, dims=[1])
+            ink_ratio = window_ink_ratio_from_patches(patches)
+            if ink_ratio.shape[1] != local.shape[1]:
+                raise RuntimeError("ViT token count and ink-window count differ: " f"{local.shape[1]} != {ink_ratio.shape[1]}")
+        contextual, local = self.vision_norm(contextual), self.vision_norm(local)
+        grouped = local
+        if show_dims:
+            print("image embeddings: " f"encoder=vit contextual={tuple(contextual.shape)} " f"local={tuple(local.shape)} flip={self.use_flip} " f"position_base_tokens={self.vit_position_base_tokens}", flush=True)
+        outputs = [contextual]
+        if return_local: outputs.append(local)
+        if return_grouped: outputs.append(grouped)
+        if return_ink: outputs.append(ink_ratio)
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
+
+    def model_config(self) -> dict:
+        return {"visual_encoder_type": "vit", "use_bilstm": False, "use_local_window_grouping": False, "vit_input_height": self.input_height, "vit_layers": self.vit_layers, "vit_heads": self.vit_heads, "vit_mlp_dim": self.vit_mlp_dim, "vit_dropout": self.vit_dropout, "vit_max_tokens": self.vit_max_tokens, "vit_position_base_tokens": self.vit_position_base_tokens}
+
+
+ViTEmbeddingModel = EmbeddingModel
+
+
+def build_vit_from_environment(*, window_size, stride, vector_size, device, use_flip):
+    return EmbeddingModel(window_size=window_size, stride=stride, vector_size=vector_size, device=device, use_flip=use_flip, input_height=_env_int("VIT_INPUT_HEIGHT", 128), vit_layers=_env_int("VIT_LAYERS", 4), vit_heads=_env_int("VIT_HEADS", 4), vit_mlp_dim=_env_int("VIT_MLP_DIM", 512), vit_dropout=_env_float("VIT_DROPOUT", 0.10), vit_max_tokens=_env_int("VIT_MAX_TOKENS", 256), vit_position_base_tokens=_env_int("VIT_POSITION_BASE_TOKENS", 63))
+
+
+def prepare_vit_model(model: EmbeddingModel) -> EmbeddingModel:
+    global window_ink_ratio_from_patches
+    from training_optimizations import fast_window_ink_ratio_from_patches
+    window_ink_ratio_from_patches = fast_window_ink_ratio_from_patches
+    if _env_flag("TORCH_COMPILE_VISUAL", False):
+        if not hasattr(torch, "compile"):
+            print("torch.compile unavailable; continuing without it", flush=True)
+        else:
+            try:
+                model.vit_encoder = torch.compile(model.vit_encoder, mode=os.environ.get("TORCH_COMPILE_MODE", "reduce-overhead"), dynamic=False)
+                print("compiled visual ViT with torch.compile", flush=True)
+            except Exception as exc:
+                print(f"torch.compile visual ViT failed: {exc}", flush=True)
+    return model
