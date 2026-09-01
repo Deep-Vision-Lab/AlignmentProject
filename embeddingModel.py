@@ -1,17 +1,8 @@
-"""Canonical patch-based Transformer visual encoder for line-image alignment.
+"""Canonical pure-ViT image embedding model for all AlignmentProject ViT branches.
 
-All ViT branches import :class:`EmbeddingModel` from this module.  It replaces
-the historical ResNet/BiLSTM implementation while preserving the shared model
-contract used by training and evaluation:
-- contextual window embeddings are returned by default;
-- ``return_local=True`` exposes pre-Transformer local patch tokens;
-- ``return_grouped=True`` returns local tokens (there is no separate grouping
-  stage in the pure-ViT architecture);
-- ``return_ink=True`` returns one foreground/ink ratio per horizontal window.
-
-The full-height patch projection is a ViT patch embedding, not a CNN feature
-hierarchy.  Existing ViT checkpoints remain state-dict compatible because the
-``vit_encoder.*`` and ``vision_norm.*`` parameter names are unchanged.
+The historical ResNet/BiLSTM implementation has been removed. ``EmbeddingModel``
+now means the patch-based Transformer encoder everywhere while preserving the
+shared trainer/evaluator contract (contextual/local/grouped/ink outputs).
 """
 from __future__ import annotations
 
@@ -47,9 +38,22 @@ def _env_float(name: str, default: float) -> float:
         return float(default)
 
 
+def _parameter(name: str, default):
+    """Read Parameters.py lazily so direct trainer_core use matches the branch."""
+    try:
+        import Parameters as P
+        return getattr(P, name, default)
+    except Exception:
+        return default
+
+
 def sliding_window(image: torch.Tensor, window_size: int, stride: int) -> torch.Tensor:
-    """Return horizontal full-height windows as ``[B, S, C, H, W]``."""
-    patches = image.unfold(dimension=3, size=int(window_size), step=int(stride))
+    """Return horizontal full-height windows as [B, S, C, H, W]."""
+    patches = image.unfold(
+        dimension=3,
+        size=int(window_size),
+        step=int(stride),
+    )
     return patches.permute(0, 3, 1, 2, 4).contiguous()
 
 
@@ -89,9 +93,14 @@ def window_ink_ratio_from_patches(
     patches: torch.Tensor,
     contrast_threshold: float | None = None,
 ) -> torch.Tensor:
-    """Estimate foreground coverage for every window and either image polarity."""
+    """Estimate foreground coverage for every horizontal window."""
     if contrast_threshold is None:
-        contrast_threshold = float(os.environ.get("INK_CONTRAST_THRESHOLD", "0.15"))
+        contrast_threshold = float(
+            os.environ.get(
+                "INK_CONTRAST_THRESHOLD",
+                _parameter("ink_contrast_threshold", 0.15),
+            )
+        )
     contrast_threshold = max(0.0, min(1.0, float(contrast_threshold)))
     with torch.no_grad():
         rgb = _denormalize_imagenet_patches(patches.detach())
@@ -106,7 +115,7 @@ def window_ink_ratio_from_patches(
 
 
 class LineWindowViT(nn.Module):
-    """Convert overlapping full-height line windows into contextual tokens."""
+    """Project full-height windows to tokens and contextualize them globally."""
 
     def __init__(
         self,
@@ -165,7 +174,9 @@ class LineWindowViT(nn.Module):
             bias=True,
         )
         self.local_norm = nn.LayerNorm(embed_dim)
-        self.position_embedding = nn.Parameter(torch.zeros(1, max_tokens, embed_dim))
+        self.position_embedding = nn.Parameter(
+            torch.zeros(1, max_tokens, embed_dim)
+        )
         self.input_dropout = nn.Dropout(float(dropout))
 
         layer = nn.TransformerEncoderLayer(
@@ -191,11 +202,10 @@ class LineWindowViT(nn.Module):
             nn.init.zeros_(self.patch_embedding.bias)
 
     def _position_tokens(self, count: int) -> torch.Tensor:
-        """Resize only the positional table learned by the pretrained sequence."""
+        """Interpolate only the positional slots trained by the base sequence."""
         count = int(count)
         if count <= 0:
             raise ValueError("position token count must be positive")
-
         base = self.position_embedding[:, : self.position_base_tokens]
         if count == self.position_base_tokens:
             return base
@@ -223,8 +233,8 @@ class LineWindowViT(nn.Module):
             )
         if int(image.shape[3]) < self.window_size:
             raise ValueError(
-                f"Input width {image.shape[3]} is smaller than window size "
-                f"{self.window_size}"
+                f"Input width {image.shape[3]} is smaller than "
+                f"window size {self.window_size}"
             )
 
         tokens = self.patch_embedding(image)
@@ -238,16 +248,15 @@ class LineWindowViT(nn.Module):
             tokens = torch.flip(tokens, dims=[1])
 
         local_tokens = self.local_norm(tokens)
-        contextual = local_tokens + self._position_tokens(local_tokens.shape[1]).to(
-            dtype=local_tokens.dtype,
-            device=local_tokens.device,
-        )
+        contextual = local_tokens + self._position_tokens(
+            local_tokens.shape[1]
+        ).to(dtype=local_tokens.dtype, device=local_tokens.device)
         contextual = self.encoder(self.input_dropout(contextual))
         return contextual, local_tokens
 
 
 class EmbeddingModel(nn.Module):
-    """Pure-ViT image embedder used by every ViT branch."""
+    """Canonical pure-ViT image embedder used by every ViT branch."""
 
     visual_encoder_type = "vit"
 
@@ -274,33 +283,62 @@ class EmbeddingModel(nn.Module):
         **_ignored,
     ) -> None:
         super().__init__()
-
         if bool(use_bilstm):
             raise ValueError(
-                "EmbeddingModel is the pure ViT encoder on ViT branches; "
+                "EmbeddingModel is pure ViT on ViT branches; "
                 "use_bilstm=True is not supported."
             )
         if bool(use_local_grouping):
             raise ValueError(
-                "EmbeddingModel is the pure ViT encoder on ViT branches; "
+                "EmbeddingModel is pure ViT on ViT branches; "
                 "use_local_grouping=True is not supported."
             )
-
         del bilstm_layers, bilstm_hidden_dim, local_group_size
 
         self.device = device
         self.window_size = int(window_size)
         self.stride = int(stride)
         self.vector_size = int(vector_size)
-        self.input_height = int(_env_int("VIT_INPUT_HEIGHT", 128) if input_height is None else input_height)
         self.use_bilstm = False
 
-        self.vit_layers = int(_env_int("VIT_LAYERS", 4) if vit_layers is None else vit_layers)
-        self.vit_heads = int(_env_int("VIT_HEADS", 4) if vit_heads is None else vit_heads)
-        self.vit_mlp_dim = int(_env_int("VIT_MLP_DIM", 512) if vit_mlp_dim is None else vit_mlp_dim)
-        self.vit_dropout = float(_env_float("VIT_DROPOUT", 0.10) if vit_dropout is None else vit_dropout)
-        self.vit_max_tokens = int(_env_int("VIT_MAX_TOKENS", 256) if vit_max_tokens is None else vit_max_tokens)
-        self.vit_position_base_tokens = int(_env_int("VIT_POSITION_BASE_TOKENS", 63) if vit_position_base_tokens is None else vit_position_base_tokens)
+        self.input_height = int(
+            _parameter("vit_input_height", 128)
+            if input_height is None
+            else input_height
+        )
+        self.vit_layers = int(
+            _parameter("vit_layers", _env_int("VIT_LAYERS", 4))
+            if vit_layers is None
+            else vit_layers
+        )
+        self.vit_heads = int(
+            _parameter("vit_heads", _env_int("VIT_HEADS", 4))
+            if vit_heads is None
+            else vit_heads
+        )
+        self.vit_mlp_dim = int(
+            _parameter("vit_mlp_dim", _env_int("VIT_MLP_DIM", 512))
+            if vit_mlp_dim is None
+            else vit_mlp_dim
+        )
+        self.vit_dropout = float(
+            _parameter("vit_dropout", _env_float("VIT_DROPOUT", 0.10))
+            if vit_dropout is None
+            else vit_dropout
+        )
+        self.vit_max_tokens = int(
+            _parameter("vit_max_tokens", _env_int("VIT_MAX_TOKENS", 256))
+            if vit_max_tokens is None
+            else vit_max_tokens
+        )
+        self.vit_position_base_tokens = int(
+            _parameter(
+                "vit_position_base_tokens",
+                _env_int("VIT_POSITION_BASE_TOKENS", 63),
+            )
+            if vit_position_base_tokens is None
+            else vit_position_base_tokens
+        )
 
         self.register_buffer(
             "_use_flip_state",
@@ -341,11 +379,18 @@ class EmbeddingModel(nn.Module):
         return_ink: bool = False,
         return_grouped: bool = False,
     ):
-        contextual, local = self.vit_encoder(image, use_flip=self.use_flip)
+        contextual, local = self.vit_encoder(
+            image,
+            use_flip=self.use_flip,
+        )
 
         ink_ratio = None
         if return_ink:
-            patches = sliding_window(image, self.window_size, self.stride)
+            patches = sliding_window(
+                image,
+                self.window_size,
+                self.stride,
+            )
             if self.use_flip:
                 patches = torch.flip(patches, dims=[1])
             ink_ratio = window_ink_ratio_from_patches(patches)
@@ -357,7 +402,6 @@ class EmbeddingModel(nn.Module):
 
         contextual = self.vision_norm(contextual)
         local = self.vision_norm(local)
-        grouped = local
 
         if show_dims:
             print(
@@ -372,7 +416,7 @@ class EmbeddingModel(nn.Module):
         if return_local:
             outputs.append(local)
         if return_grouped:
-            outputs.append(grouped)
+            outputs.append(local)
         if return_ink:
             outputs.append(ink_ratio)
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
@@ -409,13 +453,18 @@ def build_vit_from_environment(
         vector_size=vector_size,
         device=device,
         use_flip=use_flip,
-        input_height=_env_int("VIT_INPUT_HEIGHT", 128),
-        vit_layers=_env_int("VIT_LAYERS", 4),
-        vit_heads=_env_int("VIT_HEADS", 4),
-        vit_mlp_dim=_env_int("VIT_MLP_DIM", 512),
-        vit_dropout=_env_float("VIT_DROPOUT", 0.10),
-        vit_max_tokens=_env_int("VIT_MAX_TOKENS", 256),
-        vit_position_base_tokens=_env_int("VIT_POSITION_BASE_TOKENS", 63),
+        input_height=int(_parameter("vit_input_height", _env_int("VIT_INPUT_HEIGHT", 128))),
+        vit_layers=int(_parameter("vit_layers", _env_int("VIT_LAYERS", 4))),
+        vit_heads=int(_parameter("vit_heads", _env_int("VIT_HEADS", 4))),
+        vit_mlp_dim=int(_parameter("vit_mlp_dim", _env_int("VIT_MLP_DIM", 512))),
+        vit_dropout=float(_parameter("vit_dropout", _env_float("VIT_DROPOUT", 0.10))),
+        vit_max_tokens=int(_parameter("vit_max_tokens", _env_int("VIT_MAX_TOKENS", 256))),
+        vit_position_base_tokens=int(
+            _parameter(
+                "vit_position_base_tokens",
+                _env_int("VIT_POSITION_BASE_TOKENS", 63),
+            )
+        ),
     )
 
 
@@ -433,10 +482,16 @@ def prepare_vit_model(model: EmbeddingModel) -> EmbeddingModel:
             try:
                 model.vit_encoder = torch.compile(
                     model.vit_encoder,
-                    mode=os.environ.get("TORCH_COMPILE_MODE", "reduce-overhead"),
+                    mode=os.environ.get(
+                        "TORCH_COMPILE_MODE",
+                        "reduce-overhead",
+                    ),
                     dynamic=False,
                 )
                 print("compiled visual ViT with torch.compile", flush=True)
             except Exception as exc:
-                print(f"torch.compile visual ViT failed: {exc}", flush=True)
+                print(
+                    f"torch.compile visual ViT failed: {exc}",
+                    flush=True,
+                )
     return model
