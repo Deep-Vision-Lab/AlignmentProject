@@ -1,8 +1,8 @@
 """Branch-selected visual model backend.
 
-This file is intentionally the only active model difference between the two
-canonical branches. Training, DDP, losses, data loading, evaluation, scripts,
-and optimization code remain shared.
+All ViT branches now use ``embeddingModel.EmbeddingModel`` as the canonical
+visual encoder. This shim remains only to keep the shared training entry point
+and branch metadata interface stable.
 """
 from __future__ import annotations
 
@@ -33,55 +33,24 @@ def _number(name: str, default: float) -> float:
         return float(default)
 
 
-def build_visual_model(
-    *,
-    window_size,
-    stride,
-    vector_size,
-    device,
-    use_flip,
-    **_ignored,
-):
-    from vit_embedding_model import build_vit_from_environment
-
-    return build_vit_from_environment(
-        window_size=window_size,
-        stride=stride,
-        vector_size=vector_size,
-        device=device,
-        use_flip=use_flip,
-    )
+def build_visual_model(*, window_size, stride, vector_size, device, use_flip, **_ignored):
+    from embeddingModel import build_vit_from_environment
+    return build_vit_from_environment(window_size=window_size, stride=stride, vector_size=vector_size, device=device, use_flip=use_flip)
 
 
 def install_training_backend(base_module) -> None:
-    """Install this branch's constructor into the shared train.py module."""
     os.environ["VISUAL_ENCODER_TYPE"] = VISUAL_ENCODER_TYPE
     os.environ["USE_BILSTM"] = "0"
     os.environ["USE_LOCAL_WINDOW_GROUPING"] = "0"
 
-    def constructor(
-        window_size=32,
-        stride=16,
-        vector_size=128,
-        device="cuda",
-        use_flip=False,
-        **kwargs,
-    ):
-        return build_visual_model(
-            window_size=window_size,
-            stride=stride,
-            vector_size=vector_size,
-            device=device,
-            use_flip=use_flip,
-            **kwargs,
-        )
+    def constructor(window_size=32, stride=16, vector_size=128, device="cuda", use_flip=False, **kwargs):
+        return build_visual_model(window_size=window_size, stride=stride, vector_size=vector_size, device=device, use_flip=use_flip, **kwargs)
 
     base_module.EmbeddingModel = constructor
 
 
 def prepare_visual_model(model) -> None:
-    from vit_embedding_model import prepare_vit_model
-
+    from embeddingModel import prepare_vit_model
     prepare_vit_model(model)
 
 
