@@ -1,8 +1,8 @@
 """Branch-selected visual model backend.
 
-This file is intentionally the only active model difference between the two
-canonical branches. Training, DDP, losses, data loading, evaluation, scripts,
-and optimization code remain shared.
+All ViT branches now use ``embeddingModel.EmbeddingModel`` as the canonical
+visual encoder. This shim remains only to keep the shared training entry point
+and branch metadata interface stable.
 """
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def build_visual_model(
     use_flip,
     **_ignored,
 ):
-    from vit_embedding_model import build_vit_from_environment
+    from embeddingModel import build_vit_from_environment
 
     return build_vit_from_environment(
         window_size=window_size,
@@ -54,7 +54,7 @@ def build_visual_model(
 
 
 def install_training_backend(base_module) -> None:
-    """Install this branch's constructor into the shared train.py module."""
+    """Install the canonical ViT constructor into the shared trainer module."""
     os.environ["VISUAL_ENCODER_TYPE"] = VISUAL_ENCODER_TYPE
     os.environ["USE_BILSTM"] = "0"
     os.environ["USE_LOCAL_WINDOW_GROUPING"] = "0"
@@ -80,7 +80,7 @@ def install_training_backend(base_module) -> None:
 
 
 def prepare_visual_model(model) -> None:
-    from vit_embedding_model import prepare_vit_model
+    from embeddingModel import prepare_vit_model
 
     prepare_vit_model(model)
 
