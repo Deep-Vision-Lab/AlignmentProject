@@ -1,10 +1,10 @@
 import torch
 
-from vit_embedding_model import ViTEmbeddingModel
+from embeddingModel import EmbeddingModel
 
 
 def test_dense_stride_produces_125_tokens_from_trained_position_base():
-    model = ViTEmbeddingModel(
+    model = EmbeddingModel(
         window_size=32,
         stride=8,
         vector_size=32,
@@ -28,7 +28,7 @@ def test_dense_stride_produces_125_tokens_from_trained_position_base():
 
 
 def test_dense_positions_do_not_read_untrained_table_tail():
-    model = ViTEmbeddingModel(
+    model = EmbeddingModel(
         window_size=32,
         stride=8,
         vector_size=32,
