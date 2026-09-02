@@ -52,6 +52,13 @@ def install_vit_evaluation_loader() -> None:
             use_flip=False,
             **_ignored,
         ):
+            # Legacy ViT checkpoints were trained before model-side binarization
+            # existed and therefore do not contain vit_binarize_input. Missing
+            # means False. New checkpoints explicitly store True and use Otsu.
+            binarize_input = _bool(
+                config.get("vit_binarize_input", False),
+                False,
+            )
             return EmbeddingModel(
                 window_size=int(window_size),
                 stride=int(stride),
@@ -59,7 +66,7 @@ def install_vit_evaluation_loader() -> None:
                 device=device,
                 use_flip=_bool(use_flip),
                 input_height=int(config.get("vit_input_height", 128)),
-                vit_layers=int(config.get("vit_layers", 1)),
+                vit_layers=int(config.get("vit_layers", 4)),
                 vit_heads=int(config.get("vit_heads", 4)),
                 vit_mlp_dim=int(config.get("vit_mlp_dim", 512)),
                 vit_dropout=float(config.get("vit_dropout", 0.10)),
@@ -67,13 +74,7 @@ def install_vit_evaluation_loader() -> None:
                 vit_position_base_tokens=int(
                     config.get("vit_position_base_tokens", 63)
                 ),
-                vit_binarize_input=_bool(
-                    config.get("vit_binarize_input", True),
-                    True,
-                ),
-                vit_binarize_contrast_threshold=float(
-                    config.get("vit_binarize_contrast_threshold", 0.15)
-                ),
+                vit_binarize_input=binarize_input,
             )
 
         try:
