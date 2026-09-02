@@ -13,6 +13,7 @@ import torch
 import torch.nn.functional as F
 
 import Parameters as P
+from vit_checkpoint_migration import install as install_vit_checkpoint_migration
 
 
 def angular_embedding_variance_loss(
@@ -39,6 +40,8 @@ def install(base_module) -> None:
     """Install angular local + contextual anti-collapse losses once."""
     if getattr(base_module, "_angular_anti_collapse_installed", False):
         return
+
+    install_vit_checkpoint_migration(base_module)
 
     # Existing trainer calls this for the local representation in Span-DTW and
     # the contextual representation in legacy/non-span modes.
