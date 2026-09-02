@@ -86,27 +86,26 @@ import torch
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-import DataLoader as synthetic_data_loader
 import model_backend
 import span_alignment_loss
-from anti_collapse_runtime import install as install_anti_collapse
 from ddp_runtime_policy import resolve_ddp_static_graph
 from distributed_runtime_guard import install_distributed_runtime_guard
 from epoch_subset_sampling import install_epoch_subset_sampling
 from fast_hard_alignment import hard_span_dtw_path_fast
 from jax_batch_bucketing import install_jax_batch_padding
 from job_id_runtime import resolve_training_job_id
-from synthetic_training_runtime import install as install_synthetic_training
 from training_optimizations import install as install_optimizations
 from training_stability import install_training_stability
 from unified_line_geometry import install_training_geometry
+from vit_checkpoint_migration import install as install_vit_checkpoint_migration
 
 span_alignment_loss.hard_span_dtw_path = hard_span_dtw_path_fast
 base.hard_span_dtw_path = hard_span_dtw_path_fast
-install_synthetic_training(synthetic_data_loader)
 install_jax_batch_padding()
 install_optimizations(base)
-install_anti_collapse(base)
+# Keep the historical baseline loss untouched. This helper only allows an old
+# 4-layer ViT checkpoint to initialize the new 1-layer ViT by loading layer 0.
+install_vit_checkpoint_migration(base)
 install_distributed_runtime_guard(base)
 install_epoch_subset_sampling(base)
 _GEOMETRY_CONFIG = install_training_geometry()
@@ -145,13 +144,6 @@ def _model_config(stride, args):
             "initialization": "pretrained" if args.pretrained_weights else "scratch",
             "dataset_type": args.dataset_type,
             "dataset_path": args.data_dir,
-            "synthetic_train_samples": getattr(P, "synthetic_train_samples", 0),
-            "synthetic_augment": getattr(P, "synthetic_augment", False),
-            "synthetic_augment_probability": getattr(
-                P, "synthetic_augment_probability", 0.0
-            ),
-            "anti_collapse_space": "l2_normalized_window_directions",
-            "anti_collapse_contextual": True,
         }
     )
     install_training_stability(base, config, args.job_id)
@@ -301,30 +293,17 @@ def main() -> None:
             print(f"  mode         = {mode}", flush=True)
             print(f"  dataset      = {args.data_dir}", flush=True)
             print(f"  dataset_type = {args.dataset_type}", flush=True)
-            if args.dataset_type == "synthetic":
-                augmented = int(
-                    round(
-                        int(P.synthetic_train_samples)
-                        * float(P.synthetic_augment_probability)
-                    )
-                ) if P.synthetic_augment else 0
-                print(
-                    f"  synthetic    = train={P.synthetic_train_samples} "
-                    f"augmented={augmented} clean={P.synthetic_train_samples - augmented} "
-                    f"aug_prob={P.synthetic_augment_probability:.2f}",
-                    flush=True,
-                )
             print(f"  weights      = {args.pretrained_weights or '<none>'}", flush=True)
             print(f"  output       = Weights/{args.job_id}", flush=True)
             print(f"  epochs/lr    = {args.epochs}/{args.learning_rate}", flush=True)
             print(f"  window/stride= {P.window_size}/{stride}", flush=True)
             print(
                 f"  vit          = layers={P.vit_layers} heads={P.vit_heads} "
-                f"binarize_rgb={P.vit_binarize_input}",
+                f"binarize_rgb={P.vit_binarize_input} method=otsu",
                 flush=True,
             )
             print(
-                f"  anti-collapse= angular weight={P.image_variance_loss_weight} "
+                f"  variance     = weight={P.image_variance_loss_weight} "
                 f"target_std={P.image_variance_target_std}",
                 flush=True,
             )
