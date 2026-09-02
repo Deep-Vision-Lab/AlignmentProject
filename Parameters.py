@@ -42,18 +42,11 @@ use_channels_last = True
 torch_compile_visual = False
 torch_compile_mode = "reduce-overhead"
 
-# 3. DATASET / SYNTHETIC TRAINING
+# 3. DATASET
+# Synthetic data uses the normal DataLoader split (60/20/20) with no online
+# augmentation. Any augmentation already present in the dataset is treated as
+# ordinary samples.
 num_samples = 10000
-synthetic_train_samples = 9000
-synthetic_augment = True
-synthetic_augment_probability = 0.30
-synthetic_aug_rotate_deg = 1.0
-synthetic_aug_translate_x = 0.015
-synthetic_aug_translate_y = 0.03
-synthetic_aug_scale_min = 0.95
-synthetic_aug_scale_max = 1.00
-synthetic_aug_brightness = 0.10
-synthetic_aug_contrast = 0.12
 
 # 3B. REAL-DATA AUGMENTATION
 real_manifest_name = "dataset_manifest.jsonl"
@@ -115,8 +108,9 @@ vit_mlp_dim = 512
 vit_dropout = 0.10
 vit_max_tokens = 256
 vit_position_base_tokens = 63
+# One universal preprocessing path for synthetic and real data. The complete
+# line is Otsu-binarized while staying 3-channel RGB before any windows are made.
 vit_binarize_input = True
-vit_binarize_contrast_threshold = 0.15
 
 # 6. TEXT ENCODER / SPAN SEMANTICS
 text_encoder_type = "arabic_span"
@@ -183,9 +177,10 @@ order_monotonic_margin = 0.02
 order_position_component_weight = 1.0
 order_monotonic_component_weight = 1.0
 
-# 11. ANTI-COLLAPSE / REGULARIZATION
-# Applied to L2-normalized local and contextual window directions.
-image_variance_loss_weight = 0.10
+# 11. BASELINE VARIANCE REGULARIZATION
+# This is the original pre-branch baseline term from trainer_core.py. It acts on
+# raw local embeddings only; no angular/contextual runtime patch is installed.
+image_variance_loss_weight = 0.01
 image_variance_target_std = 0.05
 
 # 12. DOMAIN / ZERO-SHOT PREPROCESSING
@@ -248,16 +243,6 @@ def export_environment() -> None:
         "TORCH_COMPILE_VISUAL": _flag(torch_compile_visual),
         "TORCH_COMPILE_MODE": torch_compile_mode,
         "NUM_SAMPLES": num_samples,
-        "SYNTHETIC_TRAIN_SAMPLES": synthetic_train_samples,
-        "SYNTHETIC_AUGMENT": _flag(synthetic_augment),
-        "SYNTHETIC_AUGMENT_PROBABILITY": synthetic_augment_probability,
-        "SYNTHETIC_AUG_ROTATE_DEG": synthetic_aug_rotate_deg,
-        "SYNTHETIC_AUG_TRANSLATE_X": synthetic_aug_translate_x,
-        "SYNTHETIC_AUG_TRANSLATE_Y": synthetic_aug_translate_y,
-        "SYNTHETIC_AUG_SCALE_MIN": synthetic_aug_scale_min,
-        "SYNTHETIC_AUG_SCALE_MAX": synthetic_aug_scale_max,
-        "SYNTHETIC_AUG_BRIGHTNESS": synthetic_aug_brightness,
-        "SYNTHETIC_AUG_CONTRAST": synthetic_aug_contrast,
         "REAL_MANIFEST_NAME": real_manifest_name,
         "REAL_TRAIN_SAMPLES_PER_EPOCH": real_train_samples_per_epoch,
         "REAL_AUGMENT": _flag(real_augment),
@@ -313,7 +298,6 @@ def export_environment() -> None:
         "VIT_MAX_TOKENS": vit_max_tokens,
         "VIT_POSITION_BASE_TOKENS": vit_position_base_tokens,
         "VIT_BINARIZE_INPUT": _flag(vit_binarize_input),
-        "VIT_BINARIZE_CONTRAST_THRESHOLD": vit_binarize_contrast_threshold,
         "TEXT_ENCODER_TYPE": text_encoder_type,
         "ARABIC_TEXT_MODEL_NAME": arabic_text_model_name,
         "MAX_TEXT_TOKEN_CHARS": max_text_token_chars,
