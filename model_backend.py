@@ -1,8 +1,8 @@
 """Branch-selected visual model backend.
 
-All ViT branches use ``embeddingModel.EmbeddingModel`` as the canonical visual
-encoder. Shared defaults are one Transformer layer and three-channel
-binarization immediately before the learned full-height patch projection.
+The ViT baseline uses ``embeddingModel.EmbeddingModel`` as its canonical visual
+encoder. The full three-channel line is Otsu-binarized before full-height window
+projection, and one Transformer layer is used by default.
 """
 from __future__ import annotations
 
@@ -98,9 +98,6 @@ def visual_model_config() -> dict:
         "vit_max_tokens": _integer("VIT_MAX_TOKENS", 256),
         "vit_position_base_tokens": _integer("VIT_POSITION_BASE_TOKENS", 63),
         "vit_binarize_input": _flag("VIT_BINARIZE_INPUT", True),
-        "vit_binarize_contrast_threshold": _number(
-            "VIT_BINARIZE_CONTRAST_THRESHOLD",
-            0.15,
-        ),
+        "vit_binarize_method": "otsu",
         "torch_compile_visual": _flag("TORCH_COMPILE_VISUAL", False),
     }
