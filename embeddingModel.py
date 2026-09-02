@@ -1,9 +1,9 @@
-"""Canonical pure-ViT image embedding model for all AlignmentProject ViT branches.
+"""Canonical pure-ViT image embedding model for the ViT baseline.
 
-The visual encoder keeps the line image as three channels, applies a deterministic
-three-channel binarization before the learned patch projection, creates one token
-per full-height horizontal window, and contextualizes the window sequence with a
-single Transformer layer by default.
+The full line remains three-channel RGB. When enabled, a deterministic Otsu
+binarization is applied to the complete line before any window extraction or
+learned patch projection. The same binarized line is therefore used both for
+ViT tokens and for per-window ink/mask computation.
 """
 from __future__ import annotations
 
@@ -43,6 +43,7 @@ def _parameter(name: str, default):
     """Read Parameters.py lazily so direct trainer/evaluator use matches the branch."""
     try:
         import Parameters as P
+
         return getattr(P, name, default)
     except Exception:
         return default
@@ -51,9 +52,9 @@ def _parameter(name: str, default):
 def sliding_window(image: torch.Tensor, window_size: int, stride: int) -> torch.Tensor:
     """Return exact horizontal full-height windows as [B, S, C, H, W].
 
-    This operation has no learnable parameters. Every output pixel is copied from
-    the corresponding input position; no averaging, pooling, or convolution is
-    performed here.
+    This operation has no learnable parameters. Every output pixel comes from
+    the corresponding input location; no averaging, pooling, or convolution is
+    performed by this helper.
     """
     patches = image.unfold(
         dimension=3,
@@ -80,48 +81,81 @@ def _normalize_imagenet_image(image: torch.Tensor) -> torch.Tensor:
     return (image.float() - mean) / std
 
 
-def _background_level_from_gray(gray: torch.Tensor) -> torch.Tensor:
-    """Estimate one page-background level per image from its border."""
+def _otsu_thresholds(gray: torch.Tensor) -> torch.Tensor:
+    """Compute one Otsu threshold per grayscale line image.
+
+    ``gray`` must be [B, H, W] in [0, 1]. The returned tensor is [B, 1, 1]
+    in the same normalized range.
+    """
     if gray.ndim != 3:
         raise ValueError(f"Expected grayscale [B, H, W], got {tuple(gray.shape)}")
-    height, width = int(gray.shape[-2]), int(gray.shape[-1])
+
+    thresholds = []
+    levels = torch.arange(256, device=gray.device, dtype=torch.float32)
+    for sample in gray:
+        quantized = (sample.clamp(0.0, 1.0) * 255.0).round().to(torch.long)
+        histogram = torch.bincount(quantized.reshape(-1), minlength=256).float()
+        total = histogram.sum()
+        if total.item() <= 0:
+            thresholds.append(gray.new_tensor(127.0 / 255.0))
+            continue
+
+        background_weight = torch.cumsum(histogram, dim=0)
+        foreground_weight = total - background_weight
+        background_sum = torch.cumsum(histogram * levels, dim=0)
+        total_sum = background_sum[-1]
+
+        background_mean = background_sum / background_weight.clamp_min(1.0)
+        foreground_mean = (
+            total_sum - background_sum
+        ) / foreground_weight.clamp_min(1.0)
+        between_variance = (
+            background_weight
+            * foreground_weight
+            * (background_mean - foreground_mean).square()
+        )
+        valid = (background_weight > 0) & (foreground_weight > 0)
+        between_variance = torch.where(
+            valid,
+            between_variance,
+            between_variance.new_full(between_variance.shape, -1.0),
+        )
+        threshold = torch.argmax(between_variance).float() / 255.0
+        thresholds.append(threshold.to(device=gray.device, dtype=gray.dtype))
+
+    return torch.stack(thresholds).view(-1, 1, 1)
+
+
+def _binary_border_mean(binary: torch.Tensor) -> torch.Tensor:
+    """Return one border mean per [B, H, W] binary image."""
+    height, width = int(binary.shape[-2]), int(binary.shape[-1])
     border_h = max(1, int(round(height * 0.05)))
     border_w = max(1, int(round(width * 0.01)))
     border = torch.cat(
         [
-            gray[:, :border_h, :].flatten(start_dim=1),
-            gray[:, -border_h:, :].flatten(start_dim=1),
-            gray[:, :, :border_w].flatten(start_dim=1),
-            gray[:, :, -border_w:].flatten(start_dim=1),
+            binary[:, :border_h, :].flatten(start_dim=1),
+            binary[:, -border_h:, :].flatten(start_dim=1),
+            binary[:, :, :border_w].flatten(start_dim=1),
+            binary[:, :, -border_w:].flatten(start_dim=1),
         ],
         dim=1,
     )
-    return border.median(dim=1).values.view(-1, 1, 1)
+    return border.mean(dim=1).view(-1, 1, 1)
 
 
 def binarize_three_channel_input(
     image: torch.Tensor,
     contrast_threshold: float | None = None,
 ) -> torch.Tensor:
-    """Binarize without changing the three-channel model interface.
+    """Otsu-binarize a complete line while preserving three RGB channels.
 
-    Input is assumed to be ImageNet-normalized RGB. The operation is deliberately
-    non-learned and runs without gradients. It estimates the page background from
-    the image border, marks sufficiently different pixels as ink, then represents
-    background as white and ink as black in all three RGB channels before applying
-    the same ImageNet normalization expected by the rest of the project.
+    ``contrast_threshold`` is retained only for backward caller compatibility;
+    Otsu determines the threshold from each line. The operation is deterministic,
+    non-learned, and runs without gradients. It mirrors the historical real-data
+    preprocessing: grayscale -> autocontrast -> Otsu -> automatic polarity fix ->
+    RGB -> ImageNet normalization.
     """
-    if contrast_threshold is None:
-        contrast_threshold = float(
-            os.environ.get(
-                "VIT_BINARIZE_CONTRAST_THRESHOLD",
-                _parameter(
-                    "vit_binarize_contrast_threshold",
-                    _parameter("ink_contrast_threshold", 0.15),
-                ),
-            )
-        )
-    threshold = max(0.0, min(1.0, float(contrast_threshold)))
+    del contrast_threshold
 
     with torch.no_grad():
         rgb = _denormalize_imagenet_image(image.detach())
@@ -130,11 +164,33 @@ def binarize_three_channel_input(
             + 0.5870 * rgb[:, 1]
             + 0.1140 * rgb[:, 2]
         )
-        background = _background_level_from_gray(gray)
-        ink = (gray - background).abs().ge(threshold)
-        binary_gray = (~ink).to(dtype=rgb.dtype)
-        binary_rgb = binary_gray.unsqueeze(1).expand(-1, 3, -1, -1).contiguous()
+
+        # Equivalent purpose to PIL ImageOps.autocontrast used in the old path:
+        # stretch each complete line to the available grayscale range before Otsu.
+        minimum = gray.amin(dim=(1, 2), keepdim=True)
+        maximum = gray.amax(dim=(1, 2), keepdim=True)
+        span = maximum - minimum
+        contrasted = torch.where(
+            span > (1.0 / 255.0),
+            (gray - minimum) / span.clamp_min(1e-6),
+            gray,
+        ).clamp(0.0, 1.0)
+
+        thresholds = _otsu_thresholds(contrasted)
+        binary_gray = (contrasted > thresholds).to(dtype=rgb.dtype)
+
+        # Ensure the page/background is white. This is important for scans whose
+        # polarity is inverted.
+        invert = _binary_border_mean(binary_gray) < 0.5
+        binary_gray = torch.where(invert, 1.0 - binary_gray, binary_gray)
+
+        binary_rgb = (
+            binary_gray.unsqueeze(1)
+            .expand(-1, 3, -1, -1)
+            .contiguous()
+        )
         normalized = _normalize_imagenet_image(binary_rgb)
+
     return normalized.to(dtype=image.dtype, device=image.device)
 
 
@@ -248,6 +304,7 @@ class LineWindowViT(nn.Module):
         self.max_tokens = max_tokens
         self.position_base_tokens = position_base_tokens
         self.binarize_input = bool(binarize_input)
+        # Kept only so old configs/callers remain valid. Otsu no longer uses it.
         self.binarize_contrast_threshold = float(binarize_contrast_threshold)
 
         self.patch_embedding = nn.Conv2d(
@@ -305,7 +362,8 @@ class LineWindowViT(nn.Module):
         image: torch.Tensor,
         *,
         use_flip: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return_model_input: bool = False,
+    ):
         if image.ndim != 4 or image.shape[1] != 3:
             raise ValueError(
                 "ViT input must have shape [B, 3, H, W], "
@@ -321,11 +379,10 @@ class LineWindowViT(nn.Module):
                 f"window size {self.window_size}"
             )
 
+        # Binarize the COMPLETE line first. The learned Conv2d then slides over
+        # this exact 3-channel binary line, never over the original grayscale/RGB.
         model_input = (
-            binarize_three_channel_input(
-                image,
-                self.binarize_contrast_threshold,
-            )
+            binarize_three_channel_input(image)
             if self.binarize_input
             else image
         )
@@ -344,6 +401,9 @@ class LineWindowViT(nn.Module):
             local_tokens.shape[1]
         ).to(dtype=local_tokens.dtype, device=local_tokens.device)
         contextual = self.encoder(self.input_dropout(contextual))
+
+        if return_model_input:
+            return contextual, local_tokens, model_input
         return contextual, local_tokens
 
 
@@ -440,10 +500,7 @@ class EmbeddingModel(nn.Module):
         self.vit_binarize_contrast_threshold = float(
             _parameter(
                 "vit_binarize_contrast_threshold",
-                _env_float(
-                    "VIT_BINARIZE_CONTRAST_THRESHOLD",
-                    _parameter("ink_contrast_threshold", 0.15),
-                ),
+                _env_float("VIT_BINARIZE_CONTRAST_THRESHOLD", 0.15),
             )
             if vit_binarize_contrast_threshold is None
             else vit_binarize_contrast_threshold
@@ -490,15 +547,19 @@ class EmbeddingModel(nn.Module):
         return_ink: bool = False,
         return_grouped: bool = False,
     ):
-        contextual, local = self.vit_encoder(
+        contextual, local, model_input = self.vit_encoder(
             image,
             use_flip=self.use_flip,
+            return_model_input=True,
         )
 
         ink_ratio = None
         if return_ink:
+            # IMPORTANT: windows are cut from the same full-line Otsu result that
+            # entered patch_embedding. Masking and visual features therefore use
+            # identical pixels and identical polarity.
             patches = sliding_window(
-                image,
+                model_input,
                 self.window_size,
                 self.stride,
             )
@@ -520,7 +581,7 @@ class EmbeddingModel(nn.Module):
                 f"encoder=vit contextual={tuple(contextual.shape)} "
                 f"local={tuple(local.shape)} flip={self.use_flip} "
                 f"layers={self.vit_layers} "
-                f"binarize_rgb={self.vit_binarize_input} "
+                f"binarize_rgb={self.vit_binarize_input} method=otsu "
                 f"position_base_tokens={self.vit_position_base_tokens}",
                 flush=True,
             )
@@ -547,7 +608,7 @@ class EmbeddingModel(nn.Module):
             "vit_max_tokens": self.vit_max_tokens,
             "vit_position_base_tokens": self.vit_position_base_tokens,
             "vit_binarize_input": self.vit_binarize_input,
-            "vit_binarize_contrast_threshold": self.vit_binarize_contrast_threshold,
+            "vit_binarize_method": "otsu",
         }
 
 
@@ -596,15 +657,6 @@ def build_vit_from_environment(
             _parameter(
                 "vit_binarize_input",
                 _env_flag("VIT_BINARIZE_INPUT", True),
-            )
-        ),
-        vit_binarize_contrast_threshold=float(
-            _parameter(
-                "vit_binarize_contrast_threshold",
-                _env_float(
-                    "VIT_BINARIZE_CONTRAST_THRESHOLD",
-                    _parameter("ink_contrast_threshold", 0.15),
-                ),
             )
         ),
     )
