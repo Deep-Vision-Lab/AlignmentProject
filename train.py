@@ -89,6 +89,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import DataLoader as synthetic_data_loader
 import model_backend
 import span_alignment_loss
+from anti_collapse_runtime import install as install_anti_collapse
 from ddp_runtime_policy import resolve_ddp_static_graph
 from distributed_runtime_guard import install_distributed_runtime_guard
 from epoch_subset_sampling import install_epoch_subset_sampling
@@ -105,6 +106,7 @@ base.hard_span_dtw_path = hard_span_dtw_path_fast
 install_synthetic_training(synthetic_data_loader)
 install_jax_batch_padding()
 install_optimizations(base)
+install_anti_collapse(base)
 install_distributed_runtime_guard(base)
 install_epoch_subset_sampling(base)
 _GEOMETRY_CONFIG = install_training_geometry()
@@ -148,6 +150,8 @@ def _model_config(stride, args):
             "synthetic_augment_probability": getattr(
                 P, "synthetic_augment_probability", 0.0
             ),
+            "anti_collapse_space": "l2_normalized_window_directions",
+            "anti_collapse_contextual": True,
         }
     )
     install_training_stability(base, config, args.job_id)
@@ -314,6 +318,16 @@ def main() -> None:
             print(f"  output       = Weights/{args.job_id}", flush=True)
             print(f"  epochs/lr    = {args.epochs}/{args.learning_rate}", flush=True)
             print(f"  window/stride= {P.window_size}/{stride}", flush=True)
+            print(
+                f"  vit          = layers={P.vit_layers} heads={P.vit_heads} "
+                f"binarize_rgb={P.vit_binarize_input}",
+                flush=True,
+            )
+            print(
+                f"  anti-collapse= angular weight={P.image_variance_loss_weight} "
+                f"target_std={P.image_variance_target_std}",
+                flush=True,
+            )
             print(
                 f"  batch        = {P.batch_size} per GPU x {base.CTX.world_size} GPUs "
                 f"x {P.gradient_accumulation_steps} accumulation",
