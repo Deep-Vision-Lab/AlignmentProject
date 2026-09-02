@@ -1,8 +1,9 @@
 """Canonical pure-ViT image embedding model for all AlignmentProject ViT branches.
 
-The historical ResNet/BiLSTM implementation has been removed. ``EmbeddingModel``
-now means the patch-based Transformer encoder everywhere while preserving the
-shared trainer/evaluator contract (contextual/local/grouped/ink outputs).
+The visual encoder keeps the line image as three channels, applies a deterministic
+three-channel binarization before the learned patch projection, creates one token
+per full-height horizontal window, and contextualizes the window sequence with a
+single Transformer layer by default.
 """
 from __future__ import annotations
 
@@ -39,7 +40,7 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _parameter(name: str, default):
-    """Read Parameters.py lazily so direct trainer_core use matches the branch."""
+    """Read Parameters.py lazily so direct trainer/evaluator use matches the branch."""
     try:
         import Parameters as P
         return getattr(P, name, default)
@@ -48,13 +49,93 @@ def _parameter(name: str, default):
 
 
 def sliding_window(image: torch.Tensor, window_size: int, stride: int) -> torch.Tensor:
-    """Return horizontal full-height windows as [B, S, C, H, W]."""
+    """Return exact horizontal full-height windows as [B, S, C, H, W].
+
+    This operation has no learnable parameters. Every output pixel is copied from
+    the corresponding input position; no averaging, pooling, or convolution is
+    performed here.
+    """
     patches = image.unfold(
         dimension=3,
         size=int(window_size),
         step=int(stride),
     )
     return patches.permute(0, 3, 1, 2, 4).contiguous()
+
+
+def _denormalize_imagenet_image(image: torch.Tensor) -> torch.Tensor:
+    if image.ndim != 4 or image.shape[1] != 3:
+        raise ValueError(
+            "Expected image with shape [B, 3, H, W], "
+            f"got {tuple(image.shape)}"
+        )
+    mean = image.new_tensor(_IMAGENET_MEAN).view(1, 3, 1, 1)
+    std = image.new_tensor(_IMAGENET_STD).view(1, 3, 1, 1)
+    return (image.float() * std + mean).clamp(0.0, 1.0)
+
+
+def _normalize_imagenet_image(image: torch.Tensor) -> torch.Tensor:
+    mean = image.new_tensor(_IMAGENET_MEAN).view(1, 3, 1, 1)
+    std = image.new_tensor(_IMAGENET_STD).view(1, 3, 1, 1)
+    return (image.float() - mean) / std
+
+
+def _background_level_from_gray(gray: torch.Tensor) -> torch.Tensor:
+    """Estimate one page-background level per image from its border."""
+    if gray.ndim != 3:
+        raise ValueError(f"Expected grayscale [B, H, W], got {tuple(gray.shape)}")
+    height, width = int(gray.shape[-2]), int(gray.shape[-1])
+    border_h = max(1, int(round(height * 0.05)))
+    border_w = max(1, int(round(width * 0.01)))
+    border = torch.cat(
+        [
+            gray[:, :border_h, :].flatten(start_dim=1),
+            gray[:, -border_h:, :].flatten(start_dim=1),
+            gray[:, :, :border_w].flatten(start_dim=1),
+            gray[:, :, -border_w:].flatten(start_dim=1),
+        ],
+        dim=1,
+    )
+    return border.median(dim=1).values.view(-1, 1, 1)
+
+
+def binarize_three_channel_input(
+    image: torch.Tensor,
+    contrast_threshold: float | None = None,
+) -> torch.Tensor:
+    """Binarize without changing the three-channel model interface.
+
+    Input is assumed to be ImageNet-normalized RGB. The operation is deliberately
+    non-learned and runs without gradients. It estimates the page background from
+    the image border, marks sufficiently different pixels as ink, then represents
+    background as white and ink as black in all three RGB channels before applying
+    the same ImageNet normalization expected by the rest of the project.
+    """
+    if contrast_threshold is None:
+        contrast_threshold = float(
+            os.environ.get(
+                "VIT_BINARIZE_CONTRAST_THRESHOLD",
+                _parameter(
+                    "vit_binarize_contrast_threshold",
+                    _parameter("ink_contrast_threshold", 0.15),
+                ),
+            )
+        )
+    threshold = max(0.0, min(1.0, float(contrast_threshold)))
+
+    with torch.no_grad():
+        rgb = _denormalize_imagenet_image(image.detach())
+        gray = (
+            0.2989 * rgb[:, 0]
+            + 0.5870 * rgb[:, 1]
+            + 0.1140 * rgb[:, 2]
+        )
+        background = _background_level_from_gray(gray)
+        ink = (gray - background).abs().ge(threshold)
+        binary_gray = (~ink).to(dtype=rgb.dtype)
+        binary_rgb = binary_gray.unsqueeze(1).expand(-1, 3, -1, -1).contiguous()
+        normalized = _normalize_imagenet_image(binary_rgb)
+    return normalized.to(dtype=image.dtype, device=image.device)
 
 
 def _denormalize_imagenet_patches(patches: torch.Tensor) -> torch.Tensor:
@@ -115,7 +196,7 @@ def window_ink_ratio_from_patches(
 
 
 class LineWindowViT(nn.Module):
-    """Project full-height windows to tokens and contextualize them globally."""
+    """Project full-height 3-channel windows and contextualize them globally."""
 
     def __init__(
         self,
@@ -130,6 +211,8 @@ class LineWindowViT(nn.Module):
         dropout: float,
         max_tokens: int,
         position_base_tokens: int,
+        binarize_input: bool = True,
+        binarize_contrast_threshold: float = 0.15,
     ) -> None:
         super().__init__()
         input_height = int(input_height)
@@ -164,6 +247,8 @@ class LineWindowViT(nn.Module):
         self.embed_dim = embed_dim
         self.max_tokens = max_tokens
         self.position_base_tokens = position_base_tokens
+        self.binarize_input = bool(binarize_input)
+        self.binarize_contrast_threshold = float(binarize_contrast_threshold)
 
         self.patch_embedding = nn.Conv2d(
             in_channels=3,
@@ -202,7 +287,6 @@ class LineWindowViT(nn.Module):
             nn.init.zeros_(self.patch_embedding.bias)
 
     def _position_tokens(self, count: int) -> torch.Tensor:
-        """Interpolate only the positional slots trained by the base sequence."""
         count = int(count)
         if count <= 0:
             raise ValueError("position token count must be positive")
@@ -237,7 +321,15 @@ class LineWindowViT(nn.Module):
                 f"window size {self.window_size}"
             )
 
-        tokens = self.patch_embedding(image)
+        model_input = (
+            binarize_three_channel_input(
+                image,
+                self.binarize_contrast_threshold,
+            )
+            if self.binarize_input
+            else image
+        )
+        tokens = self.patch_embedding(model_input)
         if tokens.shape[2] != 1:
             raise RuntimeError(
                 "Full-height patch embedding should produce one vertical token row, "
@@ -256,8 +348,6 @@ class LineWindowViT(nn.Module):
 
 
 class EmbeddingModel(nn.Module):
-    """Canonical pure-ViT image embedder used by every ViT branch."""
-
     visual_encoder_type = "vit"
 
     def __init__(
@@ -274,6 +364,8 @@ class EmbeddingModel(nn.Module):
         vit_dropout: float | None = None,
         vit_max_tokens: int | None = None,
         vit_position_base_tokens: int | None = None,
+        vit_binarize_input: bool | None = None,
+        vit_binarize_contrast_threshold: float | None = None,
         *,
         use_bilstm: bool = False,
         bilstm_layers: int | None = None,
@@ -285,13 +377,11 @@ class EmbeddingModel(nn.Module):
         super().__init__()
         if bool(use_bilstm):
             raise ValueError(
-                "EmbeddingModel is pure ViT on ViT branches; "
-                "use_bilstm=True is not supported."
+                "EmbeddingModel is pure ViT on ViT branches; use_bilstm=True is not supported."
             )
         if bool(use_local_grouping):
             raise ValueError(
-                "EmbeddingModel is pure ViT on ViT branches; "
-                "use_local_grouping=True is not supported."
+                "EmbeddingModel is pure ViT on ViT branches; use_local_grouping=True is not supported."
             )
         del bilstm_layers, bilstm_hidden_dim, local_group_size
 
@@ -307,7 +397,7 @@ class EmbeddingModel(nn.Module):
             else input_height
         )
         self.vit_layers = int(
-            _parameter("vit_layers", _env_int("VIT_LAYERS", 4))
+            _parameter("vit_layers", _env_int("VIT_LAYERS", 1))
             if vit_layers is None
             else vit_layers
         )
@@ -339,6 +429,25 @@ class EmbeddingModel(nn.Module):
             if vit_position_base_tokens is None
             else vit_position_base_tokens
         )
+        self.vit_binarize_input = bool(
+            _parameter(
+                "vit_binarize_input",
+                _env_flag("VIT_BINARIZE_INPUT", True),
+            )
+            if vit_binarize_input is None
+            else vit_binarize_input
+        )
+        self.vit_binarize_contrast_threshold = float(
+            _parameter(
+                "vit_binarize_contrast_threshold",
+                _env_float(
+                    "VIT_BINARIZE_CONTRAST_THRESHOLD",
+                    _parameter("ink_contrast_threshold", 0.15),
+                ),
+            )
+            if vit_binarize_contrast_threshold is None
+            else vit_binarize_contrast_threshold
+        )
 
         self.register_buffer(
             "_use_flip_state",
@@ -360,6 +469,8 @@ class EmbeddingModel(nn.Module):
             dropout=self.vit_dropout,
             max_tokens=self.vit_max_tokens,
             position_base_tokens=self.vit_position_base_tokens,
+            binarize_input=self.vit_binarize_input,
+            binarize_contrast_threshold=self.vit_binarize_contrast_threshold,
         ).to(device)
         self.vision_norm = nn.LayerNorm(self.vector_size).to(device)
 
@@ -408,6 +519,8 @@ class EmbeddingModel(nn.Module):
                 "image embeddings: "
                 f"encoder=vit contextual={tuple(contextual.shape)} "
                 f"local={tuple(local.shape)} flip={self.use_flip} "
+                f"layers={self.vit_layers} "
+                f"binarize_rgb={self.vit_binarize_input} "
                 f"position_base_tokens={self.vit_position_base_tokens}",
                 flush=True,
             )
@@ -433,6 +546,8 @@ class EmbeddingModel(nn.Module):
             "vit_dropout": self.vit_dropout,
             "vit_max_tokens": self.vit_max_tokens,
             "vit_position_base_tokens": self.vit_position_base_tokens,
+            "vit_binarize_input": self.vit_binarize_input,
+            "vit_binarize_contrast_threshold": self.vit_binarize_contrast_threshold,
         }
 
 
@@ -453,28 +568,53 @@ def build_vit_from_environment(
         vector_size=vector_size,
         device=device,
         use_flip=use_flip,
-        input_height=int(_parameter("vit_input_height", _env_int("VIT_INPUT_HEIGHT", 128))),
-        vit_layers=int(_parameter("vit_layers", _env_int("VIT_LAYERS", 4))),
-        vit_heads=int(_parameter("vit_heads", _env_int("VIT_HEADS", 4))),
-        vit_mlp_dim=int(_parameter("vit_mlp_dim", _env_int("VIT_MLP_DIM", 512))),
-        vit_dropout=float(_parameter("vit_dropout", _env_float("VIT_DROPOUT", 0.10))),
-        vit_max_tokens=int(_parameter("vit_max_tokens", _env_int("VIT_MAX_TOKENS", 256))),
+        input_height=int(
+            _parameter("vit_input_height", _env_int("VIT_INPUT_HEIGHT", 128))
+        ),
+        vit_layers=int(
+            _parameter("vit_layers", _env_int("VIT_LAYERS", 1))
+        ),
+        vit_heads=int(
+            _parameter("vit_heads", _env_int("VIT_HEADS", 4))
+        ),
+        vit_mlp_dim=int(
+            _parameter("vit_mlp_dim", _env_int("VIT_MLP_DIM", 512))
+        ),
+        vit_dropout=float(
+            _parameter("vit_dropout", _env_float("VIT_DROPOUT", 0.10))
+        ),
+        vit_max_tokens=int(
+            _parameter("vit_max_tokens", _env_int("VIT_MAX_TOKENS", 256))
+        ),
         vit_position_base_tokens=int(
             _parameter(
                 "vit_position_base_tokens",
                 _env_int("VIT_POSITION_BASE_TOKENS", 63),
             )
         ),
+        vit_binarize_input=bool(
+            _parameter(
+                "vit_binarize_input",
+                _env_flag("VIT_BINARIZE_INPUT", True),
+            )
+        ),
+        vit_binarize_contrast_threshold=float(
+            _parameter(
+                "vit_binarize_contrast_threshold",
+                _env_float(
+                    "VIT_BINARIZE_CONTRAST_THRESHOLD",
+                    _parameter("ink_contrast_threshold", 0.15),
+                ),
+            )
+        ),
     )
 
 
-def prepare_vit_model(model: EmbeddingModel) -> EmbeddingModel:
+def prepare_vit_model(model: EmbeddingModel):
     global window_ink_ratio_from_patches
-
     from training_optimizations import fast_window_ink_ratio_from_patches
 
     window_ink_ratio_from_patches = fast_window_ink_ratio_from_patches
-
     if _env_flag("TORCH_COMPILE_VISUAL", False):
         if not hasattr(torch, "compile"):
             print("torch.compile unavailable; continuing without it", flush=True)
@@ -482,16 +622,9 @@ def prepare_vit_model(model: EmbeddingModel) -> EmbeddingModel:
             try:
                 model.vit_encoder = torch.compile(
                     model.vit_encoder,
-                    mode=os.environ.get(
-                        "TORCH_COMPILE_MODE",
-                        "reduce-overhead",
-                    ),
+                    mode=os.environ.get("TORCH_COMPILE_MODE", "reduce-overhead"),
                     dynamic=False,
                 )
-                print("compiled visual ViT with torch.compile", flush=True)
             except Exception as exc:
-                print(
-                    f"torch.compile visual ViT failed: {exc}",
-                    flush=True,
-                )
+                print(f"torch.compile visual ViT failed: {exc}", flush=True)
     return model

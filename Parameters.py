@@ -109,12 +109,14 @@ bilstm_hidden_dim = vector_size
 use_local_window_grouping = False
 local_group_size = 3
 vit_input_height = 128
-vit_layers = 4
+vit_layers = 1
 vit_heads = 4
 vit_mlp_dim = 512
 vit_dropout = 0.10
 vit_max_tokens = 256
 vit_position_base_tokens = 63
+vit_binarize_input = True
+vit_binarize_contrast_threshold = 0.15
 
 # 6. TEXT ENCODER / SPAN SEMANTICS
 text_encoder_type = "arabic_span"
@@ -182,7 +184,8 @@ order_position_component_weight = 1.0
 order_monotonic_component_weight = 1.0
 
 # 11. ANTI-COLLAPSE / REGULARIZATION
-image_variance_loss_weight = 0.01
+# Applied to L2-normalized local and contextual window directions.
+image_variance_loss_weight = 0.10
 image_variance_target_std = 0.05
 
 # 12. DOMAIN / ZERO-SHOT PREPROCESSING
@@ -309,6 +312,8 @@ def export_environment() -> None:
         "VIT_DROPOUT": vit_dropout,
         "VIT_MAX_TOKENS": vit_max_tokens,
         "VIT_POSITION_BASE_TOKENS": vit_position_base_tokens,
+        "VIT_BINARIZE_INPUT": _flag(vit_binarize_input),
+        "VIT_BINARIZE_CONTRAST_THRESHOLD": vit_binarize_contrast_threshold,
         "TEXT_ENCODER_TYPE": text_encoder_type,
         "ARABIC_TEXT_MODEL_NAME": arabic_text_model_name,
         "MAX_TEXT_TOKEN_CHARS": max_text_token_chars,

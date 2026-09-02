@@ -1,8 +1,8 @@
 """Branch-selected visual model backend.
 
-All ViT branches now use ``embeddingModel.EmbeddingModel`` as the canonical
-visual encoder. This shim remains only to keep the shared training entry point
-and branch metadata interface stable.
+All ViT branches use ``embeddingModel.EmbeddingModel`` as the canonical visual
+encoder. Shared defaults are one Transformer layer and three-channel
+binarization immediately before the learned full-height patch projection.
 """
 from __future__ import annotations
 
@@ -54,7 +54,6 @@ def build_visual_model(
 
 
 def install_training_backend(base_module) -> None:
-    """Install the canonical ViT constructor into the shared trainer module."""
     os.environ["VISUAL_ENCODER_TYPE"] = VISUAL_ENCODER_TYPE
     os.environ["USE_BILSTM"] = "0"
     os.environ["USE_LOCAL_WINDOW_GROUPING"] = "0"
@@ -92,11 +91,16 @@ def visual_model_config() -> dict:
         "use_bilstm": False,
         "use_local_window_grouping": False,
         "vit_input_height": _integer("VIT_INPUT_HEIGHT", 128),
-        "vit_layers": _integer("VIT_LAYERS", 4),
+        "vit_layers": _integer("VIT_LAYERS", 1),
         "vit_heads": _integer("VIT_HEADS", 4),
         "vit_mlp_dim": _integer("VIT_MLP_DIM", 512),
         "vit_dropout": _number("VIT_DROPOUT", 0.10),
         "vit_max_tokens": _integer("VIT_MAX_TOKENS", 256),
         "vit_position_base_tokens": _integer("VIT_POSITION_BASE_TOKENS", 63),
+        "vit_binarize_input": _flag("VIT_BINARIZE_INPUT", True),
+        "vit_binarize_contrast_threshold": _number(
+            "VIT_BINARIZE_CONTRAST_THRESHOLD",
+            0.15,
+        ),
         "torch_compile_visual": _flag("TORCH_COMPILE_VISUAL", False),
     }
