@@ -103,13 +103,9 @@ span_alignment_loss.hard_span_dtw_path = hard_span_dtw_path_fast
 base.hard_span_dtw_path = hard_span_dtw_path_fast
 install_jax_batch_padding()
 
-# Keep the optimized epoch/optimizer/checkpoint machinery, but preserve the
-# original trainer_core batch loss. The original batch loss performs two visual
-# forwards for a pair: images1 -> model and images2 -> model. It never concatenates
-# the two line-image batches before the visual encoder.
-_original_compute_batch_loss = base.compute_batch_loss
+# Install the optimized trainer. Its optimized_compute_batch_loss keeps line1
+# and line2 in two independent visual-model forward calls.
 install_optimizations(base)
-base.compute_batch_loss = _original_compute_batch_loss
 
 # Keep the historical baseline loss untouched. This helper only allows an old
 # 4-layer ViT checkpoint to initialize the new 1-layer ViT by loading layer 0.
