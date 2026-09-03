@@ -30,7 +30,9 @@ learning_rate = 1e-4
 finetune_epochs = 30
 finetune_learning_rate = 2e-5
 valid_every_n_epochs = 1
-valid_max_batches = 20
+# 0 means validate on the complete validation loader. Quality-first runs should
+# not select/check checkpoints from a truncated validation subset.
+valid_max_batches = 0
 full_checkpoint_every_n_epochs = 5
 model_weights_every_n_epochs = 2
 use_fused_adam = True
@@ -41,6 +43,7 @@ ddp_static_graph = True
 use_channels_last = True
 torch_compile_visual = False
 torch_compile_mode = "reduce-overhead"
+optimization_mode = "quality"
 
 # 3. DATASET
 # Synthetic data uses the normal DataLoader split (60/20/20) with no online
@@ -144,12 +147,16 @@ span_dtw_text_bucket_size = 64
 span_dtw_max_text_bucket = 256
 span_dtw_batch_bucket_size = 32
 span_dtw_batch_bucket_mode = "power2"
-span_dtw_active_negatives_per_sample = 4
+# 0 means use every generated negative transcript in the differentiable DTW
+# objective rather than rotating/subsampling a smaller active set.
+span_dtw_active_negatives_per_sample = 0
 
 # 8. NEGATIVE TRANSCRIPTS
 negative_mode = "mixed"
 num_negatives = 10
-span_negative_grad_mode = "hardest"
+# Keep a differentiable DTW graph for every negative. This is the quality-first
+# path; "hardest" is the memory-saving mode that backpropagates only one negative.
+span_negative_grad_mode = "all"
 
 # 9. PRE-TRANSFORMER LOCAL HARD NEGATIVES
 use_local_hard_negatives = True
@@ -158,8 +165,10 @@ local_hard_negative_margin = 0.35
 local_hard_negative_top_k = 12
 local_hard_negative_exclude_radius = 3
 local_hard_negative_min_ink = 0.01
-local_hard_negative_every_n_batches = 2
-local_hard_negative_max_samples_per_batch = 8
+# Run local hard-negative loss on every training batch.
+local_hard_negative_every_n_batches = 1
+# 0 means every sample in the micro-batch; do not subsample local-loss examples.
+local_hard_negative_max_samples_per_batch = 0
 
 # 10. IMAGE-IMAGE PAIR LOSS
 use_image_pair_contrastive = True
@@ -167,8 +176,9 @@ image_pair_loss_weight = 0.40
 image_pair_margin = 0.40
 image_pair_top_k = 8
 image_text_loss_on_both_lines = True
+# Pair and sequence-consistency losses run on every batch and every sample.
 image_pair_every_n_batches = 1
-image_pair_max_samples_per_batch = 8
+image_pair_max_samples_per_batch = 0
 sequence_consistency_loss_weight = 0.05
 pair_composition_max_regions = 2
 pair_composition_max_chars = 3
@@ -236,12 +246,13 @@ def export_environment() -> None:
         "MODEL_WEIGHTS_EVERY_N_EPOCHS": model_weights_every_n_epochs,
         "USE_FUSED_ADAM": _flag(use_fused_adam),
         "ALLOW_TF32": _flag(allow_tf32),
-        "CUDNN_BENCHMARK": _flag(cudnn_benchmark),
         "FLOAT32_MATMUL_PRECISION": float32_matmul_precision,
+        "CUDNN_BENCHMARK": _flag(cudnn_benchmark),
         "DDP_STATIC_GRAPH": _flag(ddp_static_graph),
         "USE_CHANNELS_LAST": _flag(use_channels_last),
         "TORCH_COMPILE_VISUAL": _flag(torch_compile_visual),
         "TORCH_COMPILE_MODE": torch_compile_mode,
+        "OPTIMIZATION_MODE": optimization_mode,
         "NUM_SAMPLES": num_samples,
         "REAL_MANIFEST_NAME": real_manifest_name,
         "REAL_TRAIN_SAMPLES_PER_EPOCH": real_train_samples_per_epoch,
