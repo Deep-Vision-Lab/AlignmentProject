@@ -43,6 +43,8 @@ ddp_static_graph = True
 use_channels_last = True
 torch_compile_visual = False
 torch_compile_mode = "reduce-overhead"
+# Quality-first contract: keep every configured supervision term active; runtime
+# optimizations are allowed only when they preserve the same training signal.
 optimization_mode = "quality"
 
 # 3. DATASET
