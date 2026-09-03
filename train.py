@@ -97,16 +97,20 @@ from job_id_runtime import resolve_training_job_id
 from training_optimizations import install as install_optimizations
 from training_stability import install_training_stability
 from unified_line_geometry import install_training_geometry
-from visual_forward_runtime import install as install_visual_forward
 from vit_checkpoint_migration import install as install_vit_checkpoint_migration
 
 span_alignment_loss.hard_span_dtw_path = hard_span_dtw_path_fast
 base.hard_span_dtw_path = hard_span_dtw_path_fast
 install_jax_batch_padding()
+
+# Keep the optimized epoch/optimizer/checkpoint machinery, but preserve the
+# original trainer_core batch loss. The original batch loss performs two visual
+# forwards for a pair: images1 -> model and images2 -> model. It never concatenates
+# the two line-image batches before the visual encoder.
+_original_compute_batch_loss = base.compute_batch_loss
 install_optimizations(base)
-# By default every line image gets its own visual-model forward call. Set
-# VISUAL_FORWARD_MODE=batched to restore the previous batch-concatenated fast path.
-_VISUAL_FORWARD_MODE = install_visual_forward(base)
+base.compute_batch_loss = _original_compute_batch_loss
+
 # Keep the historical baseline loss untouched. This helper only allows an old
 # 4-layer ViT checkpoint to initialize the new 1-layer ViT by loading layer 0.
 install_vit_checkpoint_migration(base)
@@ -148,7 +152,7 @@ def _model_config(stride, args):
             "initialization": "pretrained" if args.pretrained_weights else "scratch",
             "dataset_type": args.dataset_type,
             "dataset_path": args.data_dir,
-            "visual_forward_mode": _VISUAL_FORWARD_MODE,
+            "paired_visual_forward": "separate",
         }
     )
     install_training_stability(base, config, args.job_id)
@@ -307,7 +311,7 @@ def main() -> None:
                 f"binarize_rgb={P.vit_binarize_input} method=otsu",
                 flush=True,
             )
-            print(f"  visual_fwd   = {_VISUAL_FORWARD_MODE}", flush=True)
+            print("  visual_fwd   = separate line1 / line2", flush=True)
             print(
                 f"  variance     = weight={P.image_variance_loss_weight} "
                 f"target_std={P.image_variance_target_std}",
