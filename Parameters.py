@@ -23,15 +23,17 @@ profile_training = False
 profile_max_batches = 0
 
 # 2. TRAINING / OPTIMIZATION
-batch_size = 8  # per GPU micro-batch
+# Keep the current memory-safe micro-batch while preserving an effective global
+# batch of 64 on two GPUs: 8 x 4 accumulation x 2 ranks.
+batch_size = 8
 gradient_accumulation_steps = 4
-epochs = 40
+epochs = 35
 learning_rate = 1e-4
 finetune_epochs = 30
 finetune_learning_rate = 2e-5
 valid_every_n_epochs = 1
-# 0 means validate on the complete validation loader. Quality-first runs should
-# not select/check checkpoints from a truncated validation subset.
+# Validate on the full validation loader so checkpoint selection is not based on
+# a truncated subset.
 valid_max_batches = 0
 full_checkpoint_every_n_epochs = 5
 model_weights_every_n_epochs = 2
@@ -43,14 +45,12 @@ ddp_static_graph = True
 use_channels_last = True
 torch_compile_visual = False
 torch_compile_mode = "reduce-overhead"
-# Quality-first contract: keep every configured supervision term active; runtime
-# optimizations are allowed only when they preserve the same training signal.
 optimization_mode = "quality"
 
 # 3. DATASET
-# Synthetic data uses the normal DataLoader split (60/20/20) with no online
-# augmentation. Any augmentation already present in the dataset is treated as
-# ordinary samples.
+# Deliberately keep only 10,000 pairs for this reproduction. The purpose is to
+# test whether the proven architecture/loss recipe generalizes without needing
+# exposure to all 27,000 synthetic pairs.
 num_samples = 10000
 
 # 3B. REAL-DATA AUGMENTATION
@@ -100,28 +100,30 @@ lang = "Arabic"
 target_ink_height_ratio = 0.72
 ink_contrast_threshold = 0.15
 
-# 5. VISUAL ENCODER (ViT BASELINE)
+# 5. VISUAL ENCODER (PROVEN ViT BASELINE)
 use_bilstm = False
 bilstm_layers = 2
 bilstm_hidden_dim = vector_size
 use_local_window_grouping = False
 local_group_size = 3
 vit_input_height = 128
-vit_layers = 1
+# Restore the architecture used by the strong 28da729 baseline.
+vit_layers = 4
 vit_heads = 4
 vit_mlp_dim = 512
 vit_dropout = 0.10
 vit_max_tokens = 256
 vit_position_base_tokens = 63
-# One universal preprocessing path for synthetic and real data. The complete
-# line is Otsu-binarized while staying 3-channel RGB before any windows are made.
-vit_binarize_input = True
+# The proven baseline learned directly from the original ImageNet-normalized RGB
+# line. Do not destroy grayscale/edge information with model-side Otsu here.
+vit_binarize_input = False
 
 # 6. TEXT ENCODER / SPAN SEMANTICS
 text_encoder_type = "arabic_span"
 arabic_text_model_name = "aubmindlab/bert-base-arabertv02"
 max_text_token_chars = 2
-max_text_span_chars = 2
+# Restore the fixed-63 baseline span capacity.
+max_text_span_chars = 3
 max_windows_per_span = 3
 span_boundary_context_chars = 1
 span_boundary_context_max_core_chars = 1
@@ -133,10 +135,11 @@ span_use_blank_transitions = True
 span_blank_penalty = 0.35
 span_space_max_windows = 2
 span_extra_windows_per_core = 1
-span_feature_cache_size = 2048
+# Frozen AraBERT feature caching was already present in the good run; keep it.
+span_feature_cache_size = 8192
 span_feature_cache_dtype = "float16"
 span_backbone_batch_size = 512
-clear_span_cache_each_epoch = True
+clear_span_cache_each_epoch = False
 
 # 7. SPAN-DTW / GLOBAL IMAGE-TEXT ALIGNMENT
 contrastive_soft_dtw_gamma = 0.1
@@ -149,16 +152,14 @@ span_dtw_text_bucket_size = 64
 span_dtw_max_text_bucket = 256
 span_dtw_batch_bucket_size = 32
 span_dtw_batch_bucket_mode = "power2"
-# 0 means use every generated negative transcript in the differentiable DTW
-# objective rather than rotating/subsampling a smaller active set.
-span_dtw_active_negatives_per_sample = 0
+# Match the known-good training objective: four generated negatives are scored
+# per sample and the hardest one is recomputed with gradient.
+span_dtw_active_negatives_per_sample = 4
 
 # 8. NEGATIVE TRANSCRIPTS
 negative_mode = "mixed"
-num_negatives = 10
-# Keep a differentiable DTW graph for every negative. This is the quality-first
-# path; "hardest" is the memory-saving mode that backpropagates only one negative.
-span_negative_grad_mode = "all"
+num_negatives = 4
+span_negative_grad_mode = "hardest"
 
 # 9. PRE-TRANSFORMER LOCAL HARD NEGATIVES
 use_local_hard_negatives = True
@@ -167,10 +168,9 @@ local_hard_negative_margin = 0.35
 local_hard_negative_top_k = 12
 local_hard_negative_exclude_radius = 3
 local_hard_negative_min_ink = 0.01
-# Run local hard-negative loss on every training batch.
-local_hard_negative_every_n_batches = 1
-# 0 means every sample in the micro-batch; do not subsample local-loss examples.
-local_hard_negative_max_samples_per_batch = 0
+# Restore the scheduling that accompanied the good reference result.
+local_hard_negative_every_n_batches = 2
+local_hard_negative_max_samples_per_batch = 8
 
 # 10. IMAGE-IMAGE PAIR LOSS
 use_image_pair_contrastive = True
@@ -178,9 +178,8 @@ image_pair_loss_weight = 0.40
 image_pair_margin = 0.40
 image_pair_top_k = 8
 image_text_loss_on_both_lines = True
-# Pair and sequence-consistency losses run on every batch and every sample.
 image_pair_every_n_batches = 1
-image_pair_max_samples_per_batch = 0
+image_pair_max_samples_per_batch = 8
 sequence_consistency_loss_weight = 0.05
 pair_composition_max_regions = 2
 pair_composition_max_chars = 3
@@ -190,8 +189,6 @@ order_position_component_weight = 1.0
 order_monotonic_component_weight = 1.0
 
 # 11. BASELINE VARIANCE REGULARIZATION
-# This is the original pre-branch baseline term from trainer_core.py. It acts on
-# raw local embeddings only; no angular/contextual runtime patch is installed.
 image_variance_loss_weight = 0.01
 image_variance_target_std = 0.05
 
@@ -214,10 +211,11 @@ dist_timeout_seconds = 7200
 dataloader_mp_context = "spawn"
 
 # 14. EVALUATION DEFAULTS
+# Match the settings used by the strong fixed-63 ViT evaluation.
 evaluation_feature = "contextual"
-evaluation_score_mode = "auto"
+evaluation_score_mode = "raw"
 evaluation_score_clip = 4.0
-evaluation_threshold = 0.0
+evaluation_threshold = 0.45
 evaluation_gap = -0.30
 evaluation_n_samples = 100
 evaluation_real_split = "test"
