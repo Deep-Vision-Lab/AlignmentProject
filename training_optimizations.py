@@ -225,18 +225,6 @@ def prepare_raw_model(raw_model):
     return raw_model
 
 
-def split_embeddings(combined, first_size):
-    return tuple(
-        (
-            tensor[:first_size],
-            tensor[first_size:],
-        )
-        if torch.is_tensor(tensor)
-        else (tensor, tensor)
-        for tensor in combined
-    )
-
-
 def rotating_indices(batch_size: int, maximum: int, counter: int, device):
     if maximum <= 0 or maximum >= batch_size:
         return list(range(batch_size))
@@ -383,14 +371,13 @@ def optimized_compute_batch_loss(train_module):
         neg1, neg2 = batch["neg_texts1"], batch["neg_texts2"]
         batch_size = int(images1.shape[0])
 
-        with PROFILER.section("visual_forward_both_lines"):
-            combined = torch.cat([images1, images2], dim=0)
-            combined_embeddings = train_module.compute_embeddings(
-                image_embedder, combined
-            )
-            split = split_embeddings(combined_embeddings, batch_size)
-            emb1 = tuple(pair[0] for pair in split)
-            emb2 = tuple(pair[1] for pair in split)
+        # The two manuscript lines are always encoded independently. They share
+        # the same ViT weights, but no image tensor is concatenated before the
+        # visual encoder and no visual token from one line can affect the other.
+        with PROFILER.section("visual_forward_line1"):
+            emb1 = train_module.compute_embeddings(image_embedder, images1)
+        with PROFILER.section("visual_forward_line2"):
+            emb2 = train_module.compute_embeddings(image_embedder, images2)
 
         with PROFILER.section("image_text_line1"):
             loss1, stats1, emb1 = train_module.compute_single_image_text_loss(
