@@ -1,0 +1,106 @@
+{
+  "index": 3,
+  "pair_id": "synthetic_3",
+  "source_type": "synthetic",
+  "side1_type": "synthetic",
+  "side2_type": "synthetic",
+  "side1_preprocess": "synthetic",
+  "side2_preprocess": "synthetic",
+  "label_type": "",
+  "text_score": 0.0,
+  "split": "",
+  "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_3.png",
+  "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_3.png",
+  "nw_score": -8.536694526672363,
+  "normalized_nw_score": -0.13550308772495814,
+  "feature": "contextual",
+  "score_mode": "raw",
+  "score_clip": 4.0,
+  "threshold": 0.7,
+  "gap": -0.3,
+  "line1_windows": 63,
+  "line2_windows": 63,
+  "gap_steps": 34,
+  "mean_path_cosine": 0.8551157443754135,
+  "mean_full_path_cosine": 0.7361588604424311,
+  "line1_intervals_px": [
+    [
+      920.0,
+      1024.0
+    ],
+    [
+      664.0,
+      840.0
+    ],
+    [
+      440.0,
+      584.0
+    ],
+    [
+      136.0,
+      392.0
+    ],
+    [
+      40.0,
+      88.0
+    ]
+  ],
+  "line2_intervals_px": [
+    [
+      936.0,
+      1024.0
+    ],
+    [
+      680.0,
+      824.0
+    ],
+    [
+      520.0,
+      664.0
+    ],
+    [
+      136.0,
+      376.0
+    ],
+    [
+      40.0,
+      104.0
+    ]
+  ],
+  "gt_mask1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask1_3.png",
+  "gt_mask2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask2_3.png",
+  "path_steps": 31,
+  "traceback_steps": 80,
+  "warp_steps": 34,
+  "component_count": 5,
+  "full_match_steps": 46,
+  "bridged_trace_steps": 19,
+  "component_bridge_limit": 2,
+  "component_support_floor": 0.0,
+  "line1_path_windows": 31,
+  "line2_path_windows": 31,
+  "line1_span_windows": 45,
+  "line2_span_windows": 42,
+  "line1_path_fraction": 0.49206349206349204,
+  "line2_path_fraction": 0.49206349206349204,
+  "line1_matched_fraction": 0.7142857142857143,
+  "line2_matched_fraction": 0.6666666666666666,
+  "line1_path_start": 0,
+  "line1_path_end": 60,
+  "line2_path_start": 0,
+  "line2_path_end": 60,
+  "line1_component_ranges": "[[0,5],[11,21],[27,35],[39,54],[58,60]]",
+  "line2_component_ranges": "[[0,4],[12,20],[22,30],[40,54],[57,60]]",
+  "line1_mask_precision": 0.2733516483516483,
+  "line1_mask_recall": 0.6085626911314985,
+  "line1_mask_iou": 0.2324766355140187,
+  "line1_mask_dice": 0.37725118483412323,
+  "line2_mask_precision": 0.25882352941176473,
+  "line2_mask_recall": 0.6111111111111112,
+  "line2_mask_iou": 0.2222222222222222,
+  "line2_mask_dice": 0.36363636363636365,
+  "matrix_csv_cosine": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/NW/Synthetic63/vit_baseline/pair_00003/matrices/nw_match_scores_values_cosine.csv",
+  "matrix_csv_match": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/NW/Synthetic63/vit_baseline/pair_00003/matrices/nw_match_scores_values_match_score.csv",
+  "evidence_json": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/NW/Synthetic63/vit_baseline/pair_00003/evidence/nw_match_scores_values_trace.json",
+  "mean_mask_iou": 0.22734942886812046
+}
