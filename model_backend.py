@@ -1,14 +1,15 @@
-"""Branch-selected visual model backend.
+"""Branch-selected visual backend for hierarchical letter grounding.
 
-The ViT baseline uses ``embeddingModel.EmbeddingModel`` as its canonical visual
-encoder. The proven baseline learns directly from the original three-channel
-ImageNet-normalized line and uses four Transformer encoder layers.
+The image side keeps the proven 4-layer raw-RGB ViT baseline, but inserts a
+trainable local *depiction* head between primitive patch features and the
+contextual Transformer.  The depiction head receives direct letter-level VLM
+supervision in ``vlm_letter_grounding.py``.
 """
 from __future__ import annotations
 
 import os
 
-MODEL_NAME = "vit"
+MODEL_NAME = "vit_vlm_letter_depiction"
 VISUAL_ENCODER_TYPE = "vit"
 
 
@@ -43,14 +44,16 @@ def build_visual_model(
     **_ignored,
 ):
     from embeddingModel import build_vit_from_environment
+    from vlm_letter_grounding import attach_depiction_head
 
-    return build_vit_from_environment(
+    model = build_vit_from_environment(
         window_size=window_size,
         stride=stride,
         vector_size=vector_size,
         device=device,
         use_flip=use_flip,
     )
+    return attach_depiction_head(model)
 
 
 def install_training_backend(base_module) -> None:
@@ -90,6 +93,8 @@ def visual_model_config() -> dict:
         "visual_encoder_type": VISUAL_ENCODER_TYPE,
         "use_bilstm": False,
         "use_local_window_grouping": False,
+        "local_representation": "trainable_letter_depiction",
+        "context_input": "letter_depiction_tokens",
         "vit_input_height": _integer("VIT_INPUT_HEIGHT", 128),
         "vit_layers": _integer("VIT_LAYERS", 4),
         "vit_heads": _integer("VIT_HEADS", 4),
