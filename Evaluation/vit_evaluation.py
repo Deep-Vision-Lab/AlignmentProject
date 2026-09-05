@@ -48,6 +48,12 @@ def install_vit_evaluation_loader() -> None:
         if encoder_type != "vit":
             return original_loader(weights_path, device, load_text_model)
 
+        # ArabicSpanTextEncoder has an environment-level visible-core cap.  Make
+        # evaluation reconstruct the same span semantics recorded at training.
+        os.environ["SPAN_MAX_CORE_CHARS_CAP"] = str(
+            int(config.get("max_text_span_chars", 3))
+        )
+
         previous_constructor = _eval_utils.EmbeddingModel
 
         def vit_constructor(
