@@ -17,6 +17,9 @@ from vlm_letter_grounding import apply_branch_config, install_training_objective
 # same resolved values even though the shared Parameters.py remains untouched.
 apply_branch_config(P)
 P.export_environment()
+# The shared optimization validator was written for the later <=2-character
+# ablation.  This branch deliberately restores the proven max-span=3 baseline.
+os.environ["ALLOW_UNSAFE_SPAN_CONFIG"] = "1"
 
 MODEL_NAME = "vit_vlm_letter_depiction"
 VISUAL_ENCODER_TYPE = "vit"
