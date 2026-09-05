@@ -1,0 +1,92 @@
+{
+  "index": 1,
+  "pair_id": "synthetic_1",
+  "source_type": "synthetic",
+  "side1_type": "synthetic",
+  "side2_type": "synthetic",
+  "side1_preprocess": "synthetic",
+  "side2_preprocess": "synthetic",
+  "label_type": "",
+  "text_score": 0.0,
+  "split": "",
+  "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_1.png",
+  "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_1.png",
+  "nw_score": 12.964286804199219,
+  "normalized_nw_score": 0.20578233022538442,
+  "feature": "hybrid",
+  "score_mode": "raw",
+  "score_clip": 4.0,
+  "threshold": 0.45,
+  "gap": -0.3,
+  "line1_windows": 63,
+  "line2_windows": 63,
+  "gap_steps": 8,
+  "mean_path_cosine": 0.8585602694087558,
+  "mean_full_path_cosine": 0.7758937849963116,
+  "line1_intervals_px": [
+    [
+      872.0,
+      1024.0
+    ],
+    [
+      456.0,
+      744.0
+    ],
+    [
+      0.0,
+      392.0
+    ]
+  ],
+  "line2_intervals_px": [
+    [
+      872.0,
+      1024.0
+    ],
+    [
+      440.0,
+      728.0
+    ],
+    [
+      0.0,
+      392.0
+    ]
+  ],
+  "gt_mask1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask1_1.png",
+  "gt_mask2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask2_1.png",
+  "path_steps": 45,
+  "traceback_steps": 67,
+  "warp_steps": 8,
+  "component_count": 3,
+  "full_match_steps": 59,
+  "bridged_trace_steps": 9,
+  "component_bridge_limit": 2,
+  "component_support_floor": 0.0,
+  "line1_path_windows": 45,
+  "line2_path_windows": 45,
+  "line1_span_windows": 51,
+  "line2_span_windows": 51,
+  "line1_path_fraction": 0.7142857142857143,
+  "line2_path_fraction": 0.7142857142857143,
+  "line1_matched_fraction": 0.8095238095238095,
+  "line2_matched_fraction": 0.8095238095238095,
+  "line1_path_start": 0,
+  "line1_path_end": 62,
+  "line2_path_start": 0,
+  "line2_path_end": 62,
+  "line1_component_ranges": "[[0,8],[17,34],[39,62]]",
+  "line2_component_ranges": "[[0,8],[18,35],[39,62]]",
+  "line1_mask_precision": 0.8365384615384616,
+  "line1_mask_recall": 0.9886363636363636,
+  "line1_mask_iou": 0.8285714285714286,
+  "line1_mask_dice": 0.90625,
+  "line2_mask_precision": 0.8125,
+  "line2_mask_recall": 1.0,
+  "line2_mask_iou": 0.8125,
+  "line2_mask_dice": 0.896551724137931,
+  "matrix_csv_cosine": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/NW_Hybrid/Synthetic63/vit_baseline/alpha_0p50/pair_00001/matrices/nw_match_scores_values_cosine.csv",
+  "matrix_csv_match": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/NW_Hybrid/Synthetic63/vit_baseline/alpha_0p50/pair_00001/matrices/nw_match_scores_values_match_score.csv",
+  "evidence_json": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/NW_Hybrid/Synthetic63/vit_baseline/alpha_0p50/pair_00001/evidence/nw_match_scores_values_trace.json",
+  "mean_mask_iou": 0.8205357142857144,
+  "hybrid_alpha": 0.5,
+  "hybrid_formula": "normalize(alpha*local + (1-alpha)*contextual)"
+}

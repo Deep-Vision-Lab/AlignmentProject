@@ -1,0 +1,22 @@
+{
+  "algorithm": "needleman_wunsch",
+  "traceback": "terminal_(N,M)_to_origin_(0,0)",
+  "dataset": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63",
+  "detected_layout": "synthetic",
+  "weights": "/home/ahmedmas/BGU-Lab/AlignmentProject/Weights/vit_baseline/model_best.pth",
+  "parameters": "/home/ahmedmas/BGU-Lab/AlignmentProject/Parameters.py",
+  "selected": 3,
+  "successful": 3,
+  "failed": 0,
+  "mean_normalized_nw_score": 0.10794517287501583,
+  "mean_path_cosine": 0.7890828191252188,
+  "mean_mask_iou": 0.5899696283513244,
+  "feature": "hybrid",
+  "score_mode": "raw",
+  "score_clip": 4.0,
+  "threshold": 0.45,
+  "gap": -0.3,
+  "real_split": "test",
+  "hybrid_alpha": 0.5,
+  "hybrid_formula": "normalize(alpha*local + (1-alpha)*contextual)"
+}
