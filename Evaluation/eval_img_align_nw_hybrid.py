@@ -73,7 +73,6 @@ def _hybrid_parse_args():
     remaining = _remove_feature_override(remaining)
     original_argv = sys.argv
     try:
-        # Feed only canonical arguments to the canonical parser.
         sys.argv = [original_argv[0], *remaining]
         args = _ORIGINAL_PARSE_ARGS()
     finally:
