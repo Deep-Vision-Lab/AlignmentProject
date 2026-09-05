@@ -24,6 +24,12 @@ def _checkpoint_config(weights_path) -> dict:
     return {}
 
 
+def _uses_letter_depiction(config: dict) -> bool:
+    return bool(config.get("letter_depiction_enabled", False)) or str(
+        config.get("local_representation", "")
+    ).strip().lower() == "trainable_letter_depiction"
+
+
 def install_vit_evaluation_loader() -> None:
     """Reconstruct the canonical ViT with the architecture stored in a checkpoint."""
     if getattr(_eval_utils, "_vit_evaluation_loader_installed", False):
@@ -59,7 +65,7 @@ def install_vit_evaluation_loader() -> None:
                 config.get("vit_binarize_input", False),
                 False,
             )
-            return EmbeddingModel(
+            model = EmbeddingModel(
                 window_size=int(window_size),
                 stride=int(stride),
                 vector_size=int(vector_size),
@@ -76,6 +82,11 @@ def install_vit_evaluation_loader() -> None:
                 ),
                 vit_binarize_input=binarize_input,
             )
+            if _uses_letter_depiction(config):
+                from vlm_letter_grounding import attach_depiction_head
+
+                model = attach_depiction_head(model)
+            return model
 
         try:
             _eval_utils.EmbeddingModel = vit_constructor
