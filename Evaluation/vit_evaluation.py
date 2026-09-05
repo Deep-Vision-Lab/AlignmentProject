@@ -30,8 +30,42 @@ def _uses_letter_depiction(config: dict) -> bool:
     ).strip().lower() == "trainable_letter_depiction"
 
 
+def _uses_cross_attention(config: dict) -> bool:
+    return _bool(config.get("cross_attention_enabled", False), False)
+
+
+def _attach_cross_attention_from_checkpoint(models) -> None:
+    if models.text_model is None or not _uses_cross_attention(models.config):
+        return
+    from vlm_pair_cross_attention import SymmetricPairCrossAttention
+
+    if not hasattr(models.text_model, "pair_cross_attention"):
+        module = SymmetricPairCrossAttention(
+            int(models.config.get("vector_size", 128)),
+            num_heads=int(models.config.get("cross_attention_heads", 4)),
+            dropout=float(models.config.get("cross_attention_dropout", 0.10)),
+            ff_multiplier=int(models.config.get("cross_attention_ff_multiplier", 2)),
+            initial_gate=float(models.config.get("cross_attention_initial_gate", 0.20)),
+        ).to(models.device)
+        models.text_model.add_module("pair_cross_attention", module)
+
+    # The shared loader already loaded the ordinary text state before this pair
+    # module existed. Reload once so pair_cross_attention.* parameters are also
+    # restored from the checkpoint.
+    checkpoint = models.checkpoint
+    if isinstance(checkpoint, dict):
+        state = checkpoint.get("text_encoder_state_dict")
+        if state is None:
+            state = checkpoint.get("text_embedder_state_dict")
+        if state:
+            models.text_model.load_state_dict(
+                _eval_utils._strip_module_prefix(state), strict=False
+            )
+    models.text_model.eval()
+
+
 def install_vit_evaluation_loader() -> None:
-    """Reconstruct the canonical ViT with the architecture stored in a checkpoint."""
+    """Reconstruct the exact hierarchy recorded in a checkpoint."""
     if getattr(_eval_utils, "_vit_evaluation_loader_installed", False):
         return
 
@@ -48,12 +82,9 @@ def install_vit_evaluation_loader() -> None:
         if encoder_type != "vit":
             return original_loader(weights_path, device, load_text_model)
 
-        # ArabicSpanTextEncoder has an environment-level visible-core cap.  Make
-        # evaluation reconstruct the same span semantics recorded at training.
         os.environ["SPAN_MAX_CORE_CHARS_CAP"] = str(
             int(config.get("max_text_span_chars", 3))
         )
-
         previous_constructor = _eval_utils.EmbeddingModel
 
         def vit_constructor(
@@ -64,9 +95,6 @@ def install_vit_evaluation_loader() -> None:
             use_flip=False,
             **_ignored,
         ):
-            # Legacy ViT checkpoints were trained before model-side binarization
-            # existed and therefore do not contain vit_binarize_input. Missing
-            # means False. New checkpoints explicitly store True and use Otsu.
             binarize_input = _bool(
                 config.get("vit_binarize_input", False),
                 False,
@@ -96,7 +124,9 @@ def install_vit_evaluation_loader() -> None:
 
         try:
             _eval_utils.EmbeddingModel = vit_constructor
-            return original_loader(weights_path, device, load_text_model)
+            models = original_loader(weights_path, device, load_text_model)
+            _attach_cross_attention_from_checkpoint(models)
+            return models
         finally:
             _eval_utils.EmbeddingModel = previous_constructor
 
