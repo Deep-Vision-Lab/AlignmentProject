@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=vit_vlm_letters
+#SBATCH --job-name=vit_vlm_cross
 #SBATCH --partition=rtx4090
 #SBATCH --gpus=rtx_4090:2
 #SBATCH --ntasks=1
@@ -38,7 +38,7 @@ if [[ -z "${JOB_NAME}" ]]; then
 fi
 
 echo "========================================"
-echo "AlignmentProject hierarchical VLM training"
+echo "AlignmentProject hierarchical VLM + cross-attention training"
 echo "branch       = ${BRANCH}"
 echo "commit       = ${COMMIT}"
 echo "node         = $(hostname)"
@@ -46,8 +46,8 @@ echo "job_name     = ${JOB_NAME}"
 echo "slurm_job_id = ${SLURM_JOB_ID:-unknown}"
 echo "weights_dir  = Weights/${JOB_NAME}"
 echo "dataset      = ${DATASET}"
-echo "architecture = letter depiction -> 4-layer context -> Span-DTW -> image pair"
-echo "visual_fwd   = separate line1 / line2"
+echo "architecture = letter depiction -> self-context -> bidirectional cross-attention -> cosine pair matching"
+echo "visual_fwd   = separate line1 / line2 (NO image concatenation)"
 echo "CUDA_VISIBLE_DEVICES = ${CUDA_VISIBLE_DEVICES:-unset}"
 echo "========================================"
 
