@@ -9,6 +9,15 @@ from __future__ import annotations
 
 import os
 
+import Parameters as P
+from vlm_letter_grounding import apply_branch_config, install_training_objective
+
+# Apply this branch's quality-first experiment settings before the trainer builds
+# loaders/criterion/model.  Re-export standard settings so helper modules see the
+# same resolved values even though the shared Parameters.py remains untouched.
+apply_branch_config(P)
+P.export_environment()
+
 MODEL_NAME = "vit_vlm_letter_depiction"
 VISUAL_ENCODER_TYPE = "vit"
 
@@ -79,6 +88,7 @@ def install_training_backend(base_module) -> None:
         )
 
     base_module.EmbeddingModel = constructor
+    install_training_objective(base_module)
 
 
 def prepare_visual_model(model) -> None:
@@ -88,7 +98,9 @@ def prepare_visual_model(model) -> None:
 
 
 def visual_model_config() -> dict:
-    return {
+    from vlm_letter_grounding import model_config as grounding_model_config
+
+    config = {
         "model_backend": MODEL_NAME,
         "visual_encoder_type": VISUAL_ENCODER_TYPE,
         "use_bilstm": False,
@@ -106,3 +118,5 @@ def visual_model_config() -> dict:
         "vit_binarize_method": "otsu" if _flag("VIT_BINARIZE_INPUT", False) else "none",
         "torch_compile_visual": _flag("TORCH_COMPILE_VISUAL", False),
     }
+    config.update(grounding_model_config(P))
+    return config
