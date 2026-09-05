@@ -1,9 +1,9 @@
-"""Branch-selected visual backend for hierarchical letter grounding.
+"""Branch-selected backend for letter grounding + cross-line attention.
 
-The image side keeps the proven 4-layer raw-RGB ViT baseline, but inserts a
-trainable local *depiction* head between primitive patch features and the
-contextual Transformer.  The depiction head receives direct letter-level VLM
-supervision in ``vlm_letter_grounding.py``.
+The image side keeps the proven 4-layer raw-RGB ViT and trainable local letter
+*depiction* head.  Image 1 and image 2 are encoded independently.  Only after
+both independent contextual sequences exist do we apply bidirectional pair
+cross-attention, followed by cosine-based pair supervision.
 """
 from __future__ import annotations
 
@@ -11,19 +11,24 @@ import os
 
 import Parameters as P
 from vlm_letter_grounding import apply_branch_config, install_training_objective
+from vlm_pair_cross_attention import (
+    apply_cross_attention_config,
+    install_pair_cross_attention,
+    model_config as cross_attention_model_config,
+)
 
-# Apply this branch's quality-first experiment settings before the trainer builds
-# loaders/criterion/model.  Re-export standard settings so helper modules see the
-# same resolved values even though the shared Parameters.py remains untouched.
+# First restore the quality-first letter-depiction hierarchy, then add only the
+# cross-line stage.  This makes the parent branch a clean no-cross-attention
+# ablation for the new experiment.
 apply_branch_config(P)
+apply_cross_attention_config(P)
 P.export_environment()
-# The shared optimization validator and text encoder were written for a later
-# <=2-character ablation. This branch deliberately restores the proven
-# three-character contextual span baseline.
+
+# Restore the proven three-character contextual span behavior.
 os.environ["ALLOW_UNSAFE_SPAN_CONFIG"] = "1"
 os.environ["SPAN_MAX_CORE_CHARS_CAP"] = "3"
 
-MODEL_NAME = "vit_vlm_letter_depiction"
+MODEL_NAME = "vit_vlm_letter_depiction_cross_attention"
 VISUAL_ENCODER_TYPE = "vit"
 
 
@@ -93,7 +98,11 @@ def install_training_backend(base_module) -> None:
         )
 
     base_module.EmbeddingModel = constructor
+
+    # Order matters: first add the local letter-depiction image-text objective,
+    # then replace only the paired-batch stage with cross-aware pair supervision.
     install_training_objective(base_module)
+    install_pair_cross_attention(base_module)
 
 
 def prepare_visual_model(model) -> None:
@@ -112,6 +121,7 @@ def visual_model_config() -> dict:
         "use_local_window_grouping": False,
         "local_representation": "trainable_letter_depiction",
         "context_input": "letter_depiction_tokens",
+        "pair_representation": "bidirectional_cross_attention_fusion",
         "vit_input_height": _integer("VIT_INPUT_HEIGHT", 128),
         "vit_layers": _integer("VIT_LAYERS", 4),
         "vit_heads": _integer("VIT_HEADS", 4),
@@ -124,4 +134,5 @@ def visual_model_config() -> dict:
         "torch_compile_visual": _flag("TORCH_COMPILE_VISUAL", False),
     }
     config.update(grounding_model_config(P))
+    config.update(cross_attention_model_config(P))
     return config
