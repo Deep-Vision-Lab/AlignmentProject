@@ -1,5 +1,14 @@
-"""Epoch-wise random subset sampling for real-data training.
+"""Dataset-size runtime policy for synthetic and real training.
 
+Synthetic training:
+``Parameters.num_samples`` is interpreted as the exact number of training
+examples.  The legacy synthetic loader still creates a 60/20/20 split, so this
+module converts the requested train length into the corresponding total source
+cap before the loader is built.  For example, ``num_samples = 6000`` becomes a
+10,000-example source cap and therefore produces 6000/2000/2000 train/valid/test
+splits.
+
+Real training:
 When REAL_TRAIN_SAMPLES_PER_EPOCH is smaller than the available training pool,
 keep the full dataset resident but draw a fresh deterministic subset every epoch.
 The same global subset is reconstructed on every DDP rank and then sharded
@@ -73,16 +82,66 @@ class EpochRandomSubsetSampler(Sampler[int]):
         return iter(selected[self.rank : self.total_size : self.world_size])
 
 
+def _synthetic_source_cap_for_train_target(train_target: int) -> int:
+    """Return the smallest legacy source cap whose 60% split is train_target."""
+    train_target = int(train_target)
+    if train_target <= 0:
+        raise ValueError("Parameters.num_samples must be positive for synthetic training.")
+
+    # The legacy loader uses int(0.6 * total). Start from ceil(5*target/3),
+    # then adjust using the exact same floating-point expression so this remains
+    # correct even if Python's float rounding is awkward for a particular size.
+    total = (5 * train_target + 2) // 3
+    while int(0.6 * total) < train_target:
+        total += 1
+    while total > 1 and int(0.6 * (total - 1)) >= train_target:
+        total -= 1
+    return total
+
+
 def install_epoch_subset_sampling(train_module) -> None:
-    """Patch select_dataloaders to honor a target smaller than the train pool."""
+    """Patch select_dataloaders with the configured dataset-size policy."""
     if getattr(train_module, "_epoch_subset_sampling_installed", False):
         return
 
     original_select = train_module.select_dataloaders
 
     def select_dataloaders(args):
+        dataset_type = str(getattr(args, "dataset_type", "")).lower()
+
+        if dataset_type == "synthetic":
+            target = int(getattr(args, "num_samples", 0) or 0)
+            source_cap = _synthetic_source_cap_for_train_target(target)
+
+            # DataLoader imports num_samples from Parameters.py at module-import
+            # time. Override that legacy total cap before build_dataloaders() is
+            # called so Parameters.num_samples means TRAIN length, not total
+            # train+valid+test length.
+            import DataLoader as synthetic_loader
+
+            synthetic_loader.num_samples = source_cap
+            train_loader, valid_loader, test_loader, train_sampler = original_select(args)
+
+            actual_train = len(train_loader.dataset)
+            if actual_train != target:
+                raise RuntimeError(
+                    "Synthetic dataset is too small for the requested training length: "
+                    f"Parameters.num_samples={target}, expected source_cap={source_cap}, "
+                    f"actual_train={actual_train}, valid={len(valid_loader.dataset)}, "
+                    f"test={len(test_loader.dataset)}."
+                )
+
+            if train_module.CTX.is_main:
+                print(
+                    "Synthetic train length from Parameters.num_samples: "
+                    f"train={actual_train} valid={len(valid_loader.dataset)} "
+                    f"test={len(test_loader.dataset)} source_cap={source_cap}",
+                    flush=True,
+                )
+            return train_loader, valid_loader, test_loader, train_sampler
+
         train_loader, valid_loader, test_loader, train_sampler = original_select(args)
-        if str(getattr(args, "dataset_type", "")).lower() != "real":
+        if dataset_type != "real":
             return train_loader, valid_loader, test_loader, train_sampler
 
         try:
