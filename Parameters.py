@@ -25,11 +25,11 @@ profile_max_batches = 0
 # 2. TRAINING / OPTIMIZATION
 # Keep the current memory-safe micro-batch while preserving an effective global
 # batch of 64 on two GPUs: 8 x 4 accumulation x 2 ranks.
-batch_size = 8
-gradient_accumulation_steps = 4
-epochs = 35
+batch_size = 32
+gradient_accumulation_steps = 2
+epochs = 20
 learning_rate = 1e-4
-finetune_epochs = 30
+finetune_epochs = 20
 finetune_learning_rate = 2e-5
 valid_every_n_epochs = 1
 # Validate on the full validation loader so checkpoint selection is not based on
@@ -51,7 +51,7 @@ optimization_mode = "quality"
 # Deliberately keep only 10,000 pairs for this reproduction. The purpose is to
 # test whether the proven architecture/loss recipe generalizes without needing
 # exposure to all 27,000 synthetic pairs.
-num_samples = 10000
+num_samples = 6000
 
 # 3B. REAL-DATA AUGMENTATION
 real_manifest_name = "dataset_manifest.jsonl"
