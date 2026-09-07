@@ -20,7 +20,7 @@ from vlm_pair_cross_attention import (
 # First restore the quality-first letter-depiction hierarchy, then add only the
 # cross-line stage.  This makes the parent branch a clean no-cross-attention
 # ablation for the new experiment.
-apply_branch_config(P)
+# apply_branch_config(P)
 apply_cross_attention_config(P)
 P.export_environment()
 
