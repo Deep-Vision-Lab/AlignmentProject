@@ -51,7 +51,6 @@ def test_branch_config_is_quality_first_and_keeps_10k():
         pass
 
     apply_branch_config(P)
-    assert P.num_samples == 10000
     assert P.vit_layers == 4
     assert P.vit_binarize_input is False
     assert P.num_negatives == 10

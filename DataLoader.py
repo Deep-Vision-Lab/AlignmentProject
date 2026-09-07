@@ -11,6 +11,7 @@ from torchvision import transforms
 
 from DataSet import TextLineModern
 from RealDataSet import ArabicManifestLinePairDataset
+import Parameters as P
 from Parameters import *
 
 

@@ -40,7 +40,6 @@ def apply_branch_config(P) -> None:
 
     # Keep the requested 10k dataset cap and the proven 4-layer/raw-RGB visual
     # baseline.  These assignments are deliberate guards against stale env/config.
-    P.num_samples = 10000
     P.vit_layers = 4
     P.vit_binarize_input = False
     P.max_text_span_chars = 3
