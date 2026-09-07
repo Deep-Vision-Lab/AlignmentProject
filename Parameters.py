@@ -27,7 +27,7 @@ profile_max_batches = 0
 # batch of 64 on two GPUs: 8 x 4 accumulation x 2 ranks.
 batch_size = 32
 gradient_accumulation_steps = 2
-epochs = 35
+epochs = 20
 learning_rate = 1e-4
 finetune_epochs = 30
 finetune_learning_rate = 2e-5
