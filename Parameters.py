@@ -226,6 +226,16 @@ finetune_num_samples = num_samples
 finetune_data_dir = ""
 
 
+# Local depiction objective.
+letter_depiction_enabled = True
+letter_depiction_weight = 0.35
+letter_depiction_positive_weight = 0.35
+letter_depiction_margin = 0.15
+letter_depiction_gamma = 0.05
+letter_depiction_step_penalty = 0.02
+letter_depiction_min_ink = 0.01
+letter_depiction_inventory = DEFAULT_ARABIC_LETTERS
+
 def export_environment() -> None:
     values = {
         "BATCH_SIZE": batch_size,
