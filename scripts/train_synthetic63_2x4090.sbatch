@@ -15,12 +15,17 @@ set -euo pipefail
 PROJECT_DIR="${PROJECT_DIR:-/home/ahmedmas/BGU-Lab/AlignmentProject}"
 DATASET="${DATASET:-${PROJECT_DIR}/DataSet/Synthetic63}"
 TORCHRUN_BIN="${TORCHRUN_BIN:-${HOME}/.conda/envs/manucripts_align/bin/torchrun}"
+PYTHON_BIN="${PYTHON_BIN:-$(dirname "${TORCHRUN_BIN}")/python}"
 
 cd "${PROJECT_DIR}"
 mkdir -p out
 
 if [[ ! -x "${TORCHRUN_BIN}" ]]; then
   echo "ERROR: torchrun not found or not executable: ${TORCHRUN_BIN}" >&2
+  exit 2
+fi
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  echo "ERROR: python not found or not executable: ${PYTHON_BIN}" >&2
   exit 2
 fi
 if [[ ! -d "${DATASET}/images" || ! -d "${DATASET}/texts" ]]; then
@@ -31,6 +36,7 @@ fi
 BRANCH="$(git branch --show-current)"
 COMMIT="$(git rev-parse --short HEAD)"
 export JOB_NAME="${JOB_NAME:-${SLURM_JOB_NAME:-}}"
+PARAM_NUM_SAMPLES="$("${PYTHON_BIN}" -c 'import Parameters as P; print(int(P.num_samples))')"
 
 if [[ -z "${JOB_NAME}" ]]; then
   echo "ERROR: JOB_NAME is empty and SLURM_JOB_NAME is unavailable." >&2
@@ -39,15 +45,16 @@ fi
 
 echo "========================================"
 echo "AlignmentProject hierarchical VLM training"
-echo "branch       = ${BRANCH}"
-echo "commit       = ${COMMIT}"
-echo "node         = $(hostname)"
-echo "job_name     = ${JOB_NAME}"
-echo "slurm_job_id = ${SLURM_JOB_ID:-unknown}"
-echo "weights_dir  = Weights/${JOB_NAME}"
-echo "dataset      = ${DATASET}"
-echo "architecture = letter depiction -> 4-layer context -> Span-DTW -> image pair"
-echo "visual_fwd   = separate line1 / line2"
+echo "branch        = ${BRANCH}"
+echo "commit        = ${COMMIT}"
+echo "node          = $(hostname)"
+echo "job_name      = ${JOB_NAME}"
+echo "slurm_job_id  = ${SLURM_JOB_ID:-unknown}"
+echo "weights_dir   = Weights/${JOB_NAME}"
+echo "dataset       = ${DATASET}"
+echo "train_samples = ${PARAM_NUM_SAMPLES} (Parameters.py num_samples)"
+echo "architecture  = letter depiction -> 4-layer context -> Span-DTW -> image pair"
+echo "visual_fwd    = separate line1 / line2"
 echo "CUDA_VISIBLE_DEVICES = ${CUDA_VISIBLE_DEVICES:-unset}"
 echo "========================================"
 
