@@ -261,7 +261,7 @@ def _build_synthetic_dataset(data_dir):
         for name in os.listdir(images_dir)
         if name.startswith("img1_") and name.endswith(".png")
     ])
-    sample_cap = min(int(num_samples), detected) if detected > 0 else int(num_samples)
+    sample_cap = min(int(P.num_samples), detected) if detected > 0 else int(P.num_samples)
     dataset_paths = {
         "images": images_dir,
         "matrices": os.path.join(data_dir, "matrices"),
