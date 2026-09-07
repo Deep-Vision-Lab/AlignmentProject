@@ -2,9 +2,9 @@
 
 Synthetic training:
 ``Parameters.num_samples`` is interpreted as the exact number of training
-examples.  The legacy synthetic loader still creates a 60/20/20 split, so this
+examples. The legacy synthetic loader still creates a 60/20/20 split, so this
 module converts the requested train length into the corresponding total source
-cap before the loader is built.  For example, ``num_samples = 6000`` becomes a
+cap before the loader is built. For example, ``num_samples = 6000`` becomes a
 10,000-example source cap and therefore produces 6000/2000/2000 train/valid/test
 splits.
 
@@ -71,10 +71,6 @@ class EpochRandomSubsetSampler(Sampler[int]):
             self.dataset_size, generator=generator
         ).tolist()[: self.target_size]
 
-        # Equal-length DDP ranks are required so every rank reaches collective
-        # operations together. Padding is only needed when target_size is not
-        # divisible by world_size. For the canonical 6000/2 configuration this
-        # branch is not used, so all 6000 examples are unique within the epoch.
         if self.total_size > self.target_size:
             needed = self.total_size - self.target_size
             selected.extend(selected[:needed])
@@ -88,9 +84,6 @@ def _synthetic_source_cap_for_train_target(train_target: int) -> int:
     if train_target <= 0:
         raise ValueError("Parameters.num_samples must be positive for synthetic training.")
 
-    # The legacy loader uses int(0.6 * total). Start from ceil(5*target/3),
-    # then adjust using the exact same floating-point expression so this remains
-    # correct even if Python's float rounding is awkward for a particular size.
     total = (5 * train_target + 2) // 3
     while int(0.6 * total) < train_target:
         total += 1
@@ -110,23 +103,34 @@ def install_epoch_subset_sampling(train_module) -> None:
         dataset_type = str(getattr(args, "dataset_type", "")).lower()
 
         if dataset_type == "synthetic":
-            target = int(getattr(args, "num_samples", 0) or 0)
-            source_cap = _synthetic_source_cap_for_train_target(target)
-
-            # DataLoader imports num_samples from Parameters.py at module-import
-            # time. Override that legacy total cap before build_dataloaders() is
-            # called so Parameters.num_samples means TRAIN length, not total
-            # train+valid+test length.
+            # Parameters.py is the source of truth. Do not trust args.num_samples:
+            # another runtime wrapper may mutate the args object before this call.
+            import Parameters as parameters
             import DataLoader as synthetic_loader
 
+            target = int(parameters.num_samples)
+            args_target = int(getattr(args, "num_samples", 0) or 0)
+            source_cap = _synthetic_source_cap_for_train_target(target)
+
+            if train_module.CTX.is_main:
+                print(
+                    "Synthetic dataset-size policy: "
+                    f"Parameters.num_samples={target} args.num_samples={args_target} "
+                    f"source_cap={source_cap}",
+                    flush=True,
+                )
+
+            # Keep the downstream args object consistent as well, but derive the
+            # source cap only from Parameters.py.
+            args.num_samples = target
             synthetic_loader.num_samples = source_cap
             train_loader, valid_loader, test_loader, train_sampler = original_select(args)
 
             actual_train = len(train_loader.dataset)
             if actual_train != target:
                 raise RuntimeError(
-                    "Synthetic dataset is too small for the requested training length: "
-                    f"Parameters.num_samples={target}, expected source_cap={source_cap}, "
+                    "Synthetic dataset-size policy failed: "
+                    f"Parameters.num_samples={target}, source_cap={source_cap}, "
                     f"actual_train={actual_train}, valid={len(valid_loader.dataset)}, "
                     f"test={len(test_loader.dataset)}."
                 )
