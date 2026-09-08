@@ -87,6 +87,8 @@ def install_vit_evaluation_loader() -> None:
                     config.get("vit_position_base_tokens", 63)
                 ),
                 vit_binarize_input=binarize_input,
+                # Missing flag means an original full-window Conv2D checkpoint.
+                window_cnn_enabled=_bool(config.get("window_cnn_enabled", False)),
             )
             if _uses_letter_depiction(config):
                 from vlm_letter_grounding import attach_depiction_head
@@ -102,3 +104,4 @@ def install_vit_evaluation_loader() -> None:
 
     _eval_utils.load_evaluation_models = load_evaluation_models
     _eval_utils._vit_evaluation_loader_installed = True
+

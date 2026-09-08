@@ -1,4 +1,4 @@
-"""Canonical pure-ViT image embedding model for the ViT baseline.
+"""Window-CNN/ViT image encoder with checkpoint-compatible legacy patch projection.
 
 The full line remains three-channel RGB. When enabled, a deterministic Otsu
 binarization is applied to the complete line before any window extraction or
@@ -269,6 +269,7 @@ class LineWindowViT(nn.Module):
         position_base_tokens: int,
         binarize_input: bool = True,
         binarize_contrast_threshold: float = 0.15,
+        window_cnn_enabled: bool = False,
     ) -> None:
         super().__init__()
         input_height = int(input_height)
@@ -307,14 +308,22 @@ class LineWindowViT(nn.Module):
         # Kept only so old configs/callers remain valid. Otsu no longer uses it.
         self.binarize_contrast_threshold = float(binarize_contrast_threshold)
 
-        self.patch_embedding = nn.Conv2d(
-            in_channels=3,
-            out_channels=embed_dim,
-            kernel_size=(input_height, window_size),
-            stride=(input_height, stride),
-            padding=0,
-            bias=True,
-        )
+        self.window_cnn_enabled = bool(window_cnn_enabled)
+        if self.window_cnn_enabled:
+            from window_cnn import SlidingWindowCNN
+
+            self.patch_embedding = SlidingWindowCNN(
+                input_height, window_size, stride, embed_dim
+            )
+        else:
+            self.patch_embedding = nn.Conv2d(
+                in_channels=3,
+                out_channels=embed_dim,
+                kernel_size=(input_height, window_size),
+                stride=(input_height, stride),
+                padding=0,
+                bias=True,
+            )
         self.local_norm = nn.LayerNorm(embed_dim)
         self.position_embedding = nn.Parameter(
             torch.zeros(1, max_tokens, embed_dim)
@@ -339,9 +348,10 @@ class LineWindowViT(nn.Module):
 
     def _reset_parameters(self) -> None:
         nn.init.trunc_normal_(self.position_embedding, std=0.02)
-        nn.init.xavier_uniform_(self.patch_embedding.weight)
-        if self.patch_embedding.bias is not None:
-            nn.init.zeros_(self.patch_embedding.bias)
+        if isinstance(self.patch_embedding, nn.Conv2d):
+            nn.init.xavier_uniform_(self.patch_embedding.weight)
+            if self.patch_embedding.bias is not None:
+                nn.init.zeros_(self.patch_embedding.bias)
 
     def _position_tokens(self, count: int) -> torch.Tensor:
         count = int(count)
@@ -379,8 +389,8 @@ class LineWindowViT(nn.Module):
                 f"window size {self.window_size}"
             )
 
-        # Binarize the COMPLETE line first. The learned Conv2d then slides over
-        # this exact 3-channel binary line, never over the original grayscale/RGB.
+        # Optional preprocessing precedes either exact-window CNN extraction
+        # or the legacy learned patch projection. Branch defaults keep RGB.
         model_input = (
             binarize_three_channel_input(image)
             if self.binarize_input
@@ -426,6 +436,7 @@ class EmbeddingModel(nn.Module):
         vit_position_base_tokens: int | None = None,
         vit_binarize_input: bool | None = None,
         vit_binarize_contrast_threshold: float | None = None,
+        window_cnn_enabled: bool | None = None,
         *,
         use_bilstm: bool = False,
         bilstm_layers: int | None = None,
@@ -450,6 +461,10 @@ class EmbeddingModel(nn.Module):
         self.stride = int(stride)
         self.vector_size = int(vector_size)
         self.use_bilstm = False
+        self.window_cnn_enabled = bool(
+            _parameter("window_cnn_enabled", False)
+            if window_cnn_enabled is None else window_cnn_enabled
+        )
 
         self.input_height = int(
             _parameter("vit_input_height", 128)
@@ -528,6 +543,7 @@ class EmbeddingModel(nn.Module):
             position_base_tokens=self.vit_position_base_tokens,
             binarize_input=self.vit_binarize_input,
             binarize_contrast_threshold=self.vit_binarize_contrast_threshold,
+            window_cnn_enabled=self.window_cnn_enabled,
         ).to(device)
         self.vision_norm = nn.LayerNorm(self.vector_size).to(device)
 
@@ -600,6 +616,10 @@ class EmbeddingModel(nn.Module):
             "visual_encoder_type": "vit",
             "use_bilstm": False,
             "use_local_window_grouping": False,
+            "window_cnn_enabled": self.window_cnn_enabled,
+            "letter_depiction_head": hasattr(self.vit_encoder, "depiction_projection"),
+            "window_cnn_architecture": "spatial_16_32_64_pool4x2_v1" if self.window_cnn_enabled else "none",
+            "window_extraction": "exact_rgb_unfold" if self.window_cnn_enabled else "conv_patch_projection",
             "vit_input_height": self.input_height,
             "vit_layers": self.vit_layers,
             "vit_heads": self.vit_heads,
@@ -680,3 +700,4 @@ def prepare_vit_model(model: EmbeddingModel):
             except Exception as exc:
                 print(f"torch.compile visual ViT failed: {exc}", flush=True)
     return model
+

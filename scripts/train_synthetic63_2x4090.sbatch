@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=vit_vlm_letters
+#SBATCH --job-name=yelda_cnn_hierarchy
 #SBATCH --partition=rtx4090
 #SBATCH --gpus=rtx_4090:2
 #SBATCH --ntasks=1
@@ -53,7 +53,7 @@ echo "slurm_job_id  = ${SLURM_JOB_ID:-unknown}"
 echo "weights_dir   = Weights/${JOB_NAME}"
 echo "dataset       = ${DATASET}"
 echo "train_samples = ${PARAM_NUM_SAMPLES} (Parameters.py num_samples)"
-echo "architecture  = letter depiction -> 4-layer context -> Span-DTW -> image pair"
+echo "architecture  = exact RGB windows -> shared CNN -> direct 128D tokens -> 4-layer context"
 echo "visual_fwd    = separate line1 / line2"
 echo "CUDA_VISIBLE_DEVICES = ${CUDA_VISIBLE_DEVICES:-unset}"
 echo "========================================"

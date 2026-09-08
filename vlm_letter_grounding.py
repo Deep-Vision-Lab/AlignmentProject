@@ -6,8 +6,8 @@ trained to explain which Arabic letters are visible in that window sequence.
 
 Hierarchy
 ---------
-1. pixels -> trainable full-height patch projection
-2. local depiction head -> local depiction tokens
+1. pixels -> exact RGB windows -> shared trainable spatial CNN
+2. CNN output -> LayerNorm -> direct local window tokens
 3. letter-level monotonic soft-DTW against single-letter text prototypes
 4. 4-layer visual Transformer -> contextual tokens
 5. existing contextual Span-DTW + image-image/order losses
@@ -328,12 +328,19 @@ def attach_depiction_head(model):
     if not hasattr(model, "vit_encoder"):
         raise TypeError("letter depiction branch expects a ViT EmbeddingModel")
 
+    # In the window-CNN variants the CNN already produces the direct local
+    # vector. Keep letter supervision, but do not add a second depiction MLP.
+    if bool(getattr(model, "window_cnn_enabled", False)):
+        model._vlm_depiction_installed = True
+        return model
+
     from embeddingModel import binarize_three_channel_input
 
     vit = model.vit_encoder
     dim = int(vit.embed_dim)
-    device = vit.patch_embedding.weight.device
-    dtype = vit.patch_embedding.weight.dtype
+    visual_parameter = next(vit.patch_embedding.parameters())
+    device = visual_parameter.device
+    dtype = visual_parameter.dtype
 
     vit.depiction_projection = nn.Sequential(
         nn.Linear(dim, dim),
@@ -460,3 +467,4 @@ def model_config(P) -> dict:
         "local_negative_policy": "all supplied candidates -> hardest sequence",
         "text_surface_cache": "disabled",
     }
+

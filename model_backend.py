@@ -1,9 +1,8 @@
-"""Branch-selected visual backend for hierarchical letter grounding.
+"""Direct CNN window vectors followed by the visual Transformer.
 
-The image side keeps the proven 4-layer raw-RGB ViT baseline, but inserts a
-trainable local *depiction* head between primitive patch features and the
-contextual Transformer.  The depiction head receives direct letter-level VLM
-supervision in ``vlm_letter_grounding.py``.
+Exact RGB windows enter one shared trainable spatial CNN. Its 128D outputs
+receive local letter supervision and feed the 4-layer contextual Transformer.
+No extra letter-depiction MLP is added in this variant.
 """
 from __future__ import annotations
 
@@ -23,7 +22,7 @@ P.export_environment()
 os.environ["ALLOW_UNSAFE_SPAN_CONFIG"] = "1"
 os.environ["SPAN_MAX_CORE_CHARS_CAP"] = "3"
 
-MODEL_NAME = "vit_vlm_letter_depiction"
+MODEL_NAME = "vit_vlm_letter_depiction_window_cnn"
 VISUAL_ENCODER_TYPE = "vit"
 
 
@@ -110,8 +109,12 @@ def visual_model_config() -> dict:
         "visual_encoder_type": VISUAL_ENCODER_TYPE,
         "use_bilstm": False,
         "use_local_window_grouping": False,
-        "local_representation": "trainable_letter_depiction",
-        "context_input": "letter_depiction_tokens",
+        "window_cnn_enabled": bool(P.window_cnn_enabled),
+        "letter_depiction_head": False,
+        "window_cnn_architecture": "spatial_16_32_64_pool4x2_v1",
+        "window_extraction": "exact_rgb_unfold",
+        "local_representation": "direct_cnn_window_features",
+        "context_input": "direct_cnn_window_tokens",
         "vit_input_height": _integer("VIT_INPUT_HEIGHT", 128),
         "vit_layers": _integer("VIT_LAYERS", 4),
         "vit_heads": _integer("VIT_HEADS", 4),
@@ -125,3 +128,4 @@ def visual_model_config() -> dict:
     }
     config.update(grounding_model_config(P))
     return config
+
