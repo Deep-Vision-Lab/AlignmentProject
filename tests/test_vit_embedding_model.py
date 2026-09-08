@@ -17,6 +17,7 @@ def _model(use_flip=False):
         vit_mlp_dim=128,
         vit_dropout=0.0,
         vit_max_tokens=128,
+        window_cnn_enabled=False,  # Exercise legacy patch-projection compatibility.
     )
 
 
@@ -73,3 +74,4 @@ def test_evaluation_reconstructs_vit_from_checkpoint_config(tmp_path):
     assert isinstance(loaded.image_model, EmbeddingModel)
     assert loaded.image_model.use_flip is True
     assert loaded.config["visual_encoder_type"] == "vit"
+

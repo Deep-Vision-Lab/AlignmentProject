@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import torch
+from vlm_letter_grounding import DEFAULT_ARABIC_LETTERS
 
 
 def _flag(value: bool) -> str:
@@ -100,7 +101,8 @@ lang = "Arabic"
 target_ink_height_ratio = 0.72
 ink_contrast_threshold = 0.15
 
-# 5. VISUAL ENCODER (PROVEN ViT BASELINE)
+# 5. VISUAL ENCODER (EXPLICIT RGB WINDOWS -> CNN -> ViT)
+window_cnn_enabled = True
 use_bilstm = False
 bilstm_layers = 2
 bilstm_hidden_dim = vector_size
@@ -319,6 +321,7 @@ def export_environment() -> None:
         "VIT_MAX_TOKENS": vit_max_tokens,
         "VIT_POSITION_BASE_TOKENS": vit_position_base_tokens,
         "VIT_BINARIZE_INPUT": _flag(vit_binarize_input),
+        "WINDOW_CNN_ENABLED": _flag(window_cnn_enabled),
         "TEXT_ENCODER_TYPE": text_encoder_type,
         "ARABIC_TEXT_MODEL_NAME": arabic_text_model_name,
         "MAX_TEXT_TOKEN_CHARS": max_text_token_chars,
@@ -393,3 +396,4 @@ def export_environment() -> None:
     }
     for key, value in values.items():
         os.environ[key] = str(value)
+

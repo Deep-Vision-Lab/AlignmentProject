@@ -1,9 +1,8 @@
-"""Branch-selected backend for letter grounding + cross-line attention.
+"""Direct CNN window vectors followed by the visual Transformer.
 
-The image side keeps the proven 4-layer raw-RGB ViT and trainable local letter
-*depiction* head.  Image 1 and image 2 are encoded independently.  Only after
-both independent contextual sequences exist do we apply bidirectional pair
-cross-attention, followed by cosine-based pair supervision.
+Exact RGB windows enter one shared trainable spatial CNN. Its 128D outputs
+receive local letter supervision and feed the 4-layer contextual Transformer.
+No extra letter-depiction MLP is added in this variant.
 """
 from __future__ import annotations
 
@@ -28,7 +27,7 @@ P.export_environment()
 os.environ["ALLOW_UNSAFE_SPAN_CONFIG"] = "1"
 os.environ["SPAN_MAX_CORE_CHARS_CAP"] = "3"
 
-MODEL_NAME = "vit_vlm_letter_depiction_cross_attention"
+MODEL_NAME = "vit_vlm_letter_depiction_cross_attention_window_cnn"
 VISUAL_ENCODER_TYPE = "vit"
 
 
@@ -119,8 +118,12 @@ def visual_model_config() -> dict:
         "visual_encoder_type": VISUAL_ENCODER_TYPE,
         "use_bilstm": False,
         "use_local_window_grouping": False,
-        "local_representation": "trainable_letter_depiction",
-        "context_input": "letter_depiction_tokens",
+        "window_cnn_enabled": bool(P.window_cnn_enabled),
+        "letter_depiction_head": False,
+        "window_cnn_architecture": "spatial_16_32_64_pool4x2_v1",
+        "window_extraction": "exact_rgb_unfold",
+        "local_representation": "direct_cnn_window_features",
+        "context_input": "direct_cnn_window_tokens",
         "pair_representation": "bidirectional_cross_attention_fusion",
         "vit_input_height": _integer("VIT_INPUT_HEIGHT", 128),
         "vit_layers": _integer("VIT_LAYERS", 4),
@@ -136,3 +139,4 @@ def visual_model_config() -> dict:
     config.update(grounding_model_config(P))
     config.update(cross_attention_model_config(P))
     return config
+

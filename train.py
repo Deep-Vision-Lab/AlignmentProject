@@ -307,6 +307,11 @@ def main() -> None:
                 f"binarize_rgb={P.vit_binarize_input} method=otsu",
                 flush=True,
             )
+            print(
+                f"  window_cnn   = {raw_model.window_cnn_enabled} "
+                f"depiction_mlp={hasattr(raw_model.vit_encoder, 'depiction_projection')}",
+                flush=True,
+            )
             print("  visual_fwd   = separate line1 / line2", flush=True)
             print(
                 f"  variance     = weight={P.image_variance_loss_weight} "
@@ -337,3 +342,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
