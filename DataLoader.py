@@ -12,6 +12,7 @@ from torchvision import transforms
 from DataSet import TextLineModern
 from RealDataSet import ArabicManifestLinePairDataset
 from Parameters import *
+import Parameters as P
 
 
 _default_data_dir = f"DataSet/Synthetic_{lang}"
