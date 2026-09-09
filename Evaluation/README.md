@@ -1,5 +1,10 @@
 # Evaluation
 
+For these original letter-depiction branches, use the image-only evaluator in
+[YELDA_EVALUATION.md](YELDA_EVALUATION.md). It restores the original patch
+projection and residual depiction MLP, evaluates independent or fused contextual
+features, and supports interactive execution without loading AraBERT.
+
 The ViT experiment branches expose two active evaluation entry points.
 
 ## Image-image Needleman-Wunsch diagnostic

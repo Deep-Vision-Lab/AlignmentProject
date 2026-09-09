@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import torch
 
+from vlm_letter_grounding import DEFAULT_ARABIC_LETTERS
+
 
 def _flag(value: bool) -> str:
     return "1" if bool(value) else "0"
@@ -393,3 +395,4 @@ def export_environment() -> None:
     }
     for key, value in values.items():
         os.environ[key] = str(value)
+
