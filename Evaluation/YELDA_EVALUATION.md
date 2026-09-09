@@ -8,6 +8,7 @@ or Hugging Face downloads. Text fields in real manifests are dataset metadata on
 
 | Representation | Hierarchy checkpoint | Cross-attention checkpoint |
 |---|---|---|
+| `joint` (default) | Weighted local + independent contextual cosine | Weighted local + fused contextual cosine |
 | `primary` | Independent contextual C1/C2 | Fused F1/F2 after bidirectional image-pair attention |
 | `local` | Direct CNN window vectors, before Transformer | Same stage, without pair fusion |
 | `independent` | Same as primary | Contextual C1/C2 before pair fusion |
@@ -17,6 +18,30 @@ runs global Needleman–Wunsch, and extracts supported matching components/masks
 The default scoring is raw cosine minus 0.45, gap -0.30, minimum ink 0.02.
 The CNN windows are 32 pixels wide, 128 high, with the checkpoint stride (16 in
 the current runs); a 1024-pixel canvas therefore gives 63 windows.
+
+## Joint local + contextual alignment (default)
+
+Joint mode builds one score matrix:
+
+`S_joint = local_weight * cosine(L1, L2) + (1 - local_weight) * cosine(C1, C2)`.
+
+On cross-attention checkpoints, C1/C2 in this formula are the fused F1/F2 vectors.
+Local features are preserved. Both terms use the same window indices and are
+mixed before score normalization, thresholding, ink masking and a single global
+NW alignment. The default local weight is 0.5; use validation data to select a
+weight and keep it fixed on test. Weights must be finite and in [0, 1].
+
+Use `--representation joint --local-weight 0.5` with the Python entry point.
+The launchers default to joint mode and accept `LOCAL_WEIGHT=0.5`. Existing
+`primary`, `local`, and `independent` modes remain available for comparisons.
+
+Each joint evaluation saves `local_cosine_similarity`,
+`contextual_cosine_similarity`, and `joint_similarity` as both NPY and CSV.
+On the cross branch the contextual matrix uses fused features. The existing
+`cosine_similarity.npy` and main similarity heatmap now contain the combined
+matrix in joint mode; the plot title labels the two weights. Per-pair reports
+record the local weight, and run/summary JSON records it in `arguments` alongside
+`feature_stage=joint_local_contextual` or `joint_local_fused_contextual`.
 
 ## Synthetic evaluation
 
@@ -41,12 +66,12 @@ sbatch --job-name=yelda_eval_hierarchy scripts/eval_yelda.sbatch
 # Cross-attention
 PROJECT_DIR="$PWD" \
 WEIGHTS="$PWD/Weights/yelda_cnn_cross/model_best.pth" \
-REPRESENTATIONS="primary independent local" \
+REPRESENTATIONS="joint primary independent local" \
 sbatch --job-name=yelda_eval_cross scripts/eval_yelda.sbatch
 ```
 
 The script uses one RTX4090 and the `manucripts_align` environment. Its default
-dataset is `DataSet/Synthetic63`; it evaluates primary and local representations
+dataset is `DataSet/Synthetic63`; it evaluates the joint representation
 unless `REPRESENTATIONS` is specified. All representations use a single snapshot
 of the checkpoint, retained in the result directory. This also supports ongoing
 training: a saved checkpoint must exist, and a file being overwritten during the
@@ -63,7 +88,7 @@ Direct single-mode command:
 python -m Evaluation.eval_yelda \
   --dataset DataSet/Synthetic63 \
   --weights Weights/yelda_cnn_cross/model_best.pth \
-  --branch cross --representation primary \
+  --branch cross --representation joint --local-weight 0.5 \
   --split test --training-samples 6000 --split-seed 42 \
   --n-samples 100 --score-mode raw --threshold 0.45 --gap -0.30 \
   --output-dir Results/Evaluation/Yelda/cross_test_primary
@@ -77,7 +102,7 @@ An existing nonempty output directory is rejected to prevent mixing experiments.
 PROJECT_DIR="$PWD" \
 WEIGHTS="$PWD/Weights/yelda_cnn_cross/model_best.pth" \
 DATASET="$PWD/DataSet/ArabicDataset" EVAL_SPLIT=test \
-REPRESENTATIONS="primary independent local" \
+REPRESENTATIONS="joint primary independent local" \
 sbatch --job-name=yelda_eval_cross_real scripts/eval_yelda.sbatch
 ```
 
@@ -131,3 +156,4 @@ synthetic/real end-to-end reporting. Cross-specific tests skip in the hierarchy
 branch, where the pair-attention implementation is intentionally absent.
 These are CPU checks with generated inputs and test checkpoints, not trained-model
 results. A separate smoke run exercises and visually checks the actual renderer.
+

@@ -101,7 +101,7 @@ def pair_features(models, image1, image2, representation="primary"):
     first = get_image_features(models, image1, "synthetic")
     second = get_image_features(models, image2, "synthetic")
     module = models.pair_cross_attention
-    if representation == "primary" and module is not None:
+    if representation in {"primary", "joint"} and module is not None:
         with torch.inference_mode():
             fused1, fused2, _, _ = module(
                 first.contextual.unsqueeze(0), second.contextual.unsqueeze(0),
@@ -112,6 +112,9 @@ def pair_features(models, image1, image2, representation="primary"):
         first = replace(first, contextual=F.normalize(fused1[0].float(), dim=-1))
         second = replace(second, contextual=F.normalize(fused2[0].float(), dim=-1))
     for features in (first, second):
+        if representation == "joint" and not torch.isfinite(features.local).all():
+            raise ValueError("Non-finite local image embeddings")
         if not torch.isfinite(features.select("local" if representation == "local" else "contextual")).all():
             raise ValueError("Non-finite image embeddings")
     return first, second
+
