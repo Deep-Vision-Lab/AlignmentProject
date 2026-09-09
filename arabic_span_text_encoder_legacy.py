@@ -84,7 +84,13 @@ class ArabicSpanTextEncoder(nn.Module):
                 "Install it or use TEXT_ENCODER_TYPE=char."
             )
 
-        cache_dir = os.environ.get("HF_HOME") or os.environ.get("TRANSFORMERS_CACHE") or None
+        # train.py resolves both legacy flat caches and standard HF_HOME/hub caches.
+        cache_dir = (
+            os.environ.get("HF_HUB_CACHE")
+            or os.environ.get("HF_HOME")
+            or os.environ.get("TRANSFORMERS_CACHE")
+            or None
+        )
         local_files_only = (
             os.environ.get("HF_HUB_OFFLINE", "0").lower() in {"1", "true", "yes", "on"}
             or os.environ.get("TRANSFORMERS_OFFLINE", "0").lower() in {"1", "true", "yes", "on"}
