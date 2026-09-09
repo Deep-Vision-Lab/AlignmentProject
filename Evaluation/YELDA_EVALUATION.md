@@ -97,13 +97,37 @@ This is the zero-shot evaluation split, not a reconstruction of an arbitrary
 real fine-tuning split. Explicit split manifests are supported; generic manifests
 without split membership require `EVAL_SPLIT=all`.
 
-Training-equivalent deterministic preprocessing is applied to both domains.
-Checkpoint geometry overrides defaults; missing preprocessing flags use branch
-defaults, with resolved geometry/binarization recorded in each pair report.
-Predicted regions are mapped back through crop/scale/padding to source-image
+On this cross-attention branch, evaluation now defaults to
+`--image-preprocessing original` (`IMAGE_PREPROCESSING=original` in the launcher):
+
+1. Open the complete source line as RGB, retaining both edges and all rows.
+2. Resize the entire image directly to 1024 pixels wide by 128 pixels high.
+   An image already at that size keeps its exact RGB pixel values. Other sizes
+   use bilinear resizing, which can change aspect ratio; this is full source
+   coverage on the fixed model canvas, not native-resolution inference.
+3. Convert to a tensor and apply the existing ImageNet mean/std normalization.
+4. Extract local and contextual features, with model-side binarization disabled.
+   Joint scoring still combines local and fused contextual similarities.
+
+There is no foreground crop, ink-height scaling, added padding, grayscale
+conversion, autocontrast, polarity inversion, or input binarization in this mode.
+Both synthetic and real images use this path, even when checkpoint or environment
+settings enable binarization. Ink measurements still select valid windows for
+attention/alignment; they do not replace the image pixels. Binary prediction and
+ground-truth masks are evaluation outputs, not binarized encoder inputs.
+
+To reproduce the previous training preprocessing, explicitly use
+`IMAGE_PREPROCESSING=training` or `--image-preprocessing training`. That mode uses
+checkpoint geometry and branch defaults for missing flags, and can crop, pad and
+binarize. Comparing the two modes tests sensitivity to input preprocessing using
+the same checkpoint; original-image mode does not change how it was trained.
+
+Per-pair `geometry` records the actual source-to-canvas mapping and preprocessing.
+`run.json` and the run summary also record `image_input`, including saved and
+effective model binarization flags. Predicted regions are mapped back to source
 coordinates before comparison against ground-truth masks.
 
-Results go under `Results/Evaluation/Yelda/<job>/<split>/<representation>_<time>/`:
+Results go under `Results/Evaluation/Yelda/<job>/<split>/<representation>_<preprocessing>_<time>/`:
 
 - `run.json` records the checkpoint SHA-256, epoch, model configuration, evaluator
   revision, feature stage, split and scoring settings.
@@ -130,4 +154,3 @@ features, missing weights, incompatible window-CNN rejection, deterministic
 splits, source-coordinate geometry, and synthetic/real reporting. Cross-specific
 tests skip on hierarchy. They use generated inputs and test checkpoints and do
 not establish trained-model accuracy.
-

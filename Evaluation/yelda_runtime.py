@@ -101,6 +101,21 @@ def load_visual_models(checkpoint, device="auto", expected_branch="auto"):
     return models
 
 
+def configure_image_preprocessing(models, image_preprocessing):
+    """Override pixel binarization for the original-image evaluation experiment."""
+    if image_preprocessing not in {"original", "training"}:
+        raise ValueError(f"Unknown image preprocessing: {image_preprocessing}")
+    checkpoint_binarize = flag(models.config.get("vit_binarize_input", False))
+    effective = checkpoint_binarize if image_preprocessing == "training" else False
+    models.image_model.vit_binarize_input = effective
+    models.image_model.vit_encoder.binarize_input = effective
+    # Keep the saved configuration intact; report evaluation overrides separately.
+    return {"image_preprocessing": image_preprocessing,
+            "checkpoint_vit_binarize_input": checkpoint_binarize,
+            "effective_vit_binarize_input": effective,
+            "tensor_normalization": "ImageNet mean/std"}
+
+
 def pair_features(models, image1, image2, representation="primary"):
     """Pair-local state only: an error cannot mix features from different pairs."""
     first = get_image_features(models, image1, "synthetic")
@@ -122,4 +137,3 @@ def pair_features(models, image1, image2, representation="primary"):
         if not torch.isfinite(features.select("local" if representation == "local" else "contextual")).all():
             raise ValueError("Non-finite image embeddings")
     return first, second
-

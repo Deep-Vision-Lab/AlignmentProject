@@ -1,4 +1,4 @@
-"""Training preprocessing plus horizontal coordinates for source-image masks."""
+"""Full-image RGB or training preprocessing, with source-mask coordinates."""
 from __future__ import annotations
 
 import numpy as np
@@ -8,10 +8,27 @@ import zero_shot_preprocessing as preprocessing
 from zero_shot_geometry import _ink_bbox
 
 
-def prepare_line(path, domain):
-    processor = preprocessing.build_preprocessor(domain, training=False)
+def prepare_line(path, domain, image_preprocessing="original"):
     with Image.open(path) as opened:
         original = opened.convert("RGB")
+    if image_preprocessing == "original":
+        # Keep every source pixel in the field of view. Do not use the training
+        # preprocessor: even binarize=False still grayscales/crops/scales ink.
+        width, height = 1024, 128
+        processed = (original.copy() if original.size == (width, height) else
+                     original.resize((width, height), Image.Resampling.BILINEAR))
+        return processed, {
+            "image_preprocessing": "original", "color_mode": "RGB",
+            "source_width": original.width, "source_height": original.height,
+            "crop_left": 0, "crop_width": original.width,
+            "scale_x": width / float(original.width), "offset_x": 0,
+            "canvas_width": width, "canvas_height": height,
+            "binarize": False, "crop_foreground": False, "preserve_aspect": False,
+            "autocontrast": False, "auto_invert": False,
+        }
+    if image_preprocessing != "training":
+        raise ValueError(f"Unknown image preprocessing: {image_preprocessing}")
+    processor = preprocessing.build_preprocessor(domain, training=False)
     processed = processor(original)
     # Reconstruct only the deterministic horizontal geometry, from the same
     # foreground detector and rounding rules as the training preprocessor.
@@ -44,6 +61,7 @@ def prepare_line(path, domain):
     else:
         new_width, offset = width, 0
     geometry = {
+        "image_preprocessing": "training",
         "source_width": original.width, "source_height": original.height,
         "crop_left": crop_left, "crop_width": work.width,
         "scale_x": new_width / float(work.width), "offset_x": offset,

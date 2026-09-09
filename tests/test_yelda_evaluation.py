@@ -110,13 +110,13 @@ def test_synthetic_split_matches_training_and_excludes_unused_source():
 @pytest.mark.parametrize("dark", [False, True])
 @pytest.mark.parametrize("width", [180, 1800])
 def test_geometry_maps_foreground_back_to_source(tmp_path, dark, width):
-    configure_geometry({})
+    configure_geometry({}, "training")
     image = Image.new("RGB", (width, 200), "black" if dark else "white")
     rectangle = (width // 4, 70, 3 * width // 4 - 1, 129)
     ImageDraw.Draw(image).rectangle(rectangle, fill="white" if dark else "black")
     path = tmp_path / "line.png"
     image.save(path)
-    prepared, mapping = prepare_line(path, "synthetic")
+    prepared, mapping = prepare_line(path, "synthetic", "training")
     ink = np.asarray(prepared.convert("L")) < 128
     cols = np.nonzero(ink.any(axis=0))[0]
     inverse = source_intervals([[int(cols.min()), int(cols.max()) + 1]], mapping)[0]
@@ -128,14 +128,15 @@ def test_geometry_maps_foreground_back_to_source(tmp_path, dark, width):
 @pytest.mark.parametrize("cross", [False, True])
 def test_end_to_end_image_only_report(tmp_path, monkeypatch, cross):
     checkpoint, _, _ = make_checkpoint(cross)
+    checkpoint["model_config"]["vit_binarize_input"] = True
     weights = tmp_path / "model.pth"
     torch.save(checkpoint, weights)
     dataset = tmp_path / "data"
     (dataset / "images").mkdir(parents=True)
     (dataset / "masks").mkdir()
     for role in (1, 2):
-        image = Image.new("RGB", (1024, 128), "white")
-        ImageDraw.Draw(image).rectangle((200, 35, 800, 95), fill="black")
+        image = Image.new("RGB", (1024, 128), (245, 232, 209))
+        ImageDraw.Draw(image).rectangle((200, 35, 800, 95), fill=(42, 55, 67))
         image.save(dataset / "images" / f"img{role}_1.png")
         mask = Image.new("L", (1024, 128), 0)
         ImageDraw.Draw(mask).rectangle((200, 0, 800, 127), fill=255)
@@ -148,11 +149,16 @@ def test_end_to_end_image_only_report(tmp_path, monkeypatch, cross):
     summary = json.loads((output / "summary.json").read_text())
     assert summary["successful"] == 1 and summary["failed"] == 0
     assert summary["text_encoder_loaded"] is False
+    assert summary["image_input"]["checkpoint_vit_binarize_input"] is True
+    assert summary["image_input"]["effective_vit_binarize_input"] is False
+    assert summary["arguments"]["image_preprocessing"] == "original"
     assert summary["feature_stage"] == ("joint_local_fused_contextual" if cross else "joint_local_contextual")
     assert summary["line1_gt_count"] == 1
     evidence = np.load(output / "pair_00001" / "cosine_similarity.npy")
     np.testing.assert_allclose(np.diag(evidence), 1, atol=1e-5)
     pair_dir = output / "pair_00001"
+    np.testing.assert_array_equal(np.asarray(Image.open(pair_dir / "line1_model_input.png")),
+                                  np.asarray(Image.open(dataset / "images" / "img1_1.png")))
     local = np.load(pair_dir / "local_cosine_similarity.npy")
     contextual = np.load(pair_dir / "contextual_cosine_similarity.npy")
     np.testing.assert_allclose(evidence, .5 * local + .5 * contextual, atol=1e-6)
@@ -210,3 +216,58 @@ def test_window_cnn_checkpoint_rejected(tmp_path):
     torch.save(checkpoint, path)
     with pytest.raises(ValueError, match="window-CNN branch"):
         runtime.read_checkpoint(path)
+
+
+@pytest.mark.parametrize("domain", ["synthetic", "real"])
+@pytest.mark.parametrize("width", [180, 1024, 1800])
+def test_original_full_image_preserves_edges_color_and_source_coordinates(tmp_path, monkeypatch, domain, width):
+    # Environment/training defaults must never leak into the original-image path.
+    for key in ("SYNTHETIC_BINARIZE", "REAL_BINARIZE", "ZERO_SHOT_FOREGROUND_CROP",
+                "ZERO_SHOT_PRESERVE_ASPECT", "VIT_BINARIZE_INPUT"):
+        monkeypatch.setenv(key, "1")
+    array = np.full((128, width, 3), (244, 231, 212), dtype=np.uint8)
+    array[:, :10] = (100, 70, 30)
+    array[:, -10:] = (30, 60, 120)
+    array[60:65, width // 3:2 * width // 3] = (224, 220, 203)  # faint detail
+    source = Image.fromarray(array)
+    path = tmp_path / "rgb.png"
+    source.save(path)
+    prepared, mapping = prepare_line(path, domain)
+    expected = source.resize((1024, 128), Image.Resampling.BILINEAR)
+    np.testing.assert_array_equal(np.asarray(prepared), np.asarray(expected))
+    assert prepared.mode == "RGB"
+    assert mapping["offset_x"] == 0 and mapping["crop_left"] == 0
+    assert mapping["binarize"] is False and mapping["crop_foreground"] is False
+    np.testing.assert_allclose(source_intervals([[0, 1024]], mapping), [[0, width]])
+    np.testing.assert_allclose(source_intervals([[256, 768]], mapping), [[width / 4, 3 * width / 4]])
+
+
+@pytest.mark.parametrize("checkpoint_binarize", [False, True])
+def test_original_rgb_reaches_patch_cnn_without_binarization(tmp_path, checkpoint_binarize):
+    checkpoint, _, _ = make_checkpoint(True)
+    checkpoint["model_config"]["vit_binarize_input"] = checkpoint_binarize
+    models = runtime.load_visual_models(checkpoint, "cpu")
+    settings = runtime.configure_image_preprocessing(models, "original")
+    assert settings["effective_vit_binarize_input"] is False
+    assert models.config["vit_binarize_input"] is checkpoint_binarize
+    array = np.random.default_rng(15).integers(20, 240, (128, 1024, 3), dtype=np.uint8)
+    path = tmp_path / "rgb.png"
+    Image.fromarray(array).save(path)
+    prepared, _ = prepare_line(path, "real")
+    prepared.save(path)
+    inputs = []
+    handle = models.image_model.vit_encoder.patch_embedding.register_forward_pre_hook(
+        lambda module, args: inputs.append(args[0].detach().clone()))
+    try:
+        runtime.pair_features(models, path, path, "joint")
+    finally:
+        handle.remove()
+    tensor = torch.from_numpy(array.copy()).permute(2, 0, 1).float().div(255)
+    mean = torch.tensor([0.485, 0.456, 0.406])[:, None, None]
+    std = torch.tensor([0.229, 0.224, 0.225])[:, None, None]
+    assert len(inputs) == 2
+    for actual in inputs:
+        torch.testing.assert_close(actual[0], (tensor - mean) / std)
+    restored = runtime.configure_image_preprocessing(models, "training")
+    assert restored["effective_vit_binarize_input"] is checkpoint_binarize
+    assert models.image_model.vit_encoder.binarize_input is checkpoint_binarize

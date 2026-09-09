@@ -49,6 +49,8 @@ def parse_args(argv=None):
     parser.add_argument("--weights", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--branch", choices=("auto", "hierarchy", "cross"), default="auto")
+    parser.add_argument("--image-preprocessing", choices=("original", "training"), default="original",
+                        help="original: full RGB image resized to 1024x128, without cropping, padding or binarization")
     parser.add_argument("--representation", choices=("joint", "primary", "local", "independent"), default="joint")
     parser.add_argument("--local-weight", type=local_weight_value, default=0.5,
                         help="Joint score: weight of local cosine; contextual weight is 1 minus this")
@@ -103,7 +105,16 @@ def balanced_pairs(pairs):
     return ordered
 
 
-def configure_geometry(config):
+def configure_geometry(config, image_preprocessing="original"):
+    if int(config.get("line_height", 128)) != 128 or int(config.get("line_width", 1024)) != 1024:
+        raise ValueError("This evaluator currently supports the trained 128x1024 line canvas")
+    if image_preprocessing == "original":
+        return {"line_height": 128, "line_width": 1024,
+                "line_geometry_mode": "full-image-resize", "color_mode": "RGB",
+                "binarize": False, "crop_foreground": False, "padding": False,
+                "preserve_aspect": False, "autocontrast": False, "auto_invert": False}
+    if image_preprocessing != "training":
+        raise ValueError(f"Unknown image preprocessing: {image_preprocessing}")
     # Current runs record geometry; older preprocessing flags fall back to the
     # branch's Parameters.py. The resolved values are included in the report.
     mapping = {
@@ -118,8 +129,6 @@ def configure_geometry(config):
         if key in config:
             value = config[key]
             os.environ[env] = str(int(value)) if isinstance(value, bool) else str(value)
-    if int(config.get("line_height", 128)) != 128 or int(config.get("line_width", 1024)) != 1024:
-        raise ValueError("This evaluator currently supports the trained 128x1024 line canvas")
     if config.get("line_geometry_mode", "source-compatible-height") != "source-compatible-height":
         raise ValueError("Unsupported checkpoint geometry")
     os.environ["ZERO_SHOT_SOURCE_GEOMETRY"] = "1"
@@ -133,7 +142,7 @@ def evaluate_pair(base, models, pair, args, destination):
     destination.mkdir(parents=True)
     prepared, geometry = [], []
     for role, path in ((1, pair.image1), (2, pair.image2)):
-        image, mapping = prepare_line(path, pair.preprocess_domain(role))
+        image, mapping = prepare_line(path, pair.preprocess_domain(role), args.image_preprocessing)
         output = destination / f"line{role}_model_input.png"
         image.save(output)
         prepared.append(output)
@@ -179,11 +188,12 @@ def main(argv=None):
         raise SystemExit(f"Output directory is not empty; choose a new run directory: {destination}")
 
     from Evaluation import eval_img_align_nw_diagnostic as base
-    from Evaluation.yelda_runtime import read_checkpoint, load_visual_models, pair_features
+    from Evaluation.yelda_runtime import read_checkpoint, load_visual_models, pair_features, configure_image_preprocessing
     from Evaluation.trace_components import component_settings
     checkpoint = read_checkpoint(weights)
     models = load_visual_models(checkpoint, args.device, args.branch)
-    geometry = configure_geometry(models.config)
+    geometry = configure_geometry(models.config, args.image_preprocessing)
+    input_settings = configure_image_preprocessing(models, args.image_preprocessing)
     base.P.dataset_split_seed = args.split_seed
     os.environ["DISCRETE_ALIGNMENT_SCORES"] = "0"
     os.environ["SW_INK_AWARE"] = "1"
@@ -219,6 +229,7 @@ def main(argv=None):
                 "source_checkpoint": os.environ.get("EVALUATION_SOURCE_WEIGHTS", str(weights)),
                 "checkpoint_epoch": checkpoint.get("epoch"), "model_config": models.config,
                 "evaluation_git_commit": revision, "arguments": vars(args), "geometry": geometry,
+                "image_input": input_settings,
                 "trace_components": component_settings(),
                 "split_population_source": "explicit_evaluation_argument_not_checkpoint",
                 "split_policy": "torch_60_20_20" if layout == "synthetic" and args.split != "all" else (
@@ -226,6 +237,8 @@ def main(argv=None):
                 "mask_metrics_are_character_alignment_accuracy": False}
     write_json(destination / "run.json", metadata)
     print(f"Yelda evaluation: branch={branch} stage={stage} split={args.split} pairs={len(selected)} text_encoder=none", flush=True)
+    print(f"Image input: {args.image_preprocessing}; geometry={geometry['line_geometry_mode']}; "
+          f"model_binarize={input_settings['effective_vit_binarize_input']}", flush=True)
     if args.representation == "joint":
         print(f"Joint scores: local={args.local_weight:.3f}, contextual={1-args.local_weight:.3f}; one NW alignment", flush=True)
     rows = []
@@ -266,4 +279,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
