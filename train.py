@@ -34,7 +34,7 @@ import Parameters as P
 P.export_environment()
 
 
-def _contains_cached_model(cache_root: Path, model_name: str) -> bool:
+def _cached_model_directory(cache_root: Path, model_name: str) -> Path | None:
     slug = "models--" + model_name.replace("/", "--")
     for layout in (cache_root, cache_root / "hub"):
         snapshots = layout / slug / "snapshots"
@@ -46,28 +46,35 @@ def _contains_cached_model(cache_root: Path, model_name: str) -> bool:
             if any(snapshot.glob("model*.safetensors")) or any(
                 snapshot.glob("pytorch_model*.bin")
             ):
-                return True
-    return False
+                return layout.resolve()
+    return None
 
 
 def _resolve_hf_home() -> None:
     explicit = os.environ.get("HF_HOME", "").strip()
-    candidates = []
+    # Resolve the repository-cache directory, not merely its parent HF_HOME.
+    candidates = [
+        Path(value).expanduser()
+        for key in ("HF_HUB_CACHE", "TRANSFORMERS_CACHE")
+        if (value := os.environ.get(key, "").strip())
+    ]
     if explicit:
         candidates.append(Path(explicit).expanduser())
     candidates.extend(
         [
             PROJECT_DIR / ".hf_cache",
             Path(str(PROJECT_DIR) + "_clone") / ".hf_cache",
-            Path.home() / ".cache" / "huggingface",
+            Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "huggingface",
         ]
     )
     for candidate in candidates:
-        if candidate.is_dir() and _contains_cached_model(
-            candidate, P.arabic_text_model_name
-        ):
+        cache_dir = _cached_model_directory(candidate, P.arabic_text_model_name)
+        if cache_dir is not None:
             os.environ["HF_HOME"] = str(candidate)
+            os.environ["HF_HUB_CACHE"] = str(cache_dir)
             os.environ.pop("TRANSFORMERS_CACHE", None)
+            if os.environ.get("RANK", "0") == "0":
+                print(f"hf_model_cache={cache_dir}", flush=True)
             return
     if explicit:
         os.environ["HF_HOME"] = explicit
