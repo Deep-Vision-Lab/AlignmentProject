@@ -14,7 +14,7 @@ PYTHON_BIN="${PYTHON_BIN:-${HOME}/.conda/envs/manucripts_align/bin/python}"
 WEIGHTS="${WEIGHTS:-${PROJECT_DIR}/Weights/yelda_cnn_hierarchy/model_best.pth}"
 DATASET="${DATASET:-${PROJECT_DIR}/DataSet/Synthetic63}"
 EVAL_SPLIT="${EVAL_SPLIT:-test}"
-REPRESENTATIONS="${REPRESENTATIONS:-primary local}"
+REPRESENTATIONS="${REPRESENTATIONS:-joint}"
 RUN_TAG="${RUN_TAG:-${SLURM_JOB_ID:-$(date +%Y%m%d_%H%M%S)}}"
 CHECKPOINT_NAME="$(basename "$(dirname "${WEIGHTS}")")"
 RESULTS_DIR="${RESULTS_DIR:-${PROJECT_DIR}/Results/Evaluation/Yelda/${CHECKPOINT_NAME}/$(basename "${DATASET}")/${EVAL_SPLIT}/${RUN_TAG}}"
@@ -61,7 +61,8 @@ for representation in ${REPRESENTATIONS}; do
     --split "${EVAL_SPLIT}" --training-samples "${TRAINING_SAMPLES:-6000}" \
     --split-seed "${SPLIT_SEED:-42}" --n-samples "${N_SAMPLES:-100}" \
     --start-index "${START_INDEX:-1}" --device cuda \
-    --score-mode "${SCORE_MODE:-raw}" --threshold "${THRESHOLD:-0.45}" \
+    --score-mode "${SCORE_MODE:-raw}" --local-weight "${LOCAL_WEIGHT:-0.5}" --threshold "${THRESHOLD:-0.45}" \
     --gap "${GAP:--0.30}" --min-ink "${MIN_INK:-0.02}" \
     --output-dir "${RESULTS_DIR}/${representation}"
 done
+

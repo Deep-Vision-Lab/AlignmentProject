@@ -682,6 +682,11 @@ def get_pair_image_features(models, image1, image2):
     )
 
 
+def compute_pair_similarity(features1, features2, args, output_dir):
+    """Default single-representation score; Yelda can install joint scoring."""
+    return compute_similarity(features1.select(args.feature), features2.select(args.feature))
+
+
 def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="nw_diag_") as temporary:
@@ -693,8 +698,8 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
         # Both inputs are already transformed into their training-equivalent
         # display geometry. Using synthetic here applies only Resize+Normalize.
         features1, features2 = get_pair_image_features(models, model_image1, model_image2)
-        cosine = compute_similarity(
-            features1.select(args.feature), features2.select(args.feature)
+        cosine = compute_pair_similarity(
+            features1, features2, args, output_dir
         ).detach().cpu().numpy().astype(np.float32)
 
         scoring_domain = "real" if "real" in {preprocess1, preprocess2} else "synthetic"
@@ -741,7 +746,9 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
         _visualize(
             models, pair, arr1, arr2, features1, features2,
             full_path, component_path, traceback, cosine,
-            "raw cosine similarity (every window-pair value shown)",
+            (f"joint similarity: local weight={args.local_weight:.2f}, contextual weight={1-args.local_weight:.2f}"
+             if getattr(args, "representation", "") == "joint"
+             else "raw cosine similarity (every window-pair value shown)"),
             result, resolved_mode, output_dir / "cosine_similarity_values.png",
         )
         _visualize(
@@ -1013,3 +1020,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

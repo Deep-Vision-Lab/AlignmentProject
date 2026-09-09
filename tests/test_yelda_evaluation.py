@@ -60,6 +60,9 @@ def test_exact_checkpoint_forward_and_pair_fusion(tmp_path, cross):
     Image.fromarray(np.random.default_rng(43).integers(0, 256, (128, 1024, 3), dtype=np.uint8)).save(b)
     independent = runtime.pair_features(models, a, b, "independent")
     fused = runtime.pair_features(models, a, b)
+    joint = runtime.pair_features(models, a, b, "joint")
+    torch.testing.assert_close(joint[0].contextual, fused[0].contextual)
+    torch.testing.assert_close(joint[0].local, independent[0].local)
     assert fused[0].contextual.shape == (63, 128)
     torch.testing.assert_close(fused[0].local, independent[0].local)
     if cross:
@@ -143,10 +146,15 @@ def test_end_to_end_image_only_report(tmp_path, monkeypatch, cross):
     summary = json.loads((output / "summary.json").read_text())
     assert summary["successful"] == 1 and summary["failed"] == 0
     assert summary["text_encoder_loaded"] is False
-    assert summary["feature_stage"] == ("fused_contextual" if cross else "contextual")
+    assert summary["feature_stage"] == ("joint_local_fused_contextual" if cross else "joint_local_contextual")
     assert summary["line1_gt_count"] == 1
     evidence = np.load(output / "pair_00001" / "cosine_similarity.npy")
     np.testing.assert_allclose(np.diag(evidence), 1, atol=1e-5)
+    pair_dir = output / "pair_00001"
+    local = np.load(pair_dir / "local_cosine_similarity.npy")
+    contextual = np.load(pair_dir / "contextual_cosine_similarity.npy")
+    np.testing.assert_allclose(evidence, .5 * local + .5 * contextual, atol=1e-6)
+    np.testing.assert_allclose(evidence, np.load(pair_dir / "joint_similarity.npy"))
     assert (output / "pair_00001" / "line1_source_pred_mask.png").exists()
     assert (output / "selected_pairs.json").exists()
 
