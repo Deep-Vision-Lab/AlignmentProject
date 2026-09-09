@@ -1,5 +1,11 @@
 # Evaluation
 
+For the current Yelda window-CNN branches, use the image-only evaluator documented
+in [YELDA_EVALUATION.md](YELDA_EVALUATION.md). It supports the hierarchy and fused
+cross-attention paths, held-out Synthetic63 selection, matching training geometry,
+source-coordinate mask metrics, and a one-GPU SLURM launcher. It loads no AraBERT
+model or tokenizer. The older diagnostics below remain available.
+
 The ViT experiment branches expose two active evaluation entry points.
 
 ## Image-image Needleman-Wunsch diagnostic

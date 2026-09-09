@@ -538,7 +538,7 @@ def save_alignment_visualization(
     ax.set_title(
         f"{heatmap_label} | physical coordinates | bridge≤{getattr(component_path, 'bridge_limit', 0)}"
     )
-    ax.legend(loc="upper left", fontsize=7)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.07), ncol=2, fontsize=7)
     fig.colorbar(image, ax=ax, fraction=0.025, pad=0.015, label=heatmap_label)
 
     metadata = f" | pair_id={pair.pair_id} | label={pair.label_type}" if getattr(pair, "pair_id", "") else ""
