@@ -7,6 +7,7 @@ import csv
 from collections import defaultdict, deque
 from dataclasses import replace
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -17,13 +18,40 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+def local_weight_value(value):
+    weight = float(value)
+    if not math.isfinite(weight) or not 0.0 <= weight <= 1.0:
+        raise argparse.ArgumentTypeError("local-weight must be finite and between 0 and 1")
+    return weight
+
+
+def evaluation_similarity(first, second, args, output_dir):
+    from Evaluation._eval_utils import compute_similarity
+    if args.representation != "joint":
+        return compute_similarity(first.select(args.feature), second.select(args.feature))
+    import numpy as np
+    from Evaluation.joint_similarity import joint_components
+    local, contextual, joint = joint_components(
+        first.local, second.local, first.contextual, second.contextual, args.local_weight
+    )
+    for name, scores in (("local_cosine_similarity", local),
+                         ("contextual_cosine_similarity", contextual),
+                         ("joint_similarity", joint)):
+        array = scores.detach().cpu().numpy().astype(np.float32)
+        np.save(output_dir / f"{name}.npy", array)
+        np.savetxt(output_dir / f"{name}.csv", array, delimiter=",", fmt="%.8f")
+    return joint
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--weights", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--branch", choices=("auto", "hierarchy", "cross"), default="auto")
-    parser.add_argument("--representation", choices=("primary", "local", "independent"), default="primary")
+    parser.add_argument("--representation", choices=("joint", "primary", "local", "independent"), default="joint")
+    parser.add_argument("--local-weight", type=local_weight_value, default=0.5,
+                        help="Joint score: weight of local cosine; contextual weight is 1 minus this")
     parser.add_argument("--split", choices=("test", "valid", "train", "all"), default="test")
     parser.add_argument("--training-samples", type=int, default=6000,
                         help="Synthetic population used by training before its 60/20/20 split")
@@ -134,7 +162,7 @@ def evaluate_pair(base, models, pair, args, destination):
     row.update(image1=str(pair.image1), image2=str(pair.image2),
                side1_preprocess=pair.preprocess_domain(1), side2_preprocess=pair.preprocess_domain(2),
                gt_mask1=str(pair.gt_mask1 or ""), gt_mask2=str(pair.gt_mask2 or ""),
-               representation=args.representation, geometry=geometry, mask_coordinate_system="source_image")
+               feature="joint" if args.representation == "joint" else args.feature, representation=args.representation, local_weight=args.local_weight if args.representation == "joint" else None, geometry=geometry, mask_coordinate_system="source_image")
     write_json(destination / "summary.json", row)
     return row
 
@@ -176,7 +204,9 @@ def main(argv=None):
         raise ValueError("No pairs selected")
     destination.mkdir(parents=True, exist_ok=True)
     branch = "cross" if models.pair_cross_attention is not None else "hierarchy"
-    stage = "fused_contextual" if branch == "cross" and args.representation == "primary" else args.feature
+    stage = "fused_contextual" if branch == "cross" and args.representation in {"primary", "joint"} else args.feature
+    if args.representation == "joint":
+        stage = "joint_local_" + stage
     selection = [{"pair_id": p.pair_id, "index": p.index, "split": p.split,
                   "image1": str(p.image1), "image2": str(p.image2)} for p in selected]
     write_json(destination / "selected_pairs.json", selection)
@@ -196,7 +226,11 @@ def main(argv=None):
                 "mask_metrics_are_character_alignment_accuracy": False}
     write_json(destination / "run.json", metadata)
     print(f"Yelda evaluation: branch={branch} stage={stage} split={args.split} pairs={len(selected)} text_encoder=none", flush=True)
+    if args.representation == "joint":
+        print(f"Joint scores: local={args.local_weight:.3f}, contextual={1-args.local_weight:.3f}; one NW alignment", flush=True)
     rows = []
+    original_similarity_hook = base.compute_pair_similarity
+    base.compute_pair_similarity = evaluation_similarity
     original_pair_hook = base.get_pair_image_features
     base.get_pair_image_features = lambda m, a, b: pair_features(m, a, b, args.representation)
     try:
@@ -212,6 +246,7 @@ def main(argv=None):
             rows.append(row)
     finally:
         base.get_pair_image_features = original_pair_hook
+        base.compute_pair_similarity = original_similarity_hook
     with (destination / "samples.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=sorted({key for row in rows for key in row}))
         writer.writeheader()
@@ -231,3 +266,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
