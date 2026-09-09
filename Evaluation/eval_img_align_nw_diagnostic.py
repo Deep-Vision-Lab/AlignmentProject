@@ -674,6 +674,14 @@ def _visualize(
     )
 
 
+def get_pair_image_features(models, image1, image2):
+    """Extract a complete pair; pair-aware evaluators override this one hook."""
+    return (
+        get_image_features(models, image1, "synthetic"),
+        get_image_features(models, image2, "synthetic"),
+    )
+
+
 def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="nw_diag_") as temporary:
@@ -684,8 +692,7 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
 
         # Both inputs are already transformed into their training-equivalent
         # display geometry. Using synthetic here applies only Resize+Normalize.
-        features1 = get_image_features(models, model_image1, "synthetic")
-        features2 = get_image_features(models, model_image2, "synthetic")
+        features1, features2 = get_pair_image_features(models, model_image1, model_image2)
         cosine = compute_similarity(
             features1.select(args.feature), features2.select(args.feature)
         ).detach().cpu().numpy().astype(np.float32)
