@@ -56,6 +56,10 @@ def apply_branch_config(P):
 
     # The target space is a fixed character identity codebook, not AraBERT spans.
     P.text_encoder_type = "char"
+    # These span values are inactive, but shared optimization validation still
+    # inspects them during startup. Keep them in a harmless valid range.
+    P.max_text_span_chars = 1
+    P.max_text_token_chars = 1
     P.letter_codebook_seed = _env_int("LETTER_CODEBOOK_SEED", 1234)
     P.letter_codebook_vocab_size = _env_int("LETTER_CODEBOOK_VOCAB_SIZE", 4096)
     P.letter_inventory = DEFAULT_ARABIC_LETTERS
