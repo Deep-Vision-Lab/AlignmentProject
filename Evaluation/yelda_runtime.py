@@ -41,9 +41,15 @@ def load_visual_models(checkpoint, device="auto", expected_branch="auto"):
     config = dict(checkpoint["model_config"])
     if flag(config.get("window_cnn_enabled", False)):
         raise ValueError("Window-CNN checkpoints require their corresponding branch")
-    spatial = str(config.get("architecture_family", "")) == "cfm-inspired-spatial-language-alignment"
+    family = str(config.get("architecture_family", ""))
+    restoration = family == "restoration-positive-dtw-window-encoder"
+    spatial = family == "cfm-inspired-spatial-language-alignment"
     cross = flag(config.get("cross_attention_enabled", False))
-    branch = "spatial" if spatial else ("cross" if cross else "hierarchy")
+    branch = (
+        "restoration"
+        if restoration
+        else ("spatial" if spatial else ("cross" if cross else "hierarchy"))
+    )
     if expected_branch not in {"auto", branch}:
         raise ValueError(f"Requested {expected_branch}, but checkpoint is {branch}")
     if device == "auto":
@@ -65,8 +71,21 @@ def load_visual_models(checkpoint, device="auto", expected_branch="auto"):
         vit_binarize_input=flag(config.get("vit_binarize_input", False)),
         vit_binarize_contrast_threshold=float(config.get("vit_binarize_contrast_threshold", 0.15)),
     ).to(dev)
-    # Reconstruct the exact branch-specific pre-context stages BEFORE loading.
-    if spatial:
+    # Reconstruct the exact branch-specific stages BEFORE loading.
+    if restoration:
+        from types import SimpleNamespace
+        from vlm_restoration_positive_dtw import attach_restoration_dtw_stages
+
+        restoration_config = SimpleNamespace(
+            restoration_decoder_channels=int(
+                config.get("restoration_decoder_channels", 64)
+            ),
+            restoration_contrast_scale=float(
+                config.get("restoration_contrast_scale", 0.15)
+            ),
+        )
+        model = attach_restoration_dtw_stages(model, restoration_config)
+    elif spatial:
         from types import SimpleNamespace
         from vlm_spatial_language_alignment import attach_spatial_language_stages
 
