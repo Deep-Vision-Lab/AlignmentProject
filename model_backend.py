@@ -1,28 +1,26 @@
-"""Branch-selected backend for CFM-inspired spatial language alignment.
+"""Branch-selected backend for restoration + positive letter DTW.
 
-Each manuscript line independently produces spatially indexed vectors in a
-frozen Arabic language space. The two images meet only through the existing
-image-image contrastive/order losses and final cosine/NW alignment.
+Each manuscript line is trained independently. The visual encoder produces one
+primitive token per physical window, a semantic adapter maps that token toward a
+fixed character-identity space, and a lightweight decoder reconstructs the
+window's stroke map from the primitive token.
 """
 from __future__ import annotations
 
 import os
 
 import Parameters as P
-from vlm_spatial_language_alignment import (
+from vlm_restoration_positive_dtw import (
     apply_branch_config,
-    attach_spatial_language_stages,
+    attach_restoration_dtw_stages,
     install_training_objective,
-    model_config as spatial_model_config,
+    model_config as restoration_model_config,
 )
 
 apply_branch_config(P)
 P.export_environment()
 
-os.environ["ALLOW_UNSAFE_SPAN_CONFIG"] = "1"
-os.environ["SPAN_MAX_CORE_CHARS_CAP"] = "3"
-
-MODEL_NAME = "vit_cfm_spatial_language"
+MODEL_NAME = "vit_restoration_positive_dtw"
 VISUAL_ENCODER_TYPE = "vit"
 
 
@@ -59,7 +57,7 @@ def build_visual_model(
         device=device,
         use_flip=use_flip,
     )
-    return attach_spatial_language_stages(model, P)
+    return attach_restoration_dtw_stages(model, P)
 
 
 def install_training_backend(base_module):
@@ -90,6 +88,7 @@ def install_training_backend(base_module):
 
 def prepare_visual_model(model):
     from embeddingModel import prepare_vit_model
+
     prepare_vit_model(model)
 
 
@@ -105,14 +104,10 @@ def visual_model_config():
         "vit_mlp_dim": _integer("VIT_MLP_DIM", 512),
         "vit_dropout": _number("VIT_DROPOUT", 0.10),
         "vit_max_tokens": int(P.vit_max_tokens),
-        "vit_position_base_tokens": _integer(
-            "VIT_POSITION_BASE_TOKENS", 63
-        ),
+        "vit_position_base_tokens": _integer("VIT_POSITION_BASE_TOKENS", 63),
         "vit_binarize_input": bool(P.vit_binarize_input),
-        "vit_binarize_method": (
-            "otsu" if bool(P.vit_binarize_input) else "none"
-        ),
+        "vit_binarize_method": "none",
         "torch_compile_visual": _flag("TORCH_COMPILE_VISUAL", False),
     }
-    config.update(spatial_model_config(P))
+    config.update(restoration_model_config(P))
     return config
