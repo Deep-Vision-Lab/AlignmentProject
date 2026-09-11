@@ -22,7 +22,7 @@ from arabic_span_text_encoder import ArabicSpanTextEncoder
 from arabic_token_text_encoder import ArabicTokenTextEncoder
 from embeddingModel import EmbeddingModel
 from span_alignment_loss import hard_span_dtw_path
-from textEmbedding import TextEmbedding
+from textEmbedding import OrthogonalCharEmbedding, TextEmbedding
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -227,7 +227,23 @@ def load_evaluation_models(
         local_group_size=int(config.get("local_group_size", 3)),
     ).to(dev)
 
-    if str(config.get("architecture_family", "")) == "cfm-inspired-spatial-language-alignment":
+    family = str(config.get("architecture_family", ""))
+    if family == "restoration-positive-dtw-window-encoder":
+        from types import SimpleNamespace
+        from vlm_restoration_positive_dtw import attach_restoration_dtw_stages
+
+        restoration_config = SimpleNamespace(
+            restoration_decoder_channels=int(
+                config.get("restoration_decoder_channels", 64)
+            ),
+            restoration_contrast_scale=float(
+                config.get("restoration_contrast_scale", 0.15)
+            ),
+        )
+        image_model = attach_restoration_dtw_stages(
+            image_model, restoration_config
+        )
+    elif family == "cfm-inspired-spatial-language-alignment":
         from types import SimpleNamespace
         from vlm_spatial_language_alignment import attach_spatial_language_stages
 
@@ -292,7 +308,17 @@ def load_evaluation_models(
                 device=dev,
             )
         elif text_type == "char":
-            text_model = TextEmbedding(embedding_dim=vector_size)
+            if (
+                str(config.get("letter_codebook", ""))
+                == "frozen-orthogonal-character-identities"
+            ):
+                text_model = OrthogonalCharEmbedding(
+                    embedding_dim=vector_size,
+                    vocab_size=int(config.get("letter_codebook_vocab_size", 4096)),
+                    seed=int(config.get("letter_codebook_seed", 1234)),
+                )
+            else:
+                text_model = TextEmbedding(embedding_dim=vector_size)
         else:
             raise ValueError(f"Unsupported text_encoder_type={text_type!r}")
 
