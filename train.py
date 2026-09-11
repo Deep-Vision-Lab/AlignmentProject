@@ -233,10 +233,11 @@ def _validate_constructed_backend(model: nn.Module) -> None:
     has_vit = any(key.startswith("vit_encoder.") for key in keys)
     has_cnn = any(key.startswith("cnn_encoder.") for key in keys)
     has_bilstm = any(key.startswith("sequence_encoder.bilstm.") for key in keys)
-    if backend == "vit" and (not has_vit or has_cnn or has_bilstm):
+    visual_type = str(getattr(model_backend, "VISUAL_ENCODER_TYPE", backend)).strip().lower()
+    if visual_type == "vit" and (not has_vit or has_cnn or has_bilstm):
         raise RuntimeError(
             "ViT branch built the wrong model: "
-            f"has_vit={has_vit} has_cnn={has_cnn} has_bilstm={has_bilstm}"
+            f"backend={backend} has_vit={has_vit} has_cnn={has_cnn} has_bilstm={has_bilstm}"
         )
 
 
