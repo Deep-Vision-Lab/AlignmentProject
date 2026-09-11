@@ -8,6 +8,7 @@ any project module that imports them.
 from __future__ import annotations
 
 import os
+import multiprocessing
 from dataclasses import dataclass
 
 
@@ -26,6 +27,24 @@ def isolate_local_rank_cuda_device() -> RankDeviceSelection:
     visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
     original = os.environ.get("ORIGINAL_CUDA_VISIBLE_DEVICES", visible).strip()
     selected = visible
+
+    # DataLoader uses the "spawn" multiprocessing context. A spawned worker
+    # re-executes train.py, so it reaches this helper with WORLD_SIZE inherited
+    # from torchrun and with the parent rank's already-isolated one-device
+    # CUDA_VISIBLE_DEVICES. It is not itself a torchrun rank and must not be
+    # required to prove rank-wrapper isolation again.
+    #
+    # Preserve the parent's visibility exactly and return before any torchrun
+    # validation. This also avoids changing CUDA visibility inside a worker.
+    if multiprocessing.current_process().name != "MainProcess":
+        os.environ["ALIGNMENT_ORIGINAL_CUDA_VISIBLE_DEVICES"] = original
+        os.environ["ALIGNMENT_SELECTED_CUDA_DEVICE"] = selected
+        return RankDeviceSelection(
+            local_rank=local_rank,
+            world_size=world_size,
+            original_visible_devices=original,
+            selected_device=selected,
+        )
 
     if world_size > 1:
         # GeForce RTX 4090 nodes can expose two CUDA devices while CUDA peer
