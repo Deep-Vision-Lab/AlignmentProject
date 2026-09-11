@@ -137,24 +137,77 @@ def positive_monotonic_letter_dtw_cost(
     target = F.normalize(target_prototypes.float(), p=2, dim=-1)
     costs = 1.0 - torch.matmul(visual, target.T)
 
-    large = costs.new_tensor(1e4)
-    previous = [costs.new_tensor(0.0)] + [large for _ in range(L)]
+    # Evaluate complete anti-diagonals together. All dependencies of cells with
+    # i+j=k live on anti-diagonals k-1 (vertical/horizontal) or k-2
+    # (diagonal), so this is mathematically identical to the scalar recurrence
+    # while avoiding T*L tiny Python/GPU operations.
+    large_value = 1e4
     penalty = float(step_penalty)
+    previous = None
+    previous_start = 0
+    previous2 = None
+    previous2_start = 0
 
-    for i in range(T):
-        current = [large]
-        for j in range(L):
-            predecessors = torch.stack(
-                [
-                    previous[j],
-                    previous[j + 1] + penalty,
-                    current[j] + penalty,
-                ]
+    for diagonal_index in range(T + L - 1):
+        start_i = max(0, diagonal_index - (L - 1))
+        end_i = min(T - 1, diagonal_index)
+        i = torch.arange(start_i, end_i + 1, device=costs.device)
+        j = diagonal_index - i
+        count = int(i.numel())
+
+        vertical_valid = i > 0
+        horizontal_valid = j > 0
+        diagonal_valid = vertical_valid & horizontal_valid
+
+        vertical = costs.new_full((count,), large_value)
+        horizontal = costs.new_full((count,), large_value)
+        diagonal = costs.new_full((count,), large_value)
+
+        if previous is not None:
+            vertical_index = (i - 1 - previous_start).clamp(
+                0, max(0, int(previous.numel()) - 1)
             )
-            current.append(costs[i, j] + _softmin(predecessors, gamma))
-        previous = current
+            horizontal_index = (i - previous_start).clamp(
+                0, max(0, int(previous.numel()) - 1)
+            )
+            vertical_values = previous.index_select(0, vertical_index)
+            horizontal_values = previous.index_select(0, horizontal_index)
+            vertical = torch.where(vertical_valid, vertical_values, vertical)
+            horizontal = torch.where(horizontal_valid, horizontal_values, horizontal)
 
-    return previous[L] / float(max(1, T + L))
+        if previous2 is not None:
+            diagonal_index_in_previous = (i - 1 - previous2_start).clamp(
+                0, max(0, int(previous2.numel()) - 1)
+            )
+            diagonal_values = previous2.index_select(
+                0, diagonal_index_in_previous
+            )
+            diagonal = torch.where(
+                diagonal_valid, diagonal_values, diagonal
+            )
+
+        # Virtual DP[-1,-1] = 0 starts the path at (0,0).
+        origin = (i == 0) & (j == 0)
+        diagonal = torch.where(origin, torch.zeros_like(diagonal), diagonal)
+
+        predecessors = torch.stack(
+            [
+                diagonal,
+                vertical + penalty,
+                horizontal + penalty,
+            ],
+            dim=0,
+        )
+        current = costs[i, j] - max(float(gamma), 1e-5) * torch.logsumexp(
+            -predecessors / max(float(gamma), 1e-5),
+            dim=0,
+        )
+
+        previous2, previous2_start = previous, previous_start
+        previous, previous_start = current, start_i
+
+    # The final anti-diagonal contains only cell (T-1,L-1).
+    return previous[0] / float(max(1, T + L))
 
 
 class StrokeRestorationDecoder(nn.Module):
