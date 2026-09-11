@@ -112,14 +112,19 @@ class ResizeAndBinarize:
         return float(border.mean()) if border.size else 255.0
 
     def __call__(self, image: Image.Image) -> Image.Image:
+        if not self.enabled:
+            # Preserve the original RGB appearance for branches that explicitly
+            # disable real-data binarization. The restoration target itself
+            # derives grayscale stroke contrast inside the model.
+            return image.convert("RGB").resize(
+                (self.width, self.height),
+                _RESAMPLE_BILINEAR,
+            )
+
         image = image.convert("L").resize(
             (self.width, self.height),
             _RESAMPLE_BILINEAR,
         )
-
-        if not self.enabled:
-            return image.convert("RGB")
-
         if self.autocontrast:
             image = ImageOps.autocontrast(image)
 
