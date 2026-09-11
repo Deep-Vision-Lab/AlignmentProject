@@ -74,7 +74,10 @@ belong to**.
 
 The text side is `OrthogonalCharEmbedding`, already available in this
 repository. Every Unicode character has a deterministic frozen vector. There is
-no AraBERT and no trainable text projection in this experiment.
+no AraBERT and no trainable text projection in this experiment. Transcript
+cleaning uses NFKC normalization and keeps Unicode Arabic letters, so valid forms
+such as `ٱ` are not silently discarded and presentation-form ligatures are
+folded into their ordinary letter sequence.
 
 The fixed vectors are not supposed to know what Arabic letters look like. They
 are stable identity destinations. Repeated appearances of the same transcript
@@ -94,7 +97,8 @@ For cleaned transcript letters `c_1 ... c_L` and semantic window vectors
 C[i,j] = 1 - cosine(L_i, e_{c_j})
 ```
 
-The differentiable DP permits:
+The differentiable DP is evaluated by vectorized anti-diagonals (same recurrence,
+fewer tiny GPU operations) and permits:
 
 - diagonal: next window, next letter;
 - vertical: another window still belongs to the current letter;
