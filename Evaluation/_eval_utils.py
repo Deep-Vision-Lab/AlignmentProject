@@ -212,12 +212,33 @@ def load_evaluation_models(
         vector_size=int(config.get("vector_size", 128)),
         device=dev,
         use_flip=str(config.get("lang", "Arabic")).lower() == "arabic",
-        use_bilstm=_bool(config, "use_bilstm", True),
+        input_height=int(config.get("vit_input_height", 128)),
+        vit_layers=int(config.get("vit_layers", 4)),
+        vit_heads=int(config.get("vit_heads", 4)),
+        vit_mlp_dim=int(config.get("vit_mlp_dim", 512)),
+        vit_dropout=float(config.get("vit_dropout", 0.10)),
+        vit_max_tokens=int(config.get("vit_max_tokens", 256)),
+        vit_position_base_tokens=int(config.get("vit_position_base_tokens", 63)),
+        vit_binarize_input=_bool(config, "vit_binarize_input", False),
+        use_bilstm=_bool(config, "use_bilstm", False),
         bilstm_layers=int(config.get("bilstm_layers", 2)),
         bilstm_hidden_dim=int(config.get("bilstm_hidden_dim", 128)),
         use_local_grouping=use_local_grouping,
         local_group_size=int(config.get("local_group_size", 3)),
     ).to(dev)
+
+    if str(config.get("architecture_family", "")) == "cfm-inspired-spatial-language-alignment":
+        from types import SimpleNamespace
+        from vlm_spatial_language_alignment import attach_spatial_language_stages
+
+        spatial_config = SimpleNamespace(
+            spatial_affinity_radius=int(config.get("spatial_affinity_radius", 3)),
+            spatial_affinity_temperature=float(config.get("spatial_affinity_temperature", 0.15)),
+            spatial_affinity_distance_penalty=float(config.get("spatial_affinity_distance_penalty", 0.12)),
+            spatial_affinity_initial_gate=float(config.get("spatial_affinity_initial_gate", 0.15)),
+            context_residual_initial_gate=float(config.get("context_residual_initial_gate", 0.25)),
+        )
+        image_model = attach_spatial_language_stages(image_model, spatial_config)
     incompatible = image_model.load_state_dict(_model_state(checkpoint), strict=False)
     serious_missing = [
         key
