@@ -48,7 +48,11 @@ def parse_args(argv=None):
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--weights", required=True)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--branch", choices=("auto", "hierarchy", "cross", "spatial"), default="auto")
+    parser.add_argument(
+        "--branch",
+        choices=("auto", "hierarchy", "cross", "spatial", "restoration"),
+        default="auto",
+    )
     parser.add_argument("--image-preprocessing", choices=("original", "training"), default="original",
                         help="original: full RGB image resized to 1024x128, without cropping, padding or binarization")
     parser.add_argument("--representation", choices=("joint", "primary", "local", "independent"), default="joint")
@@ -213,9 +217,29 @@ def main(argv=None):
     if not selected:
         raise ValueError("No pairs selected")
     destination.mkdir(parents=True, exist_ok=True)
-    branch = ("spatial" if str(models.config.get("architecture_family", "")) == "cfm-inspired-spatial-language-alignment" else ("cross" if models.pair_cross_attention is not None else "hierarchy"))
-    stage = "fused_contextual" if branch == "cross" and args.representation in {"primary", "joint"} else args.feature
-    if args.representation == "joint":
+    family = str(models.config.get("architecture_family", ""))
+    branch = (
+        "restoration"
+        if family == "restoration-positive-dtw-window-encoder"
+        else (
+            "spatial"
+            if family == "cfm-inspired-spatial-language-alignment"
+            else ("cross" if models.pair_cross_attention is not None else "hierarchy")
+        )
+    )
+    if branch == "restoration":
+        stage = (
+            "joint_primitive_semantic"
+            if args.representation == "joint"
+            else (
+                "primitive_stroke"
+                if args.representation == "local"
+                else "semantic_letter_aligned"
+            )
+        )
+    else:
+        stage = "fused_contextual" if branch == "cross" and args.representation in {"primary", "joint"} else args.feature
+    if args.representation == "joint" and branch != "restoration":
         stage = "joint_local_" + stage
     selection = [{"pair_id": p.pair_id, "index": p.index, "split": p.split,
                   "image1": str(p.image1), "image2": str(p.image2)} for p in selected]
