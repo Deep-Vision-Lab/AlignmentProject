@@ -97,14 +97,31 @@ def apply_branch_config(P):
     P.restoration_decoder_channels = _env_int("RESTORATION_DECODER_CHANNELS", 64)
 
 
-def _clean_letters(text: str, inventory_set: set[str]) -> list[str]:
+def _is_arabic_letter(character: str) -> bool:
+    codepoint = ord(character)
+    in_arabic_block = (
+        0x0600 <= codepoint <= 0x06FF
+        or 0x0750 <= codepoint <= 0x077F
+        or 0x08A0 <= codepoint <= 0x08FF
+        or 0xFB50 <= codepoint <= 0xFDFF
+        or 0xFE70 <= codepoint <= 0xFEFF
+    )
+    return in_arabic_block and unicodedata.category(character).startswith("L")
+
+
+def _clean_letters(text: str) -> list[str]:
+    """Keep Arabic letters while removing spaces, marks, punctuation and tatweel.
+
+    NFKC folds Arabic presentation forms/ligatures into their ordinary Unicode
+    letter sequence. This avoids silently dropping valid manuscript/Quranic
+    letters such as alef-wasla simply because they were absent from a hand-made
+    alphabet list.
+    """
     letters = []
-    for character in unicodedata.normalize("NFC", str(text)):
+    for character in unicodedata.normalize("NFKC", str(text)):
         if character.isspace() or character == "ـ":
             continue
-        if unicodedata.category(character) in {"Mn", "Me", "Cf"}:
-            continue
-        if character in inventory_set:
+        if _is_arabic_letter(character):
             letters.append(character)
     return letters
 
@@ -418,14 +435,12 @@ def attach_restoration_dtw_stages(model, P):
 
 
 def positive_letter_dtw_loss(P, text_encoder, semantic_tokens, ink_ratios, positive_texts):
-    inventory = str(P.letter_inventory)
-    inventory_set = set(inventory)
     losses = []
     windows_used = []
     letters_used = []
 
     for sample_index, text in enumerate(positive_texts):
-        letters = _clean_letters(text, inventory_set)
+        letters = _clean_letters(text)
         if not letters:
             continue
 
