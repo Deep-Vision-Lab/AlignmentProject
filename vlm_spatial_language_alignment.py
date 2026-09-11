@@ -564,6 +564,15 @@ def apply_branch_config(P):
     P.spatial_letter_min_ink = _cfm_env_float("SPATIAL_LETTER_MIN_INK", 0.01)
     P.spatial_letter_inventory = DEFAULT_ARABIC_LETTERS
 
+    # The reused monotonic implementation historically reads letter_depiction_*
+    # names. Keep those internal aliases synchronized with this branch's knobs.
+    P.letter_depiction_positive_weight = P.spatial_letter_positive_weight
+    P.letter_depiction_margin = P.spatial_letter_margin
+    P.letter_depiction_gamma = P.spatial_letter_gamma
+    P.letter_depiction_step_penalty = P.spatial_letter_step_penalty
+    P.letter_depiction_min_ink = P.spatial_letter_min_ink
+    P.letter_depiction_inventory = P.spatial_letter_inventory
+
     # Segmentation-like dense vocabulary objective.
     P.dense_letter_weight = _cfm_env_float("DENSE_LETTER_WEIGHT", 0.15)
     P.dense_letter_temperature = _cfm_env_float(
