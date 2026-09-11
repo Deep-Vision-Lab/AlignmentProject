@@ -59,6 +59,7 @@ echo "============================================================"
 # accidental source-editing errors before the actual training entrypoint runs.
 "${PYTHON_BIN}" -m py_compile \
   train.py \
+  runtime_device_setup.py \
   model_backend.py \
   vlm_restoration_positive_dtw.py \
   DataLoader.py \
