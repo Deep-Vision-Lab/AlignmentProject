@@ -46,7 +46,13 @@ def apply_branch_config(P):
     P.vit_layers = 1
     P.vit_binarize_input = False
     P.real_binarize = False
+    # Existing real augmentation is designed around binary ink. Keep the first
+    # minimal experiment on the original resized line rather than mixing in a
+    # different preprocessing objective.
+    P.real_augment = False
     P.vit_max_tokens = max(int(getattr(P, "vit_max_tokens", 256)), 256)
+    # No Span-DTW/JAX objective is active on this branch.
+    P.span_dtw_backend = "torch"
 
     # The target space is a fixed character identity codebook, not AraBERT spans.
     P.text_encoder_type = "char"
