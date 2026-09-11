@@ -129,7 +129,15 @@ def _manifest_dataset(path: Path) -> ArabicManifestLinePairDataset:
         text_key=os.environ.get("REAL_TEXT_KEY", "text_original_path"),
         allowed_labels=base_loader._parse_real_labels(),
         max_samples=None,
-        paired=bool(\n            base_loader.use_image_pair_contrastive\n            or getattr(\n                base_loader.P,\n                \"keep_paired_lines_for_independent_training\",\n                False,\n            )\n        ),\n        min_text_score=0.0,
+        paired=bool(
+            base_loader.use_image_pair_contrastive
+            or getattr(
+                base_loader.P,
+                "keep_paired_lines_for_independent_training",
+                False,
+            )
+        ),
+        min_text_score=0.0,
         validate_paths=_env_flag("REAL_VALIDATE_PATHS", False),
     )
 
