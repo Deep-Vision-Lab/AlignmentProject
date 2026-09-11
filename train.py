@@ -30,7 +30,11 @@ from runtime_device_setup import isolate_local_rank_cuda_device
 RANK_DEVICE = isolate_local_rank_cuda_device()
 
 import Parameters as P
+import model_backend
 
+# Import the branch backend before exporting environment/config or constructing
+# dataloaders. This branch changes the text encoder to a frozen char codebook and
+# disables every negative/pair loss.
 P.export_environment()
 
 
@@ -51,6 +55,10 @@ def _contains_cached_model(cache_root: Path, model_name: str) -> bool:
 
 
 def _resolve_hf_home() -> None:
+    # Character-codebook branches require no HuggingFace model at all.
+    if str(P.text_encoder_type).strip().lower() == "char":
+        return
+
     explicit = os.environ.get("HF_HOME", "").strip()
     candidates = []
     if explicit:
@@ -86,7 +94,6 @@ import torch
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-import model_backend
 import span_alignment_loss
 from ddp_runtime_policy import resolve_ddp_static_graph
 from distributed_runtime_guard import install_distributed_runtime_guard
@@ -103,12 +110,10 @@ span_alignment_loss.hard_span_dtw_path = hard_span_dtw_path_fast
 base.hard_span_dtw_path = hard_span_dtw_path_fast
 install_jax_batch_padding()
 
-# Install the optimized trainer. Its optimized_compute_batch_loss keeps line1
-# and line2 in two independent visual-model forward calls.
+# Install shared optimization/runtime helpers first. The branch backend then
+# replaces compute_batch_loss with the minimal restoration + positive-DTW loss.
 install_optimizations(base)
 
-# Keep the historical baseline loss untouched. This helper only allows an old
-# 4-layer ViT checkpoint to initialize the new 1-layer ViT by loading layer 0.
 install_vit_checkpoint_migration(base)
 install_distributed_runtime_guard(base)
 install_epoch_subset_sampling(base)
@@ -144,11 +149,11 @@ def _model_config(stride, args):
     config.update(
         {
             "experiment_name": P.experiment_name,
-            "configuration_source": "Parameters.py",
+            "configuration_source": "Parameters.py + branch backend",
             "initialization": "pretrained" if args.pretrained_weights else "scratch",
             "dataset_type": args.dataset_type,
             "dataset_path": args.data_dir,
-            "paired_visual_forward": "separate",
+            "paired_visual_forward": "independent-lines-only",
         }
     )
     install_training_stability(base, config, args.job_id)
@@ -168,7 +173,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--weights",
         default=None,
-        help="Optional pretrained model. If supplied, the run is fine-tuning.",
+        help="Optional visual initialization. New restoration/semantic heads remain newly initialized.",
     )
     return parser.parse_args()
 
@@ -239,6 +244,10 @@ def _validate_constructed_backend(model: nn.Module) -> None:
             "ViT branch built the wrong model: "
             f"backend={backend} has_vit={has_vit} has_cnn={has_cnn} has_bilstm={has_bilstm}"
         )
+    if not any("semantic_adapter" in key for key in keys):
+        raise RuntimeError("Restoration-DTW backend is missing semantic_adapter parameters")
+    if not any("stroke_decoder" in key for key in keys):
+        raise RuntimeError("Restoration-DTW backend is missing stroke_decoder parameters")
 
 
 def main() -> None:
@@ -293,8 +302,8 @@ def main() -> None:
         )
 
         if base.CTX.is_main:
-            mode = "fine-tune" if args.pretrained_weights else "scratch"
-            print("AlignmentProject global trainer", flush=True)
+            mode = "visual-init" if args.pretrained_weights else "scratch"
+            print("AlignmentProject restoration + positive-DTW trainer", flush=True)
             print(f"  backend      = {model_backend.MODEL_NAME}", flush=True)
             print(f"  mode         = {mode}", flush=True)
             print(f"  dataset      = {args.data_dir}", flush=True)
@@ -304,14 +313,17 @@ def main() -> None:
             print(f"  epochs/lr    = {args.epochs}/{args.learning_rate}", flush=True)
             print(f"  window/stride= {P.window_size}/{stride}", flush=True)
             print(
-                f"  vit          = layers={P.vit_layers} heads={P.vit_heads} "
-                f"binarize_rgb={P.vit_binarize_input} method=otsu",
+                f"  objective    = {P.positive_letter_dtw_weight}*positive_letter_DTW "
+                f"+ {P.restoration_weight}*stroke_restoration",
                 flush=True,
             )
-            print("  visual_fwd   = separate line1 / line2", flush=True)
             print(
-                f"  variance     = weight={P.image_variance_loss_weight} "
-                f"target_std={P.image_variance_target_std}",
+                f"  negatives    = {P.num_negatives}; image_pair_loss={P.image_pair_loss_weight}; "
+                f"variance={P.image_variance_loss_weight}",
+                flush=True,
+            )
+            print(
+                "  representations= primitive(stroke) -> semantic(letter); no active Transformer context",
                 flush=True,
             )
             print(
