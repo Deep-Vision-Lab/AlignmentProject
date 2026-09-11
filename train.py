@@ -94,21 +94,14 @@ import torch
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-import span_alignment_loss
 from ddp_runtime_policy import resolve_ddp_static_graph
 from distributed_runtime_guard import install_distributed_runtime_guard
 from epoch_subset_sampling import install_epoch_subset_sampling
-from fast_hard_alignment import hard_span_dtw_path_fast
-from jax_batch_bucketing import install_jax_batch_padding
 from job_id_runtime import resolve_training_job_id
 from training_optimizations import install as install_optimizations
 from training_stability import install_training_stability
 from unified_line_geometry import install_training_geometry
 from vit_checkpoint_migration import install as install_vit_checkpoint_migration
-
-span_alignment_loss.hard_span_dtw_path = hard_span_dtw_path_fast
-base.hard_span_dtw_path = hard_span_dtw_path_fast
-install_jax_batch_padding()
 
 # Install shared optimization/runtime helpers first. The branch backend then
 # replaces compute_batch_loss with the minimal restoration + positive-DTW loss.
