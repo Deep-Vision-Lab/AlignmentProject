@@ -62,7 +62,9 @@ def apply_branch_config(P):
     P.max_text_token_chars = 1
     P.letter_codebook_seed = _env_int("LETTER_CODEBOOK_SEED", 1234)
     P.letter_codebook_vocab_size = _env_int("LETTER_CODEBOOK_VOCAB_SIZE", 4096)
-    P.letter_inventory = DEFAULT_ARABIC_LETTERS
+    # Informational label: actual targets accept Unicode Arabic letters after
+    # NFKC normalization rather than filtering through a closed alphabet list.
+    P.letter_inventory = "unicode-arabic-letters-after-nfkc"
 
     # Keep both sides of an available pair only as two independent training lines.
     P.keep_paired_lines_for_independent_training = True
