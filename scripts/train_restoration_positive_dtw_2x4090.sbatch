@@ -65,4 +65,5 @@ export TORCH_COMPILE_VISUAL="${TORCH_COMPILE_VISUAL:-0}"
   --standalone \
   --nproc_per_node=2 \
   train.py \
-  --dataset "${DATASET}"
+  --dataset "${DATASET}" \
+  "$@"
