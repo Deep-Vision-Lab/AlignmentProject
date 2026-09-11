@@ -55,6 +55,17 @@ echo "context loss = 0"
 echo "text target  = frozen orthogonal Arabic character identities"
 echo "============================================================"
 
+# Cheap syntax preflight before torchrun starts two worker processes. This catches
+# accidental source-editing errors before the actual training entrypoint runs.
+"${PYTHON_BIN}" -m py_compile \
+  train.py \
+  model_backend.py \
+  vlm_restoration_positive_dtw.py \
+  DataLoader.py \
+  DataSet.py \
+  AugmentedRealDataLoader.py
+echo "Python syntax preflight: OK"
+
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 export TOKENIZERS_PARALLELISM=false
