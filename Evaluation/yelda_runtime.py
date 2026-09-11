@@ -41,8 +41,9 @@ def load_visual_models(checkpoint, device="auto", expected_branch="auto"):
     config = dict(checkpoint["model_config"])
     if flag(config.get("window_cnn_enabled", False)):
         raise ValueError("Window-CNN checkpoints require their corresponding branch")
+    spatial = str(config.get("architecture_family", "")) == "cfm-inspired-spatial-language-alignment"
     cross = flag(config.get("cross_attention_enabled", False))
-    branch = "cross" if cross else "hierarchy"
+    branch = "spatial" if spatial else ("cross" if cross else "hierarchy")
     if expected_branch not in {"auto", branch}:
         raise ValueError(f"Requested {expected_branch}, but checkpoint is {branch}")
     if device == "auto":
@@ -64,10 +65,22 @@ def load_visual_models(checkpoint, device="auto", expected_branch="auto"):
         vit_binarize_input=flag(config.get("vit_binarize_input", False)),
         vit_binarize_contrast_threshold=float(config.get("vit_binarize_contrast_threshold", 0.15)),
     ).to(dev)
-    # Original branches insert the residual depiction MLP before context.
-    # Reconstruct it BEFORE loading so its trained weights cannot be discarded.
-    from vlm_letter_grounding import attach_depiction_head
-    model = attach_depiction_head(model)
+    # Reconstruct the exact branch-specific pre-context stages BEFORE loading.
+    if spatial:
+        from types import SimpleNamespace
+        from vlm_spatial_language_alignment import attach_spatial_language_stages
+
+        spatial_config = SimpleNamespace(
+            spatial_affinity_radius=int(config.get("spatial_affinity_radius", 3)),
+            spatial_affinity_temperature=float(config.get("spatial_affinity_temperature", 0.15)),
+            spatial_affinity_distance_penalty=float(config.get("spatial_affinity_distance_penalty", 0.12)),
+            spatial_affinity_initial_gate=float(config.get("spatial_affinity_initial_gate", 0.15)),
+            context_residual_initial_gate=float(config.get("context_residual_initial_gate", 0.25)),
+        )
+        model = attach_spatial_language_stages(model, spatial_config)
+    else:
+        from vlm_letter_grounding import attach_depiction_head
+        model = attach_depiction_head(model)
     model.load_state_dict(_model_state(checkpoint), strict=True)
     model.eval()
     # No Arabic text encoder/tokenizer is constructed or used for alignment.
