@@ -297,7 +297,11 @@ def _build_real_dataset(data_dir):
         text_key=text_key,
         allowed_labels=labels,
         max_samples=max_samples,
-        paired=bool(\n            use_image_pair_contrastive\n            or getattr(P, \"keep_paired_lines_for_independent_training\", False)\n        ),\n        min_text_score=min_text_score,
+        paired=bool(
+            use_image_pair_contrastive
+            or getattr(P, "keep_paired_lines_for_independent_training", False)
+        ),
+        min_text_score=min_text_score,
         validate_paths=validate_paths,
     )
 
