@@ -56,6 +56,18 @@ def parse_args(argv=None):
     parser.add_argument("--image-preprocessing", choices=("original", "training"), default="original",
                         help="original: full RGB image resized to 1024x128, without cropping, padding or binarization")
     parser.add_argument("--representation", choices=("joint", "primary", "local", "independent"), default="joint")
+    parser.add_argument(
+        "--alignment-unit",
+        choices=("window", "word"),
+        default="window",
+        help="window: align raw windows; word: pool visually segmented words before NW",
+    )
+    parser.add_argument(
+        "--word-support-floor",
+        type=float,
+        default=0.0,
+        help="Minimum word-level match score that is rendered as a matched word",
+    )
     parser.add_argument("--local-weight", type=local_weight_value, default=0.5,
                         help="Joint score: weight of local cosine; contextual weight is 1 minus this")
     parser.add_argument("--split", choices=("test", "valid", "train", "all"), default="test")
@@ -260,7 +272,11 @@ def main(argv=None):
                     "balanced_page_pair_groups" if layout == "real" else "manifest_or_all"),
                 "mask_metrics_are_character_alignment_accuracy": False}
     write_json(destination / "run.json", metadata)
-    print(f"Yelda evaluation: branch={branch} stage={stage} split={args.split} pairs={len(selected)} text_encoder=none", flush=True)
+    print(
+        f"Yelda evaluation: branch={branch} stage={stage} unit={args.alignment_unit} "
+        f"split={args.split} pairs={len(selected)} text_encoder=none",
+        flush=True,
+    )
     print(f"Image input: {args.image_preprocessing}; geometry={geometry['line_geometry_mode']}; "
           f"model_binarize={input_settings['effective_vit_binarize_input']}", flush=True)
     if args.representation == "joint":
@@ -276,7 +292,17 @@ def main(argv=None):
             try:
                 row = evaluate_pair(base, models, pair, args, output)
                 row.update(status="ok", output=str(output))
-                print(f"[{pair.index}] NW={row['normalized_nw_score']:.4f} mask_IoU={row['mean_mask_iou']}", flush=True)
+                unit_extra = (
+                    f" words={row.get('line1_words')}x{row.get('line2_words')} "
+                    f"matched_words={row.get('matched_word_pairs')}"
+                    if row.get("alignment_unit") == "word"
+                    else ""
+                )
+                print(
+                    f"[{pair.index}] NW={row['normalized_nw_score']:.4f} "
+                    f"mask_IoU={row['mean_mask_iou']}{unit_extra}",
+                    flush=True,
+                )
             except Exception as exc:
                 row = {"index": pair.index, "pair_id": pair.pair_id, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
                 print(row["error"], file=sys.stderr, flush=True)
