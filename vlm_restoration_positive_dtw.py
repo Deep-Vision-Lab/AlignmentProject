@@ -35,6 +35,13 @@ def _env_int(name, default):
         return int(default)
 
 
+def _env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def apply_branch_config(P):
     """Configure the minimal restoration + positive-DTW experiment."""
     P.experiment_name = "vit_restoration_positive_dtw"
@@ -141,6 +148,9 @@ def apply_branch_config(P):
     P.positive_letter_dtw_position_prior = _env_float(
         "POSITIVE_LETTER_DTW_POSITION_PRIOR", 0.15
     )
+    P.positive_letter_dtw_disable_horizontal_when_feasible = _env_flag(
+        "POSITIVE_LETTER_DTW_DISABLE_HORIZONTAL_WHEN_FEASIBLE", True
+    )
     P.positive_letter_dtw_competition_temperature = _env_float(
         "POSITIVE_LETTER_DTW_COMPETITION_TEMPERATURE", 0.10
     )
@@ -169,6 +179,7 @@ def apply_branch_config(P):
     )
     P.restoration_pixel_weight = _env_float("RESTORATION_PIXEL_WEIGHT", 1.0)
     P.restoration_edge_weight = _env_float("RESTORATION_EDGE_WEIGHT", 0.50)
+    P.restoration_dice_weight = _env_float("RESTORATION_DICE_WEIGHT", 0.50)
     P.restoration_foreground_weight = _env_float(
         "RESTORATION_FOREGROUND_WEIGHT", 2.0
     )
@@ -217,6 +228,7 @@ def _soft_dtw_cost_matrix(
     vertical_penalty: float,
     horizontal_penalty: float,
     position_prior_weight: float = 0.0,
+    disable_horizontal_when_feasible: bool = False,
 ) -> torch.Tensor:
     """Differentiable monotonic DTW over a precomputed [T,L] cost matrix.
 
@@ -245,6 +257,13 @@ def _soft_dtw_cost_matrix(
     gamma = max(float(gamma), 1e-5)
     v_penalty = float(vertical_penalty)
     h_penalty = float(horizontal_penalty)
+    # When there are at least as many image windows as transcript letters,
+    # horizontal moves are unnecessary: diagonal + vertical transitions can
+    # reach the endpoint while assigning >=1 window to every letter. Forbid
+    # horizontal transitions in that case so one image window cannot absorb an
+    # arbitrary run of transcript characters.
+    if bool(disable_horizontal_when_feasible) and T >= L:
+        h_penalty = large_value
     previous = None
     previous_start = 0
     previous2 = None
@@ -446,8 +465,20 @@ def stroke_restoration_loss(P, prediction: torch.Tensor, target: torch.Tensor):
         + (pred_dy - target_dy).abs().mean()
     )
 
-    total = float(P.restoration_pixel_weight) * pixel + float(P.restoration_edge_weight) * edge
-    return total, pixel, edge
+    # Soft Dice directly rewards foreground/stroke overlap. Weighted L1 alone
+    # can otherwise prefer a smooth average when most pixels are background.
+    reduce_dims = tuple(range(2, prediction.ndim))
+    intersection = (prediction * target).sum(dim=reduce_dims)
+    denominator = prediction.sum(dim=reduce_dims) + target.sum(dim=reduce_dims)
+    dice_score = (2.0 * intersection + 1e-6) / (denominator + 1e-6)
+    dice = 1.0 - dice_score.mean()
+
+    total = (
+        float(P.restoration_pixel_weight) * pixel
+        + float(P.restoration_edge_weight) * edge
+        + float(P.restoration_dice_weight) * dice
+    )
+    return total, pixel, edge, dice
 
 
 def attach_restoration_dtw_stages(model, P):
@@ -668,6 +699,9 @@ def positive_letter_dtw_loss(P, text_encoder, semantic_tokens, ink_ratios, posit
             vertical_penalty=float(P.positive_letter_dtw_vertical_penalty),
             horizontal_penalty=float(P.positive_letter_dtw_horizontal_penalty),
             position_prior_weight=float(P.positive_letter_dtw_position_prior),
+            disable_horizontal_when_feasible=bool(
+                P.positive_letter_dtw_disable_horizontal_when_feasible
+            ),
         )
         losses.append(cost)
         windows_used.append(float(visual.shape[0]))
@@ -770,7 +804,7 @@ def install_training_objective(train_module):
                 ),
             }
 
-        restoration, pixel, edge = stroke_restoration_loss(
+        restoration, pixel, edge, dice = stroke_restoration_loss(
             train_module.P,
             bundle["restoration"],
             bundle["restoration_target"],
@@ -784,6 +818,7 @@ def install_training_objective(train_module):
             "restoration_loss": float(restoration.detach().item()),
             "restoration_pixel": float(pixel.detach().item()),
             "restoration_edge": float(edge.detach().item()),
+            "restoration_dice": float(dice.detach().item()),
             "norm_pos": float(dtw.detach().item()),
             "norm_neg": float("nan"),
             "cost_pos": float(dtw.detach().item()),
@@ -944,6 +979,9 @@ def install_training_objective(train_module):
                         "minimal/restoration_edge": float(
                             train_stats.get("restoration_edge", 0.0)
                         ),
+                        "minimal/restoration_dice": float(
+                            train_stats.get("restoration_dice", 0.0)
+                        ),
                         "minimal/dtw_windows": float(train_stats.get("dtw_windows", 0.0)),
                         "minimal/dtw_letters": float(train_stats.get("dtw_letters", 0.0)),
                         "minimal/dtw_gamma": float(
@@ -1019,6 +1057,9 @@ def model_config(P):
         "positive_letter_dtw_position_prior": float(
             P.positive_letter_dtw_position_prior
         ),
+        "positive_letter_dtw_disable_horizontal_when_feasible": bool(
+            P.positive_letter_dtw_disable_horizontal_when_feasible
+        ),
         "positive_letter_dtw_competition_temperature": float(
             P.positive_letter_dtw_competition_temperature
         ),
@@ -1027,6 +1068,7 @@ def model_config(P):
         "restoration_weight": float(P.restoration_weight),
         "restoration_pixel_weight": float(P.restoration_pixel_weight),
         "restoration_edge_weight": float(P.restoration_edge_weight),
+        "restoration_dice_weight": float(P.restoration_dice_weight),
         "restoration_foreground_weight": float(P.restoration_foreground_weight),
         "restoration_contrast_scale": float(P.restoration_contrast_scale),
         "restoration_decoder_channels": int(P.restoration_decoder_channels),
