@@ -733,13 +733,29 @@ def install_training_objective(train_module):
         ):
             bundle = image_embedder(images, return_training_bundle=True)
 
-        dtw, dtw_stats = positive_letter_dtw_loss(
-            train_module.P,
-            text_encoder,
-            bundle["semantic"],
-            bundle["ink"],
-            texts,
-        )
+        if float(train_module.P.positive_letter_dtw_weight) > 0.0:
+            dtw, dtw_stats = positive_letter_dtw_loss(
+                train_module.P,
+                text_encoder,
+                bundle["semantic"],
+                bundle["ink"],
+                texts,
+            )
+        else:
+            dtw = bundle["semantic"].sum() * 0.0
+            dtw_stats = {
+                "positive_letter_dtw": 0.0,
+                "dtw_windows": 0.0,
+                "dtw_letters": 0.0,
+                "dtw_gamma": float(train_module.P.positive_letter_dtw_gamma),
+                "dtw_vertical_penalty": float(
+                    train_module.P.positive_letter_dtw_vertical_penalty
+                ),
+                "dtw_horizontal_penalty": float(
+                    train_module.P.positive_letter_dtw_horizontal_penalty
+                ),
+            }
+
         restoration, pixel, edge = stroke_restoration_loss(
             train_module.P,
             bundle["restoration"],
@@ -793,6 +809,35 @@ def install_training_objective(train_module):
 
     train_module.compute_batch_loss = compute_batch_loss
 
+    def epoch_start_hook(*, epoch, total_epochs):
+        del total_epochs
+        if str(train_module.P.restoration_training_stage) != "align":
+            train_module.P.positive_letter_dtw_gamma = float(
+                train_module.P.positive_letter_dtw_gamma_start
+            )
+            return
+        start = max(1e-5, float(train_module.P.positive_letter_dtw_gamma_start))
+        end = max(1e-5, float(train_module.P.positive_letter_dtw_gamma_end))
+        anneal_epochs = max(
+            1, int(train_module.P.positive_letter_dtw_anneal_epochs)
+        )
+        progress = min(1.0, max(0.0, (int(epoch) - 1) / max(1, anneal_epochs - 1)))
+        # Exponential interpolation keeps the early epochs substantially softer
+        # instead of collapsing to the near-hard endpoint immediately.
+        gamma = start * ((end / start) ** progress)
+        train_module.P.positive_letter_dtw_gamma = float(gamma)
+        if train_module.CTX.is_main:
+            print(
+                "[restoration-dtw-curriculum] "
+                f"epoch={epoch} gamma={gamma:.5f} "
+                f"v_penalty={train_module.P.positive_letter_dtw_vertical_penalty:.3f} "
+                f"h_penalty={train_module.P.positive_letter_dtw_horizontal_penalty:.3f} "
+                f"position_prior={train_module.P.positive_letter_dtw_position_prior:.3f}",
+                flush=True,
+            )
+
+    train_module.epoch_start_hook = epoch_start_hook
+
     # Fixed validation-line diagnostic after every epoch. This is analysis-only:
     # it never participates in the optimizer update.
     probe_state = {
@@ -817,13 +862,36 @@ def install_training_objective(train_module):
         from pathlib import Path
         from restoration_epoch_probe import run_epoch_probe
 
+        probe_config = dict(config)
+        probe_config.update(
+            {
+                "positive_letter_dtw_gamma": float(
+                    train_module.P.positive_letter_dtw_gamma
+                ),
+                "positive_letter_dtw_vertical_penalty": float(
+                    train_module.P.positive_letter_dtw_vertical_penalty
+                ),
+                "positive_letter_dtw_horizontal_penalty": float(
+                    train_module.P.positive_letter_dtw_horizontal_penalty
+                ),
+                "positive_letter_dtw_position_prior": float(
+                    train_module.P.positive_letter_dtw_position_prior
+                ),
+                "positive_letter_dtw_competition_temperature": float(
+                    train_module.P.positive_letter_dtw_competition_temperature
+                ),
+                "positive_letter_dtw_cost_mode": str(
+                    train_module.P.positive_letter_dtw_cost_mode
+                ),
+            }
+        )
         result = run_epoch_probe(
             model=model,
             text_encoder=text_encoder,
             valid_loader=valid_loader,
             epoch=int(epoch),
             job_id=str(job_id),
-            config=config,
+            config=probe_config,
             weights_root=Path(train_module.__file__).resolve().parent / "Weights",
             device=device,
             previous_patch_weight=probe_state["patch_weight"],
@@ -861,6 +929,24 @@ def install_training_objective(train_module):
                         ),
                         "minimal/dtw_windows": float(train_stats.get("dtw_windows", 0.0)),
                         "minimal/dtw_letters": float(train_stats.get("dtw_letters", 0.0)),
+                        "minimal/dtw_gamma": float(
+                            train_stats.get(
+                                "dtw_gamma",
+                                train_module.P.positive_letter_dtw_gamma,
+                            )
+                        ),
+                        "minimal/dtw_vertical_penalty": float(
+                            train_stats.get(
+                                "dtw_vertical_penalty",
+                                train_module.P.positive_letter_dtw_vertical_penalty,
+                            )
+                        ),
+                        "minimal/dtw_horizontal_penalty": float(
+                            train_stats.get(
+                                "dtw_horizontal_penalty",
+                                train_module.P.positive_letter_dtw_horizontal_penalty,
+                            )
+                        ),
                     },
                     step=int(epoch),
                     commit=False,
@@ -873,7 +959,13 @@ def install_training_objective(train_module):
 def model_config(P):
     return {
         "architecture_family": "restoration-positive-dtw-window-encoder",
-        "training_supervision": "positive-letter-dtw + stroke-restoration only",
+        "training_stage": str(P.restoration_training_stage),
+        "training_supervision": (
+            "stroke-restoration pretraining only"
+            if str(P.restoration_training_stage) == "pretrain"
+            else "competitive positive-letter-dtw + stroke-restoration regularizer"
+        ),
+        "restoration_local_encoder": str(P.restoration_local_encoder),
         "primary_representation": (
             "primitive-direct-letter-aligned-window"
             if str(P.restoration_semantic_adapter) == "identity"
@@ -897,7 +989,23 @@ def model_config(P):
         "letter_inventory": str(P.letter_inventory),
         "positive_letter_dtw_weight": float(P.positive_letter_dtw_weight),
         "positive_letter_dtw_gamma": float(P.positive_letter_dtw_gamma),
+        "positive_letter_dtw_gamma_start": float(P.positive_letter_dtw_gamma_start),
+        "positive_letter_dtw_gamma_end": float(P.positive_letter_dtw_gamma_end),
+        "positive_letter_dtw_anneal_epochs": int(P.positive_letter_dtw_anneal_epochs),
         "positive_letter_dtw_step_penalty": float(P.positive_letter_dtw_step_penalty),
+        "positive_letter_dtw_vertical_penalty": float(
+            P.positive_letter_dtw_vertical_penalty
+        ),
+        "positive_letter_dtw_horizontal_penalty": float(
+            P.positive_letter_dtw_horizontal_penalty
+        ),
+        "positive_letter_dtw_position_prior": float(
+            P.positive_letter_dtw_position_prior
+        ),
+        "positive_letter_dtw_competition_temperature": float(
+            P.positive_letter_dtw_competition_temperature
+        ),
+        "positive_letter_dtw_cost_mode": str(P.positive_letter_dtw_cost_mode),
         "positive_letter_dtw_min_ink": float(P.positive_letter_dtw_min_ink),
         "restoration_weight": float(P.restoration_weight),
         "restoration_pixel_weight": float(P.restoration_pixel_weight),
