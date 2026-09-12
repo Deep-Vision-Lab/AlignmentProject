@@ -66,6 +66,18 @@ def apply_branch_config(P):
     # NFKC normalization rather than filtering through a closed alphabet list.
     P.letter_inventory = "unicode-arabic-letters-after-nfkc"
 
+    # New diagnostic-first architecture: supervise the primitive window encoder
+    # directly with positive letter-DTW. "identity" removes the residual
+    # 128->256->128 MLP entirely. "residual_mlp" is retained only so historical
+    # checkpoints from this branch remain loadable/evaluable.
+    P.restoration_semantic_adapter = os.environ.get(
+        "RESTORATION_SEMANTIC_ADAPTER", "identity"
+    ).strip().lower()
+    if P.restoration_semantic_adapter not in {"identity", "residual_mlp"}:
+        raise ValueError(
+            "RESTORATION_SEMANTIC_ADAPTER must be identity or residual_mlp"
+        )
+
     # Keep both sides of an available pair only as two independent training lines.
     P.keep_paired_lines_for_independent_training = True
     P.image_text_loss_on_both_lines = True
@@ -282,6 +294,13 @@ class ResidualSemanticAdapter(nn.Module):
         return self.norm(primitive + self.adapter(primitive))
 
 
+class IdentitySemanticAdapter(nn.Module):
+    """Pass primitive features directly to DTW with no trainable projection."""
+
+    def forward(self, primitive: torch.Tensor) -> torch.Tensor:
+        return primitive
+
+
 def _soft_stroke_target_from_normalized_patches(patches: torch.Tensor, contrast_scale: float):
     """Convert normalized RGB patches into soft foreground/stroke maps in [0,1]."""
     if patches.ndim != 5 or patches.shape[2] != 3:
@@ -348,7 +367,21 @@ def attach_restoration_dtw_stages(model, P):
     device = vit.patch_embedding.weight.device
     dtype = vit.patch_embedding.weight.dtype
 
-    vit.semantic_adapter = ResidualSemanticAdapter(dim).to(device=device, dtype=dtype)
+    semantic_mode = str(
+        getattr(P, "restoration_semantic_adapter", "residual_mlp")
+    ).strip().lower()
+    if semantic_mode == "identity":
+        vit.semantic_adapter = IdentitySemanticAdapter().to(device=device)
+    elif semantic_mode == "residual_mlp":
+        vit.semantic_adapter = ResidualSemanticAdapter(dim).to(
+            device=device, dtype=dtype
+        )
+    else:
+        raise ValueError(
+            f"Unknown restoration semantic adapter mode: {semantic_mode!r}"
+        )
+    vit.restoration_semantic_adapter = semantic_mode
+
     vit.stroke_decoder = StrokeRestorationDecoder(
         dim,
         output_height=int(vit.input_height),
@@ -631,6 +664,13 @@ def model_config(P):
         "training_supervision": "positive-letter-dtw + stroke-restoration only",
         "primary_representation": "semantic-letter-aligned-window",
         "local_representation": "primitive-stroke-window",
+        "restoration_semantic_adapter": str(P.restoration_semantic_adapter),
+        "semantic_projection_trainable": bool(
+            str(P.restoration_semantic_adapter) == "residual_mlp"
+        ),
+        "dtw_supervises_primitive_directly": bool(
+            str(P.restoration_semantic_adapter) == "identity"
+        ),
         "context_transformer_active": False,
         "negative_transcripts": 0,
         "image_pair_supervision": False,
