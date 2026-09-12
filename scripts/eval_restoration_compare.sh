@@ -31,6 +31,8 @@ echo "split         = ${EVAL_SPLIT}"
 echo "pairs         = ${N_SAMPLES}"
 echo "start_index   = ${START_INDEX}"
 echo "score_mode    = ${SCORE_MODE}"
+echo "threshold     = ${THRESHOLD:-0.0}"
+echo "gap           = ${GAP:--0.30}"
 echo "preprocessing = ${IMAGE_PREPROCESSING}"
 echo "output        = ${ROOT_OUT}"
 echo "============================================================"
@@ -52,7 +54,7 @@ for REP in local primary joint; do
     --device "${DEVICE}" \
     --score-mode "${SCORE_MODE}" \
     --local-weight "${LOCAL_WEIGHT}" \
-    --threshold "${THRESHOLD:-0.45}" \
+    --threshold "${THRESHOLD:-0.0}" \
     --gap "${GAP:--0.30}" \
     --output-dir "${ROOT_OUT}/${REP}"
 done
