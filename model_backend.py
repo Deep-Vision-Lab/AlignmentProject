@@ -1,9 +1,11 @@
 """Branch-selected backend for restoration + positive letter DTW.
 
 Each manuscript line is trained independently. The visual encoder produces one
-primitive token per physical window, a semantic adapter maps that token toward a
-fixed character-identity space, and a lightweight decoder reconstructs the
-window's stroke map from the primitive token.
+primitive token per physical window. New runs supervise that primitive directly
+with the fixed character-identity DTW target (identity semantic path), while a
+lightweight decoder reconstructs the window's stroke map from the same primitive.
+The historical residual semantic MLP remains loadable only for checkpoint
+compatibility and explicit ablations.
 """
 from __future__ import annotations
 
