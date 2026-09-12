@@ -11,7 +11,7 @@ N_SAMPLES="${N_SAMPLES:-100}"
 START_INDEX="${START_INDEX:-1}"
 SCORE_MODE="${SCORE_MODE:-raw}"
 IMAGE_PREPROCESSING="${IMAGE_PREPROCESSING:-original}"
-ALIGNMENT_UNIT="${ALIGNMENT_UNIT:-word}"
+ALIGNMENT_UNIT="${ALIGNMENT_UNIT:-window}"
 LOCAL_WEIGHT="${LOCAL_WEIGHT:-0.5}"
 DEVICE="${DEVICE:-cuda}"
 TAG="${TAG:-$(date +%Y%m%d_%H%M%S)}"
@@ -62,6 +62,7 @@ echo "threshold     = ${THRESHOLD:-0.0}"
 echo "gap           = ${GAP:--0.30}"
 echo "preprocessing = ${IMAGE_PREPROCESSING}"
 echo "alignment_unit= ${ALIGNMENT_UNIT}"
+echo "min_windows   = ${MIN_ALIGNED_WINDOWS:-5}"
 echo "output        = ${ROOT_OUT}"
 echo "============================================================"
 
@@ -75,6 +76,7 @@ for REP in local primary joint; do
     --representation "${REP}" \
     --alignment-unit "${ALIGNMENT_UNIT}" \
     --word-support-floor "${WORD_SUPPORT_FLOOR:-0.0}" \
+    --min-aligned-windows "${MIN_ALIGNED_WINDOWS:-5}" \
     --image-preprocessing "${IMAGE_PREPROCESSING}" \
     --split "${EVAL_SPLIT}" \
     --training-samples "${TRAINING_SAMPLES:-6000}" \
