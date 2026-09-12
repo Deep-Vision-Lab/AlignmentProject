@@ -1464,6 +1464,10 @@ def train(
     run = init_wandb(args, config)
     history = []
     for epoch in range(start_epoch, args.epochs):
+        epoch_start_hook = globals().get("epoch_start_hook")
+        if callable(epoch_start_hook):
+            epoch_start_hook(epoch=epoch + 1, total_epochs=args.epochs)
+
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
         CTX.barrier()
