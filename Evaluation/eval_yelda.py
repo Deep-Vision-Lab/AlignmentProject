@@ -68,6 +68,12 @@ def parse_args(argv=None):
         default=0.0,
         help="Minimum word-level match score that is rendered as a matched word",
     )
+    parser.add_argument(
+        "--min-aligned-windows",
+        type=int,
+        default=5,
+        help="Minimum supported window matches required before a window component is treated as an aligned word/region",
+    )
     parser.add_argument("--local-weight", type=local_weight_value, default=0.5,
                         help="Joint score: weight of local cosine; contextual weight is 1 minus this")
     parser.add_argument("--split", choices=("test", "valid", "train", "all"), default="test")
@@ -194,6 +200,11 @@ def evaluate_pair(base, models, pair, args, destination):
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.min_aligned_windows < 1:
+        raise SystemExit("--min-aligned-windows must be at least 1")
+    # Keep the original window-level NW. Only components with enough supported
+    # window correspondences are allowed to become aligned/masked regions.
+    os.environ["TRACE_COMPONENT_MIN_MATCHES"] = str(args.min_aligned_windows)
     if args.n_samples < 0 or args.start_index < 1:
         raise SystemExit("n-samples must be nonnegative; start-index must be positive")
     dataset, weights = Path(args.dataset).expanduser().resolve(), Path(args.weights).expanduser().resolve()
@@ -274,6 +285,7 @@ def main(argv=None):
     write_json(destination / "run.json", metadata)
     print(
         f"Yelda evaluation: branch={branch} stage={stage} unit={args.alignment_unit} "
+        f"min_aligned_windows={args.min_aligned_windows} "
         f"split={args.split} pairs={len(selected)} text_encoder=none",
         flush=True,
     )
