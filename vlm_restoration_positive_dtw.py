@@ -857,6 +857,7 @@ def install_training_objective(train_module):
     probe_state = {
         "patch_weight": None,
         "matrix": None,
+        "training_cost": None,
         "path": None,
     }
 
@@ -910,10 +911,12 @@ def install_training_objective(train_module):
             device=device,
             previous_patch_weight=probe_state["patch_weight"],
             previous_matrix=probe_state["matrix"],
+            previous_training_cost=probe_state["training_cost"],
             previous_path=probe_state["path"],
         )
         probe_state["patch_weight"] = result["patch_weight"]
         probe_state["matrix"] = result["matrix"]
+        probe_state["training_cost"] = result["training_cost"]
         probe_state["path"] = result["path"]
 
     train_module.epoch_diagnostic_hook = epoch_diagnostic_hook
