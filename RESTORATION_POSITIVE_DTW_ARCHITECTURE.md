@@ -29,7 +29,7 @@ P_1 ... P_T                         primitive stroke tokens
  |         |
  |         +---- lightweight decoder ----> reconstructed stroke map
  |
- +---- residual semantic adapter --------> L_1 ... L_T
+ +---- identity semantic path -----------> L_i = P_i
                                              |
                                              | cosine costs to fixed letter IDs
                                              v
@@ -62,13 +62,22 @@ L_restoration = L_pixel + 0.5 * L_edge
 `L_edge` compares horizontal and vertical finite differences so boundaries,
 dots, curves, and connections matter.
 
-### Semantic token L_i
+### DTW representation
 
-A residual MLP + LayerNorm maps `P_i` to `L_i`. This is the representation
-used by the positive letter-DTW objective and the primary image-only evaluation.
+For new diagnostic-first runs, the semantic adapter is `identity`:
 
-Its responsibility is: **represent which character identity the visible strokes
-belong to**.
+```
+L_i = P_i
+```
+
+There is no trainable `128 -> 256 -> 128` fully connected semantic MLP between
+the primitive window encoder and positive letter-DTW. This deliberately makes
+DTW supervise the same local representation that restoration must preserve.
+The historical `residual_mlp` mode is retained only to load/evaluate older
+checkpoints and as an explicit ablation.
+
+The checkpoint records `restoration_semantic_adapter`, so the two
+architectures cannot be silently confused.
 
 ### Fixed letter codebook
 
@@ -127,7 +136,9 @@ git fetch origin
 git checkout agent/restoration-positive-dtw-window-encoder
 git pull
 
-JOB_NAME=vit_restore_dtw_s16 \
+JOB_NAME=vit_restore_dtw_identity_s16 \
+RESTORATION_SEMANTIC_ADAPTER=identity \
+RESTORATION_EPOCH_PROBE=1 \
 sbatch scripts/train_restoration_positive_dtw_2x4090.sbatch
 ```
 
@@ -149,6 +160,24 @@ The important training signals are:
 - `minimal/restoration` should decrease;
 - `minimal/restoration_pixel` should decrease;
 - `minimal/restoration_edge` should decrease.
+
+Every epoch also writes a fixed validation-line diagnostic under:
+
+```
+Weights/<JOB_NAME>/epoch_diagnostics/
+  history.csv
+  epoch_001/window_letter_dtw.png
+  epoch_001/primitive_window_cosine.png
+  epoch_001/semantic_window_cosine.png
+  epoch_001/metrics.json
+  ...
+```
+
+Use `history.csv` to verify that the encoder really changes and that the DTW
+matrix improves rather than merely the scalar loss decreasing. In particular,
+track `patch_weight_relative_delta_prev`, `matrix_mean_abs_delta_prev`,
+`mean_dtw_path_cosine`, `mean_top1_margin`,
+`primitive_effective_rank`, and `dtw_restoration_grad_cosine`.
 
 Do not expect negative-gap metrics because this experiment intentionally has no
 negative samples.
