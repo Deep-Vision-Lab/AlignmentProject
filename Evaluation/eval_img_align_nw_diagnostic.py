@@ -687,6 +687,292 @@ def compute_pair_similarity(features1, features2, args, output_dir):
     return compute_similarity(features1.select(args.feature), features2.select(args.feature))
 
 
+def _evaluate_word_level(
+    models,
+    pair,
+    args,
+    output_dir,
+    arr1,
+    arr2,
+    features1,
+    features2,
+):
+    """Run global NW on complete visual words rather than raw windows."""
+    from Evaluation.visual_word_alignment import (
+        matched_word_pairs,
+        pool_visual_words,
+        region_intervals,
+        save_word_alignment_visualization,
+        save_word_regions_csv,
+    )
+
+    window_size = int(getattr(models.image_model, "window_size", 32))
+    stride = int(getattr(models.image_model, "stride", 16))
+    use_flip = bool(models.image_model.use_flip)
+
+    word_features1, regions1 = pool_visual_words(
+        features1,
+        arr1,
+        use_flip=use_flip,
+        window_size=window_size,
+        stride=stride,
+    )
+    word_features2, regions2 = pool_visual_words(
+        features2,
+        arr2,
+        use_flip=use_flip,
+        window_size=window_size,
+        stride=stride,
+    )
+    save_word_regions_csv(output_dir / "line1_word_regions.csv", regions1)
+    save_word_regions_csv(output_dir / "line2_word_regions.csv", regions2)
+
+    cosine = compute_pair_similarity(
+        word_features1, word_features2, args, output_dir
+    ).detach().cpu().numpy().astype(np.float32)
+
+    preprocess1 = pair.preprocess_domain(1)
+    preprocess2 = pair.preprocess_domain(2)
+    scoring_domain = "real" if "real" in {preprocess1, preprocess2} else "synthetic"
+    resolved_mode = resolve_score_mode(args.score_mode, scoring_domain)
+    match_scores = build_match_scores(
+        cosine, resolved_mode, args.score_clip, args.threshold
+    )
+    result = needleman_wunsch(
+        match_scores,
+        gap_penalty=float(args.gap),
+        similarity_offset=0.0,
+    )
+
+    support_floor = float(getattr(args, "word_support_floor", 0.0))
+    supported_pairs = matched_word_pairs(
+        result, match_scores, support_floor=support_floor
+    )
+    intervals1 = region_intervals(regions1, [i for i, _ in supported_pairs])
+    intervals2 = region_intervals(regions2, [j for _, j in supported_pairs])
+
+    save_word_alignment_visualization(
+        arr1=arr1,
+        arr2=arr2,
+        regions1=regions1,
+        regions2=regions2,
+        matrix=cosine,
+        result=result,
+        supported_pairs=supported_pairs,
+        output=output_dir / "word_cosine_similarity_values.png",
+        matrix_label="word-to-word cosine similarity",
+    )
+    save_word_alignment_visualization(
+        arr1=arr1,
+        arr2=arr2,
+        regions1=regions1,
+        regions2=regions2,
+        matrix=match_scores,
+        result=result,
+        supported_pairs=supported_pairs,
+        output=output_dir / "word_nw_match_scores_values.png",
+        matrix_label=f"word-level NW match score ({resolved_mode})",
+    )
+    dp_scores = np.asarray(result.score_matrix[1:, 1:], dtype=np.float32)
+    save_word_alignment_visualization(
+        arr1=arr1,
+        arr2=arr2,
+        regions1=regions1,
+        regions2=regions2,
+        matrix=dp_scores,
+        result=result,
+        supported_pairs=supported_pairs,
+        output=output_dir / "word_nw_dp_trace_values.png",
+        matrix_label="word-level accumulated global NW DP score",
+    )
+
+    np.save(output_dir / "cosine_similarity.npy", cosine)
+    np.save(output_dir / "nw_match_scores.npy", match_scores)
+    np.save(output_dir / "nw_dp_scores.npy", dp_scores)
+    np.savetxt(
+        output_dir / "word_cosine_similarity.csv",
+        cosine,
+        delimiter=",",
+        fmt="%.8f",
+    )
+    np.savetxt(
+        output_dir / "word_nw_match_scores.csv",
+        match_scores,
+        delimiter=",",
+        fmt="%.8f",
+    )
+    np.savetxt(
+        output_dir / "word_nw_dp_scores.csv",
+        dp_scores,
+        delimiter=",",
+        fmt="%.8f",
+    )
+
+    with (output_dir / "word_nw_trace_path_values.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "trace_step",
+                "operation",
+                "word1",
+                "word2",
+                "cosine",
+                "match_score",
+                "supported",
+            ],
+        )
+        writer.writeheader()
+        supported_set = set(supported_pairs)
+        for position, step in enumerate(result.steps):
+            i, j = step.index1, step.index2
+            pair_key = (
+                (int(i), int(j))
+                if i is not None and j is not None
+                else None
+            )
+            writer.writerow(
+                {
+                    "trace_step": position,
+                    "operation": step.operation,
+                    "word1": "" if i is None else int(i),
+                    "word2": "" if j is None else int(j),
+                    "cosine": (
+                        ""
+                        if i is None or j is None
+                        else f"{float(cosine[i, j]):.8f}"
+                    ),
+                    "match_score": (
+                        ""
+                        if i is None or j is None
+                        else f"{float(match_scores[i, j]):.8f}"
+                    ),
+                    "supported": bool(pair_key in supported_set),
+                }
+            )
+
+    pred1 = _predicted_mask(arr1.shape, intervals1)
+    pred2 = _predicted_mask(arr2.shape, intervals2)
+    Image.fromarray(pred1).save(output_dir / "line1_pred_mask.png")
+    Image.fromarray(pred2).save(output_dir / "line2_pred_mask.png")
+
+    gt1 = _load_gt_mask(pair.gt_mask1, pred1.shape)
+    gt2 = _load_gt_mask(pair.gt_mask2, pred2.shape)
+    if gt1 is not None:
+        Image.fromarray(gt1).save(output_dir / "line1_gt_mask.png")
+    if gt2 is not None:
+        Image.fromarray(gt2).save(output_dir / "line2_gt_mask.png")
+
+    supported_cosines = [float(cosine[i, j]) for i, j in supported_pairs]
+    full_cosines = [float(cosine[i, j]) for i, j in result.pairs]
+    matrix_mean_cosine = float(np.mean(cosine)) if cosine.size else None
+    matrix_std_cosine = float(np.std(cosine)) if cosine.size else None
+    mean_path_cosine = (
+        float(np.mean(supported_cosines)) if supported_cosines else None
+    )
+    path_cosine_margin = (
+        mean_path_cosine - matrix_mean_cosine
+        if mean_path_cosine is not None and matrix_mean_cosine is not None
+        else None
+    )
+    path_cosine_z = (
+        path_cosine_margin / matrix_std_cosine
+        if path_cosine_margin is not None
+        and matrix_std_cosine is not None
+        and matrix_std_cosine > 1e-8
+        else None
+    )
+    gap_steps = sum(
+        1 for step in result.steps
+        if step.index1 is None or step.index2 is None
+    )
+    matched1 = sorted({i for i, _ in supported_pairs})
+    matched2 = sorted({j for _, j in supported_pairs})
+
+    row = {
+        "index": int(pair.index),
+        "pair_id": pair.pair_id,
+        "source_type": pair.source_type,
+        "side1_type": pair.side1_type,
+        "side2_type": pair.side2_type,
+        "side1_preprocess": preprocess1,
+        "side2_preprocess": preprocess2,
+        "label_type": pair.label_type,
+        "text_score": float(pair.text_score),
+        "split": pair.split,
+        "image1": str(pair.image1),
+        "image2": str(pair.image2),
+        "alignment_unit": "word",
+        "nw_score": float(result.score),
+        "normalized_nw_score": float(result.normalized_score),
+        "feature": args.feature,
+        "score_mode": resolved_mode,
+        "score_clip": float(args.score_clip),
+        "threshold": float(args.threshold),
+        "gap": float(args.gap),
+        "word_support_floor": support_floor,
+        "line1_words": len(regions1),
+        "line2_words": len(regions2),
+        "matched_word_pairs": len(supported_pairs),
+        "full_word_match_steps": len(result.pairs),
+        "gap_steps": int(gap_steps),
+        "mean_path_cosine": mean_path_cosine,
+        "mean_full_path_cosine": (
+            float(np.mean(full_cosines)) if full_cosines else None
+        ),
+        "matrix_mean_cosine": matrix_mean_cosine,
+        "matrix_std_cosine": matrix_std_cosine,
+        "path_cosine_margin": path_cosine_margin,
+        "path_cosine_z": path_cosine_z,
+        "line1_intervals_px": intervals1,
+        "line2_intervals_px": intervals2,
+        "gt_mask1": str(pair.gt_mask1) if pair.gt_mask1 else "",
+        "gt_mask2": str(pair.gt_mask2) if pair.gt_mask2 else "",
+        # Compatibility fields now count WORD units, not windows.
+        "path_steps": len(supported_pairs),
+        "traceback_steps": len(result.steps),
+        "warp_steps": int(gap_steps),
+        "component_count": len(supported_pairs),
+        "full_match_steps": len(result.pairs),
+        "bridged_trace_steps": 0,
+        "component_bridge_limit": 0,
+        "component_support_floor": support_floor,
+        "line1_path_windows": len(matched1),
+        "line2_path_windows": len(matched2),
+        "line1_span_windows": len(matched1),
+        "line2_span_windows": len(matched2),
+        "line1_path_fraction": len(matched1) / max(1, len(regions1)),
+        "line2_path_fraction": len(matched2) / max(1, len(regions2)),
+        "line1_matched_fraction": len(matched1) / max(1, len(regions1)),
+        "line2_matched_fraction": len(matched2) / max(1, len(regions2)),
+        "line1_path_start": min(matched1) if matched1 else -1,
+        "line1_path_end": max(matched1) if matched1 else -1,
+        "line2_path_start": min(matched2) if matched2 else -1,
+        "line2_path_end": max(matched2) if matched2 else -1,
+        "line1_component_ranges": json.dumps(
+            [[value, value] for value in matched1], separators=(",", ":")
+        ),
+        "line2_component_ranges": json.dumps(
+            [[value, value] for value in matched2], separators=(",", ":")
+        ),
+        **_mask_metrics(pred1, gt1, "line1"),
+        **_mask_metrics(pred2, gt2, "line2"),
+    }
+    available_ious = [
+        value
+        for value in (row["line1_mask_iou"], row["line2_mask_iou"])
+        if value is not None
+    ]
+    row["mean_mask_iou"] = (
+        float(np.mean(available_ious)) if available_ious else None
+    )
+    (output_dir / "summary.json").write_text(
+        json.dumps(row, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return row
+
+
 def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="nw_diag_") as temporary:
@@ -698,6 +984,18 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
         # Both inputs are already transformed into their training-equivalent
         # display geometry. Using synthetic here applies only Resize+Normalize.
         features1, features2 = get_pair_image_features(models, model_image1, model_image2)
+        if str(getattr(args, "alignment_unit", "window")).lower() == "word":
+            return _evaluate_word_level(
+                models,
+                pair,
+                args,
+                output_dir,
+                arr1,
+                arr2,
+                features1,
+                features2,
+            )
+
         cosine = compute_pair_similarity(
             features1, features2, args, output_dir
         ).detach().cpu().numpy().astype(np.float32)
@@ -888,6 +1186,18 @@ def parse_args():
     parser.add_argument(
         "--feature", choices=("contextual", "local", "grouped"),
         default=str(getattr(P, "evaluation_feature", "contextual")),
+    )
+    parser.add_argument(
+        "--alignment-unit",
+        choices=("window", "word"),
+        default="window",
+        help="window: raw window NW; word: image-only visually segmented word NW",
+    )
+    parser.add_argument(
+        "--word-support-floor",
+        type=float,
+        default=0.0,
+        help="Minimum word-level NW diagonal score that becomes an aligned word mask",
     )
     parser.add_argument(
         "--score-mode", choices=("auto", "raw", "centered", "mutual-z"),
