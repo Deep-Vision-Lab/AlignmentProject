@@ -23,6 +23,32 @@ cd "${PROJECT_DIR}"
 
 mkdir -p "${ROOT_OUT}"
 
+echo "CUDA environment:"
+echo "  host                 = $(hostname)"
+echo "  SLURM_JOB_ID         = ${SLURM_JOB_ID:-<none>}"
+echo "  SLURM_JOB_GPUS       = ${SLURM_JOB_GPUS:-<none>}"
+echo "  CUDA_VISIBLE_DEVICES = ${CUDA_VISIBLE_DEVICES:-<unset>}"
+
+if [[ "${DEVICE}" == cuda* ]]; then
+  "${PYTHON_BIN}" - <<'PY'
+import os
+import sys
+try:
+    import torch
+    print("  torch.cuda.is_available =", torch.cuda.is_available())
+    print("  torch.cuda.device_count =", torch.cuda.device_count())
+    if not torch.cuda.is_available() or torch.cuda.device_count() < 1:
+        raise SystemExit(
+            "ERROR: CUDA evaluation requested, but this shell has no usable CUDA device. "
+            "Run the evaluation inside an active SLURM GPU allocation or set DEVICE=cpu."
+        )
+    print("  CUDA device 0         =", torch.cuda.get_device_name(0))
+except Exception as exc:
+    print(f"ERROR: CUDA preflight failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+    raise
+PY
+fi
+
 echo "============================================================"
 echo "Restoration representation comparison"
 echo "weights       = ${WEIGHTS}"
