@@ -306,10 +306,29 @@ def main() -> None:
             print(f"  epochs/lr    = {args.epochs}/{args.learning_rate}", flush=True)
             print(f"  window/stride= {P.window_size}/{stride}", flush=True)
             print(
+                f"  stage        = {P.restoration_training_stage}",
+                flush=True,
+            )
+            print(
+                f"  local_encoder= {P.restoration_local_encoder}",
+                flush=True,
+            )
+            print(
                 f"  objective    = {P.positive_letter_dtw_weight}*positive_letter_DTW "
                 f"+ {P.restoration_weight}*stroke_restoration",
                 flush=True,
             )
+            if P.restoration_training_stage == "align":
+                print(
+                    "  dtw          = "
+                    f"cost={P.positive_letter_dtw_cost_mode} "
+                    f"gamma={P.positive_letter_dtw_gamma_start}->{P.positive_letter_dtw_gamma_end} "
+                    f"vertical={P.positive_letter_dtw_vertical_penalty} "
+                    f"horizontal={P.positive_letter_dtw_horizontal_penalty} "
+                    f"no_horizontal_if_feasible="
+                    f"{P.positive_letter_dtw_disable_horizontal_when_feasible}",
+                    flush=True,
+                )
             print(
                 f"  negatives    = {P.num_negatives}; image_pair_loss={P.image_pair_loss_weight}; "
                 f"variance={P.image_variance_loss_weight}",
