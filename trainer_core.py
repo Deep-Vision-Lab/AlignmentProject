@@ -1511,6 +1511,21 @@ def train(
             )
             save_model_weights(model, text_encoder, args.job_id, config)
 
+            # Branches may install a lightweight, fixed-sample epoch diagnostic.
+            # It is deliberately outside the optimizer update and runs only on
+            # rank 0 after weights for the epoch have been saved.
+            diagnostic_hook = globals().get("epoch_diagnostic_hook")
+            if callable(diagnostic_hook):
+                diagnostic_hook(
+                    model=_unwrap_model(model),
+                    text_encoder=text_encoder,
+                    valid_loader=valid_loader,
+                    epoch=epoch + 1,
+                    job_id=args.job_id,
+                    config=config,
+                    device=P.device,
+                )
+
             should_visualize = (
                 (((epoch + 1) % 10 == 0) or ((epoch + 1) == args.epochs))
                 and not P.use_image_pair_contrastive
