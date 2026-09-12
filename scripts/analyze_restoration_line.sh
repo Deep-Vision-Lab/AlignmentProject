@@ -19,6 +19,30 @@ export MPLBACKEND=Agg
 "${PYTHON_BIN}" -m py_compile Evaluation/analyze_restoration_line.py
 echo "Diagnostic syntax preflight: OK"
 
+echo "CUDA environment:"
+echo "  host=$(hostname)"
+echo "  SLURM_JOB_ID=${SLURM_JOB_ID:-<none>}"
+echo "  SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-<none>}"
+echo "  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
+
+if [[ "${DEVICE}" == cuda* ]]; then
+  if ! "${PYTHON_BIN}" - <<'PY'
+import sys
+import torch
+ok = torch.cuda.is_available() and torch.cuda.device_count() > 0
+print("  torch.cuda.is_available() =", torch.cuda.is_available())
+print("  torch.cuda.device_count() =", torch.cuda.device_count())
+if ok:
+    print("  cuda:0 =", torch.cuda.get_device_name(0))
+sys.exit(0 if ok else 1)
+PY
+  then
+    echo "ERROR: DEVICE=${DEVICE} requested, but this shell has no usable CUDA device." >&2
+    echo "Run inside an active SLURM GPU allocation, or use DEVICE=cpu." >&2
+    exit 3
+  fi
+fi
+
 echo "============================================================"
 echo "Restoration line feature diagnostic"
 echo "weights       = ${WEIGHTS}"
