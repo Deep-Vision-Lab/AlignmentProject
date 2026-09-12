@@ -287,6 +287,7 @@ def run_epoch_probe(
     device,
     previous_patch_weight=None,
     previous_matrix=None,
+    previous_training_cost=None,
     previous_path=None,
 ):
     """Run the fixed-line probe and return state needed for next epoch."""
@@ -368,8 +369,12 @@ def run_epoch_probe(
     )
 
     current_matrix = matrix.detach().cpu().numpy().astype(np.float32)
+    current_training_cost = (
+        training_cost.detach().cpu().numpy().astype(np.float32)
+    )
     current_path = {(int(i), int(j)) for i, j in full_path}
     matrix_delta = None
+    training_cost_delta = None
     matrix_correlation = None
     path_jaccard = None
     if previous_matrix is not None and previous_matrix.shape == current_matrix.shape:
@@ -378,6 +383,13 @@ def run_epoch_probe(
         right = current_matrix.reshape(-1)
         if np.std(left) > 1e-8 and np.std(right) > 1e-8:
             matrix_correlation = float(np.corrcoef(left, right)[0, 1])
+    if (
+        previous_training_cost is not None
+        and previous_training_cost.shape == current_training_cost.shape
+    ):
+        training_cost_delta = float(
+            np.mean(np.abs(current_training_cost - previous_training_cost))
+        )
     if previous_path is not None:
         union = current_path | set(previous_path)
         path_jaccard = (
@@ -502,6 +514,7 @@ def run_epoch_probe(
         "stroke_semantic_similarity_correlation": stroke_semantic_correlation,
         "restoration_mae": recon_mae,
         "matrix_mean_abs_delta_prev": matrix_delta,
+        "training_cost_mean_abs_delta_prev": training_cost_delta,
         "matrix_correlation_prev": matrix_correlation,
         "dtw_path_jaccard_prev": path_jaccard,
         "patch_weight_relative_delta_prev": patch_delta,
@@ -548,6 +561,7 @@ def run_epoch_probe(
     return {
         "patch_weight": current_patch,
         "matrix": current_matrix,
+        "training_cost": current_training_cost,
         "path": current_path,
         "metrics": metrics,
     }
