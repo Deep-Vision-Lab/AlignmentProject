@@ -99,6 +99,19 @@ def _offdiag_mean(matrix: torch.Tensor, separation: int = 5) -> float:
     return float(selected.mean()) if selected.size else float("nan")
 
 
+def _matrix_correlation(left: torch.Tensor, right: torch.Tensor) -> float:
+    a = left.detach().float().cpu().numpy()
+    b = right.detach().float().cpu().numpy()
+    if a.shape != b.shape or a.ndim != 2:
+        return float("nan")
+    mask = ~np.eye(a.shape[0], dtype=bool) if a.shape[0] == a.shape[1] else np.ones_like(a, dtype=bool)
+    av = a[mask]
+    bv = b[mask]
+    if av.size < 2 or np.std(av) <= 1e-8 or np.std(bv) <= 1e-8:
+        return float("nan")
+    return float(np.corrcoef(av, bv)[0, 1])
+
+
 def _save_heatmap(path: Path, matrix, title: str, xlabel: str, ylabel: str, path_pairs=None):
     value = np.asarray(matrix, dtype=np.float32)
     fig, ax = plt.subplots(
@@ -274,6 +287,10 @@ def run_epoch_probe(
         semantic_similarity = semantic @ semantic.T
         reconstruction = bundle["restoration"][0, :, 0].float()
         restoration_target = bundle["restoration_target"][0, :, 0].float()
+        stroke_flat = F.normalize(
+            restoration_target.flatten(start_dim=1).float(), p=2, dim=-1
+        )
+        stroke_similarity = stroke_flat @ stroke_flat.T
 
     compact_path, hard_cost = _hard_dtw(
         (1.0 - compact_matrix).detach().cpu().numpy(),
@@ -298,6 +315,12 @@ def run_epoch_probe(
     semantic_rank = _effective_rank(bundle["semantic"][0])
     primitive_nonlocal = _offdiag_mean(primitive_similarity, 5)
     semantic_nonlocal = _offdiag_mean(semantic_similarity, 5)
+    stroke_primitive_correlation = _matrix_correlation(
+        stroke_similarity, primitive_similarity
+    )
+    stroke_semantic_correlation = _matrix_correlation(
+        stroke_similarity, semantic_similarity
+    )
 
     current_matrix = matrix.detach().cpu().numpy().astype(np.float32)
     current_path = {(int(i), int(j)) for i, j in full_path}
@@ -386,6 +409,8 @@ def run_epoch_probe(
         "semantic_effective_rank": semantic_rank,
         "primitive_nonlocal_cosine_sep5": primitive_nonlocal,
         "semantic_nonlocal_cosine_sep5": semantic_nonlocal,
+        "stroke_primitive_similarity_correlation": stroke_primitive_correlation,
+        "stroke_semantic_similarity_correlation": stroke_semantic_correlation,
         "restoration_mae": recon_mae,
         "matrix_mean_abs_delta_prev": matrix_delta,
         "matrix_correlation_prev": matrix_correlation,
