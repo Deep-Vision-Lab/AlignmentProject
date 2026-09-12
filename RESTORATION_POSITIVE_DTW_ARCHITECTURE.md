@@ -9,14 +9,17 @@ physical stroke information inside the window while also being learnable toward
 a stable character identity. Corresponding shapes in different manuscripts are
 never explicitly paired during training.
 
-The active objective has exactly two conceptual losses:
+The branch is now trained in two stages rather than asking a randomly
+initialized encoder to solve restoration and alignment simultaneously:
 
 ```
-L_total = 1.0 * L_positive_letter_DTW + 0.10 * L_restoration
+Stage A: L = 1.0 * L_restoration
+Stage B: L = 1.0 * L_positive_letter_DTW + 0.05 * L_restoration
 ```
 
 No negative transcripts, image-image pair contrastive loss, cross-attention,
-context-consistency loss, dense-letter loss, or variance loss are active.
+context-consistency loss, or Transformer context are active. Stage-B character
+discrimination comes from full-alphabet competition inside the DTW cost matrix.
 
 ## Architecture
 
@@ -253,18 +256,18 @@ objective.
 The evaluator never needs the transcript or text codebook.
 
 ```bash
-WEIGHTS="$PWD/Weights/vit_restore_dtw_s16/model_best.pth" \
+WEIGHTS="$PWD/Weights/restore_seq2seq_dtw_s16/model_latest.pth" \
 REPRESENTATION=primary \
 bash scripts/eval_yelda_restoration_positive_dtw.sh
 ```
 
-Representations:
+For the default identity semantic path, `L_i = P_i`. Therefore `primary` and
+`local` are the same underlying feature in the new experiment, and `joint`
+does not add new information. Evaluate `primary` as the canonical output.
+The three-way representation comparison remains useful only for historical
+residual-MLP checkpoints.
 
-- `primary`: semantic letter-aligned token `L_i` (main result);
-- `local`: primitive stroke token `P_i`;
-- `joint`: equal-weight combination for diagnosis.
-
-Run all three:
+Historical comparison commands:
 
 ```bash
 WEIGHTS="$PWD/Weights/vit_restore_dtw_s16/model_best.pth" REPRESENTATION=local \
