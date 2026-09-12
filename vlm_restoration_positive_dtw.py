@@ -210,35 +210,41 @@ def _softmin(values: torch.Tensor, gamma: float) -> torch.Tensor:
     return -gamma * torch.logsumexp(-values / gamma, dim=0)
 
 
-def positive_monotonic_letter_dtw_cost(
-    visual_tokens: torch.Tensor,
-    target_prototypes: torch.Tensor,
+def _soft_dtw_cost_matrix(
+    costs: torch.Tensor,
     *,
     gamma: float,
-    step_penalty: float,
+    vertical_penalty: float,
+    horizontal_penalty: float,
+    position_prior_weight: float = 0.0,
 ) -> torch.Tensor:
-    """Positive-only differentiable DTW between windows and transcript letters.
+    """Differentiable monotonic DTW over a precomputed [T,L] cost matrix.
 
-    diagonal: advance window and letter
-    vertical: next window still depicts the same letter
-    horizontal: same overlapping window can depict the next adjacent letter
+    A vertical move advances to the next image window while staying on the same
+    letter. A horizontal move advances the transcript without advancing the
+    image window, so it is deliberately much more expensive by default.
     """
-    if visual_tokens.ndim != 2 or target_prototypes.ndim != 2:
-        raise ValueError("DTW expects [T,D] visual and [L,D] letter tensors")
-    T, L = int(visual_tokens.shape[0]), int(target_prototypes.shape[0])
+    if costs.ndim != 2:
+        raise ValueError("DTW cost matrix must be [T,L]")
+    T, L = int(costs.shape[0]), int(costs.shape[1])
     if T <= 0 or L <= 0:
-        return visual_tokens.sum() * 0.0
+        return costs.sum() * 0.0
 
-    visual = F.normalize(visual_tokens.float(), p=2, dim=-1)
-    target = F.normalize(target_prototypes.float(), p=2, dim=-1)
-    costs = 1.0 - torch.matmul(visual, target.T)
+    if float(position_prior_weight) > 0.0 and T > 1 and L > 1:
+        image_position = torch.linspace(
+            0.0, 1.0, T, device=costs.device, dtype=costs.dtype
+        )
+        text_position = torch.linspace(
+            0.0, 1.0, L, device=costs.device, dtype=costs.dtype
+        )
+        costs = costs + float(position_prior_weight) * (
+            image_position[:, None] - text_position[None, :]
+        ).abs()
 
-    # Evaluate complete anti-diagonals together. All dependencies of cells with
-    # i+j=k live on anti-diagonals k-1 (vertical/horizontal) or k-2
-    # (diagonal), so this is mathematically identical to the scalar recurrence
-    # while avoiding T*L tiny Python/GPU operations.
     large_value = 1e4
-    penalty = float(step_penalty)
+    gamma = max(float(gamma), 1e-5)
+    v_penalty = float(vertical_penalty)
+    h_penalty = float(horizontal_penalty)
     previous = None
     previous_start = 0
     previous2 = None
@@ -278,32 +284,62 @@ def positive_monotonic_letter_dtw_cost(
             diagonal_values = previous2.index_select(
                 0, diagonal_index_in_previous
             )
-            diagonal = torch.where(
-                diagonal_valid, diagonal_values, diagonal
-            )
+            diagonal = torch.where(diagonal_valid, diagonal_values, diagonal)
 
-        # Virtual DP[-1,-1] = 0 starts the path at (0,0).
         origin = (i == 0) & (j == 0)
         diagonal = torch.where(origin, torch.zeros_like(diagonal), diagonal)
 
         predecessors = torch.stack(
             [
                 diagonal,
-                vertical + penalty,
-                horizontal + penalty,
+                vertical + v_penalty,
+                horizontal + h_penalty,
             ],
             dim=0,
         )
-        current = costs[i, j] - max(float(gamma), 1e-5) * torch.logsumexp(
-            -predecessors / max(float(gamma), 1e-5),
+        current = costs[i, j] - gamma * torch.logsumexp(
+            -predecessors / gamma,
             dim=0,
         )
-
         previous2, previous2_start = previous, previous_start
         previous, previous_start = current, start_i
 
-    # The final anti-diagonal contains only cell (T-1,L-1).
     return previous[0] / float(max(1, T + L))
+
+
+def positive_monotonic_letter_dtw_cost(
+    visual_tokens: torch.Tensor,
+    target_prototypes: torch.Tensor,
+    *,
+    gamma: float,
+    step_penalty: float,
+    horizontal_penalty: float | None = None,
+    position_prior_weight: float = 0.0,
+) -> torch.Tensor:
+    """Positive differentiable DTW from cosine costs.
+
+    This public helper keeps the historical API for tests/ablations while using
+    the new asymmetric transition penalties internally.
+    """
+    if visual_tokens.ndim != 2 or target_prototypes.ndim != 2:
+        raise ValueError("DTW expects [T,D] visual and [L,D] letter tensors")
+    if visual_tokens.shape[0] <= 0 or target_prototypes.shape[0] <= 0:
+        return visual_tokens.sum() * 0.0
+
+    visual = F.normalize(visual_tokens.float(), p=2, dim=-1)
+    target = F.normalize(target_prototypes.float(), p=2, dim=-1)
+    costs = 1.0 - torch.matmul(visual, target.T)
+    return _soft_dtw_cost_matrix(
+        costs,
+        gamma=gamma,
+        vertical_penalty=float(step_penalty),
+        horizontal_penalty=(
+            float(step_penalty)
+            if horizontal_penalty is None
+            else float(horizontal_penalty)
+        ),
+        position_prior_weight=float(position_prior_weight),
+    )
 
 
 class StrokeRestorationDecoder(nn.Module):
@@ -538,6 +574,7 @@ def positive_letter_dtw_loss(P, text_encoder, semantic_tokens, ink_ratios, posit
     losses = []
     windows_used = []
     letters_used = []
+    path_cost_means = []
 
     for sample_index, text in enumerate(positive_texts):
         letters = _clean_letters(text)
@@ -554,27 +591,69 @@ def positive_letter_dtw_loss(P, text_encoder, semantic_tokens, ink_ratios, posit
         if visual.shape[0] == 0:
             continue
 
+        visual_norm = F.normalize(visual.float(), p=2, dim=-1)
         with torch.no_grad():
             target = text_encoder("".join(letters)).detach().to(visual.device)
-        cost = positive_monotonic_letter_dtw_cost(
-            visual,
-            target,
+            target = F.normalize(target.float(), p=2, dim=-1)
+
+        if str(P.positive_letter_dtw_cost_mode) == "full_alphabet_nll":
+            # No negative transcripts are introduced. Instead, every window must
+            # compete against all Arabic character identities before DTW selects
+            # a monotonic route through the true transcript.
+            inventory = list(dict.fromkeys(DEFAULT_ARABIC_LETTERS + "".join(letters)))
+            with torch.no_grad():
+                inventory_vectors = text_encoder("".join(inventory)).detach().to(
+                    visual.device
+                )
+                inventory_vectors = F.normalize(
+                    inventory_vectors.float(), p=2, dim=-1
+                )
+            temperature = max(
+                1e-4, float(P.positive_letter_dtw_competition_temperature)
+            )
+            logits = torch.matmul(visual_norm, inventory_vectors.T) / temperature
+            nll = -F.log_softmax(logits, dim=-1)
+            lookup = {character: index for index, character in enumerate(inventory)}
+            target_indices = torch.tensor(
+                [lookup[character] for character in letters],
+                dtype=torch.long,
+                device=visual.device,
+            )
+            costs = nll.index_select(1, target_indices)
+        else:
+            costs = 1.0 - torch.matmul(visual_norm, target.T)
+
+        cost = _soft_dtw_cost_matrix(
+            costs,
             gamma=float(P.positive_letter_dtw_gamma),
-            step_penalty=float(P.positive_letter_dtw_step_penalty),
+            vertical_penalty=float(P.positive_letter_dtw_vertical_penalty),
+            horizontal_penalty=float(P.positive_letter_dtw_horizontal_penalty),
+            position_prior_weight=float(P.positive_letter_dtw_position_prior),
         )
         losses.append(cost)
         windows_used.append(float(visual.shape[0]))
         letters_used.append(float(len(letters)))
+        path_cost_means.append(float(cost.detach().item()))
 
     if not losses:
         zero = semantic_tokens.sum() * 0.0
-        return zero, {"positive_letter_dtw": 0.0, "dtw_windows": 0.0, "dtw_letters": 0.0}
+        return zero, {
+            "positive_letter_dtw": 0.0,
+            "dtw_windows": 0.0,
+            "dtw_letters": 0.0,
+            "dtw_gamma": float(P.positive_letter_dtw_gamma),
+            "dtw_vertical_penalty": float(P.positive_letter_dtw_vertical_penalty),
+            "dtw_horizontal_penalty": float(P.positive_letter_dtw_horizontal_penalty),
+        }
 
     loss = torch.stack(losses).mean()
     return loss, {
         "positive_letter_dtw": float(loss.detach().item()),
         "dtw_windows": sum(windows_used) / len(windows_used),
         "dtw_letters": sum(letters_used) / len(letters_used),
+        "dtw_gamma": float(P.positive_letter_dtw_gamma),
+        "dtw_vertical_penalty": float(P.positive_letter_dtw_vertical_penalty),
+        "dtw_horizontal_penalty": float(P.positive_letter_dtw_horizontal_penalty),
     }
 
 
