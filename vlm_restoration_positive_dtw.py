@@ -39,6 +39,14 @@ def apply_branch_config(P):
     """Configure the minimal restoration + positive-DTW experiment."""
     P.experiment_name = "vit_restoration_positive_dtw"
 
+    # Branch-local experiment controls make short diagnostic runs possible
+    # without editing the shared Parameters.py.
+    P.epochs = _env_int("RESTORATION_EPOCHS", int(P.epochs))
+    P.learning_rate = _env_float(
+        "RESTORATION_LEARNING_RATE", float(P.learning_rate)
+    )
+    P.num_samples = _env_int("RESTORATION_NUM_SAMPLES", int(P.num_samples))
+
     # Visual geometry. The Transformer is not part of the active architecture;
     # one frozen layer remains only because the shared ViT container requires it.
     P.window_size = 32
