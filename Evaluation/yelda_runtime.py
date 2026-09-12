@@ -83,6 +83,12 @@ def load_visual_models(checkpoint, device="auto", expected_branch="auto"):
             restoration_contrast_scale=float(
                 config.get("restoration_contrast_scale", 0.15)
             ),
+            # Historical checkpoints from this branch predate the config field
+            # and therefore used the residual MLP. New diagnostic-first runs
+            # record identity explicitly.
+            restoration_semantic_adapter=str(
+                config.get("restoration_semantic_adapter", "residual_mlp")
+            ),
         )
         model = attach_restoration_dtw_stages(model, restoration_config)
     elif spatial:
