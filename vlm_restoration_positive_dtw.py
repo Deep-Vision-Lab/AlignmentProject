@@ -595,6 +595,48 @@ def attach_restoration_dtw_stages(model, P):
     return model
 
 
+def letter_dtw_cost_matrix(P, text_encoder, visual: torch.Tensor, letters: list[str]):
+    """Return the actual training cost matrix [windows, transcript letters].
+
+    In full_alphabet_nll mode every window competes against the complete Arabic
+    character inventory. The transcript columns then select the negative
+    log-probability of the corresponding true character.
+    """
+    if visual.ndim != 2:
+        raise ValueError("visual must be [T,D]")
+    if not letters:
+        return visual.new_empty((visual.shape[0], 0))
+
+    visual_norm = F.normalize(visual.float(), p=2, dim=-1)
+    with torch.no_grad():
+        target = text_encoder("".join(letters)).detach().to(visual.device)
+        target = F.normalize(target.float(), p=2, dim=-1)
+
+    if str(P.positive_letter_dtw_cost_mode) == "full_alphabet_nll":
+        inventory = list(dict.fromkeys(DEFAULT_ARABIC_LETTERS + "".join(letters)))
+        with torch.no_grad():
+            inventory_vectors = text_encoder("".join(inventory)).detach().to(
+                visual.device
+            )
+            inventory_vectors = F.normalize(
+                inventory_vectors.float(), p=2, dim=-1
+            )
+        temperature = max(
+            1e-4, float(P.positive_letter_dtw_competition_temperature)
+        )
+        logits = torch.matmul(visual_norm, inventory_vectors.T) / temperature
+        nll = -F.log_softmax(logits, dim=-1)
+        lookup = {character: index for index, character in enumerate(inventory)}
+        target_indices = torch.tensor(
+            [lookup[character] for character in letters],
+            dtype=torch.long,
+            device=visual.device,
+        )
+        return nll.index_select(1, target_indices)
+
+    return 1.0 - torch.matmul(visual_norm, target.T)
+
+
 def positive_letter_dtw_loss(P, text_encoder, semantic_tokens, ink_ratios, positive_texts):
     losses = []
     windows_used = []
@@ -616,37 +658,9 @@ def positive_letter_dtw_loss(P, text_encoder, semantic_tokens, ink_ratios, posit
         if visual.shape[0] == 0:
             continue
 
-        visual_norm = F.normalize(visual.float(), p=2, dim=-1)
-        with torch.no_grad():
-            target = text_encoder("".join(letters)).detach().to(visual.device)
-            target = F.normalize(target.float(), p=2, dim=-1)
-
-        if str(P.positive_letter_dtw_cost_mode) == "full_alphabet_nll":
-            # No negative transcripts are introduced. Instead, every window must
-            # compete against all Arabic character identities before DTW selects
-            # a monotonic route through the true transcript.
-            inventory = list(dict.fromkeys(DEFAULT_ARABIC_LETTERS + "".join(letters)))
-            with torch.no_grad():
-                inventory_vectors = text_encoder("".join(inventory)).detach().to(
-                    visual.device
-                )
-                inventory_vectors = F.normalize(
-                    inventory_vectors.float(), p=2, dim=-1
-                )
-            temperature = max(
-                1e-4, float(P.positive_letter_dtw_competition_temperature)
-            )
-            logits = torch.matmul(visual_norm, inventory_vectors.T) / temperature
-            nll = -F.log_softmax(logits, dim=-1)
-            lookup = {character: index for index, character in enumerate(inventory)}
-            target_indices = torch.tensor(
-                [lookup[character] for character in letters],
-                dtype=torch.long,
-                device=visual.device,
-            )
-            costs = nll.index_select(1, target_indices)
-        else:
-            costs = 1.0 - torch.matmul(visual_norm, target.T)
+        costs = letter_dtw_cost_matrix(
+            P, text_encoder, visual, letters
+        )
 
         cost = _soft_dtw_cost_matrix(
             costs,
