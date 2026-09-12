@@ -465,8 +465,33 @@ def attach_restoration_dtw_stages(model, P):
 
     vit = model.vit_encoder
     dim = int(vit.embed_dim)
-    device = vit.patch_embedding.weight.device
-    dtype = vit.patch_embedding.weight.dtype
+    reference_parameter = next(vit.patch_embedding.parameters())
+    device = reference_parameter.device
+    dtype = reference_parameter.dtype
+
+    local_encoder_mode = str(
+        getattr(P, "restoration_local_encoder", "fullheight_conv")
+    ).strip().lower()
+    if local_encoder_mode == "cnn_seq2seq":
+        from restoration_window_seq2seq import (
+            WindowSequenceCNNEncoder,
+            WindowSequenceStrokeDecoder,
+        )
+        vit.patch_embedding = WindowSequenceCNNEncoder(
+            input_height=int(vit.input_height),
+            window_size=int(vit.window_size),
+            stride=int(vit.stride),
+            embed_dim=dim,
+            base_channels=32,
+        ).to(device=device, dtype=dtype)
+        decoder_class = WindowSequenceStrokeDecoder
+    elif local_encoder_mode == "fullheight_conv":
+        decoder_class = StrokeRestorationDecoder
+    else:
+        raise ValueError(
+            f"Unknown restoration local encoder: {local_encoder_mode!r}"
+        )
+    vit.restoration_local_encoder = local_encoder_mode
 
     semantic_mode = str(
         getattr(P, "restoration_semantic_adapter", "residual_mlp")
@@ -483,7 +508,7 @@ def attach_restoration_dtw_stages(model, P):
         )
     vit.restoration_semantic_adapter = semantic_mode
 
-    vit.stroke_decoder = StrokeRestorationDecoder(
+    vit.stroke_decoder = decoder_class(
         dim,
         output_height=int(vit.input_height),
         output_width=int(vit.window_size),
