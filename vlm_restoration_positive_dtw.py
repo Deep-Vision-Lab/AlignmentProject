@@ -760,6 +760,34 @@ def install_training_objective(train_module):
             if not args.pretrained_weights:
                 return None
             loaded = torch.load(args.pretrained_weights, map_location=train_module.P.device)
+            loaded_config = (
+                loaded.get("model_config", {})
+                if isinstance(loaded, dict)
+                else {}
+            )
+            loaded_family = str(
+                loaded_config.get("architecture_family", "")
+            )
+            loaded_local_encoder = str(
+                loaded_config.get(
+                    "restoration_local_encoder",
+                    "fullheight_conv",
+                )
+            )
+            expected_local_encoder = str(
+                train_module.P.restoration_local_encoder
+            )
+            if (
+                loaded_family == "restoration-positive-dtw-window-encoder"
+                and loaded_local_encoder != expected_local_encoder
+            ):
+                raise ValueError(
+                    "Restoration initialization encoder mismatch: "
+                    f"checkpoint={loaded_local_encoder} "
+                    f"current={expected_local_encoder}. "
+                    "For cnn_seq2seq alignment, first pretrain the cnn_seq2seq "
+                    "restoration stage and use that checkpoint."
+                )
             state = train_module.extract_model_state(loaded)
             incompatible = model.load_state_dict(state, strict=False)
             if train_module.CTX.is_main:
