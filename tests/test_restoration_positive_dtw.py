@@ -92,3 +92,36 @@ def test_full_model_training_bundle_has_one_token_per_window():
     assert bundle["ink"].shape == (1, 7)
     assert bundle["restoration"].shape == (1, 7, 1, 128, 32)
     assert bundle["restoration_target"].shape == (1, 7, 1, 128, 32)
+
+
+
+def test_identity_semantic_adapter_sends_primitive_directly_to_dtw():
+    model = EmbeddingModel(
+        window_size=32,
+        stride=16,
+        vector_size=128,
+        device="cpu",
+        use_flip=True,
+        input_height=128,
+        vit_layers=1,
+        vit_heads=4,
+        vit_mlp_dim=256,
+        vit_dropout=0.0,
+        vit_max_tokens=64,
+        vit_position_base_tokens=7,
+        vit_binarize_input=False,
+    )
+    config = SimpleNamespace(
+        restoration_decoder_channels=16,
+        restoration_contrast_scale=0.15,
+        restoration_semantic_adapter="identity",
+    )
+    model = attach_restoration_dtw_stages(model, config)
+    image = torch.randn(1, 3, 128, 128)
+    bundle = model(image, return_training_bundle=True)
+
+    assert model.vit_encoder.restoration_semantic_adapter == "identity"
+    assert not list(model.vit_encoder.semantic_adapter.parameters())
+    assert torch.allclose(
+        bundle["semantic"], bundle["primitive"], atol=1e-6, rtol=1e-5
+    )
