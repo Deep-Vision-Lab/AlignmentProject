@@ -89,6 +89,9 @@ def load_visual_models(checkpoint, device="auto", expected_branch="auto"):
             restoration_semantic_adapter=str(
                 config.get("restoration_semantic_adapter", "residual_mlp")
             ),
+            restoration_local_encoder=str(
+                config.get("restoration_local_encoder", "fullheight_conv")
+            ),
         )
         model = attach_restoration_dtw_stages(model, restoration_config)
     elif spatial:
