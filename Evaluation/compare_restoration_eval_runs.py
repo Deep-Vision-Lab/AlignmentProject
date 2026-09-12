@@ -70,7 +70,8 @@ def _paired_delta(left, right, metric):
         if a is None or b is None:
             continue
         delta = a - b
-        deltas.append((delta, key, a, b))
+        index = left[key].get("index") or right[key].get("index") or ""
+        deltas.append((delta, key, index, a, b))
         if delta > 1e-9:
             wins += 1
         elif delta < -1e-9:
@@ -88,7 +89,7 @@ def _paired_delta(left, right, metric):
             "best": [],
             "worst": [],
         }
-    ordered = sorted(deltas)
+    ordered = sorted(deltas, key=lambda item: item[0])
     count = len(deltas)
     return {
         "count": count,
@@ -98,12 +99,24 @@ def _paired_delta(left, right, metric):
         "losses": losses,
         "win_rate": wins / count,
         "best": [
-            {"pair_id": key, "delta": delta, "left": a, "right": b}
-            for delta, key, a, b in reversed(ordered[-5:])
+            {
+                "pair_id": key,
+                "index": index,
+                "delta": delta,
+                "left": a,
+                "right": b,
+            }
+            for delta, key, index, a, b in reversed(ordered[-5:])
         ],
         "worst": [
-            {"pair_id": key, "delta": delta, "left": a, "right": b}
-            for delta, key, a, b in ordered[:5]
+            {
+                "pair_id": key,
+                "index": index,
+                "delta": delta,
+                "left": a,
+                "right": b,
+            }
+            for delta, key, index, a, b in ordered[:5]
         ],
     }
 
@@ -239,14 +252,16 @@ def main():
         interesting.append("Primary improves most:")
         for row in item["best"]:
             interesting.append(
-                f"- {row['pair_id']}: delta={row['delta']:.4f} "
+                f"- {row['pair_id']} (pair_{int(float(row['index'])):05d}): "
+                f"delta={row['delta']:.4f} "
                 f"(primary={row['left']:.4f}, local={row['right']:.4f})"
             )
         interesting.append("")
         interesting.append("Primary degrades most:")
         for row in item["worst"]:
             interesting.append(
-                f"- {row['pair_id']}: delta={row['delta']:.4f} "
+                f"- {row['pair_id']} (pair_{int(float(row['index'])):05d}): "
+                f"delta={row['delta']:.4f} "
                 f"(primary={row['left']:.4f}, local={row['right']:.4f})"
             )
         interesting.append("")
