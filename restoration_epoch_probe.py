@@ -183,6 +183,12 @@ def _settings(config: dict):
         positive_letter_dtw_position_prior=float(
             config.get("positive_letter_dtw_position_prior", 0.15)
         ),
+        positive_letter_dtw_disable_horizontal_when_feasible=bool(
+            config.get(
+                "positive_letter_dtw_disable_horizontal_when_feasible",
+                True,
+            )
+        ),
         positive_letter_dtw_competition_temperature=float(
             config.get("positive_letter_dtw_competition_temperature", 0.10)
         ),
@@ -194,6 +200,7 @@ def _settings(config: dict):
         ),
         restoration_pixel_weight=float(config.get("restoration_pixel_weight", 1.0)),
         restoration_edge_weight=float(config.get("restoration_edge_weight", 0.5)),
+        restoration_dice_weight=float(config.get("restoration_dice_weight", 0.5)),
         restoration_foreground_weight=float(
             config.get("restoration_foreground_weight", 2.0)
         ),
@@ -218,7 +225,7 @@ def _loss_gradients(model, text_encoder, image, text, config):
             bundle["ink"],
             [text],
         )
-        restoration, _, _ = stroke_restoration_loss(
+        restoration, _, _, _ = stroke_restoration_loss(
             settings,
             bundle["restoration"],
             bundle["restoration_target"],
@@ -336,10 +343,22 @@ def run_epoch_probe(
         )
         stroke_similarity = stroke_flat @ stroke_flat.T
 
+    horizontal_penalty = float(
+        config.get("positive_letter_dtw_horizontal_penalty", 0.30)
+    )
+    if bool(
+        config.get(
+            "positive_letter_dtw_disable_horizontal_when_feasible",
+            True,
+        )
+    ) and int(compact_training_cost.shape[0]) >= int(
+        compact_training_cost.shape[1]
+    ):
+        horizontal_penalty = 1e4
     compact_path, hard_cost = _hard_dtw(
         compact_training_cost.detach().cpu().numpy(),
         float(config.get("positive_letter_dtw_vertical_penalty", 0.05)),
-        float(config.get("positive_letter_dtw_horizontal_penalty", 0.30)),
+        horizontal_penalty,
         float(config.get("positive_letter_dtw_position_prior", 0.15)),
     )
     full_path = [
