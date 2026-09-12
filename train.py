@@ -237,8 +237,8 @@ def _validate_constructed_backend(model: nn.Module) -> None:
             "ViT branch built the wrong model: "
             f"backend={backend} has_vit={has_vit} has_cnn={has_cnn} has_bilstm={has_bilstm}"
         )
-    if not any("semantic_adapter" in key for key in keys):
-        raise RuntimeError("Restoration-DTW backend is missing semantic_adapter parameters")
+    if not hasattr(getattr(model, "vit_encoder", None), "semantic_adapter"):
+        raise RuntimeError("Restoration-DTW backend is missing semantic_adapter module")
     if not any("stroke_decoder" in key for key in keys):
         raise RuntimeError("Restoration-DTW backend is missing stroke_decoder parameters")
 
@@ -316,7 +316,9 @@ def main() -> None:
                 flush=True,
             )
             print(
-                "  representations= primitive(stroke) -> semantic(letter); no active Transformer context",
+                "  representations= primitive(stroke) -> "
+                f"{P.restoration_semantic_adapter} -> letter-DTW; "
+                "no active Transformer context",
                 flush=True,
             )
             print(
