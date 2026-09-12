@@ -32,27 +32,46 @@ def _clean_letters(text: str):
     return _clean_letters(text)
 
 
-def _hard_dtw(costs: np.ndarray, step_penalty: float):
+def _hard_dtw(
+    costs: np.ndarray,
+    vertical_penalty: float,
+    horizontal_penalty: float | None = None,
+    position_prior_weight: float = 0.0,
+):
     costs = np.asarray(costs, dtype=np.float64)
     rows, cols = costs.shape
+    if horizontal_penalty is None:
+        horizontal_penalty = float(vertical_penalty)
+    work = costs.copy()
+    if position_prior_weight > 0 and rows > 1 and cols > 1:
+        image_position = np.linspace(0.0, 1.0, rows)[:, None]
+        text_position = np.linspace(0.0, 1.0, cols)[None, :]
+        work += float(position_prior_weight) * np.abs(
+            image_position - text_position
+        )
+
     dp = np.full((rows, cols), np.inf, dtype=np.float64)
     trace = np.full((rows, cols), -1, dtype=np.int8)
-    dp[0, 0] = costs[0, 0]
+    dp[0, 0] = work[0, 0]
     for i in range(1, rows):
-        dp[i, 0] = dp[i - 1, 0] + step_penalty + costs[i, 0]
+        dp[i, 0] = (
+            dp[i - 1, 0] + float(vertical_penalty) + work[i, 0]
+        )
         trace[i, 0] = 1
     for j in range(1, cols):
-        dp[0, j] = dp[0, j - 1] + step_penalty + costs[0, j]
+        dp[0, j] = (
+            dp[0, j - 1] + float(horizontal_penalty) + work[0, j]
+        )
         trace[0, j] = 2
     for i in range(1, rows):
         for j in range(1, cols):
             previous = (
                 dp[i - 1, j - 1],
-                dp[i - 1, j] + step_penalty,
-                dp[i, j - 1] + step_penalty,
+                dp[i - 1, j] + float(vertical_penalty),
+                dp[i, j - 1] + float(horizontal_penalty),
             )
             move = int(np.argmin(previous))
-            dp[i, j] = previous[move] + costs[i, j]
+            dp[i, j] = previous[move] + work[i, j]
             trace[i, j] = move
     path = []
     i, j = rows - 1, cols - 1
@@ -298,6 +317,15 @@ def run_epoch_probe(
         valid_indices = torch.nonzero(valid, as_tuple=False).flatten()
         matrix = semantic @ target.T
         compact_matrix = matrix.index_select(0, valid_indices)
+        from vlm_restoration_positive_dtw import letter_dtw_cost_matrix
+        settings = _settings(config)
+        training_cost = letter_dtw_cost_matrix(
+            settings,
+            text_encoder,
+            bundle["semantic"][0].float(),
+            letters,
+        )
+        compact_training_cost = training_cost.index_select(0, valid_indices)
         primitive_similarity = primitive @ primitive.T
         semantic_similarity = semantic @ semantic.T
         reconstruction = bundle["restoration"][0, :, 0].float()
@@ -307,12 +335,11 @@ def run_epoch_probe(
         )
         stroke_similarity = stroke_flat @ stroke_flat.T
 
-    # The visualization remains cosine-based for interpretability, but the hard
-    # diagnostic traceback uses the stronger vertical penalty as its base. The
-    # training recurrence itself uses asymmetric vertical/horizontal penalties.
     compact_path, hard_cost = _hard_dtw(
-        (1.0 - compact_matrix).detach().cpu().numpy(),
+        compact_training_cost.detach().cpu().numpy(),
         float(config.get("positive_letter_dtw_vertical_penalty", 0.05)),
+        float(config.get("positive_letter_dtw_horizontal_penalty", 0.30)),
+        float(config.get("positive_letter_dtw_position_prior", 0.15)),
     )
     full_path = [
         (int(valid_indices[i].item()), int(j))
@@ -382,6 +409,16 @@ def run_epoch_probe(
         delimiter=",",
         fmt="%.8f",
     )
+    training_cost_np = (
+        training_cost.detach().cpu().numpy().astype(np.float32)
+    )
+    np.save(epoch_dir / "window_letter_training_cost.npy", training_cost_np)
+    np.savetxt(
+        epoch_dir / "window_letter_training_cost.csv",
+        training_cost_np,
+        delimiter=",",
+        fmt="%.8f",
+    )
     np.save(
         epoch_dir / "primitive_window_cosine.npy",
         primitive_similarity.detach().cpu().numpy().astype(np.float32),
@@ -394,6 +431,14 @@ def run_epoch_probe(
         epoch_dir / "window_letter_dtw.png",
         current_matrix,
         f"Epoch {epoch}: semantic window -> transcript letter cosine",
+        "transcript letter index",
+        "window index",
+        full_path,
+    )
+    _save_heatmap(
+        epoch_dir / "window_letter_training_cost_dtw.png",
+        training_cost_np,
+        f"Epoch {epoch}: actual DTW training cost (hard path overlaid)",
         "transcript letter index",
         "window index",
         full_path,
@@ -413,6 +458,25 @@ def run_epoch_probe(
         "window i",
     )
 
+    horizontal_steps = sum(
+        1
+        for (i0, j0), (i1, j1) in zip(full_path[:-1], full_path[1:])
+        if i1 == i0 and j1 == j0 + 1
+    )
+    vertical_steps = sum(
+        1
+        for (i0, j0), (i1, j1) in zip(full_path[:-1], full_path[1:])
+        if i1 == i0 + 1 and j1 == j0
+    )
+    max_letters_same_window = 1
+    current_run = 1
+    for (i0, _j0), (i1, _j1) in zip(full_path[:-1], full_path[1:]):
+        if i1 == i0:
+            current_run += 1
+            max_letters_same_window = max(max_letters_same_window, current_run)
+        else:
+            current_run = 1
+
     metrics = {
         "epoch": int(epoch),
         "probe_side": side,
@@ -423,6 +487,9 @@ def run_epoch_probe(
         "letters": int(matrix.shape[1]),
         "ink_windows": int(valid.sum().item()),
         "hard_dtw_cost": float(hard_cost),
+        "hard_dtw_horizontal_steps": int(horizontal_steps),
+        "hard_dtw_vertical_steps": int(vertical_steps),
+        "hard_dtw_max_letters_same_window": int(max_letters_same_window),
         "mean_dtw_path_cosine": float(np.mean(path_values)) if path_values else float("nan"),
         "mean_top1_letter_cosine": float(top1.mean()),
         "mean_top1_margin": float(margin.mean()),
