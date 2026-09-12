@@ -6,6 +6,7 @@ from embeddingModel import EmbeddingModel
 from vlm_restoration_positive_dtw import (
     StrokeRestorationDecoder,
     _clean_letters,
+    _soft_dtw_cost_matrix,
     attach_restoration_dtw_stages,
     positive_monotonic_letter_dtw_cost,
 )
@@ -125,3 +126,76 @@ def test_identity_semantic_adapter_sends_primitive_directly_to_dtw():
     assert torch.allclose(
         bundle["semantic"], bundle["primitive"], atol=1e-6, rtol=1e-5
     )
+
+
+
+def test_cnn_seq2seq_encoder_keeps_one_token_per_32px_window():
+    model = EmbeddingModel(
+        window_size=32,
+        stride=16,
+        vector_size=128,
+        device="cpu",
+        use_flip=True,
+        input_height=128,
+        vit_layers=1,
+        vit_heads=4,
+        vit_mlp_dim=256,
+        vit_dropout=0.0,
+        vit_max_tokens=64,
+        vit_position_base_tokens=7,
+        vit_binarize_input=False,
+    )
+    config = SimpleNamespace(
+        restoration_decoder_channels=64,
+        restoration_contrast_scale=0.15,
+        restoration_semantic_adapter="identity",
+        restoration_local_encoder="cnn_seq2seq",
+    )
+    model = attach_restoration_dtw_stages(model, config)
+    image = torch.randn(1, 3, 128, 128)
+    bundle = model(image, return_training_bundle=True)
+
+    assert model.vit_encoder.restoration_local_encoder == "cnn_seq2seq"
+    assert bundle["primitive"].shape == (1, 7, 128)
+    assert bundle["semantic"].shape == (1, 7, 128)
+    assert bundle["restoration"].shape == (1, 7, 1, 128, 32)
+    assert torch.allclose(
+        bundle["semantic"], bundle["primitive"], atol=1e-6, rtol=1e-5
+    )
+
+
+def test_disabling_horizontal_moves_removes_soft_alternative_paths_when_feasible():
+    # With T=L=2, diagonal+vertical topology is sufficient and no horizontal
+    # move is needed. On a zero matrix, allowing horizontal alternatives lowers
+    # soft-DTW through log-sum-exp entropy; disabling them leaves the diagonal
+    # route as the only cheap route.
+    costs = torch.zeros(2, 2)
+    allowed = _soft_dtw_cost_matrix(
+        costs,
+        gamma=0.1,
+        vertical_penalty=0.0,
+        horizontal_penalty=0.0,
+        disable_horizontal_when_feasible=False,
+    )
+    disabled = _soft_dtw_cost_matrix(
+        costs,
+        gamma=0.1,
+        vertical_penalty=0.0,
+        horizontal_penalty=0.0,
+        disable_horizontal_when_feasible=True,
+    )
+    assert float(disabled) > float(allowed)
+
+
+def test_horizontal_moves_remain_available_when_text_is_longer_than_windows():
+    # T<L requires at least one horizontal transition to reach the final
+    # transcript character; the safety rule must therefore keep it available.
+    costs = torch.zeros(2, 3)
+    value = _soft_dtw_cost_matrix(
+        costs,
+        gamma=0.05,
+        vertical_penalty=0.05,
+        horizontal_penalty=0.30,
+        disable_horizontal_when_feasible=True,
+    )
+    assert torch.isfinite(value)
