@@ -1,0 +1,129 @@
+{
+  "index": 2716,
+  "pair_id": "synthetic_2716",
+  "source_type": "synthetic",
+  "side1_type": "synthetic",
+  "side2_type": "synthetic",
+  "side1_preprocess": "synthetic",
+  "side2_preprocess": "synthetic",
+  "label_type": "",
+  "text_score": 0.0,
+  "split": "test",
+  "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_2716.png",
+  "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_2716.png",
+  "nw_score": 30.371292114257812,
+  "normalized_nw_score": 0.48208400181361605,
+  "feature": "joint",
+  "score_mode": "raw",
+  "score_clip": 4.0,
+  "threshold": 0.0,
+  "gap": -0.3,
+  "line1_windows": 63,
+  "line2_windows": 63,
+  "gap_steps": 16,
+  "mean_path_cosine": 0.6833560455079172,
+  "mean_full_path_cosine": 0.6394777830351482,
+  "matrix_mean_cosine": 0.18549929559230804,
+  "matrix_std_cosine": 0.5009552836418152,
+  "path_cosine_margin": 0.49785674991560913,
+  "path_cosine_z": 0.9938147498841003,
+  "line1_intervals_px": [
+    [
+      56.0,
+      1024.0
+    ]
+  ],
+  "line2_intervals_px": [
+    [
+      120.0,
+      1024.0
+    ]
+  ],
+  "gt_mask1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask1_2716.png",
+  "gt_mask2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask2_2716.png",
+  "path_steps": 51,
+  "traceback_steps": 71,
+  "warp_steps": 16,
+  "component_count": 1,
+  "full_match_steps": 55,
+  "bridged_trace_steps": 13,
+  "component_bridge_limit": 2,
+  "component_support_floor": 0.0,
+  "line1_path_windows": 51,
+  "line2_path_windows": 51,
+  "line1_span_windows": 60,
+  "line2_span_windows": 56,
+  "line1_path_fraction": 0.8095238095238095,
+  "line2_path_fraction": 0.8095238095238095,
+  "line1_matched_fraction": 0.9523809523809523,
+  "line2_matched_fraction": 0.8888888888888888,
+  "line1_path_start": 0,
+  "line1_path_end": 59,
+  "line2_path_start": 0,
+  "line2_path_end": 55,
+  "line1_component_ranges": "[[0,59]]",
+  "line2_component_ranges": "[[0,55]]",
+  "line1_mask_iou": 0.2465483234714004,
+  "line1_mask_dice": 0.39556962025316456,
+  "line1_mask_precision": 0.25826446280991733,
+  "line1_mask_recall": 0.8445945945945946,
+  "line2_mask_iou": 0.32632743362831856,
+  "line2_mask_dice": 0.4920767306088407,
+  "line2_mask_precision": 0.32632743362831856,
+  "line2_mask_recall": 1.0,
+  "matrix_csv_cosine": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Yelda/vit_restore_dtw/joint_quick/pair_02716/matrices/nw_match_scores_values_cosine.csv",
+  "matrix_csv_match": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Yelda/vit_restore_dtw/joint_quick/pair_02716/matrices/nw_match_scores_values_match_score.csv",
+  "evidence_json": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Yelda/vit_restore_dtw/joint_quick/pair_02716/evidence/nw_match_scores_values_trace.json",
+  "mean_mask_iou": 0.28643787854985947,
+  "line1_source_intervals_px": [
+    [
+      56.0,
+      1024.0
+    ]
+  ],
+  "line2_source_intervals_px": [
+    [
+      120.0,
+      1024.0
+    ]
+  ],
+  "representation": "joint",
+  "local_weight": 0.5,
+  "geometry": [
+    {
+      "image_preprocessing": "original",
+      "color_mode": "RGB",
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 0,
+      "crop_width": 1024,
+      "scale_x": 1.0,
+      "offset_x": 0,
+      "canvas_width": 1024,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": false,
+      "preserve_aspect": false,
+      "autocontrast": false,
+      "auto_invert": false
+    },
+    {
+      "image_preprocessing": "original",
+      "color_mode": "RGB",
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 0,
+      "crop_width": 1024,
+      "scale_x": 1.0,
+      "offset_x": 0,
+      "canvas_width": 1024,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": false,
+      "preserve_aspect": false,
+      "autocontrast": false,
+      "auto_invert": false
+    }
+  ],
+  "mask_coordinate_system": "source_image"
+}
