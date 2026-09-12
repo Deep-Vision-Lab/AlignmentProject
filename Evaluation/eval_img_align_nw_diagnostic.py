@@ -800,6 +800,24 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
         gap_steps = sum(
             1 for step in result.steps if step.index1 is None or step.index2 is None
         )
+        matrix_mean_cosine = float(np.mean(cosine)) if cosine.size else None
+        matrix_std_cosine = float(np.std(cosine)) if cosine.size else None
+        mean_path_cosine = (
+            float(np.mean(supported_cosines)) if supported_cosines else None
+        )
+        path_cosine_margin = (
+            mean_path_cosine - matrix_mean_cosine
+            if mean_path_cosine is not None and matrix_mean_cosine is not None
+            else None
+        )
+        path_cosine_z = (
+            path_cosine_margin / matrix_std_cosine
+            if path_cosine_margin is not None
+            and matrix_std_cosine is not None
+            and matrix_std_cosine > 1e-8
+            else None
+        )
+
         row = {
             "index": int(pair.index),
             "pair_id": pair.pair_id,
@@ -823,8 +841,12 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
             "line1_windows": int(cosine.shape[0]),
             "line2_windows": int(cosine.shape[1]),
             "gap_steps": int(gap_steps),
-            "mean_path_cosine": float(np.mean(supported_cosines)) if supported_cosines else None,
+            "mean_path_cosine": mean_path_cosine,
             "mean_full_path_cosine": float(np.mean(full_cosines)) if full_cosines else None,
+            "matrix_mean_cosine": matrix_mean_cosine,
+            "matrix_std_cosine": matrix_std_cosine,
+            "path_cosine_margin": path_cosine_margin,
+            "path_cosine_z": path_cosine_z,
             "line1_intervals_px": intervals1,
             "line2_intervals_px": intervals2,
             "gt_mask1": str(pair.gt_mask1) if pair.gt_mask1 else "",
