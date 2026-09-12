@@ -14,6 +14,12 @@ RESULTS_DIR="${RESULTS_DIR:-${PROJECT_DIR}/Results/Evaluation/Yelda/vit_restore_
 cd "${PROJECT_DIR}"
 export MPLBACKEND=Agg
 
+"${PYTHON_BIN}" -m py_compile \
+  Evaluation/eval_yelda.py \
+  Evaluation/eval_img_align_nw_diagnostic.py \
+  Evaluation/visual_word_alignment.py
+echo "Evaluation syntax preflight: OK"
+
 exec "${PYTHON_BIN}" -u -m Evaluation.eval_yelda \
   --dataset "${DATASET}" \
   --weights "${WEIGHTS}" \
