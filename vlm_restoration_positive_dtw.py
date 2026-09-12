@@ -42,10 +42,17 @@ def apply_branch_config(P):
     # Branch-local experiment controls make short diagnostic runs possible
     # without editing the shared Parameters.py.
     P.epochs = _env_int("RESTORATION_EPOCHS", int(P.epochs))
+    P.finetune_epochs = P.epochs
     P.learning_rate = _env_float(
         "RESTORATION_LEARNING_RATE", float(P.learning_rate)
     )
+    P.finetune_learning_rate = P.learning_rate
     P.num_samples = _env_int("RESTORATION_NUM_SAMPLES", int(P.num_samples))
+    P.restoration_training_stage = os.environ.get(
+        "RESTORATION_TRAINING_STAGE", "align"
+    ).strip().lower()
+    if P.restoration_training_stage not in {"pretrain", "align"}:
+        raise ValueError("RESTORATION_TRAINING_STAGE must be pretrain or align")
 
     # Visual geometry. The Transformer is not part of the active architecture;
     # one frozen layer remains only because the shared ViT container requires it.
@@ -74,6 +81,16 @@ def apply_branch_config(P):
     # NFKC normalization rather than filtering through a closed alphabet list.
     P.letter_inventory = "unicode-arabic-letters-after-nfkc"
 
+    # New runs use a restoration-pretrained local CNN over each 128x32 window.
+    # Historical checkpoints used one full-height Conv2d projection.
+    P.restoration_local_encoder = os.environ.get(
+        "RESTORATION_LOCAL_ENCODER", "cnn_seq2seq"
+    ).strip().lower()
+    if P.restoration_local_encoder not in {"cnn_seq2seq", "fullheight_conv"}:
+        raise ValueError(
+            "RESTORATION_LOCAL_ENCODER must be cnn_seq2seq or fullheight_conv"
+        )
+
     # New diagnostic-first architecture: supervise the primitive window encoder
     # directly with positive letter-DTW. "identity" removes the residual
     # 128->256->128 MLP entirely. "residual_mlp" is retained only so historical
@@ -100,23 +117,63 @@ def apply_branch_config(P):
     P.image_variance_loss_weight = 0.0
     P.real_filter_infeasible_span_dtw = False
 
-    # Positive-only weak letter grounding.
-    P.positive_letter_dtw_weight = _env_float("POSITIVE_LETTER_DTW_WEIGHT", 1.0)
-    P.positive_letter_dtw_gamma = _env_float("POSITIVE_LETTER_DTW_GAMMA", 0.05)
-    P.positive_letter_dtw_step_penalty = _env_float(
-        "POSITIVE_LETTER_DTW_STEP_PENALTY", 0.02
+    # Positive-only weak letter grounding. Alignment training uses a curriculum:
+    # high gamma first (many plausible paths receive gradient), then lower gamma.
+    P.positive_letter_dtw_gamma_start = _env_float(
+        "POSITIVE_LETTER_DTW_GAMMA_START", 0.50
     )
+    P.positive_letter_dtw_gamma_end = _env_float(
+        "POSITIVE_LETTER_DTW_GAMMA_END", 0.05
+    )
+    P.positive_letter_dtw_anneal_epochs = _env_int(
+        "POSITIVE_LETTER_DTW_ANNEAL_EPOCHS", 10
+    )
+    P.positive_letter_dtw_gamma = P.positive_letter_dtw_gamma_start
+    P.positive_letter_dtw_vertical_penalty = _env_float(
+        "POSITIVE_LETTER_DTW_VERTICAL_PENALTY", 0.05
+    )
+    # A horizontal transition advances letters without advancing image windows.
+    # The old 0.02 symmetric penalty allowed one window to absorb many letters.
+    P.positive_letter_dtw_horizontal_penalty = _env_float(
+        "POSITIVE_LETTER_DTW_HORIZONTAL_PENALTY", 0.30
+    )
+    P.positive_letter_dtw_step_penalty = P.positive_letter_dtw_vertical_penalty
+    P.positive_letter_dtw_position_prior = _env_float(
+        "POSITIVE_LETTER_DTW_POSITION_PRIOR", 0.15
+    )
+    P.positive_letter_dtw_competition_temperature = _env_float(
+        "POSITIVE_LETTER_DTW_COMPETITION_TEMPERATURE", 0.10
+    )
+    P.positive_letter_dtw_cost_mode = os.environ.get(
+        "POSITIVE_LETTER_DTW_COST_MODE", "full_alphabet_nll"
+    ).strip().lower()
+    if P.positive_letter_dtw_cost_mode not in {"cosine", "full_alphabet_nll"}:
+        raise ValueError(
+            "POSITIVE_LETTER_DTW_COST_MODE must be cosine or full_alphabet_nll"
+        )
     P.positive_letter_dtw_min_ink = _env_float("POSITIVE_LETTER_DTW_MIN_INK", 0.01)
 
-    # Stroke restoration is one conceptual loss with pixel and edge components.
-    P.restoration_weight = _env_float("RESTORATION_WEIGHT", 0.10)
+    if P.restoration_training_stage == "pretrain":
+        P.positive_letter_dtw_weight = 0.0
+        default_restoration_weight = 1.0
+    else:
+        P.positive_letter_dtw_weight = _env_float(
+            "POSITIVE_LETTER_DTW_WEIGHT", 1.0
+        )
+        default_restoration_weight = 0.05
+
+    # Stroke restoration is pretraining supervision, then a small anti-forgetting
+    # regularizer during DTW alignment.
+    P.restoration_weight = _env_float(
+        "RESTORATION_WEIGHT", default_restoration_weight
+    )
     P.restoration_pixel_weight = _env_float("RESTORATION_PIXEL_WEIGHT", 1.0)
     P.restoration_edge_weight = _env_float("RESTORATION_EDGE_WEIGHT", 0.50)
     P.restoration_foreground_weight = _env_float(
         "RESTORATION_FOREGROUND_WEIGHT", 2.0
     )
     P.restoration_contrast_scale = _env_float("RESTORATION_CONTRAST_SCALE", 0.15)
-    P.restoration_decoder_channels = _env_int("RESTORATION_DECODER_CHANNELS", 64)
+    P.restoration_decoder_channels = _env_int("RESTORATION_DECODER_CHANNELS", 128)
 
 
 def _is_arabic_letter(character: str) -> bool:
