@@ -183,6 +183,18 @@ def effective_rank(vectors: np.ndarray):
     return float(np.exp(entropy))
 
 
+def matrix_correlation(left: np.ndarray, right: np.ndarray):
+    a = np.asarray(left, dtype=np.float64)
+    b = np.asarray(right, dtype=np.float64)
+    if a.shape != b.shape or a.ndim != 2:
+        return None
+    mask = ~np.eye(a.shape[0], dtype=bool) if a.shape[0] == a.shape[1] else np.ones_like(a, dtype=bool)
+    av, bv = a[mask], b[mask]
+    if av.size < 2 or np.std(av) <= 1e-8 or np.std(bv) <= 1e-8:
+        return None
+    return float(np.corrcoef(av, bv)[0, 1])
+
+
 def edge_mae(pred: np.ndarray, target: np.ndarray):
     px = np.diff(pred, axis=1)
     tx = np.diff(target, axis=1)
@@ -447,6 +459,17 @@ def main():
 
     pred_np = reconstruction.detach().cpu().numpy()
     target_np = restoration_target.detach().cpu().numpy()
+    stroke_flat = target_np.reshape(n_windows, -1)
+    stroke_norm = stroke_flat / np.clip(
+        np.linalg.norm(stroke_flat, axis=1, keepdims=True), 1e-8, None
+    )
+    stroke_cosine = stroke_norm @ stroke_norm.T
+    stroke_primitive_correlation = matrix_correlation(
+        stroke_cosine, primitive_cosine
+    )
+    stroke_semantic_correlation = matrix_correlation(
+        stroke_cosine, semantic_cosine
+    )
     ink_np = ink.detach().cpu().numpy()
     p_raw_norm = torch.linalg.vector_norm(primitive_raw, dim=-1).detach().cpu().numpy()
     l_norm = torch.linalg.vector_norm(semantic, dim=-1).detach().cpu().numpy()
@@ -648,6 +671,8 @@ def main():
         "mean_nonlocal_semantic_cosine_sep5": offdiag_mean(semantic_cosine, 5),
         "primitive_effective_rank": effective_rank(primitive_np),
         "semantic_effective_rank": effective_rank(semantic_np),
+        "stroke_primitive_similarity_correlation": stroke_primitive_correlation,
+        "stroke_semantic_similarity_correlation": stroke_semantic_correlation,
     }
     (output / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2),
@@ -716,6 +741,10 @@ The hard DTW shown here is DIAGNOSTIC ONLY. Training used differentiable soft DT
     print(f"mean restoration MAE     : {summary['mean_restoration_mae']:.4f}")
     print(f"primitive effective rank : {summary['primitive_effective_rank']:.2f}")
     print(f"semantic effective rank  : {summary['semantic_effective_rank']:.2f}")
+    print(
+        "stroke↔primitive corr    : "
+        f"{summary['stroke_primitive_similarity_correlation'] if summary['stroke_primitive_similarity_correlation'] is not None else float('nan'):.4f}"
+    )
     print(f"mean top-1 letter cosine : {summary['mean_top1_letter_cosine']:.4f}")
     print(f"mean top-1 letter margin : {summary['mean_top1_letter_margin']:.4f}")
     print(f"mean DTW path cosine     : {summary['mean_dtw_path_cosine']:.4f}")
