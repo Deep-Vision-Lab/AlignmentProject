@@ -20,167 +20,233 @@ context-consistency loss, dense-letter loss, or variance loss are active.
 
 ## Architecture
 
+The branch is now trained in two explicit stages.
+
+### Stage A — restoration pretraining
+
 ```
 full 128x1024 RGB line
         |
-        | full-height sliding projection, window=32, stride=16
+        | overlapping windows: 128x32, stride 16
         v
-P_1 ... P_T                         primitive stroke tokens
- |         |
- |         +---- lightweight decoder ----> reconstructed stroke map
+W_0 ... W_62
+        |
+        | SAME local CNN encoder for every window
+        v
+P_0 ... P_62                     128-D primitive tokens
+        |
+        | sequence decoder (shared per token)
+        v
+R_0 ... R_62                     1x128x32 soft stroke maps
+        |
+        v
+L_rest = L_pixel + 0.5 L_edge + 0.5 L_dice
+```
+
+There is no DTW during Stage A. Its only job is to learn a local encoder whose
+primitive vectors preserve stroke information. The old single full-height Conv2d
+projection is retained only for historical checkpoint compatibility.
+
+The new local encoder is a small CNN hierarchy applied independently to each
+128x32 window:
+
+```
+3x128x32
+ -> Conv blocks
+ -> 32 channels
+ -> 64 channels /2
+ -> 96 channels /2
+ -> 128 channels /2
+ -> 128 channels /2
+ -> adaptive pooling
+ -> P_i in R^128
+```
+
+The line is therefore a sequence of 63 windows, producing a sequence of 63
+primitive vectors and a sequence of 63 reconstructions. There is still no
+Transformer/BiLSTM/context in this experiment.
+
+### Stage B — DTW alignment from the pretrained encoder
+
+Stage B initializes the exact same CNN encoder and decoder from the Stage-A
+checkpoint. The encoder remains trainable.
+
+```
+W_i
  |
- +---- identity semantic path -----------> L_i = P_i
-                                             |
-                                             | cosine costs to fixed letter IDs
-                                             v
-                                   positive monotonic Soft-DTW
-                                   against this line transcript
+ v
+pretrained local CNN
+ |
+ v
+P_i
+ |\
+ | \----> restoration decoder ----> 0.05 * L_rest
+ |
+ +-------> identity semantic path: L_i = P_i
+             |
+             v
+      full-alphabet character competition
+             |
+             v
+      transcript letter cost matrix
+             |
+             v
+      monotonic soft-DTW curriculum
+             |
+             v
+             L_DTW
 ```
 
-There is one token for every physical horizontal window. The active model does
-not use the inherited global Transformer. The shared Transformer container is
-kept only for checkpoint/model compatibility and its parameters are frozen.
+No trainable fully connected semantic adapter exists in the default new run.
 
-### Primitive token P_i
+### Why the restoration change was necessary
 
-The full-height Conv2d window projection produces a 128-D vector for each
-physical window. The restoration decoder is attached directly to this token.
+The old diagnostic checkpoint showed that the failure already existed in the
+primitive representation. On diagnostic pair 132:
 
-Its responsibility is: **remember the visible stroke structure**.
+- side 1 primitive effective rank: ~3.36 / 128;
+- side 1 stroke-to-primitive similarity correlation: ~0.014;
+- side 1 restoration MAE: ~0.498;
+- side 2 primitive effective rank: ~2.91 / 128;
+- side 2 stroke-to-primitive correlation: ~0.280;
+- side 2 restoration MAE: ~0.522.
 
-### Stroke restoration
+Therefore the old residual semantic MLP was not the only issue: the primitive
+encoder itself had not learned a reliable stroke geometry.
 
-The decoder maps each primitive token back to a `1 x 128 x 32` soft stroke
-map. It does not reconstruct parchment RGB. The target is local foreground
-contrast computed from the original RGB window.
+### Restoration loss
 
-```
-L_restoration = L_pixel + 0.5 * L_edge
-```
-
-`L_pixel` is foreground-weighted L1 (default foreground weight 2.0).
-`L_edge` compares horizontal and vertical finite differences so boundaries,
-dots, curves, and connections matter.
-
-### DTW representation
-
-For new diagnostic-first runs, the semantic adapter is `identity`:
+The decoder reconstructs a soft foreground/stroke map, not RGB:
 
 ```
-L_i = P_i
+L_restoration =
+    1.0 * foreground-weighted L1
+  + 0.5 * edge loss
+  + 0.5 * soft Dice loss
 ```
 
-There is no trainable `128 -> 256 -> 128` fully connected semantic MLP between
-the primitive window encoder and positive letter-DTW. This deliberately makes
-DTW supervise the same local representation that restoration must preserve.
-The historical `residual_mlp` mode is retained only to load/evaluate older
-checkpoints and as an explicit ablation.
+Dice prevents a blurry/background-dominated reconstruction from receiving an
+artificially acceptable pixel loss.
 
-The checkpoint records `restoration_semantic_adapter`, so the two
-architectures cannot be silently confused.
+### DTW cost
 
-### Fixed letter codebook
-
-The text side is `OrthogonalCharEmbedding`, already available in this
-repository. Every Unicode character has a deterministic frozen vector. There is
-no AraBERT and no trainable text projection in this experiment. Transcript
-cleaning uses NFKC normalization and keeps Unicode Arabic letters, so valid forms
-such as `ٱ` are not silently discarded and presentation-form ligatures are
-folded into their ordinary letter sequence.
-
-The fixed vectors are not supposed to know what Arabic letters look like. They
-are stable identity destinations. Repeated appearances of the same transcript
-letter across many lines teach the visual encoder to map different handwritten
-forms toward the same destination.
-
-Therefore isolated glyph images are **not required**. A separate multi-font
-glyph warm-up remains a later ablation if line-level weak supervision is hard to
-bootstrap.
-
-## Positive-only monotonic DTW
-
-For cleaned transcript letters `c_1 ... c_L` and semantic window vectors
-`L_1 ... L_T`:
+For each visual window, Stage B first compares it against the complete frozen
+Arabic character inventory. If `z_i` is the normalized primitive and `e_c`
+is a frozen character vector:
 
 ```
-C[i,j] = 1 - cosine(L_i, e_{c_j})
+logit(i,c) = cosine(z_i, e_c) / temperature
+cost(i,c)  = -log softmax_c(logit(i,c))
 ```
 
-The differentiable DP is evaluated by vectorized anti-diagonals (same recurrence,
-fewer tiny GPU operations) and permits:
+The transcript selects the relevant character columns from this full-alphabet
+cost matrix. This gives letter discrimination without adding negative
+transcripts.
 
-- diagonal: next window, next letter;
-- vertical: another window still belongs to the current letter;
-- horizontal: one overlapping window can contain evidence from two adjacent letters.
+### DTW curriculum
 
-Only the true transcript of the current line is used. There are no negative
-transcripts and no margin against another line.
+The DTW path is recomputed on every forward pass. It was never cached. The old
+problem was early path lock-in: gamma was already 0.05 from epoch 1 and both
+vertical/horizontal steps cost only 0.02.
 
-## Paired files are not pair supervision
-
-Some datasets physically store `line1` and `line2` together. The branch keeps
-both so data is not discarded, but computes:
+The new alignment defaults are:
 
 ```
-loss = 0.5 * (loss(line1, text1) + loss(line2, text2))
+gamma:              0.50 -> 0.05 over 10 epochs
+vertical penalty:   0.05
+horizontal penalty: 0.30
+position prior:     0.15
+alphabet temp:      0.10
 ```
 
-There is no term that compares line1 with line2. They are two independent
-single-line training examples sharing the same encoder and frozen letter
-codebook.
+When the number of available image windows is at least the number of transcript
+letters (`T >= L`), horizontal transitions are disabled entirely. They are
+unnecessary in that case because diagonal + vertical transitions can reach the
+endpoint while assigning at least one window to every letter.
 
-## Training
+This directly prevents the old degeneracy where one window could absorb a long
+run of transcript characters. If `L > T`, horizontal transitions remain
+available because they are mathematically required, but they keep the larger
+penalty.
 
-```bash
-git fetch origin
-git checkout agent/restoration-positive-dtw-window-encoder
-git pull
+### Epoch diagnostics
 
-JOB_NAME=vit_restore_dtw_identity_s16 \
-RESTORATION_SEMANTIC_ADAPTER=identity \
-RESTORATION_EPOCH_PROBE=1 \
-sbatch scripts/train_restoration_positive_dtw_2x4090.sbatch
-```
-
-Default first experiment: window 32, stride 16.
-
-A denser stride-8 experiment can follow:
-
-```bash
-JOB_NAME=vit_restore_dtw_s8 \
-RESTORATION_DTW_STRIDE_RATIO=0.25 \
-sbatch scripts/train_restoration_positive_dtw_2x4090.sbatch
-```
-
-## What to monitor
-
-The important training signals are:
-
-- `minimal/positive_letter_dtw` should decrease;
-- `minimal/restoration` should decrease;
-- `minimal/restoration_pixel` should decrease;
-- `minimal/restoration_edge` should decrease.
-
-Every epoch also writes a fixed validation-line diagnostic under:
+Stage B analyzes the same fixed validation line after every epoch and stores:
 
 ```
 Weights/<JOB_NAME>/epoch_diagnostics/
   history.csv
-  epoch_001/window_letter_dtw.png
-  epoch_001/primitive_window_cosine.png
-  epoch_001/semantic_window_cosine.png
-  epoch_001/metrics.json
+  epoch_001/
+    window_letter_cosine.csv
+    window_letter_training_cost.csv
+    window_letter_training_cost_dtw.png
+    primitive_window_cosine.png
+    metrics.json
   ...
 ```
 
-Use `history.csv` to verify that the encoder really changes and that the DTW
-matrix improves rather than merely the scalar loss decreasing. In particular,
-track `patch_weight_relative_delta_prev`, `matrix_mean_abs_delta_prev`,
-`mean_dtw_path_cosine`, `mean_top1_margin`,
-`primitive_effective_rank`, and `dtw_restoration_grad_cosine`.
+The most important fields are:
 
-Do not expect negative-gap metrics because this experiment intentionally has no
-negative samples.
+- `training_cost_mean_abs_delta_prev`: is the actual DTW cost matrix changing?
+- `dtw_path_jaccard_prev`: how much did the hard diagnostic route change?
+- `hard_dtw_max_letters_same_window`: should be 1 whenever T >= L;
+- `mean_dtw_path_cosine` and `mean_top1_margin`: is grounding improving?
+- `primitive_effective_rank`: is the encoder collapsing?
+- `stroke_primitive_similarity_correlation`: does primitive geometry reflect
+  visual stroke geometry?
+- `patch_weight_relative_delta_prev`: is the local encoder actually updating?
+- `dtw_restoration_grad_cosine`: are DTW and restoration gradients compatible?
+
+A correct DTW route does not need to keep changing forever. The desired pattern
+is meaningful change early in training followed by stabilization as the
+window-letter costs become more discriminative.
+
+## Training
+
+### Stage A: pretrain restoration
+
+```bash
+JOB_NAME=restore_seq2seq_pretrain_s16 \
+RESTORATION_TRAINING_STAGE=pretrain \
+RESTORATION_LOCAL_ENCODER=cnn_seq2seq \
+RESTORATION_SEMANTIC_ADAPTER=identity \
+RESTORATION_EPOCHS=10 \
+RESTORATION_NUM_SAMPLES=6000 \
+RESTORATION_LEARNING_RATE=1e-4 \
+sbatch scripts/train_restoration_positive_dtw_2x4090.sbatch
+```
+
+Stage A uses:
+
+```
+DTW weight         = 0
+restoration weight = 1.0
+```
+
+### Stage B: initialize from Stage A and train alignment
+
+```bash
+JOB_NAME=restore_seq2seq_dtw_s16 \
+RESTORATION_TRAINING_STAGE=align \
+RESTORATION_LOCAL_ENCODER=cnn_seq2seq \
+RESTORATION_SEMANTIC_ADAPTER=identity \
+RESTORATION_EPOCHS=20 \
+RESTORATION_NUM_SAMPLES=6000 \
+RESTORATION_LEARNING_RATE=1e-4 \
+RESTORATION_EPOCH_PROBE=1 \
+sbatch scripts/train_restoration_positive_dtw_2x4090.sbatch \
+  --weights "$PWD/Weights/restore_seq2seq_pretrain_s16/model_latest.pth"
+```
+
+Stage B defaults to:
+
+```
+DTW weight         = 1.0
+restoration weight = 0.05
+```
+
+The restoration term in Stage B is an anti-forgetting regularizer, not the main
+objective.
 
 ## Image-only evaluation
 
