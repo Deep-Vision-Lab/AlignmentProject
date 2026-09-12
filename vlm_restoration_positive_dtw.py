@@ -790,9 +790,17 @@ def install_training_objective(train_module):
                 )
             state = train_module.extract_model_state(loaded)
             incompatible = model.load_state_dict(state, strict=False)
+            if loaded_family == "restoration-positive-dtw-window-encoder":
+                if incompatible.missing_keys or incompatible.unexpected_keys:
+                    raise RuntimeError(
+                        "Restoration pretraining checkpoint did not load exactly: "
+                        f"missing={incompatible.missing_keys[:10]} "
+                        f"unexpected={incompatible.unexpected_keys[:10]}. "
+                        "Stage B must initialize the exact Stage-A encoder/decoder."
+                    )
             if train_module.CTX.is_main:
                 print(
-                    "Loaded visual initialization with strict=False: "
+                    "Loaded visual initialization: "
                     f"missing={len(incompatible.missing_keys)} "
                     f"unexpected={len(incompatible.unexpected_keys)}",
                     flush=True,
