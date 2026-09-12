@@ -20,6 +20,8 @@ METRICS = (
     "normalized_nw_score",
     "mean_path_cosine",
     "mean_mask_iou",
+    "path_cosine_margin",
+    "path_cosine_z",
     "component_count",
     "gap_steps",
 )
@@ -155,7 +157,13 @@ def main():
             metric: _paired_delta(
                 runs[left]["samples"], runs[right]["samples"], metric
             )
-            for metric in ("normalized_nw_score", "mean_path_cosine", "mean_mask_iou")
+            for metric in (
+                "normalized_nw_score",
+                "mean_path_cosine",
+                "mean_mask_iou",
+                "path_cosine_margin",
+                "path_cosine_z",
+            )
         }
 
     (root / "representation_comparison.json").write_text(
@@ -181,7 +189,8 @@ def main():
     print("=" * 76)
     print(
         f"{'representation':<14} {'NW':>10} {'path cos':>10} "
-        f"{'mask IoU':>10} {'components':>12} {'pairs':>8}"
+        f"{'margin':>10} {'path z':>10} {'mask IoU':>10} "
+        f"{'components':>12} {'pairs':>8}"
     )
     for name in ("local", "primary", "joint"):
         metrics = report["representations"][name]["metrics"]
@@ -189,6 +198,8 @@ def main():
             f"{name:<14} "
             f"{_fmt(metrics['normalized_nw_score']['mean']):>10} "
             f"{_fmt(metrics['mean_path_cosine']['mean']):>10} "
+            f"{_fmt(metrics['path_cosine_margin']['mean']):>10} "
+            f"{_fmt(metrics['path_cosine_z']['mean']):>10} "
             f"{_fmt(metrics['mean_mask_iou']['mean']):>10} "
             f"{_fmt(metrics['component_count']['mean']):>12} "
             f"{report['representations'][name]['successful_pairs']:>8}"
@@ -197,7 +208,13 @@ def main():
     print("\nPrimary semantic L_i versus primitive P_i")
     print("-" * 76)
     comparison = report["paired_comparisons"]["primary_minus_local"]
-    for metric in ("normalized_nw_score", "mean_path_cosine", "mean_mask_iou"):
+    for metric in (
+        "normalized_nw_score",
+        "mean_path_cosine",
+        "path_cosine_margin",
+        "path_cosine_z",
+        "mean_mask_iou",
+    ):
         item = comparison[metric]
         print(
             f"{metric:<24} delta={_fmt(item['mean_delta'])} "
@@ -207,7 +224,13 @@ def main():
 
     # Build a small human-readable list of pairs worth opening visually.
     interesting = []
-    for metric in ("mean_mask_iou", "mean_path_cosine", "normalized_nw_score"):
+    for metric in (
+        "mean_mask_iou",
+        "path_cosine_z",
+        "path_cosine_margin",
+        "mean_path_cosine",
+        "normalized_nw_score",
+    ):
         item = comparison[metric]
         if not item["count"]:
             continue
