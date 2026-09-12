@@ -153,7 +153,22 @@ def _settings(config: dict):
     return SimpleNamespace(
         positive_letter_dtw_gamma=float(config.get("positive_letter_dtw_gamma", 0.05)),
         positive_letter_dtw_step_penalty=float(
-            config.get("positive_letter_dtw_step_penalty", 0.02)
+            config.get("positive_letter_dtw_step_penalty", 0.05)
+        ),
+        positive_letter_dtw_vertical_penalty=float(
+            config.get("positive_letter_dtw_vertical_penalty", 0.05)
+        ),
+        positive_letter_dtw_horizontal_penalty=float(
+            config.get("positive_letter_dtw_horizontal_penalty", 0.30)
+        ),
+        positive_letter_dtw_position_prior=float(
+            config.get("positive_letter_dtw_position_prior", 0.15)
+        ),
+        positive_letter_dtw_competition_temperature=float(
+            config.get("positive_letter_dtw_competition_temperature", 0.10)
+        ),
+        positive_letter_dtw_cost_mode=str(
+            config.get("positive_letter_dtw_cost_mode", "full_alphabet_nll")
         ),
         positive_letter_dtw_min_ink=float(
             config.get("positive_letter_dtw_min_ink", 0.01)
@@ -173,7 +188,7 @@ def _loss_gradients(model, text_encoder, image, text, config):
     )
 
     settings = _settings(config)
-    parameter = model.vit_encoder.patch_embedding.weight
+    parameter = next(model.vit_encoder.patch_embedding.parameters())
     model.zero_grad(set_to_none=True)
     with torch.enable_grad():
         bundle = model(image, return_training_bundle=True)
@@ -292,9 +307,12 @@ def run_epoch_probe(
         )
         stroke_similarity = stroke_flat @ stroke_flat.T
 
+    # The visualization remains cosine-based for interpretability, but the hard
+    # diagnostic traceback uses the stronger vertical penalty as its base. The
+    # training recurrence itself uses asymmetric vertical/horizontal penalties.
     compact_path, hard_cost = _hard_dtw(
         (1.0 - compact_matrix).detach().cpu().numpy(),
-        float(config.get("positive_letter_dtw_step_penalty", 0.02)),
+        float(config.get("positive_letter_dtw_vertical_penalty", 0.05)),
     )
     full_path = [
         (int(valid_indices[i].item()), int(j))
@@ -342,7 +360,11 @@ def run_epoch_probe(
         )
 
     current_patch = (
-        model.vit_encoder.patch_embedding.weight.detach().float().cpu().clone()
+        next(model.vit_encoder.patch_embedding.parameters())
+        .detach()
+        .float()
+        .cpu()
+        .clone()
     )
     patch_delta = None
     if previous_patch_weight is not None:
