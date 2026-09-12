@@ -624,6 +624,49 @@ def install_training_objective(train_module):
 
     train_module.compute_batch_loss = compute_batch_loss
 
+    # Fixed validation-line diagnostic after every epoch. This is analysis-only:
+    # it never participates in the optimizer update.
+    probe_state = {
+        "patch_weight": None,
+        "matrix": None,
+        "path": None,
+    }
+
+    def epoch_diagnostic_hook(
+        *,
+        model,
+        text_encoder,
+        valid_loader,
+        epoch,
+        job_id,
+        config,
+        device,
+    ):
+        enabled = os.environ.get("RESTORATION_EPOCH_PROBE", "1").strip().lower()
+        if enabled not in {"1", "true", "yes", "on"}:
+            return
+        from pathlib import Path
+        from restoration_epoch_probe import run_epoch_probe
+
+        result = run_epoch_probe(
+            model=model,
+            text_encoder=text_encoder,
+            valid_loader=valid_loader,
+            epoch=int(epoch),
+            job_id=str(job_id),
+            config=config,
+            weights_root=Path(train_module.__file__).resolve().parent / "Weights",
+            device=device,
+            previous_patch_weight=probe_state["patch_weight"],
+            previous_matrix=probe_state["matrix"],
+            previous_path=probe_state["path"],
+        )
+        probe_state["patch_weight"] = result["patch_weight"]
+        probe_state["matrix"] = result["matrix"]
+        probe_state["path"] = result["path"]
+
+    train_module.epoch_diagnostic_hook = epoch_diagnostic_hook
+
     # The historical visualization assumes contextual Span-DTW/negative losses.
     # Disable it rather than silently plotting a different objective.
     train_module.save_d3tw_visualization = lambda *args, **kwargs: None
