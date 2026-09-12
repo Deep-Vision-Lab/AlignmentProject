@@ -26,7 +26,7 @@ mkdir -p out
 BRANCH="$(git branch --show-current)"
 COMMIT="$(git rev-parse --short HEAD)"
 
-export JOB_NAME="${JOB_NAME:-vit_restore_dtw_s16}"
+export JOB_NAME="${JOB_NAME:-vit_restore_dtw_identity_s16}"
 export RESTORATION_DTW_STRIDE_RATIO="${RESTORATION_DTW_STRIDE_RATIO:-0.50}"
 export POSITIVE_LETTER_DTW_WEIGHT="${POSITIVE_LETTER_DTW_WEIGHT:-1.0}"
 export POSITIVE_LETTER_DTW_GAMMA="${POSITIVE_LETTER_DTW_GAMMA:-0.05}"
@@ -39,6 +39,8 @@ export RESTORATION_FOREGROUND_WEIGHT="${RESTORATION_FOREGROUND_WEIGHT:-2.0}"
 export RESTORATION_CONTRAST_SCALE="${RESTORATION_CONTRAST_SCALE:-0.15}"
 export RESTORATION_DECODER_CHANNELS="${RESTORATION_DECODER_CHANNELS:-64}"
 export LETTER_CODEBOOK_SEED="${LETTER_CODEBOOK_SEED:-1234}"
+export RESTORATION_SEMANTIC_ADAPTER="${RESTORATION_SEMANTIC_ADAPTER:-identity}"
+export RESTORATION_EPOCH_PROBE="${RESTORATION_EPOCH_PROBE:-1}"
 
 echo "============================================================"
 echo "AlignmentProject: restoration + positive letter-DTW"
@@ -53,6 +55,8 @@ echo "negatives    = 0"
 echo "pair loss    = 0"
 echo "context loss = 0"
 echo "text target  = frozen orthogonal Arabic character identities"
+echo "semantic     = ${RESTORATION_SEMANTIC_ADAPTER} (identity => DTW supervises primitive directly)"
+echo "epoch probe  = ${RESTORATION_EPOCH_PROBE}"
 echo "============================================================"
 
 # Cheap syntax preflight before torchrun starts two worker processes. This catches
@@ -62,6 +66,7 @@ echo "============================================================"
   runtime_device_setup.py \
   model_backend.py \
   vlm_restoration_positive_dtw.py \
+  restoration_epoch_probe.py \
   DataLoader.py \
   DataSet.py \
   AugmentedRealDataLoader.py
