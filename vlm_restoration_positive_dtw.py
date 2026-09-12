@@ -713,7 +713,11 @@ def model_config(P):
     return {
         "architecture_family": "restoration-positive-dtw-window-encoder",
         "training_supervision": "positive-letter-dtw + stroke-restoration only",
-        "primary_representation": "semantic-letter-aligned-window",
+        "primary_representation": (
+            "primitive-direct-letter-aligned-window"
+            if str(P.restoration_semantic_adapter) == "identity"
+            else "semantic-letter-aligned-window"
+        ),
         "local_representation": "primitive-stroke-window",
         "restoration_semantic_adapter": str(P.restoration_semantic_adapter),
         "semantic_projection_trainable": bool(
