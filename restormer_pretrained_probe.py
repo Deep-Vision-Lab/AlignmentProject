@@ -109,13 +109,48 @@ def load_restormer(assets: RestormerAssets, device="cpu"):
     return model
 
 
-def _manuscript_like_windows(device):
+def _probe_windows(device):
+    """Prefer two informative windows from the real synthetic dataset."""
+    dataset = os.environ.get("SYNTHETIC_DIAG_DATASET", "").strip()
+    index = os.environ.get("SYNTHETIC_DIAG_INDEX", "").strip()
+    if dataset and index:
+        root = Path(dataset).expanduser()
+        if not root.is_absolute():
+            root = ROOT / root
+        image = None
+        for suffix in (".png", ".jpg", ".jpeg", ".tif", ".tiff"):
+            candidate = root / "images" / f"img1_{int(index)}{suffix}"
+            if candidate.is_file():
+                image = candidate
+                break
+        if image is not None:
+            from zero_shot_preprocessing import ManuscriptLinePreprocessor
+            processor = ManuscriptLinePreprocessor(
+                size=(128, 1024),
+                training=False,
+                augment=False,
+                binarize=False,
+                preserve_aspect=True,
+                crop_foreground=True,
+                target_ink_height_ratio=0.72,
+                autocontrast=False,
+            )
+            prepared, _ = processor.preprocess_with_metadata(Image.open(image).convert("RGB"))
+            arr = np.asarray(prepared, dtype=np.float32) / 255.0
+            line = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
+            patches = line.unfold(3, 32, 16).permute(0, 3, 1, 2, 4).contiguous()[0]
+            darkness = (1.0 - patches.mean(dim=(1, 2, 3))).cpu()
+            chosen = torch.topk(darkness, k=min(2, int(patches.shape[0]))).indices
+            windows = patches.index_select(0, chosen).to(device)
+            if windows.shape[0] == 2:
+                return windows, f"real synthetic line {image}, windows={chosen.tolist()}"
+
     x = torch.ones(2, 3, 128, 32, device=device)
     x[0, :, 42:48, 4:27] = 0.10
     x[0, :, 31:36, 20:24] = 0.15
     x[1, :, 72:78, 3:25] = 0.15
     x[1, :, 57:62, 7:11] = 0.10
-    return x
+    return x, "fallback manuscript-like artificial windows"
 
 
 def _tensor_image(x):
@@ -193,7 +228,8 @@ def main():
         f"latent_shape={tuple(feature.shape)}\n"
         f"latent_cosine_between_two_windows={cosine:.8f}\n"
         f"identity_L1_before_step={float(loss_before.detach()):.8f}\n"
-        f"gradient_signal={grad_norm:.8g}\n\n"
+        f"gradient_signal={grad_norm:.8g}\n"
+        f"window_source={window_source}\n\n"
         "Inspect 01_input_vs_pretrained_output.png to judge the pretrained output yourself.\n"
         "A poor reconstruction here means pretraining alone is not sufficient for manuscript windows.\n"
     )
@@ -205,6 +241,7 @@ def main():
         f"identity_L1={float(loss_before.detach()):.6f} grad_signal={grad_norm:.6g}",
         flush=True,
     )
+    print(f"probe windows: {window_source}", flush=True)
     print(
         "Interpretation: pretraining is usable as an initialization, but the "
         "manuscript identity/restoration objective still needs fine-tuning.",
