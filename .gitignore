@@ -25,3 +25,5 @@ logs/performance/
 
 
 TrainResults/
+# External pretrained model source checkouts
+third_party/Restormer/
