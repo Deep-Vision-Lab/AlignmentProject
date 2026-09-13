@@ -1,3 +1,32 @@
+# Real synthetic line first
+
+Before the controlled point checks, you can inspect the actual preprocessing and
+window slicing on a real synthetic line:
+
+```bash
+bash scripts/restoration_points/synthetic_line_visual_check.sh
+```
+
+The script automatically prefers `DataSet/Synthetic63/images/img1_132.png`,
+then other available synthetic images. It saves the original line, detected crop,
+processed RGB line, window boundaries, and both physical and Arabic logical
+window contact sheets under:
+
+```text
+Results/Diagnostics/restoration_points/synthetic_line/
+```
+
+For a full **trained-model** window-by-window diagnostic on the restoration
+branch's synthetic line, use:
+
+```bash
+bash scripts/analyze_restoration_line.sh
+```
+
+That second command requires a compatible trained restoration checkpoint.
+
+---
+
 # Viewing the Restoration Point Results
 
 Branch: `agent/restoration-positive-dtw-window-encoder`
