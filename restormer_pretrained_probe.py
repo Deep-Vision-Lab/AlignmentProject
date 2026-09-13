@@ -80,6 +80,17 @@ def load_restormer(assets: RestormerAssets, device="cpu"):
     sys.path.insert(0, str(assets.repo))
     module = importlib.import_module("basicsr.models.archs.restormer_arch")
     Restormer = module.Restormer
+    checkpoint_name = assets.checkpoint.name.lower()
+    # The official Restormer demo uses BiasFree LayerNorm for Real Denoising
+    # and Gaussian Color Denoising checkpoints.
+    layer_norm_type = (
+        "BiasFree"
+        if (
+            "real_denoising" in checkpoint_name
+            or "gaussian_color_denoising" in checkpoint_name
+        )
+        else "WithBias"
+    )
     model = Restormer(
         inp_channels=3,
         out_channels=3,
@@ -89,9 +100,10 @@ def load_restormer(assets: RestormerAssets, device="cpu"):
         heads=[1, 2, 4, 8],
         ffn_expansion_factor=2.66,
         bias=False,
-        LayerNorm_type="WithBias",
+        LayerNorm_type=layer_norm_type,
         dual_pixel_task=False,
     ).to(device)
+    model._alignment_probe_layer_norm_type = layer_norm_type
     payload = torch.load(assets.checkpoint, map_location=device)
     if isinstance(payload, dict):
         state = payload.get("params", payload.get("state_dict", payload))
@@ -224,6 +236,7 @@ def main():
         "Point 03 pretrained Restormer result\n"
         "STATUS: PASS\n"
         f"checkpoint={assets.checkpoint}\n"
+        f"layer_norm_type={getattr(model, '_alignment_probe_layer_norm_type', 'unknown')}\n"
         f"output_shape={tuple(restored.shape)}\n"
         f"latent_shape={tuple(feature.shape)}\n"
         f"latent_cosine_between_two_windows={cosine:.8f}\n"
