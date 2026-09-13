@@ -84,6 +84,9 @@ def test_full_model_training_bundle_has_one_token_per_window():
     config = SimpleNamespace(
         restoration_decoder_channels=16,
         restoration_contrast_scale=0.15,
+        restoration_semantic_adapter="identity",
+        restoration_local_encoder="cnn_seq2seq",
+        restoration_training_stage="align",
     )
     model = attach_restoration_dtw_stages(model, config)
     image = torch.randn(1, 3, 128, 128)
@@ -92,12 +95,12 @@ def test_full_model_training_bundle_has_one_token_per_window():
     assert bundle["primitive"].shape == (1, 7, 128)
     assert bundle["semantic"].shape == (1, 7, 128)
     assert bundle["ink"].shape == (1, 7)
-    assert bundle["restoration"].shape == (1, 7, 1, 128, 32)
-    assert bundle["restoration_target"].shape == (1, 7, 1, 128, 32)
+    assert bundle["restoration"].shape == (1, 7, 3, 128, 32)
+    assert bundle["restoration_target"].shape == (1, 7, 3, 128, 32)
 
 
 
-def test_identity_semantic_adapter_sends_primitive_directly_to_dtw():
+def test_recommended_fusion_is_distinct_from_local_primitive():
     model = EmbeddingModel(
         window_size=32,
         stride=16,
@@ -117,14 +120,17 @@ def test_identity_semantic_adapter_sends_primitive_directly_to_dtw():
         restoration_decoder_channels=16,
         restoration_contrast_scale=0.15,
         restoration_semantic_adapter="identity",
+        restoration_local_encoder="cnn_seq2seq",
+        restoration_training_stage="align",
     )
     model = attach_restoration_dtw_stages(model, config)
     image = torch.randn(1, 3, 128, 128)
     bundle = model(image, return_training_bundle=True)
 
     assert model.vit_encoder.restoration_semantic_adapter == "identity"
-    assert not list(model.vit_encoder.semantic_adapter.parameters())
-    assert torch.allclose(
+    assert hasattr(model.vit_encoder, "fusion_head")
+    assert bundle["semantic"].shape == bundle["primitive"].shape
+    assert not torch.allclose(
         bundle["semantic"], bundle["primitive"], atol=1e-6, rtol=1e-5
     )
 
@@ -151,6 +157,7 @@ def test_cnn_seq2seq_encoder_keeps_one_token_per_32px_window():
         restoration_contrast_scale=0.15,
         restoration_semantic_adapter="identity",
         restoration_local_encoder="cnn_seq2seq",
+        restoration_training_stage="align",
     )
     model = attach_restoration_dtw_stages(model, config)
     image = torch.randn(1, 3, 128, 128)
@@ -159,10 +166,9 @@ def test_cnn_seq2seq_encoder_keeps_one_token_per_32px_window():
     assert model.vit_encoder.restoration_local_encoder == "cnn_seq2seq"
     assert bundle["primitive"].shape == (1, 7, 128)
     assert bundle["semantic"].shape == (1, 7, 128)
-    assert bundle["restoration"].shape == (1, 7, 1, 128, 32)
-    assert torch.allclose(
-        bundle["semantic"], bundle["primitive"], atol=1e-6, rtol=1e-5
-    )
+    assert bundle["restoration"].shape == (1, 7, 3, 128, 32)
+    assert bundle["semantic"].shape == bundle["primitive"].shape
+    assert hasattr(model.vit_encoder, "fusion_head")
 
 
 def test_disabling_horizontal_moves_removes_soft_alternative_paths_when_feasible():
@@ -214,7 +220,7 @@ def test_cnn_seq2seq_token_keeps_spatial_bottleneck_projection():
         base_channels=16,
     )
     assert isinstance(encoder.to_token[1], torch.nn.Linear)
-    assert encoder.to_token[1].in_features == 128 * 8 * 2
+    assert encoder.to_token[1].in_features == 128 * 8 * 8
     assert encoder.to_token[1].out_features == 128
 
 
