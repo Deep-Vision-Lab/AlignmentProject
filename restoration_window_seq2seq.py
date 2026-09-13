@@ -80,12 +80,24 @@ class WindowSequenceCNNEncoder(nn.Module):
 
         # 128x32
         self.encoder = nn.Sequential(
-            ConvBlock(3, c, stride=1, groups=4),       # 128x32
-            ConvBlock(c, c * 2, stride=2, groups=8),   # 64x16
-            ConvBlock(c * 2, c * 3, stride=2, groups=8), # 32x8
-            ConvBlock(c * 3, c * 4, stride=2, groups=8), # 16x4
+            ConvBlock(3, c, stride=1, groups=4),          # 128x32
+            ConvBlock(c, c * 2, stride=2, groups=8),      # 64x16
+            ConvBlock(c * 2, c * 3, stride=2, groups=8),  # 32x8
+            ConvBlock(c * 3, c * 4, stride=2, groups=8),  # 16x4
             ConvBlock(c * 4, self.embed_dim, stride=2, groups=8), # 8x2
-            nn.AdaptiveAvgPool2d((1, 1)),
+        )
+        # IMPORTANT: do not global-average the 8x2 feature map. Restoration
+        # needs to know WHERE strokes occurred inside the 128x32 window.
+        # Flattening preserves spatial position before the learned bottleneck.
+        self.spatial_height = 8
+        self.spatial_width = 2
+        self.to_token = nn.Sequential(
+            nn.Flatten(start_dim=1),
+            nn.Linear(
+                self.embed_dim * self.spatial_height * self.spatial_width,
+                self.embed_dim,
+            ),
+            nn.LayerNorm(self.embed_dim),
         )
 
     def extract_windows(self, line: torch.Tensor) -> torch.Tensor:
@@ -107,7 +119,19 @@ class WindowSequenceCNNEncoder(nn.Module):
         patches = self.extract_windows(line)
         batch, count, channels, height, width = patches.shape
         flat = patches.reshape(batch * count, channels, height, width)
-        encoded = self.encoder(flat).flatten(1)
+        spatial = self.encoder(flat)
+        expected = (
+            batch * count,
+            self.embed_dim,
+            self.spatial_height,
+            self.spatial_width,
+        )
+        if tuple(spatial.shape) != expected:
+            raise RuntimeError(
+                f"Unexpected local CNN feature map {tuple(spatial.shape)}; "
+                f"expected {expected}"
+            )
+        encoded = self.to_token(spatial)
         encoded = encoded.reshape(batch, count, self.embed_dim)
         # Historical patch_embedding contract: [B,D,1,T]
         return encoded.transpose(1, 2).unsqueeze(2).contiguous()
