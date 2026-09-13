@@ -21,12 +21,17 @@ class ConvBlock(nn.Module):
         groups = max(1, min(int(groups), int(out_channels)))
         while out_channels % groups:
             groups -= 1
+        stride_value = (
+            tuple(int(value) for value in stride)
+            if isinstance(stride, (tuple, list))
+            else int(stride)
+        )
         self.block = nn.Sequential(
             nn.Conv2d(
                 int(in_channels),
                 int(out_channels),
                 kernel_size=3,
-                stride=int(stride),
+                stride=stride_value,
                 padding=1,
                 bias=False,
             ),
