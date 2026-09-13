@@ -2,8 +2,15 @@
 """Recommendation 12: overfit eight distinct windows before full training."""
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+
 import torch
 import torch.nn.functional as F
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from restoration_window_seq2seq import (
     WindowSequenceCNNEncoder,
