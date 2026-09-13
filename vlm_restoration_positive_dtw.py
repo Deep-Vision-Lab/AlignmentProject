@@ -84,6 +84,8 @@ def apply_branch_config(P):
     os.environ["REAL_BINARIZE_AUTOCONTRAST"] = "0"
     os.environ["ZERO_SHOT_FOREGROUND_CROP"] = "1"
     os.environ["ZERO_SHOT_PRESERVE_ASPECT"] = "1"
+    os.environ["ZERO_SHOT_SOURCE_GEOMETRY"] = "0"
+    os.environ["LINE_GEOMETRY_MODE"] = "crop-aspect-preserving-rgb"
     P.vit_max_tokens = max(int(getattr(P, "vit_max_tokens", 256)), 256)
     P.restoration_context_layers = int(P.vit_layers)
     P.restoration_fusion = "concat_projection_norm"
