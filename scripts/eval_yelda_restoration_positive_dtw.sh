@@ -3,13 +3,13 @@ set -euo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
-WEIGHTS="${WEIGHTS:-${PROJECT_DIR}/Weights/vit_restore_dtw_s16/model_best.pth}"
+WEIGHTS="${WEIGHTS:-${PROJECT_DIR}/Weights/restore_fused_rgb_dtw_s16/model_best.pth}"
 DATASET="${DATASET:-${PROJECT_DIR}/DataSet/Synthetic63}"
 REPRESENTATION="${REPRESENTATION:-primary}"
 ALIGNMENT_UNIT="${ALIGNMENT_UNIT:-window}"
-IMAGE_PREPROCESSING="${IMAGE_PREPROCESSING:-original}"
+IMAGE_PREPROCESSING="${IMAGE_PREPROCESSING:-training}"
 EVAL_SPLIT="${EVAL_SPLIT:-test}"
-RESULTS_DIR="${RESULTS_DIR:-${PROJECT_DIR}/Results/Evaluation/Yelda/vit_restore_dtw/${EVAL_SPLIT}/${REPRESENTATION}_${IMAGE_PREPROCESSING}_$(date +%Y%m%d_%H%M%S)}"
+RESULTS_DIR="${RESULTS_DIR:-${PROJECT_DIR}/Results/Evaluation/Yelda/restore_fused_rgb_dtw/${EVAL_SPLIT}/${REPRESENTATION}_${IMAGE_PREPROCESSING}_$(date +%Y%m%d_%H%M%S)}"
 
 cd "${PROJECT_DIR}"
 export MPLBACKEND=Agg
