@@ -77,7 +77,12 @@ def apply_branch_config(P):
     P.vit_layers = _env_int("RESTORATION_CONTEXT_LAYERS", 2)
     P.vit_binarize_input = False
     P.real_binarize = False
+    P.real_binarize_autocontrast = False
     P.real_augment = False
+    P.zero_shot_preprocess = True
+    P.zero_shot_preserve_aspect = True
+    P.zero_shot_foreground_crop = True
+    P.zero_shot_source_geometry = False
     # Set these before unified_line_geometry installs its defaults.
     os.environ["SYNTHETIC_BINARIZE"] = "0"
     os.environ["REAL_BINARIZE"] = "0"
