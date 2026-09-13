@@ -29,44 +29,32 @@ def prepare_line(path, domain, image_preprocessing="original"):
     if image_preprocessing != "training":
         raise ValueError(f"Unknown image preprocessing: {image_preprocessing}")
     processor = preprocessing.build_preprocessor(domain, training=False)
+    if hasattr(processor, "preprocess_with_metadata"):
+        processed, geometry = processor.preprocess_with_metadata(original)
+        geometry = dict(geometry)
+        geometry["image_preprocessing"] = "training"
+        geometry.setdefault("autocontrast", bool(processor.autocontrast))
+        geometry.setdefault("auto_invert", bool(processor.auto_invert))
+        return processed, geometry
+
+    # Legacy fallback for old preprocessors.
     processed = processor(original)
-    # Reconstruct only the deterministic horizontal geometry, from the same
-    # foreground detector and rounding rules as the training preprocessor.
     work = original.convert("L")
-    if processor.autocontrast:
-        work = ImageOps.autocontrast(work)
     crop_left = 0
-    if processor.crop_foreground:
-        work = ImageOps.autocontrast(work)
-        mask = preprocessing._ink_mask(np.asarray(work, dtype=np.uint8))
-        ys, xs = np.nonzero(mask)
-        if xs.size >= 4 and ys.size >= 4:
-            x0, x1 = int(xs.min()), int(xs.max()) + 1
-            y0, y1 = int(ys.min()), int(ys.max()) + 1
-            dx = max(2, int(round((x1 - x0) * 0.025)))
-            dy = max(2, int(round((y1 - y0) * 0.15)))
-            crop_left = max(0, x0 - dx)
-            work = work.crop((crop_left, max(0, y0 - dy), min(work.width, x1 + dx), min(work.height, y1 + dy)))
     height, width = processor.size
-    if processor.preserve_aspect:
-        work = ImageOps.autocontrast(work)
-        if preprocessing._border_mean(np.asarray(work, dtype=np.uint8)) < 127.5:
-            work = ImageOps.invert(work)
-        _, y0, _, y1 = _ink_bbox(work)
-        ratio = min(0.95, max(0.20, float(processor.target_ink_height_ratio)))
-        desired = max(8, min(height - 2, int(round(height * ratio))))
-        scale = desired / float(max(1, y1 - y0))
-        new_width = min(width, max(1, int(round(work.width * scale))))
-        offset = max(0, width - new_width) // 2
-    else:
-        new_width, offset = width, 0
+    new_width, offset = width, 0
     geometry = {
         "image_preprocessing": "training",
-        "source_width": original.width, "source_height": original.height,
-        "crop_left": crop_left, "crop_width": work.width,
-        "scale_x": new_width / float(work.width), "offset_x": offset,
-        "canvas_width": width, "canvas_height": height,
-        "binarize": processor.binarize, "crop_foreground": processor.crop_foreground,
+        "source_width": original.width,
+        "source_height": original.height,
+        "crop_left": crop_left,
+        "crop_width": work.width,
+        "scale_x": new_width / float(max(1, work.width)),
+        "offset_x": offset,
+        "canvas_width": width,
+        "canvas_height": height,
+        "binarize": processor.binarize,
+        "crop_foreground": processor.crop_foreground,
         "preserve_aspect": processor.preserve_aspect,
     }
     return processed, geometry
