@@ -215,6 +215,24 @@ Interpretation:
   the restoration representation.
 """
     (output / "summary.txt").write_text(summary, encoding="utf-8")
+    (output / "metrics.json").write_text(
+        json.dumps(
+            {
+                "image": str(image_path),
+                "selected_x0": int(x0),
+                "selected_x1": int(x0 + SEGMENT_WIDTH),
+                "initial_l1": float(losses[0]),
+                "final_l1": float(losses[-1]),
+                "loss_ratio": float(final_ratio),
+                "target_diversity": float(target_diversity),
+                "output_diversity": float(output_diversity),
+                "swap_delta": float(swap_delta),
+                "passed": bool(passed),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     print(summary)
     return 0 if passed else 2
 
