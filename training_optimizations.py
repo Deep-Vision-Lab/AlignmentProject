@@ -761,6 +761,13 @@ def optimized_train(train_module):
         weights_every = max(1, _integer("MODEL_WEIGHTS_EVERY_N_EPOCHS", 2))
 
         for epoch in range(start_epoch, args.epochs):
+            epoch_start_hook = getattr(train_module, "epoch_start_hook", None)
+            if callable(epoch_start_hook):
+                epoch_start_hook(
+                    epoch=epoch + 1,
+                    total_epochs=args.epochs,
+                )
+
             if train_sampler is not None:
                 train_sampler.set_epoch(epoch)
             train_module.CTX.barrier()
@@ -844,6 +851,20 @@ def optimized_train(train_module):
                     )
                     atomic_torch_save(
                         checkpoint, directory / "checkpoint_latest.pth"
+                    )
+
+                diagnostic_hook = getattr(
+                    train_module, "epoch_diagnostic_hook", None
+                )
+                if callable(diagnostic_hook):
+                    diagnostic_hook(
+                        model=train_module._unwrap_model(model),
+                        text_encoder=text_encoder,
+                        valid_loader=valid_loader,
+                        epoch=epoch + 1,
+                        job_id=args.job_id,
+                        config=config,
+                        device=train_module.P.device,
                     )
 
                 report_dir = Path("logs") / "performance"
