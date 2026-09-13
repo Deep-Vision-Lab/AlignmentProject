@@ -49,7 +49,7 @@ def parse_args():
     parser.add_argument(
         "--image-preprocessing",
         choices=("original", "training"),
-        default="original",
+        default="training",
     )
     parser.add_argument("--top-k", type=int, default=5)
     return parser.parse_args()
@@ -196,11 +196,21 @@ def matrix_correlation(left: np.ndarray, right: np.ndarray):
 
 
 def edge_mae(pred: np.ndarray, target: np.ndarray):
-    px = np.diff(pred, axis=1)
-    tx = np.diff(target, axis=1)
-    py = np.diff(pred, axis=0)
-    ty = np.diff(target, axis=0)
-    return 0.5 * (float(np.mean(np.abs(px - tx))) + float(np.mean(np.abs(py - ty))))
+    # HxW for legacy stroke maps, CxHxW for recommended RGB restoration.
+    if pred.ndim == 3:
+        px = np.diff(pred, axis=2)
+        tx = np.diff(target, axis=2)
+        py = np.diff(pred, axis=1)
+        ty = np.diff(target, axis=1)
+    else:
+        px = np.diff(pred, axis=1)
+        tx = np.diff(target, axis=1)
+        py = np.diff(pred, axis=0)
+        ty = np.diff(target, axis=0)
+    return 0.5 * (
+        float(np.mean(np.abs(px - tx)))
+        + float(np.mean(np.abs(py - ty)))
+    )
 
 
 def save_matrix(path: Path, matrix, title, xlabel, ylabel, path_pairs=None):
@@ -286,11 +296,19 @@ def save_window_card(
     axes[0].set_title(f"W{window_index} original\nx={x0}:{x1}, ink={ink:.3f}")
     axes[0].axis("off")
 
-    axes[1].imshow(restoration_target, cmap="gray", vmin=0.0, vmax=1.0)
-    axes[1].set_title("restoration target")
+    def display_image(value):
+        value = np.asarray(value)
+        if value.ndim == 3 and value.shape[0] in {1, 3}:
+            value = np.transpose(value, (1, 2, 0))
+        if value.ndim == 3 and value.shape[-1] == 1:
+            value = value[..., 0]
+        return value
+
+    axes[1].imshow(display_image(restoration_target), vmin=0.0, vmax=1.0)
+    axes[1].set_title("RGB restoration target")
     axes[1].axis("off")
 
-    axes[2].imshow(restoration_prediction, cmap="gray", vmin=0.0, vmax=1.0)
+    axes[2].imshow(display_image(restoration_prediction), vmin=0.0, vmax=1.0)
     axes[2].set_title(
         f"reconstruction\nMAE={recon_mae:.3f}, edge={recon_edge_mae:.3f}"
     )
@@ -360,8 +378,8 @@ def main():
     primitive = bundle["primitive"][0].float()
     semantic = bundle["semantic"][0].float()
     ink = bundle["ink"][0].float()
-    reconstruction = bundle["restoration"][0, :, 0].float()
-    restoration_target = bundle["restoration_target"][0, :, 0].float()
+    reconstruction = bundle["restoration"][0].float()
+    restoration_target = bundle["restoration_target"][0].float()
 
     n_windows = int(semantic.shape[0])
     window_size = int(models.image_model.window_size)
@@ -381,8 +399,8 @@ def main():
 
     transcript_similarity = semantic_unit @ transcript_vectors.T
     costs = 1.0 - transcript_similarity
-    min_ink = float(config.get("positive_letter_dtw_min_ink", 0.01))
-    valid_mask = ink >= min_ink
+    min_ink = float(config.get("positive_letter_dtw_min_ink", 0.0))
+    valid_mask = ink.bool()
     if not bool(valid_mask.any()):
         valid_mask = torch.ones_like(ink, dtype=torch.bool)
     valid_indices = torch.nonzero(valid_mask, as_tuple=False).flatten()
@@ -494,7 +512,10 @@ def main():
     p_raw_norm = torch.linalg.vector_norm(primitive_raw, dim=-1).detach().cpu().numpy()
     l_norm = torch.linalg.vector_norm(semantic, dim=-1).detach().cpu().numpy()
     p_l_cos = F.cosine_similarity(primitive, semantic, dim=-1).detach().cpu().numpy()
-    reconstruction_mae = np.mean(np.abs(pred_np - target_np), axis=(1, 2))
+    reconstruction_mae = np.mean(
+        np.abs(pred_np - target_np),
+        axis=tuple(range(1, pred_np.ndim)),
+    )
     reconstruction_edge_mae = np.asarray(
         [edge_mae(pred_np[i], target_np[i]) for i in range(n_windows)],
         dtype=np.float32,
