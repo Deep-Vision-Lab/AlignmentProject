@@ -12,7 +12,8 @@ results to Results/Diagnostics/restoration_points/point_03/.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import importlib
+from runpy import run_path
+import os
 from pathlib import Path
 import sys
 
@@ -87,9 +88,9 @@ def find_restormer_assets(root: Path | None = None) -> RestormerAssets:
 def load_restormer(assets: RestormerAssets, device="cpu"):
     if not assets.ready or assets.repo is None or assets.checkpoint is None:
         raise RuntimeError(assets.message)
-    sys.path.insert(0, str(assets.repo))
-    module = importlib.import_module("basicsr.models.archs.restormer_arch")
-    Restormer = module.Restormer
+    arch_path = assets.repo / "basicsr" / "models" / "archs" / "restormer_arch.py"
+    namespace = run_path(str(arch_path))
+    Restormer = namespace["Restormer"]
     checkpoint_name = assets.checkpoint.name.lower()
     # The official Restormer demo uses BiasFree LayerNorm for Real Denoising
     # and Gaussian Color Denoising checkpoints.
@@ -114,7 +115,11 @@ def load_restormer(assets: RestormerAssets, device="cpu"):
         dual_pixel_task=False,
     ).to(device)
     model._alignment_probe_layer_norm_type = layer_norm_type
-    payload = torch.load(assets.checkpoint, map_location=device)
+    payload = torch.load(
+        assets.checkpoint,
+        map_location=device,
+        weights_only=False,
+    )
     if isinstance(payload, dict):
         state = payload.get("params", payload.get("state_dict", payload))
     else:
@@ -124,10 +129,7 @@ def load_restormer(assets: RestormerAssets, device="cpu"):
         for key, value in state.items()
         if torch.is_tensor(value)
     }
-    incompatible = model.load_state_dict(cleaned, strict=False)
-    loaded_count = len(cleaned) - len(incompatible.unexpected_keys)
-    if loaded_count <= 0:
-        raise RuntimeError(f"No compatible Restormer tensors loaded from {assets.checkpoint}")
+    model.load_state_dict(cleaned, strict=True)
     return model
 
 
@@ -209,7 +211,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = load_restormer(assets, device=device)
     model.train()
-    windows = _manuscript_like_windows(device)
+    windows, window_source = _probe_windows(device)
 
     latent = {}
     handle = model.latent.register_forward_hook(
