@@ -56,7 +56,17 @@ def find_restormer_assets(root: Path | None = None) -> RestormerAssets:
     for folder in folders:
         if folder.is_dir():
             weight_candidates.extend(sorted(folder.rglob("*.pth")))
-    checkpoint = weight_candidates[0] if weight_candidates else None
+    checkpoint = None
+    if weight_candidates:
+        preferred_names = (
+            "real_denoising.pth",
+            "gaussian_color_denoising_blind.pth",
+        )
+        by_name = {item.name: item for item in weight_candidates}
+        checkpoint = next(
+            (by_name[name] for name in preferred_names if name in by_name),
+            weight_candidates[0],
+        )
     ready = repo is not None and checkpoint is not None
     if ready:
         message = f"Restormer ready: repo={repo} checkpoint={checkpoint}"
