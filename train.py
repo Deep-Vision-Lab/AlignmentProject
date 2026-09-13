@@ -33,8 +33,8 @@ import Parameters as P
 import model_backend
 
 # Import the branch backend before exporting environment/config or constructing
-# dataloaders. This branch changes the text encoder to a frozen char codebook and
-# disables every negative/pair loss.
+# dataloaders. This branch changes the text encoder to a frozen char codebook,
+# enables transcript negatives, and keeps evaluation image-only.
 P.export_environment()
 
 
@@ -104,7 +104,7 @@ from unified_line_geometry import install_training_geometry
 from vit_checkpoint_migration import install as install_vit_checkpoint_migration
 
 # Install shared optimization/runtime helpers first. The branch backend then
-# replaces compute_batch_loss with the minimal restoration + positive-DTW loss.
+# replaces compute_batch_loss with RGB restoration + positive/negative DTW.
 install_optimizations(base)
 
 install_vit_checkpoint_migration(base)
@@ -241,6 +241,8 @@ def _validate_constructed_backend(model: nn.Module) -> None:
         raise RuntimeError("Restoration-DTW backend is missing semantic_adapter module")
     if not any("stroke_decoder" in key for key in keys):
         raise RuntimeError("Restoration-DTW backend is missing stroke_decoder parameters")
+    if not any("fusion_head" in key for key in keys):
+        raise RuntimeError("Restoration-DTW backend is missing local/context fusion parameters")
 
 
 def main() -> None:
@@ -315,7 +317,8 @@ def main() -> None:
             )
             print(
                 f"  objective    = {P.positive_letter_dtw_weight}*positive_letter_DTW "
-                f"+ {P.restoration_weight}*stroke_restoration",
+                f"+ {P.restoration_contrastive_weight}*negative_margin_DTW "
+                f"+ {P.restoration_weight}*RGB_restoration",
                 flush=True,
             )
             if P.restoration_training_stage == "align":
@@ -335,9 +338,9 @@ def main() -> None:
                 flush=True,
             )
             print(
-                "  representations= primitive(stroke) -> "
-                f"{P.restoration_semantic_adapter} -> letter-DTW; "
-                "no active Transformer context",
+                "  representations= local RGB-restoration token -> "
+                f"{P.restoration_context_layers}-layer Transformer context -> "
+                "concat+projection+L2 fused DTW vector",
                 flush=True,
             )
             print(
