@@ -151,9 +151,18 @@ def configure_geometry(config, image_preprocessing="original"):
         if key in config:
             value = config[key]
             os.environ[env] = str(int(value)) if isinstance(value, bool) else str(value)
-    if config.get("line_geometry_mode", "source-compatible-height") != "source-compatible-height":
-        raise ValueError("Unsupported checkpoint geometry")
-    os.environ["ZERO_SHOT_SOURCE_GEOMETRY"] = "1"
+    geometry_mode = str(
+        config.get("line_geometry_mode", "source-compatible-height")
+    )
+    if geometry_mode not in {
+        "source-compatible-height",
+        "crop-aspect-preserving-rgb",
+    }:
+        raise ValueError(f"Unsupported checkpoint geometry: {geometry_mode}")
+    os.environ["LINE_GEOMETRY_MODE"] = geometry_mode
+    os.environ["ZERO_SHOT_SOURCE_GEOMETRY"] = (
+        "1" if geometry_mode == "source-compatible-height" else "0"
+    )
     from unified_line_geometry import install_evaluation_geometry
     return install_evaluation_geometry()
 
