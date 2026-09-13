@@ -1,12 +1,13 @@
-"""Single-line Arabic window encoder with stroke restoration and positive-only DTW.
+"""Arabic window encoder with RGB restoration, sequence context and DTW.
 
-Active supervision is intentionally minimal:
-  1) stroke restoration from primitive window tokens;
-  2) positive monotonic letter DTW against a fixed frozen character codebook.
+Recommended pipeline:
+  crop outer margins -> proportional resize -> overlapping real RGB windows ->
+  local CNN -> positional Transformer context -> local/context fusion -> DTW.
 
-There are no negative transcripts, no image-image contrastive loss, no pair
-cross-attention, no contextual Span-DTW, no dense alphabet classifier, and no
-variance/context-consistency auxiliary losses in this experiment.
+The local token alone must reconstruct its complete original RGB window. During
+alignment training, positive and negative image-text DTW costs supervise the
+fused representation while the text character codebook remains frozen. Final
+evaluation remains image-only.
 """
 from __future__ import annotations
 
@@ -17,6 +18,14 @@ import unicodedata
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from restoration_recommended_components import (
+    LocalContextFusion,
+    contrastive_margin_from_costs,
+    denormalize_imagenet_windows,
+    line_padding_masks,
+    masked_image_restoration_loss,
+)
 
 DEFAULT_ARABIC_LETTERS = "ءآأؤإئابتثجحخدذرزسشصضطظعغفقكلمنهويىة"
 
@@ -61,18 +70,24 @@ def apply_branch_config(P):
     if P.restoration_training_stage not in {"pretrain", "align"}:
         raise ValueError("RESTORATION_TRAINING_STAGE must be pretrain or align")
 
-    # Visual geometry. The Transformer is not part of the active architecture;
-    # one frozen layer remains only because the shared ViT container requires it.
+    # Real RGB geometry: crop only outer margins, keep internal spaces, resize
+    # the complete line proportionally, then slice overlapping windows.
     P.window_size = 32
     P.stride_ratio = _env_float("RESTORATION_DTW_STRIDE_RATIO", 0.50)
-    P.vit_layers = 1
+    P.vit_layers = _env_int("RESTORATION_CONTEXT_LAYERS", 2)
     P.vit_binarize_input = False
     P.real_binarize = False
-    # Existing real augmentation is designed around binary ink. Keep the first
-    # minimal experiment on the original resized line rather than mixing in a
-    # different preprocessing objective.
     P.real_augment = False
+    # Set these before unified_line_geometry installs its defaults.
+    os.environ["SYNTHETIC_BINARIZE"] = "0"
+    os.environ["REAL_BINARIZE"] = "0"
+    os.environ["REAL_BINARIZE_AUTOCONTRAST"] = "0"
+    os.environ["ZERO_SHOT_FOREGROUND_CROP"] = "1"
+    os.environ["ZERO_SHOT_PRESERVE_ASPECT"] = "1"
     P.vit_max_tokens = max(int(getattr(P, "vit_max_tokens", 256)), 256)
+    P.restoration_context_layers = int(P.vit_layers)
+    P.restoration_fusion = "concat_projection_norm"
+    P.restoration_target_mode = "original_rgb_window"
     # No Span-DTW/JAX objective is active on this branch.
     P.span_dtw_backend = "torch"
 
@@ -114,8 +129,16 @@ def apply_branch_config(P):
     P.keep_paired_lines_for_independent_training = True
     P.image_text_loss_on_both_lines = True
 
-    # Remove all negative/pair/contextual auxiliary supervision.
-    P.num_negatives = 0
+    # Transcript negatives are used only during training. Image-image evaluation
+    # remains independent of text. Ten negatives matches the established project
+    # setup and can be changed through RESTORATION_NUM_NEGATIVES.
+    P.num_negatives = _env_int("RESTORATION_NUM_NEGATIVES", 10)
+    P.restoration_contrastive_weight = _env_float(
+        "RESTORATION_CONTRASTIVE_WEIGHT", 0.50
+    )
+    P.restoration_contrastive_margin = _env_float(
+        "RESTORATION_CONTRASTIVE_MARGIN", 0.20
+    )
     P.use_local_hard_negatives = False
     P.local_hard_negative_weight = 0.0
     P.use_image_pair_contrastive = False
@@ -161,16 +184,19 @@ def apply_branch_config(P):
         raise ValueError(
             "POSITIVE_LETTER_DTW_COST_MODE must be cosine or full_alphabet_nll"
         )
-    P.positive_letter_dtw_min_ink = _env_float("POSITIVE_LETTER_DTW_MIN_INK", 0.01)
+    # Internal blank gaps remain part of sequence geometry. Outer padding is
+    # masked explicitly with token_valid instead of deleting low-ink windows.
+    P.positive_letter_dtw_min_ink = 0.0
 
     if P.restoration_training_stage == "pretrain":
         P.positive_letter_dtw_weight = 0.0
+        P.restoration_contrastive_weight = 0.0
         default_restoration_weight = 1.0
     else:
         P.positive_letter_dtw_weight = _env_float(
             "POSITIVE_LETTER_DTW_WEIGHT", 1.0
         )
-        default_restoration_weight = 0.05
+        default_restoration_weight = 0.10
 
     # Stroke restoration is pretraining supervision, then a small anti-forgetting
     # regularizer during DTW alignment.
@@ -179,13 +205,13 @@ def apply_branch_config(P):
     )
     P.restoration_pixel_weight = _env_float("RESTORATION_PIXEL_WEIGHT", 1.0)
     P.restoration_edge_weight = _env_float("RESTORATION_EDGE_WEIGHT", 0.50)
-    P.restoration_dice_weight = _env_float("RESTORATION_DICE_WEIGHT", 0.50)
+    # Dice/foreground weighting were for binary stroke masks. The new target is
+    # the complete RGB window, so reconstruction uses pixel+edge+structure.
+    P.restoration_dice_weight = 0.0
     P.restoration_structure_weight = _env_float(
         "RESTORATION_STRUCTURE_WEIGHT", 0.25
     )
-    P.restoration_foreground_weight = _env_float(
-        "RESTORATION_FOREGROUND_WEIGHT", 2.0
-    )
+    P.restoration_foreground_weight = 0.0
     P.restoration_contrast_scale = _env_float("RESTORATION_CONTRAST_SCALE", 0.15)
     P.restoration_decoder_channels = _env_int("RESTORATION_DECODER_CHANNELS", 128)
 
@@ -452,61 +478,21 @@ def _soft_stroke_target_from_normalized_patches(patches: torch.Tensor, contrast_
     return target.unsqueeze(2)
 
 
-def stroke_restoration_loss(P, prediction: torch.Tensor, target: torch.Tensor):
-    prediction = prediction.float()
-    target = target.float()
-    foreground_weight = max(float(P.restoration_foreground_weight), 0.0)
-    weights = 1.0 + foreground_weight * target
-    pixel = (weights * (prediction - target).abs()).sum() / weights.sum().clamp_min(1.0)
-
-    pred_dx = prediction[..., :, 1:] - prediction[..., :, :-1]
-    target_dx = target[..., :, 1:] - target[..., :, :-1]
-    pred_dy = prediction[..., 1:, :] - prediction[..., :-1, :]
-    target_dy = target[..., 1:, :] - target[..., :-1, :]
-    edge = 0.5 * (
-        (pred_dx - target_dx).abs().mean()
-        + (pred_dy - target_dy).abs().mean()
+def stroke_restoration_loss(
+    P,
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    valid_mask: torch.Tensor | None = None,
+):
+    """Complete RGB-window reconstruction with artificial-padding masking."""
+    return masked_image_restoration_loss(
+        prediction,
+        target,
+        valid_mask,
+        pixel_weight=float(P.restoration_pixel_weight),
+        edge_weight=float(P.restoration_edge_weight),
+        structure_weight=float(P.restoration_structure_weight),
     )
-
-    # Soft Dice directly rewards foreground/stroke overlap. Weighted L1 alone
-    # can otherwise prefer a smooth average when most pixels are background.
-    reduce_dims = tuple(range(2, prediction.ndim))
-    intersection = (prediction * target).sum(dim=reduce_dims)
-    denominator = prediction.sum(dim=reduce_dims) + target.sum(dim=reduce_dims)
-    dice_score = (2.0 * intersection + 1e-6) / (denominator + 1e-6)
-    dice = 1.0 - dice_score.mean()
-
-    # Match the pairwise structure of reconstructed windows to the pairwise
-    # structure of their targets. If every decoded window becomes the same
-    # average template, prediction similarity is ~1 everywhere while target
-    # similarity is not, so this term becomes large.
-    pred_flat = prediction.flatten(start_dim=2)
-    target_flat = target.flatten(start_dim=2)
-    pred_flat = pred_flat - pred_flat.mean(dim=-1, keepdim=True)
-    target_flat = target_flat - target_flat.mean(dim=-1, keepdim=True)
-    pred_unit = F.normalize(pred_flat, p=2, dim=-1, eps=1e-6)
-    target_unit = F.normalize(target_flat, p=2, dim=-1, eps=1e-6)
-    pred_similarity = torch.matmul(pred_unit, pred_unit.transpose(-1, -2))
-    target_similarity = torch.matmul(target_unit, target_unit.transpose(-1, -2))
-    count = int(prediction.shape[1])
-    if count > 1:
-        mask = ~torch.eye(
-            count, dtype=torch.bool, device=prediction.device
-        ).unsqueeze(0)
-        structure = (
-            pred_similarity - target_similarity
-        ).abs().masked_select(mask.expand_as(pred_similarity)).mean()
-    else:
-        structure = prediction.sum() * 0.0
-
-    total = (
-        float(P.restoration_pixel_weight) * pixel
-        + float(P.restoration_edge_weight) * edge
-        + float(P.restoration_dice_weight) * dice
-        + float(P.restoration_structure_weight) * structure
-    )
-    return total, pixel, edge, dice, structure
-
 
 def attach_restoration_dtw_stages(model, P):
     """Install primitive->semantic and primitive->restoration branches."""
@@ -566,6 +552,9 @@ def attach_restoration_dtw_stages(model, P):
         )
     vit.restoration_semantic_adapter = semantic_mode
 
+    # The active alignment representation is always a local/context fusion.
+    vit.fusion_head = LocalContextFusion(dim).to(device=device, dtype=dtype)
+
     vit.stroke_decoder = decoder_class(
         dim,
         output_height=int(vit.input_height),
@@ -573,13 +562,16 @@ def attach_restoration_dtw_stages(model, P):
         channels=int(P.restoration_decoder_channels),
     ).to(device=device, dtype=dtype)
 
-    # The global Transformer and position embeddings are deliberately absent from
-    # this experiment's computation graph. Freeze them so DDP never expects grads.
+    # Stage A learns only the local restoration bottleneck. Stage B unfreezes
+    # positional Transformer context and the concat-projection fusion head.
+    context_trainable = str(getattr(P, "restoration_training_stage", "align")) == "align"
     for parameter in vit.encoder.parameters():
-        parameter.requires_grad_(False)
-    vit.position_embedding.requires_grad_(False)
+        parameter.requires_grad_(context_trainable)
+    vit.position_embedding.requires_grad_(context_trainable)
+    for parameter in vit.fusion_head.parameters():
+        parameter.requires_grad_(context_trainable)
 
-    def minimal_window_forward(self, image, *, use_flip, return_model_input=False):
+    def encode_restoration_sequence(self, image, *, use_flip):
         if image.ndim != 4 or image.shape[1] != 3:
             raise ValueError("Expected image [B,3,H,W]")
         if int(image.shape[2]) != self.input_height:
@@ -587,19 +579,41 @@ def attach_restoration_dtw_stages(model, P):
         if int(image.shape[3]) < self.window_size:
             raise ValueError("Input width is smaller than the window width")
 
-        model_input = binarize_three_channel_input(image) if self.binarize_input else image
+        # The branch preprocessor already preserves RGB; no binarization/corruption.
+        model_input = image
         tokens = self.patch_embedding(model_input)
         if tokens.shape[2] != 1:
             raise RuntimeError("Full-height patch projection must produce one token row")
-        primitive = tokens.squeeze(2).transpose(1, 2).contiguous()
+        local = tokens.squeeze(2).transpose(1, 2).contiguous()
         if use_flip:
-            primitive = torch.flip(primitive, dims=[1])
-        primitive = self.local_norm(primitive)
-        semantic = self.semantic_adapter(primitive)
-        if return_model_input:
-            return semantic, primitive, model_input
-        return semantic, primitive
+            local = torch.flip(local, dims=[1])
+        local = self.local_norm(local)
 
+        token_valid, pixel_valid = line_padding_masks(
+            model_input,
+            window_size=self.window_size,
+            stride=self.stride,
+            use_flip=use_flip,
+        )
+        positional = local + self._position_tokens(local.shape[1]).to(
+            dtype=local.dtype, device=local.device
+        )
+        contextual = self.encoder(
+            self.input_dropout(positional),
+            src_key_padding_mask=~token_valid,
+        )
+        fused = self.fusion_head(local, contextual)
+        return fused, local, contextual, model_input, token_valid, pixel_valid
+
+    def minimal_window_forward(self, image, *, use_flip, return_model_input=False):
+        fused, local, _contextual, model_input, _token_valid, _pixel_valid = (
+            self.encode_restoration_sequence(image, use_flip=use_flip)
+        )
+        if return_model_input:
+            return fused, local, model_input
+        return fused, local
+
+    vit.encode_restoration_sequence = MethodType(encode_restoration_sequence, vit)
     vit.forward = MethodType(minimal_window_forward, vit)
 
     original_forward = model.forward
@@ -613,39 +627,54 @@ def attach_restoration_dtw_stages(model, P):
         return_grouped=False,
         return_training_bundle=False,
     ):
-        if not return_training_bundle:
-            return original_forward(
-                image,
-                show_dims=show_dims,
-                return_local=return_local,
-                return_ink=return_ink,
-                return_grouped=return_grouped,
+        fused, local, contextual, model_input, token_valid, pixel_valid = (
+            self.vit_encoder.encode_restoration_sequence(
+                image, use_flip=self.use_flip
             )
-
-        semantic, primitive, model_input = self.vit_encoder(
-            image,
-            use_flip=self.use_flip,
-            return_model_input=True,
         )
         patches = sliding_window(model_input, self.window_size, self.stride)
         if self.use_flip:
             patches = torch.flip(patches, dims=[1])
-        ink = window_ink_ratio_from_patches(patches)
-        if int(ink.shape[1]) != int(primitive.shape[1]):
+        if int(patches.shape[1]) != int(local.shape[1]):
             raise RuntimeError("Token/window count mismatch in restoration branch")
 
-        restoration = self.vit_encoder.stroke_decoder(primitive)
-        target = _soft_stroke_target_from_normalized_patches(
-            patches, float(P.restoration_contrast_scale)
-        ).to(device=restoration.device)
+        fused_out = self.vision_norm(fused)
+        local_out = self.vision_norm(local)
 
+        if not return_training_bundle:
+            if show_dims:
+                print(
+                    "image embeddings: restoration recommended "
+                    f"fused={tuple(fused_out.shape)} local={tuple(local_out.shape)} "
+                    f"context={tuple(contextual.shape)}",
+                    flush=True,
+                )
+            outputs = [fused_out]
+            if return_local:
+                outputs.append(local_out)
+            if return_grouped:
+                outputs.append(local_out)
+            if return_ink:
+                # Evaluation uses this as a validity mask. Internal blank spaces
+                # remain valid; only outer artificial padding becomes zero.
+                outputs.append(token_valid.float())
+            return outputs[0] if len(outputs) == 1 else tuple(outputs)
+
+        restoration = self.vit_encoder.stroke_decoder(local)
+        target = denormalize_imagenet_windows(patches).to(
+            device=restoration.device, dtype=restoration.dtype
+        )
         return {
-            "semantic": self.vision_norm(semantic),
-            "primitive": self.vision_norm(primitive),
-            "primitive_raw": primitive,
-            "ink": ink,
+            "semantic": fused_out,
+            "fused": fused_out,
+            "primitive": local_out,
+            "primitive_raw": local,
+            "contextual": self.vision_norm(contextual),
+            "ink": token_valid.float(),
+            "token_valid": token_valid,
             "restoration": restoration,
             "restoration_target": target,
+            "restoration_valid_mask": pixel_valid.to(restoration.device),
         }
 
     model.forward = MethodType(model_forward, model)
@@ -708,9 +737,7 @@ def positive_letter_dtw_loss(P, text_encoder, semantic_tokens, ink_ratios, posit
 
         visual = semantic_tokens[sample_index]
         if ink_ratios is not None:
-            mask = ink_ratios[sample_index].to(visual.device).float() >= float(
-                P.positive_letter_dtw_min_ink
-            )
+            mask = ink_ratios[sample_index].to(visual.device).bool()
             if bool(mask.any()):
                 visual = visual[mask]
         if visual.shape[0] == 0:
@@ -754,6 +781,90 @@ def positive_letter_dtw_loss(P, text_encoder, semantic_tokens, ink_ratios, posit
         "dtw_gamma": float(P.positive_letter_dtw_gamma),
         "dtw_vertical_penalty": float(P.positive_letter_dtw_vertical_penalty),
         "dtw_horizontal_penalty": float(P.positive_letter_dtw_horizontal_penalty),
+    }
+
+
+def negative_letter_dtw_margin_loss(
+    P,
+    text_encoder,
+    semantic_tokens,
+    token_valid,
+    positive_texts,
+    negative_texts,
+):
+    """Contrast positive transcript DTW against per-sample negative transcripts."""
+    if not negative_texts or float(P.restoration_contrastive_weight) <= 0.0:
+        return semantic_tokens.sum() * 0.0, {
+            "negative_letter_dtw": 0.0,
+            "contrastive_margin_loss": 0.0,
+        }
+
+    sample_losses = []
+    negative_cost_values = []
+    for sample_index, positive_text in enumerate(positive_texts):
+        positives = _clean_letters(positive_text)
+        if not positives:
+            continue
+        visual = semantic_tokens[sample_index]
+        if token_valid is not None:
+            valid = token_valid[sample_index].to(visual.device).bool()
+            if bool(valid.any()):
+                visual = visual[valid]
+        if visual.shape[0] == 0:
+            continue
+
+        pos_costs = letter_dtw_cost_matrix(P, text_encoder, visual, positives)
+        positive_cost = _soft_dtw_cost_matrix(
+            pos_costs,
+            gamma=float(P.positive_letter_dtw_gamma),
+            vertical_penalty=float(P.positive_letter_dtw_vertical_penalty),
+            horizontal_penalty=float(P.positive_letter_dtw_horizontal_penalty),
+            position_prior_weight=float(P.positive_letter_dtw_position_prior),
+            disable_horizontal_when_feasible=bool(
+                P.positive_letter_dtw_disable_horizontal_when_feasible
+            ),
+        )
+        sample_negative_costs = []
+        for negative_text in negative_texts[sample_index]:
+            negative_letters = _clean_letters(negative_text)
+            if not negative_letters:
+                continue
+            neg_costs = letter_dtw_cost_matrix(
+                P, text_encoder, visual, negative_letters
+            )
+            negative_cost = _soft_dtw_cost_matrix(
+                neg_costs,
+                gamma=float(P.positive_letter_dtw_gamma),
+                vertical_penalty=float(P.positive_letter_dtw_vertical_penalty),
+                horizontal_penalty=float(P.positive_letter_dtw_horizontal_penalty),
+                position_prior_weight=float(P.positive_letter_dtw_position_prior),
+                disable_horizontal_when_feasible=bool(
+                    P.positive_letter_dtw_disable_horizontal_when_feasible
+                ),
+            )
+            sample_negative_costs.append(negative_cost)
+            negative_cost_values.append(float(negative_cost.detach().item()))
+        if sample_negative_costs:
+            sample_losses.append(
+                contrastive_margin_from_costs(
+                    positive_cost,
+                    sample_negative_costs,
+                    float(P.restoration_contrastive_margin),
+                )
+            )
+
+    if not sample_losses:
+        zero = semantic_tokens.sum() * 0.0
+        return zero, {
+            "negative_letter_dtw": 0.0,
+            "contrastive_margin_loss": 0.0,
+        }
+    loss = torch.stack(sample_losses).mean()
+    return loss, {
+        "negative_letter_dtw": (
+            sum(negative_cost_values) / max(1, len(negative_cost_values))
+        ),
+        "contrastive_margin_loss": float(loss.detach().item()),
     }
 
 
@@ -837,7 +948,9 @@ def install_training_objective(train_module):
 
         train_module._load_initial_states = load_initial_states
 
-    def single_line_loss(image_embedder, text_encoder, images, texts):
+    def single_line_loss(
+        image_embedder, text_encoder, images, texts, negative_texts=None
+    ):
         with train_module.autocast(
             dtype=train_module.AMP_DTYPE,
             enabled=train_module.USE_AMP,
@@ -867,27 +980,40 @@ def install_training_objective(train_module):
                 ),
             }
 
+        contrastive, contrastive_stats = negative_letter_dtw_margin_loss(
+            train_module.P,
+            text_encoder,
+            bundle["semantic"],
+            bundle["token_valid"],
+            texts,
+            negative_texts,
+        )
         restoration, pixel, edge, dice, structure = stroke_restoration_loss(
             train_module.P,
             bundle["restoration"],
             bundle["restoration_target"],
+            bundle["restoration_valid_mask"],
         )
         total = (
             float(train_module.P.positive_letter_dtw_weight) * dtw
+            + float(train_module.P.restoration_contrastive_weight) * contrastive
             + float(train_module.P.restoration_weight) * restoration
         )
         stats = {
             **dtw_stats,
+            **contrastive_stats,
             "restoration_loss": float(restoration.detach().item()),
             "restoration_pixel": float(pixel.detach().item()),
             "restoration_edge": float(edge.detach().item()),
             "restoration_dice": float(dice.detach().item()),
             "restoration_structure": float(structure.detach().item()),
             "norm_pos": float(dtw.detach().item()),
-            "norm_neg": float("nan"),
+            "norm_neg": float(contrastive_stats["negative_letter_dtw"]),
             "cost_pos": float(dtw.detach().item()),
-            "cost_neg": float("nan"),
-            "gap": float("nan"),
+            "cost_neg": float(contrastive_stats["negative_letter_dtw"]),
+            "gap": float(
+                contrastive_stats["negative_letter_dtw"] - float(dtw.detach().item())
+            ),
             "local_hard_neg": 0.0,
             "image_pair_loss": 0.0,
             "order_loss": 0.0,
@@ -903,10 +1029,18 @@ def install_training_objective(train_module):
             images1 = batch["images1"].to(train_module.P.device, non_blocking=True)
             images2 = batch["images2"].to(train_module.P.device, non_blocking=True)
             loss1, stats1 = single_line_loss(
-                image_embedder, text_encoder, images1, batch["texts1"]
+                image_embedder,
+                text_encoder,
+                images1,
+                batch["texts1"],
+                batch.get("neg_texts1"),
             )
             loss2, stats2 = single_line_loss(
-                image_embedder, text_encoder, images2, batch["texts2"]
+                image_embedder,
+                text_encoder,
+                images2,
+                batch["texts2"],
+                batch.get("neg_texts2"),
             )
             loss = 0.5 * (loss1 + loss2)
             stats = train_module.average_stats([stats1, stats2])
@@ -914,9 +1048,11 @@ def install_training_objective(train_module):
             stats["total"] = float(loss.detach().item())
             return loss, stats
 
-        images, texts, _ignored_negatives = batch
+        images, texts, negative_texts = batch
         images = images.to(train_module.P.device, non_blocking=True)
-        loss, stats = single_line_loss(image_embedder, text_encoder, images, texts)
+        loss, stats = single_line_loss(
+            image_embedder, text_encoder, images, texts, negative_texts
+        )
         stats["independent_lines_per_pair"] = 1.0
         return loss, stats
 
@@ -1083,17 +1219,13 @@ def model_config(P):
         "architecture_family": "restoration-positive-dtw-window-encoder",
         "training_stage": str(P.restoration_training_stage),
         "training_supervision": (
-            "stroke-restoration pretraining only"
+            "original-rgb-window restoration pretraining only"
             if str(P.restoration_training_stage) == "pretrain"
-            else "competitive positive-letter-dtw + stroke-restoration regularizer"
+            else "positive+negative letter-dtw + rgb-restoration regularizer"
         ),
         "restoration_local_encoder": str(P.restoration_local_encoder),
-        "primary_representation": (
-            "primitive-direct-letter-aligned-window"
-            if str(P.restoration_semantic_adapter) == "identity"
-            else "semantic-letter-aligned-window"
-        ),
-        "local_representation": "primitive-stroke-window",
+        "primary_representation": "normalized-local-context-fusion",
+        "local_representation": "local-rgb-restoration-window",
         "restoration_semantic_adapter": str(P.restoration_semantic_adapter),
         "semantic_projection_trainable": bool(
             str(P.restoration_semantic_adapter) == "residual_mlp"
@@ -1101,8 +1233,13 @@ def model_config(P):
         "dtw_supervises_primitive_directly": bool(
             str(P.restoration_semantic_adapter) == "identity"
         ),
-        "context_transformer_active": False,
-        "negative_transcripts": 0,
+        "context_transformer_active": True,
+        "context_transformer_layers": int(P.restoration_context_layers),
+        "fusion_mode": str(P.restoration_fusion),
+        "restoration_target_mode": str(P.restoration_target_mode),
+        "negative_transcripts": int(P.num_negatives),
+        "contrastive_dtw_weight": float(P.restoration_contrastive_weight),
+        "contrastive_dtw_margin": float(P.restoration_contrastive_margin),
         "image_pair_supervision": False,
         "text_encoder_type": "char",
         "letter_codebook": "frozen-orthogonal-character-identities",
@@ -1143,6 +1280,10 @@ def model_config(P):
         "restoration_contrast_scale": float(P.restoration_contrast_scale),
         "restoration_decoder_channels": int(P.restoration_decoder_channels),
         "real_binarize": bool(P.real_binarize),
+        "synthetic_binarize": False,
+        "zero_shot_preprocess": True,
+        "zero_shot_preserve_aspect": True,
+        "zero_shot_foreground_crop": True,
         "keep_paired_lines_for_independent_training": bool(
             P.keep_paired_lines_for_independent_training
         ),
