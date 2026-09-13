@@ -180,6 +180,9 @@ def apply_branch_config(P):
     P.restoration_pixel_weight = _env_float("RESTORATION_PIXEL_WEIGHT", 1.0)
     P.restoration_edge_weight = _env_float("RESTORATION_EDGE_WEIGHT", 0.50)
     P.restoration_dice_weight = _env_float("RESTORATION_DICE_WEIGHT", 0.50)
+    P.restoration_structure_weight = _env_float(
+        "RESTORATION_STRUCTURE_WEIGHT", 0.25
+    )
     P.restoration_foreground_weight = _env_float(
         "RESTORATION_FOREGROUND_WEIGHT", 2.0
     )
@@ -473,12 +476,36 @@ def stroke_restoration_loss(P, prediction: torch.Tensor, target: torch.Tensor):
     dice_score = (2.0 * intersection + 1e-6) / (denominator + 1e-6)
     dice = 1.0 - dice_score.mean()
 
+    # Match the pairwise structure of reconstructed windows to the pairwise
+    # structure of their targets. If every decoded window becomes the same
+    # average template, prediction similarity is ~1 everywhere while target
+    # similarity is not, so this term becomes large.
+    pred_flat = prediction.flatten(start_dim=2)
+    target_flat = target.flatten(start_dim=2)
+    pred_flat = pred_flat - pred_flat.mean(dim=-1, keepdim=True)
+    target_flat = target_flat - target_flat.mean(dim=-1, keepdim=True)
+    pred_unit = F.normalize(pred_flat, p=2, dim=-1, eps=1e-6)
+    target_unit = F.normalize(target_flat, p=2, dim=-1, eps=1e-6)
+    pred_similarity = torch.matmul(pred_unit, pred_unit.transpose(-1, -2))
+    target_similarity = torch.matmul(target_unit, target_unit.transpose(-1, -2))
+    count = int(prediction.shape[1])
+    if count > 1:
+        mask = ~torch.eye(
+            count, dtype=torch.bool, device=prediction.device
+        ).unsqueeze(0)
+        structure = (
+            pred_similarity - target_similarity
+        ).abs().masked_select(mask.expand_as(pred_similarity)).mean()
+    else:
+        structure = prediction.sum() * 0.0
+
     total = (
         float(P.restoration_pixel_weight) * pixel
         + float(P.restoration_edge_weight) * edge
         + float(P.restoration_dice_weight) * dice
+        + float(P.restoration_structure_weight) * structure
     )
-    return total, pixel, edge, dice
+    return total, pixel, edge, dice, structure
 
 
 def attach_restoration_dtw_stages(model, P):
@@ -840,7 +867,7 @@ def install_training_objective(train_module):
                 ),
             }
 
-        restoration, pixel, edge, dice = stroke_restoration_loss(
+        restoration, pixel, edge, dice, structure = stroke_restoration_loss(
             train_module.P,
             bundle["restoration"],
             bundle["restoration_target"],
@@ -855,6 +882,7 @@ def install_training_objective(train_module):
             "restoration_pixel": float(pixel.detach().item()),
             "restoration_edge": float(edge.detach().item()),
             "restoration_dice": float(dice.detach().item()),
+            "restoration_structure": float(structure.detach().item()),
             "norm_pos": float(dtw.detach().item()),
             "norm_neg": float("nan"),
             "cost_pos": float(dtw.detach().item()),
@@ -1018,6 +1046,9 @@ def install_training_objective(train_module):
                         "minimal/restoration_dice": float(
                             train_stats.get("restoration_dice", 0.0)
                         ),
+                        "minimal/restoration_structure": float(
+                            train_stats.get("restoration_structure", 0.0)
+                        ),
                         "minimal/dtw_windows": float(train_stats.get("dtw_windows", 0.0)),
                         "minimal/dtw_letters": float(train_stats.get("dtw_letters", 0.0)),
                         "minimal/dtw_gamma": float(
@@ -1105,6 +1136,9 @@ def model_config(P):
         "restoration_pixel_weight": float(P.restoration_pixel_weight),
         "restoration_edge_weight": float(P.restoration_edge_weight),
         "restoration_dice_weight": float(P.restoration_dice_weight),
+        "restoration_structure_weight": float(
+            P.restoration_structure_weight
+        ),
         "restoration_foreground_weight": float(P.restoration_foreground_weight),
         "restoration_contrast_scale": float(P.restoration_contrast_scale),
         "restoration_decoder_channels": int(P.restoration_decoder_channels),
