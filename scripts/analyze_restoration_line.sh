@@ -9,7 +9,7 @@ DATASET="${DATASET:-${PROJECT_DIR}/DataSet/Synthetic63}"
 INDEX="${INDEX:-132}"
 SIDE="${SIDE:-1}"
 DEVICE="${DEVICE:-cuda}"
-IMAGE_PREPROCESSING="${IMAGE_PREPROCESSING:-original}"
+IMAGE_PREPROCESSING="${IMAGE_PREPROCESSING:-training}"
 TAG="${TAG:-line${INDEX}_side${SIDE}}"
 OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_DIR}/Results/Diagnostics/restoration_windows/${TAG}}"
 
