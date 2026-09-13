@@ -459,6 +459,26 @@ def main():
 
     pred_np = reconstruction.detach().cpu().numpy()
     target_np = restoration_target.detach().cpu().numpy()
+
+    def centered_pairwise_cosine(values):
+        flat = values.reshape(values.shape[0], -1).astype(np.float64)
+        flat = flat - flat.mean(axis=1, keepdims=True)
+        norms = np.linalg.norm(flat, axis=1, keepdims=True)
+        unit = flat / np.clip(norms, 1e-8, None)
+        return unit @ unit.T
+
+    reconstruction_cosine = centered_pairwise_cosine(pred_np)
+    target_window_cosine = centered_pairwise_cosine(target_np)
+    recon_target_structure_correlation = matrix_correlation(
+        reconstruction_cosine, target_window_cosine
+    )
+    reconstruction_offdiag = reconstruction_cosine[
+        ~np.eye(n_windows, dtype=bool)
+    ]
+    target_offdiag = target_window_cosine[
+        ~np.eye(n_windows, dtype=bool)
+    ]
+
     stroke_flat = target_np.reshape(n_windows, -1)
     stroke_norm = stroke_flat / np.clip(
         np.linalg.norm(stroke_flat, axis=1, keepdims=True), 1e-8, None
@@ -673,6 +693,19 @@ def main():
         "semantic_effective_rank": effective_rank(semantic_np),
         "stroke_primitive_similarity_correlation": stroke_primitive_correlation,
         "stroke_semantic_similarity_correlation": stroke_semantic_correlation,
+        "mean_reconstruction_pairwise_cosine": float(
+            reconstruction_offdiag.mean()
+        ),
+        "mean_target_pairwise_cosine": float(target_offdiag.mean()),
+        "reconstruction_target_structure_correlation": (
+            recon_target_structure_correlation
+        ),
+        "mean_reconstruction_pixel_std_across_windows": float(
+            pred_np.std(axis=0).mean()
+        ),
+        "mean_target_pixel_std_across_windows": float(
+            target_np.std(axis=0).mean()
+        ),
     }
     (output / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2),
@@ -744,6 +777,18 @@ The hard DTW shown here is DIAGNOSTIC ONLY. Training used differentiable soft DT
     print(
         "stroke↔primitive corr    : "
         f"{summary['stroke_primitive_similarity_correlation'] if summary['stroke_primitive_similarity_correlation'] is not None else float('nan'):.4f}"
+    )
+    print(
+        "decoded pairwise cosine : "
+        f"{summary['mean_reconstruction_pairwise_cosine']:.4f}"
+    )
+    print(
+        "target pairwise cosine  : "
+        f"{summary['mean_target_pairwise_cosine']:.4f}"
+    )
+    print(
+        "decode structure corr   : "
+        f"{summary['reconstruction_target_structure_correlation'] if summary['reconstruction_target_structure_correlation'] is not None else float('nan'):.4f}"
     )
     print(f"mean top-1 letter cosine : {summary['mean_top1_letter_cosine']:.4f}")
     print(f"mean top-1 letter margin : {summary['mean_top1_letter_margin']:.4f}")
