@@ -41,7 +41,9 @@ def resolved_geometry() -> dict[str, Any]:
         "line_width": width,
         "target_ink_height_ratio": ink_ratio,
         "target_ink_height_pixels": int(round(height * ink_ratio)),
-        "line_geometry_mode": "source-compatible-height",
+        "line_geometry_mode": os.environ.get(
+            "LINE_GEOMETRY_MODE", "source-compatible-height"
+        ),
     }
 
 
