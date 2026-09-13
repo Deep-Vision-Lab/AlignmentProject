@@ -1,3 +1,21 @@
+# Full synthetic-data diagnosis
+
+To run the complete diagnostic workflow on an actual synthetic pair and compare
+local restoration, Stage A, Stage B, context, fusion, DTW, and image-image
+similarity, run:
+
+```bash
+bash scripts/restoration_points/run_all_synthetic.sh
+```
+
+No flags are required. The main result is written to
+`Results/Diagnostics/restoration_points/synthetic_suite/index_<N>/DIAGNOSIS.md`.
+
+See `docs/restoration_points/SYNTHETIC_DIAGNOSTIC_SUITE.md` for the complete
+output map.
+
+---
+
 # Real synthetic line first
 
 Before the controlled point checks, you can inspect the actual preprocessing and
