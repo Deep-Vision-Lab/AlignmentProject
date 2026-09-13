@@ -1,11 +1,11 @@
-"""Branch-selected backend for restoration + positive letter DTW.
+"""Branch backend for RGB restoration + contextual fused letter-DTW.
 
-Each manuscript line is trained independently. The visual encoder produces one
-primitive token per physical window. New runs supervise that primitive directly
-with the fixed character-identity DTW target (identity semantic path), while a
-lightweight decoder reconstructs the window's stroke map from the same primitive.
-The historical residual semantic MLP remains loadable only for checkpoint
-compatibility and explicit ablations.
+Each manuscript line is processed independently. Every physical window produces
+one local restoration token; a positional Transformer builds sequence context;
+local and contextual vectors are concatenated, projected and normalized for DTW.
+The local token alone reconstructs the complete RGB window. Training uses a
+frozen character codebook with positive and negative transcripts, while final
+alignment evaluation remains image-only.
 """
 from __future__ import annotations
 
