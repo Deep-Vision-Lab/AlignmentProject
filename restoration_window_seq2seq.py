@@ -2,11 +2,12 @@
 
 The module treats a manuscript line as a sequence of overlapping 128x32 windows.
 Each window is encoded by the SAME convolutional encoder, producing one 128-D
-primitive token. A decoder can reconstruct every window's soft stroke map.
+local token.  The decoder reconstructs the COMPLETE original RGB window.
 
-This is deliberately local: there is no Transformer, BiLSTM, or neighboring
-window communication. Pretraining therefore teaches P_i to describe the pixels
-inside W_i before DTW asks P_i to become letter-discriminative.
+Downsampling is intentionally anisotropic: height is reduced aggressively while
+width is preserved for longer, because Arabic dots, short strokes and neighboring
+letters are easily destroyed by early horizontal downsampling.  Sequence context
+is added later by the branch Transformer; this module remains purely local.
 """
 from __future__ import annotations
 
@@ -78,19 +79,20 @@ class WindowSequenceCNNEncoder(nn.Module):
         self.embed_dim = int(embed_dim)
         c = max(16, int(base_channels))
 
-        # 128x32
+        # 128x32 -> 64x32 -> 32x32 -> 16x16 -> 8x8.
+        # Width is not reduced until the third block, preserving fine Arabic
+        # stroke/dot geometry much longer than the historical 128x32 -> 8x2 path.
         self.encoder = nn.Sequential(
-            ConvBlock(3, c, stride=1, groups=4),          # 128x32
-            ConvBlock(c, c * 2, stride=2, groups=8),      # 64x16
-            ConvBlock(c * 2, c * 3, stride=2, groups=8),  # 32x8
-            ConvBlock(c * 3, c * 4, stride=2, groups=8),  # 16x4
-            ConvBlock(c * 4, self.embed_dim, stride=2, groups=8), # 8x2
+            ConvBlock(3, c, stride=1, groups=4),                 # 128x32
+            ConvBlock(c, c * 2, stride=(2, 1), groups=8),        # 64x32
+            ConvBlock(c * 2, c * 3, stride=(2, 1), groups=8),    # 32x32
+            ConvBlock(c * 3, c * 4, stride=(2, 2), groups=8),    # 16x16
+            ConvBlock(c * 4, self.embed_dim, stride=(2, 2), groups=8), # 8x8
         )
-        # IMPORTANT: do not global-average the 8x2 feature map. Restoration
-        # needs to know WHERE strokes occurred inside the 128x32 window.
-        # Flattening preserves spatial position before the learned bottleneck.
+        # Never global-average the spatial feature map. Flattening keeps WHERE a
+        # stroke occurred before the 128-D bottleneck.
         self.spatial_height = 8
-        self.spatial_width = 2
+        self.spatial_width = 8
         self.to_token = nn.Sequential(
             nn.Flatten(start_dim=1),
             nn.Linear(
@@ -115,7 +117,7 @@ class WindowSequenceCNNEncoder(nn.Module):
         # [B,C,H,T,W] -> [B,T,C,H,W]
         return patches.permute(0, 3, 1, 2, 4).contiguous()
 
-    def forward(self, line: torch.Tensor) -> torch.Tensor:
+    def _spatial_features(self, line: torch.Tensor):
         patches = self.extract_windows(line)
         batch, count, channels, height, width = patches.shape
         flat = patches.reshape(batch * count, channels, height, width)
@@ -131,14 +133,32 @@ class WindowSequenceCNNEncoder(nn.Module):
                 f"Unexpected local CNN feature map {tuple(spatial.shape)}; "
                 f"expected {expected}"
             )
+        return spatial, batch, count
+
+    def forward(self, line: torch.Tensor) -> torch.Tensor:
+        spatial, batch, count = self._spatial_features(line)
         encoded = self.to_token(spatial)
         encoded = encoded.reshape(batch, count, self.embed_dim)
         # Historical patch_embedding contract: [B,D,1,T]
         return encoded.transpose(1, 2).unsqueeze(2).contiguous()
 
+    def spatial_vectors(self, line: torch.Tensor, vectors_per_window: int = 4):
+        """Optional K spatial vectors/window for the point-11 ablation.
+
+        This is intentionally NOT the default alignment representation. It gives
+        us a controlled experiment if one 128-D vector cannot represent windows
+        containing several neighboring letters.
+        """
+        k = max(1, int(vectors_per_window))
+        spatial, batch, count = self._spatial_features(line)
+        pooled = torch.nn.functional.adaptive_avg_pool2d(spatial, (1, k))
+        pooled = pooled.squeeze(2).transpose(1, 2).contiguous()
+        pooled = pooled.reshape(batch, count, k, self.embed_dim)
+        return torch.nn.functional.normalize(pooled.float(), p=2, dim=-1)
+
 
 class WindowSequenceStrokeDecoder(nn.Module):
-    """Decode a sequence of primitive tokens into soft 128x32 stroke maps."""
+    """Decode each local token into the complete original 128x32 RGB window."""
 
     def __init__(self, dim=128, output_height=128, output_width=32, channels=128):
         super().__init__()
@@ -159,7 +179,7 @@ class WindowSequenceStrokeDecoder(nn.Module):
             nn.ConvTranspose2d(channels // 2, channels // 4, 4, stride=2, padding=1), # 64x16
             nn.GroupNorm(4, channels // 4),
             nn.GELU(),
-            nn.ConvTranspose2d(channels // 4, 1, 4, stride=2, padding=1), # 128x32
+            nn.ConvTranspose2d(channels // 4, 3, 4, stride=2, padding=1), # RGB 128x32
             nn.Sigmoid(),
         )
 
@@ -171,5 +191,5 @@ class WindowSequenceStrokeDecoder(nn.Module):
         x = x.reshape(batch * count, self.channels, 8, 2)
         x = self.decoder(x)
         return x.reshape(
-            batch, count, 1, self.output_height, self.output_width
+            batch, count, 3, self.output_height, self.output_width
         )
