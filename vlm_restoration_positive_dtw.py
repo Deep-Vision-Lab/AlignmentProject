@@ -551,6 +551,10 @@ def attach_restoration_dtw_stages(model, P):
             f"Unknown restoration semantic adapter mode: {semantic_mode!r}"
         )
     vit.restoration_semantic_adapter = semantic_mode
+    # The legacy semantic adapter is retained only for loading old branch
+    # checkpoints/ablations. It is not in the recommended computation graph.
+    for parameter in vit.semantic_adapter.parameters():
+        parameter.requires_grad_(False)
 
     # The active alignment representation is always a local/context fusion.
     vit.fusion_head = LocalContextFusion(dim).to(device=device, dtype=dtype)
@@ -1227,12 +1231,9 @@ def model_config(P):
         "primary_representation": "normalized-local-context-fusion",
         "local_representation": "local-rgb-restoration-window",
         "restoration_semantic_adapter": str(P.restoration_semantic_adapter),
-        "semantic_projection_trainable": bool(
-            str(P.restoration_semantic_adapter) == "residual_mlp"
-        ),
-        "dtw_supervises_primitive_directly": bool(
-            str(P.restoration_semantic_adapter) == "identity"
-        ),
+        "semantic_projection_trainable": False,
+        "dtw_supervises_primitive_directly": False,
+        "dtw_representation": "normalized-local-context-fusion",
         "context_transformer_active": True,
         "context_transformer_layers": int(P.restoration_context_layers),
         "fusion_mode": str(P.restoration_fusion),
