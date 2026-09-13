@@ -232,6 +232,7 @@ def _loss_gradients(model, text_encoder, image, text, config):
             settings,
             bundle["restoration"],
             bundle["restoration_target"],
+            bundle.get("restoration_valid_mask"),
         )
         dtw_grad = torch.autograd.grad(
             dtw,
@@ -322,7 +323,9 @@ def run_epoch_probe(
         semantic = F.normalize(bundle["semantic"][0].float(), p=2, dim=-1)
         primitive = F.normalize(bundle["primitive"][0].float(), p=2, dim=-1)
         ink = bundle["ink"][0].float()
-        valid = ink >= float(config.get("positive_letter_dtw_min_ink", 0.01))
+        # The recommended branch exposes an explicit 0/1 outer-padding mask,
+        # not a continuous per-window ink ratio.
+        valid = ink.bool()
         if not bool(valid.any()):
             valid = torch.ones_like(ink, dtype=torch.bool)
         valid_indices = torch.nonzero(valid, as_tuple=False).flatten()
@@ -339,8 +342,8 @@ def run_epoch_probe(
         compact_training_cost = training_cost.index_select(0, valid_indices)
         primitive_similarity = primitive @ primitive.T
         semantic_similarity = semantic @ semantic.T
-        reconstruction = bundle["restoration"][0, :, 0].float()
-        restoration_target = bundle["restoration_target"][0, :, 0].float()
+        reconstruction = bundle["restoration"][0].float()
+        restoration_target = bundle["restoration_target"][0].float()
 
         target_centered = restoration_target.flatten(start_dim=1).float()
         target_centered = target_centered - target_centered.mean(
