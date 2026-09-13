@@ -70,6 +70,7 @@ echo "[VERIFY] Checking Python dependencies and strict checkpoint compatibility.
 
 "$PYTHON_BIN" - "$RESTORMER_DIR" "$WEIGHT_FILE" <<'PY'
 from pathlib import Path
+from runpy import run_path
 import sys
 
 repo = Path(sys.argv[1]).resolve()
@@ -88,8 +89,9 @@ except Exception:
         "  python -m pip install einops"
     )
 
-sys.path.insert(0, str(repo))
-from basicsr.models.archs.restormer_arch import Restormer
+arch_path = repo / "basicsr" / "models" / "archs" / "restormer_arch.py"
+namespace = run_path(str(arch_path))
+Restormer = namespace["Restormer"]
 
 model = Restormer(
     inp_channels=3,
