@@ -5,10 +5,9 @@ Expected assets:
   third_party/Restormer/                    official swz30/Restormer checkout
   Weights/Pretrained/Restormer/*.pth        one official 3-channel checkpoint
 
-The script deliberately does not silently download a large third-party model.
-When assets are present it loads the official architecture, captures its latent
-encoder feature, checks reconstruction output, and performs one identity
-fine-tuning step on manuscript-like 128x32 windows.
+When assets are present the script loads Restormer, captures its latent encoder
+feature, performs one identity-restoration fine-tuning step, and saves visible
+results to Results/Diagnostics/restoration_points/point_03/.
 """
 from __future__ import annotations
 
@@ -17,12 +16,15 @@ import importlib
 from pathlib import Path
 import sys
 
+import numpy as np
+from PIL import Image, ImageDraw
 import torch
 import torch.nn.functional as F
 
 ROOT = Path(__file__).resolve().parent
 if ROOT.name == "tools":
     ROOT = ROOT.parent
+OUT_DIR = ROOT / "Results" / "Diagnostics" / "restoration_points" / "point_03"
 
 
 @dataclass(frozen=True)
@@ -35,10 +37,7 @@ class RestormerAssets:
 
 def find_restormer_assets(root: Path | None = None) -> RestormerAssets:
     root = ROOT if root is None else Path(root)
-    repo_candidates = [
-        root / "third_party" / "Restormer",
-        root / "Restormer",
-    ]
+    repo_candidates = [root / "third_party" / "Restormer", root / "Restormer"]
     repo = next(
         (
             item
@@ -48,11 +47,13 @@ def find_restormer_assets(root: Path | None = None) -> RestormerAssets:
         None,
     )
     weight_candidates = []
-    for folder in [
+    folders = [
         root / "Weights" / "Pretrained" / "Restormer",
         root / "pretrained_models" / "Restormer",
-        *( [repo / "pretrained_models"] if repo is not None else [] ),
-    ]:
+    ]
+    if repo is not None:
+        folders.append(repo / "pretrained_models")
+    for folder in folders:
         if folder.is_dir():
             weight_candidates.extend(sorted(folder.rglob("*.pth")))
     checkpoint = weight_candidates[0] if weight_candidates else None
@@ -104,9 +105,7 @@ def load_restormer(assets: RestormerAssets, device="cpu"):
     incompatible = model.load_state_dict(cleaned, strict=False)
     loaded_count = len(cleaned) - len(incompatible.unexpected_keys)
     if loaded_count <= 0:
-        raise RuntimeError(
-            f"No compatible Restormer tensors loaded from {assets.checkpoint}"
-        )
+        raise RuntimeError(f"No compatible Restormer tensors loaded from {assets.checkpoint}")
     return model
 
 
@@ -119,12 +118,35 @@ def _manuscript_like_windows(device):
     return x
 
 
+def _tensor_image(x):
+    x = x.detach().float().cpu().clamp(0, 1)
+    arr = (x.permute(1, 2, 0).numpy() * 255.0).round().astype(np.uint8)
+    return Image.fromarray(arr, mode="RGB")
+
+
+def _save_pair_sheet(inputs, outputs):
+    w, h, label_h = 32, 128, 24
+    canvas = Image.new("RGB", (2 * w, 2 * (h + label_h)), "white")
+    draw = ImageDraw.Draw(canvas)
+    for r, (name, tensor) in enumerate([("input", inputs), ("restored", outputs)]):
+        for i in range(2):
+            y0 = r * (h + label_h)
+            draw.text((i * w + 2, y0 + 3), f"{name} {i}", fill="black")
+            canvas.paste(_tensor_image(tensor[i]), (i * w, y0 + label_h))
+    canvas.save(OUT_DIR / "01_input_vs_pretrained_output.png")
+
+
 def main():
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
     assets = find_restormer_assets()
     print(assets.message, flush=True)
     if not assets.ready:
-        # A missing third-party checkpoint is an informative SKIP, not a failure
-        # of the branch code or of the other twelve recommendation checks.
+        (OUT_DIR / "summary.txt").write_text(
+            "Point 03 pretrained Restormer result\nSTATUS: SKIPPED\n"
+            + assets.message + "\n",
+            encoding="utf-8",
+        )
+        print(f"Result saved to: {OUT_DIR / 'summary.txt'}")
         return 0
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -161,6 +183,22 @@ def main():
     if grad_norm <= 0:
         raise RuntimeError("Restormer fine-tuning step produced no gradients")
 
+    _save_pair_sheet(windows.detach(), restored.detach())
+    cosine = float(F.cosine_similarity(feature[0:1], feature[1:2], dim=-1)[0])
+    summary = (
+        "Point 03 pretrained Restormer result\n"
+        "STATUS: PASS\n"
+        f"checkpoint={assets.checkpoint}\n"
+        f"output_shape={tuple(restored.shape)}\n"
+        f"latent_shape={tuple(feature.shape)}\n"
+        f"latent_cosine_between_two_windows={cosine:.8f}\n"
+        f"identity_L1_before_step={float(loss_before.detach()):.8f}\n"
+        f"gradient_signal={grad_norm:.8g}\n\n"
+        "Inspect 01_input_vs_pretrained_output.png to judge the pretrained output yourself.\n"
+        "A poor reconstruction here means pretraining alone is not sufficient for manuscript windows.\n"
+    )
+    (OUT_DIR / "summary.txt").write_text(summary, encoding="utf-8")
+
     print(
         "PASS point 3: pretrained Restormer loaded; "
         f"output={tuple(restored.shape)} latent={tuple(feature.shape)} "
@@ -172,6 +210,8 @@ def main():
         "manuscript identity/restoration objective still needs fine-tuning.",
         flush=True,
     )
+    print(f"Visual results saved to: {OUT_DIR}")
+    print(f"Open: {OUT_DIR / 'summary.txt'}")
     return 0
 
 
