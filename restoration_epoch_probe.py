@@ -341,10 +341,24 @@ def run_epoch_probe(
         semantic_similarity = semantic @ semantic.T
         reconstruction = bundle["restoration"][0, :, 0].float()
         restoration_target = bundle["restoration_target"][0, :, 0].float()
-        stroke_flat = F.normalize(
-            restoration_target.flatten(start_dim=1).float(), p=2, dim=-1
+
+        target_centered = restoration_target.flatten(start_dim=1).float()
+        target_centered = target_centered - target_centered.mean(
+            dim=-1, keepdim=True
         )
-        stroke_similarity = stroke_flat @ stroke_flat.T
+        target_unit = F.normalize(target_centered, p=2, dim=-1, eps=1e-6)
+        stroke_similarity = target_unit @ target_unit.T
+
+        reconstruction_centered = reconstruction.flatten(start_dim=1).float()
+        reconstruction_centered = reconstruction_centered - reconstruction_centered.mean(
+            dim=-1, keepdim=True
+        )
+        reconstruction_unit = F.normalize(
+            reconstruction_centered, p=2, dim=-1, eps=1e-6
+        )
+        reconstruction_similarity = (
+            reconstruction_unit @ reconstruction_unit.T
+        )
 
     horizontal_penalty = float(
         config.get("positive_letter_dtw_horizontal_penalty", 0.30)
@@ -389,6 +403,13 @@ def run_epoch_probe(
     stroke_semantic_correlation = _matrix_correlation(
         stroke_similarity, semantic_similarity
     )
+    reconstruction_target_structure_correlation = _matrix_correlation(
+        reconstruction_similarity, stroke_similarity
+    )
+    reconstruction_pairwise_mean = _offdiag_mean(
+        reconstruction_similarity, 1
+    )
+    target_pairwise_mean = _offdiag_mean(stroke_similarity, 1)
 
     current_matrix = matrix.detach().cpu().numpy().astype(np.float32)
     current_training_cost = (
@@ -534,6 +555,11 @@ def run_epoch_probe(
         "semantic_nonlocal_cosine_sep5": semantic_nonlocal,
         "stroke_primitive_similarity_correlation": stroke_primitive_correlation,
         "stroke_semantic_similarity_correlation": stroke_semantic_correlation,
+        "mean_reconstruction_pairwise_cosine": reconstruction_pairwise_mean,
+        "mean_target_pairwise_cosine": target_pairwise_mean,
+        "reconstruction_target_structure_correlation": (
+            reconstruction_target_structure_correlation
+        ),
         "restoration_mae": recon_mae,
         "matrix_mean_abs_delta_prev": matrix_delta,
         "training_cost_mean_abs_delta_prev": training_cost_delta,
@@ -568,6 +594,8 @@ def run_epoch_probe(
         f"epoch={epoch} adapter={metrics['semantic_adapter']} "
         f"recon={recon_mae:.4f} "
         f"rankP={primitive_rank:.2f} rankL={semantic_rank:.2f} "
+        f"reconPair={reconstruction_pairwise_mean:.4f} "
+        f"reconStruct={reconstruction_target_structure_correlation:.4f} "
         f"pathCos={metrics['mean_dtw_path_cosine']:.4f} "
         f"top1={metrics['mean_top1_letter_cosine']:.4f} "
         f"margin={metrics['mean_top1_margin']:.4f} "
