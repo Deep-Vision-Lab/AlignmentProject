@@ -644,7 +644,9 @@ def attach_restoration_dtw_stages(model, P):
         if int(patches.shape[1]) != int(local.shape[1]):
             raise RuntimeError("Token/window count mismatch in restoration branch")
 
-        fused_out = self.vision_norm(fused)
+        fused_out = F.normalize(
+            self.vision_norm(fused).float(), p=2, dim=-1
+        ).to(dtype=fused.dtype)
         local_out = self.vision_norm(local)
 
         if not return_training_bundle:
