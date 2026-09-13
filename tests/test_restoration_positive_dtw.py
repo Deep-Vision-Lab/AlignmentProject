@@ -9,6 +9,7 @@ from vlm_restoration_positive_dtw import (
     _soft_dtw_cost_matrix,
     attach_restoration_dtw_stages,
     positive_monotonic_letter_dtw_cost,
+    stroke_restoration_loss,
 )
 
 
@@ -199,3 +200,43 @@ def test_horizontal_moves_remain_available_when_text_is_longer_than_windows():
         disable_horizontal_when_feasible=True,
     )
     assert torch.isfinite(value)
+
+
+
+def test_cnn_seq2seq_token_keeps_spatial_bottleneck_projection():
+    from restoration_window_seq2seq import WindowSequenceCNNEncoder
+
+    encoder = WindowSequenceCNNEncoder(
+        input_height=128,
+        window_size=32,
+        stride=16,
+        embed_dim=128,
+        base_channels=16,
+    )
+    assert isinstance(encoder.to_token[1], torch.nn.Linear)
+    assert encoder.to_token[1].in_features == 128 * 8 * 2
+    assert encoder.to_token[1].out_features == 128
+
+
+def test_restoration_structure_loss_penalizes_same_template_for_different_targets():
+    settings = SimpleNamespace(
+        restoration_foreground_weight=2.0,
+        restoration_pixel_weight=0.0,
+        restoration_edge_weight=0.0,
+        restoration_dice_weight=0.0,
+        restoration_structure_weight=1.0,
+    )
+    target = torch.zeros(1, 2, 1, 8, 8)
+    target[0, 0, 0, 2, 1:4] = 1.0
+    target[0, 1, 0, 5, 4:7] = 1.0
+
+    collapsed = target[:, :1].repeat(1, 2, 1, 1, 1)
+    faithful = target.clone()
+
+    collapsed_loss, *_ = stroke_restoration_loss(
+        settings, collapsed, target
+    )
+    faithful_loss, *_ = stroke_restoration_loss(
+        settings, faithful, target
+    )
+    assert float(faithful_loss) < float(collapsed_loss)
