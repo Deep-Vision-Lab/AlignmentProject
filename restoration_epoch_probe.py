@@ -201,6 +201,9 @@ def _settings(config: dict):
         restoration_pixel_weight=float(config.get("restoration_pixel_weight", 1.0)),
         restoration_edge_weight=float(config.get("restoration_edge_weight", 0.5)),
         restoration_dice_weight=float(config.get("restoration_dice_weight", 0.5)),
+        restoration_structure_weight=float(
+            config.get("restoration_structure_weight", 0.25)
+        ),
         restoration_foreground_weight=float(
             config.get("restoration_foreground_weight", 2.0)
         ),
@@ -225,7 +228,7 @@ def _loss_gradients(model, text_encoder, image, text, config):
             bundle["ink"],
             [text],
         )
-        restoration, _, _, _ = stroke_restoration_loss(
+        restoration, _, _, _, _ = stroke_restoration_loss(
             settings,
             bundle["restoration"],
             bundle["restoration_target"],
