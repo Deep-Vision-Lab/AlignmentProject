@@ -103,22 +103,90 @@ def _ink_mask(gray: np.ndarray) -> np.ndarray:
     return dark_ink if _border_mean(gray) >= 127.5 else light_ink
 
 
-def foreground_crop(image: Image.Image, margin_x=0.025, margin_y=0.15) -> Image.Image:
-    gray_image = ImageOps.autocontrast(image.convert("L"))
-    gray = np.asarray(gray_image, dtype=np.uint8)
+def foreground_crop_with_metadata(
+    image: Image.Image,
+    margin_x=0.025,
+    margin_y=0.15,
+):
+    """Use a temporary gray foreground mask to crop the ORIGINAL image.
+
+    The detector may autocontrast the temporary grayscale copy, but the returned
+    crop keeps the source RGB/color/intensity values unchanged.
+    """
+    source = image.convert("RGB")
+    gray_for_mask = ImageOps.autocontrast(source.convert("L"))
+    gray = np.asarray(gray_for_mask, dtype=np.uint8)
     mask = _ink_mask(gray)
     ys, xs = np.nonzero(mask)
     if xs.size < 4 or ys.size < 4:
-        return gray_image
-    x0, x1 = int(xs.min()), int(xs.max()) + 1
-    y0, y1 = int(ys.min()), int(ys.max()) + 1
-    pad_x = max(2, int(round((x1 - x0) * float(margin_x))))
-    pad_y = max(2, int(round((y1 - y0) * float(margin_y))))
-    x0 = max(0, x0 - pad_x)
-    x1 = min(gray.shape[1], x1 + pad_x)
-    y0 = max(0, y0 - pad_y)
-    y1 = min(gray.shape[0], y1 + pad_y)
-    return gray_image.crop((x0, y0, x1, y1))
+        box = (0, 0, source.width, source.height)
+    else:
+        x0, x1 = int(xs.min()), int(xs.max()) + 1
+        y0, y1 = int(ys.min()), int(ys.max()) + 1
+        pad_x = max(2, int(round((x1 - x0) * float(margin_x))))
+        pad_y = max(2, int(round((y1 - y0) * float(margin_y))))
+        box = (
+            max(0, x0 - pad_x),
+            max(0, y0 - pad_y),
+            min(gray.shape[1], x1 + pad_x),
+            min(gray.shape[0], y1 + pad_y),
+        )
+    cropped = source.crop(box)
+    metadata = {
+        "source_width": int(source.width),
+        "source_height": int(source.height),
+        "crop_left": int(box[0]),
+        "crop_top": int(box[1]),
+        "crop_right": int(box[2]),
+        "crop_bottom": int(box[3]),
+        "crop_width": int(box[2] - box[0]),
+        "crop_height": int(box[3] - box[1]),
+        "crop_margin_x": float(margin_x),
+        "crop_margin_y": float(margin_y),
+    }
+    return cropped, metadata
+
+
+def foreground_crop(image: Image.Image, margin_x=0.025, margin_y=0.15) -> Image.Image:
+    return foreground_crop_with_metadata(image, margin_x, margin_y)[0]
+
+
+def aspect_preserving_pad_with_metadata(
+    image: Image.Image,
+    size=(128, 1024),
+    target_ink_height_ratio=0.72,
+    horizontal_jitter=0.0,
+):
+    """Resize once with one scale, then pad; never stretch windows independently."""
+    target_h, target_w = map(int, size)
+    source = image.convert("RGB")
+    desired_h = max(8, int(round(target_h * float(target_ink_height_ratio))))
+    scale = min(
+        desired_h / max(1, source.height),
+        target_w / max(1, source.width),
+    )
+    new_w = max(1, min(target_w, int(round(source.width * scale))))
+    new_h = max(1, min(target_h, int(round(source.height * scale))))
+    resized = source.resize((new_w, new_h), _BILINEAR)
+    canvas = Image.new("RGB", (target_w, target_h), color=(255, 255, 255))
+    max_x = max(0, target_w - new_w)
+    centered_x = max_x // 2
+    jitter = int(round(max_x * max(0.0, float(horizontal_jitter))))
+    x = min(max_x, max(0, centered_x + random.randint(-jitter, jitter))) if jitter else centered_x
+    y = max(0, (target_h - new_h) // 2)
+    canvas.paste(resized, (x, y))
+    metadata = {
+        "scale_x": float(new_w / max(1, source.width)),
+        "scale_y": float(new_h / max(1, source.height)),
+        "resize_scale": float(scale),
+        "resized_width": int(new_w),
+        "resized_height": int(new_h),
+        "offset_x": int(x),
+        "offset_y": int(y),
+        "canvas_width": int(target_w),
+        "canvas_height": int(target_h),
+    }
+    return canvas, metadata
 
 
 def aspect_preserving_pad(
@@ -127,24 +195,9 @@ def aspect_preserving_pad(
     target_ink_height_ratio=0.72,
     horizontal_jitter=0.0,
 ) -> Image.Image:
-    target_h, target_w = map(int, size)
-    image = image.convert("L")
-    desired_h = max(8, int(round(target_h * float(target_ink_height_ratio))))
-    scale = min(
-        desired_h / max(1, image.height),
-        target_w / max(1, image.width),
-    )
-    new_w = max(1, min(target_w, int(round(image.width * scale))))
-    new_h = max(1, min(target_h, int(round(image.height * scale))))
-    resized = image.resize((new_w, new_h), _BILINEAR)
-    canvas = Image.new("L", (target_w, target_h), color=255)
-    max_x = max(0, target_w - new_w)
-    centered_x = max_x // 2
-    jitter = int(round(max_x * max(0.0, float(horizontal_jitter))))
-    x = min(max_x, max(0, centered_x + random.randint(-jitter, jitter))) if jitter else centered_x
-    y = max(0, (target_h - new_h) // 2)
-    canvas.paste(resized, (x, y))
-    return canvas
+    return aspect_preserving_pad_with_metadata(
+        image, size, target_ink_height_ratio, horizontal_jitter
+    )[0]
 
 
 def _random_resize(image: Image.Image) -> Image.Image:
@@ -253,31 +306,76 @@ class ManuscriptLinePreprocessor:
             base += random.randint(-self.threshold_jitter, self.threshold_jitter)
         return max(0, min(255, int(base)))
 
-    def __call__(self, image: Image.Image) -> Image.Image:
-        work = image.convert("L")
-        if self.autocontrast:
-            work = ImageOps.autocontrast(work)
+    def preprocess_with_metadata(self, image: Image.Image):
+        """Return processed RGB plus crop/resize offsets for inverse mapping."""
+        work = image.convert("RGB")
+        metadata = {
+            "source_width": int(work.width),
+            "source_height": int(work.height),
+            "crop_left": 0,
+            "crop_top": 0,
+            "crop_width": int(work.width),
+            "crop_height": int(work.height),
+        }
         if self.crop_foreground:
-            work = foreground_crop(work)
+            work, crop_meta = foreground_crop_with_metadata(work)
+            metadata.update(crop_meta)
+
+        # Augmentation is deliberately disabled on this restoration branch, but
+        # keep the generic profile behavior for other callers.
         work = self._augment(work)
+
         if self.preserve_aspect:
-            work = aspect_preserving_pad(
+            work, resize_meta = aspect_preserving_pad_with_metadata(
                 work,
                 self.size,
                 self.target_ink_height_ratio,
                 horizontal_jitter=0.08 if self.training and self.augment else 0.0,
             )
+            metadata.update(resize_meta)
         else:
-            work = work.resize((self.size[1], self.size[0]), _BILINEAR)
+            source_w, source_h = work.size
+            target_h, target_w = self.size
+            work = work.resize((target_w, target_h), _BILINEAR)
+            metadata.update(
+                {
+                    "scale_x": float(target_w / max(1, source_w)),
+                    "scale_y": float(target_h / max(1, source_h)),
+                    "resize_scale": None,
+                    "resized_width": int(target_w),
+                    "resized_height": int(target_h),
+                    "offset_x": 0,
+                    "offset_y": 0,
+                    "canvas_width": int(target_w),
+                    "canvas_height": int(target_h),
+                }
+            )
+
+        metadata.update(
+            {
+                "binarize": bool(self.binarize),
+                "crop_foreground": bool(self.crop_foreground),
+                "preserve_aspect": bool(self.preserve_aspect),
+            }
+        )
 
         if not self.binarize:
-            return work.convert("RGB")
-        gray = np.asarray(ImageOps.autocontrast(work), dtype=np.uint8)
+            # IMPORTANT: no autocontrast or grayscale conversion touches the
+            # actual model image. The mask used for cropping was temporary only.
+            return work.convert("RGB"), metadata
+
+        gray_image = work.convert("L")
+        if self.autocontrast:
+            gray_image = ImageOps.autocontrast(gray_image)
+        gray = np.asarray(gray_image, dtype=np.uint8)
         threshold = self._threshold(gray)
         binary = np.where(gray > threshold, 255, 0).astype(np.uint8)
         if self.auto_invert and _border_mean(binary) < 127.5:
             binary = 255 - binary
-        return Image.fromarray(binary, mode="L").convert("RGB")
+        return Image.fromarray(binary, mode="L").convert("RGB"), metadata
+
+    def __call__(self, image: Image.Image) -> Image.Image:
+        return self.preprocess_with_metadata(image)[0]
 
 
 def build_preprocessor(dataset_type: str, training: bool) -> ManuscriptLinePreprocessor:
