@@ -1,3 +1,32 @@
+## Restormer prerequisite
+
+Point 03 is a true pretrained-model test and requires the official upstream
+Restormer source plus an official checkpoint.
+
+Run once from the repository root:
+
+```bash
+bash scripts/setup_restormer_pretrained.sh
+```
+
+This creates:
+
+```text
+third_party/Restormer/
+Weights/Pretrained/Restormer/real_denoising.pth
+```
+
+The setup verifies that `real_denoising.pth` loads strictly into the official
+3-channel Restormer architecture with `LayerNorm_type="BiasFree"`.
+
+After that run:
+
+```bash
+bash scripts/restoration_points/03_pretrained_restormer.sh
+```
+
+---
+
 # Full synthetic-data restoration diagnostic
 
 Branch: `agent/restoration-positive-dtw-window-encoder`
