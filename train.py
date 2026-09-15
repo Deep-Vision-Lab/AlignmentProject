@@ -104,7 +104,7 @@ from unified_line_geometry import install_training_geometry
 from vit_checkpoint_migration import install as install_vit_checkpoint_migration
 
 # Install shared optimization/runtime helpers first. The branch backend then
-# replaces compute_batch_loss with positive/negative letter-DTW only.
+# replaces compute_batch_loss with positive letter-DTW by default.
 install_optimizations(base)
 
 install_vit_checkpoint_migration(base)
@@ -143,10 +143,10 @@ def _model_config(stride, args):
         {
             "experiment_name": P.experiment_name,
             "configuration_source": "Parameters.py + branch backend",
-            "initialization": "pretrained" if args.pretrained_weights else "scratch",
+            "initialization": "pretrained-resnet18+pretrained-deit-tiny",
             "dataset_type": args.dataset_type,
             "dataset_path": args.data_dir,
-            "paired_visual_forward": "independent-lines-only",
+            "paired_visual_forward": "single-ddp-forward-then-split",
         }
     )
     install_training_stability(base, config, args.job_id)
