@@ -280,11 +280,11 @@ def main() -> None:
         base._broadcast_trainable_text_parameters(text_encoder)
 
         model: nn.Module = raw_model
-        # This diagnostic DTW objective is data-dependent. Paired manuscript
-        # lines are consolidated into one model forward, but static_graph is
-        # still intentionally disabled because DTW path structure varies by data.
-        os.environ["DDP_STATIC_GRAPH"] = "0"
-        os.environ["DDP_STATIC_GRAPH_EFFECTIVE"] = "0"
+        # Paired manuscript lines are consolidated into one model forward.
+        # Every active visual parameter participates in every batch, so this
+        # branch uses DDP static-graph mode across the two GPUs.
+        os.environ["DDP_STATIC_GRAPH"] = "1"
+        os.environ["DDP_STATIC_GRAPH_EFFECTIVE"] = "1"
         static_graph = resolve_ddp_static_graph()
         if base.CTX.enabled:
             model = DDP(
@@ -294,6 +294,7 @@ def main() -> None:
                 broadcast_buffers=False,
                 find_unused_parameters=False,
                 gradient_as_bucket_view=True,
+                static_graph=bool(static_graph.enabled),
             )
 
         criterion = base.build_criterion()
@@ -303,8 +304,8 @@ def main() -> None:
                 "hf_home": os.environ.get("HF_HOME", ""),
                 "original_cuda_visible_devices": RANK_DEVICE.original_visible_devices,
                 "selected_cuda_device": RANK_DEVICE.selected_device,
-                "ddp_static_graph": False,
-                "ddp_static_graph_reason": "disabled: data-dependent DTW diagnostic graph",
+                "ddp_static_graph": bool(static_graph.enabled),
+                "ddp_static_graph_reason": static_graph.description,
                 "ddp_find_unused_parameters": False,
             }
         )
