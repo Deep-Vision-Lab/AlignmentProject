@@ -46,7 +46,7 @@ export LETTER_CODEBOOK_SEED="${LETTER_CODEBOOK_SEED:-1234}"
 export RESNET18_PRETRAINED="${RESNET18_PRETRAINED:-0}"
 export TINY_VIT_DROPOUT="${TINY_VIT_DROPOUT:-0.0}"
 
-"${PYTHON_BIN}" -m py_compile   train.py   runtime_device_setup.py   model_backend.py   vlm_restoration_positive_dtw.py   resnet18_window_encoder.py   restoration_recommended_components.py   zero_shot_preprocessing.py   DataLoader.py   DataSet.py   AugmentedRealDataLoader.py
+"${PYTHON_BIN}" -m py_compile   train.py   runtime_device_setup.py   model_backend.py   vlm_restoration_positive_dtw.py   resnet18_window_encoder.py   restoration_recommended_components.py   zero_shot_preprocessing.py   DataLoader.py   DataSet.py   AugmentedRealDataLoader.py   training_stability.py   training_optimizations.py   epoch_subset_sampling.py   distributed_runtime_guard.py   vit_checkpoint_migration.py
 
 "${PYTHON_BIN}" -m pytest -q tests/test_restoration_positive_dtw.py >/dev/null
 
