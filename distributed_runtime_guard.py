@@ -43,10 +43,5 @@ def install_distributed_runtime_guard(base_module) -> None:
                 timeout=timedelta(seconds=timeout_seconds),
             )
         base_module.P.device = context.device
-        print(
-            f"distributed_runtime rank={context.rank} "
-            f"world={context.world_size} timeout_seconds={timeout_seconds}",
-            flush=True,
-        )
 
     context.initialize = initialize
