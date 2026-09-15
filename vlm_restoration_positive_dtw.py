@@ -3,7 +3,7 @@
 Pipeline:
   crop outer margins -> proportional resize -> overlapping real RGB windows ->
   shared ResNet-18 window encoder -> ViT-Tiny sequence context ->
-  local/context fusion -> positive/negative letter-DTW.
+  local/context fusion -> positive letter-DTW.
 
 There is intentionally no restoration decoder and no reconstruction loss on
 this revision. The frozen character codebook supervises only the fused visual
@@ -793,7 +793,7 @@ def freeze_text_encoder(text_encoder):
 
 
 def install_training_objective(train_module):
-    """Install the positive-DTW + negative-margin-DTW objective."""
+    """Install positive-DTW training with optional negative-margin DTW."""
     from textEmbedding import OrthogonalCharEmbedding
 
     def build_text_encoder():
