@@ -970,7 +970,7 @@ def install_training_objective(train_module):
 def model_config(P):
     return {
         "architecture_family": "restoration-positive-dtw-window-encoder",
-        "architecture_revision": "resnet18-vit-tiny-no-restoration",
+        "architecture_revision": "pretrained-resnet18-deit-tiny-no-restoration",
         "training_stage": "align",
         "training_supervision": "positive+negative letter-dtw only",
         "local_encoder_type": "resnet18",
