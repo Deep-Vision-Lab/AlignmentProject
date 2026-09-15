@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=vit_restore_dtw
+#SBATCH --job-name=resnet18_tinyvit_dtw
 #SBATCH --partition=rtx4090
 #SBATCH --gpus=rtx_4090:2
 #SBATCH --ntasks=1
@@ -26,17 +26,25 @@ mkdir -p out
 BRANCH="$(git branch --show-current)"
 COMMIT="$(git rev-parse --short HEAD)"
 
-export JOB_NAME="${JOB_NAME:-restore_fused_rgb_dtw_s16}"
-export RESTORATION_EPOCHS="${RESTORATION_EPOCHS:-20}"
-export RESTORATION_NUM_SAMPLES="${RESTORATION_NUM_SAMPLES:-6000}"
-export RESTORATION_LEARNING_RATE="${RESTORATION_LEARNING_RATE:-1e-4}"
-export RESTORATION_TRAINING_STAGE="${RESTORATION_TRAINING_STAGE:-align}"
-export RESTORATION_LOCAL_ENCODER="${RESTORATION_LOCAL_ENCODER:-cnn_seq2seq}"
-export RESTORATION_CONTEXT_LAYERS="${RESTORATION_CONTEXT_LAYERS:-2}"
-export RESTORATION_NUM_NEGATIVES="${RESTORATION_NUM_NEGATIVES:-10}"
-export RESTORATION_CONTRASTIVE_WEIGHT="${RESTORATION_CONTRASTIVE_WEIGHT:-0.50}"
-export RESTORATION_CONTRASTIVE_MARGIN="${RESTORATION_CONTRASTIVE_MARGIN:-0.20}"
-export RESTORATION_DTW_STRIDE_RATIO="${RESTORATION_DTW_STRIDE_RATIO:-0.50}"
+export JOB_NAME="${JOB_NAME:-resnet18_tinyvit_dtw_s16}"
+export RESNET_TINYVIT_EPOCHS="${RESNET_TINYVIT_EPOCHS:-20}"
+export RESNET_TINYVIT_NUM_SAMPLES="${RESNET_TINYVIT_NUM_SAMPLES:-6000}"
+export RESNET_TINYVIT_LEARNING_RATE="${RESNET_TINYVIT_LEARNING_RATE:-1e-4}"
+export RESNET_TINYVIT_STRIDE_RATIO="${RESNET_TINYVIT_STRIDE_RATIO:-0.50}"
+export RESNET_TINYVIT_NUM_NEGATIVES="${RESNET_TINYVIT_NUM_NEGATIVES:-10}"
+export RESNET_TINYVIT_CONTRASTIVE_WEIGHT="${RESNET_TINYVIT_CONTRASTIVE_WEIGHT:-0.50}"
+export RESNET_TINYVIT_CONTRASTIVE_MARGIN="${RESNET_TINYVIT_CONTRASTIVE_MARGIN:-0.20}"
+
+# Standard ViT-Tiny sequence configuration.
+export TINY_VIT_EMBED_DIM="${TINY_VIT_EMBED_DIM:-192}"
+export TINY_VIT_LAYERS="${TINY_VIT_LAYERS:-12}"
+export TINY_VIT_HEADS="${TINY_VIT_HEADS:-3}"
+export TINY_VIT_MLP_DIM="${TINY_VIT_MLP_DIM:-768}"
+export TINY_VIT_DROPOUT="${TINY_VIT_DROPOUT:-0.10}"
+
+# Off by default so jobs do not need network access to download ImageNet weights.
+export RESNET18_IMAGENET_PRETRAINED="${RESNET18_IMAGENET_PRETRAINED:-0}"
+
 export POSITIVE_LETTER_DTW_WEIGHT="${POSITIVE_LETTER_DTW_WEIGHT:-1.0}"
 export POSITIVE_LETTER_DTW_GAMMA_START="${POSITIVE_LETTER_DTW_GAMMA_START:-0.50}"
 export POSITIVE_LETTER_DTW_GAMMA_END="${POSITIVE_LETTER_DTW_GAMMA_END:-0.05}"
@@ -47,68 +55,37 @@ export POSITIVE_LETTER_DTW_POSITION_PRIOR="${POSITIVE_LETTER_DTW_POSITION_PRIOR:
 export POSITIVE_LETTER_DTW_DISABLE_HORIZONTAL_WHEN_FEASIBLE="${POSITIVE_LETTER_DTW_DISABLE_HORIZONTAL_WHEN_FEASIBLE:-1}"
 export POSITIVE_LETTER_DTW_COMPETITION_TEMPERATURE="${POSITIVE_LETTER_DTW_COMPETITION_TEMPERATURE:-0.10}"
 export POSITIVE_LETTER_DTW_COST_MODE="${POSITIVE_LETTER_DTW_COST_MODE:-full_alphabet_nll}"
-if [[ -z "${RESTORATION_WEIGHT+x}" ]]; then
-  if [[ "${RESTORATION_TRAINING_STAGE}" == "pretrain" ]]; then
-    export RESTORATION_WEIGHT="1.0"
-  else
-    export RESTORATION_WEIGHT="0.10"
-  fi
-else
-  export RESTORATION_WEIGHT
-fi
-export RESTORATION_PIXEL_WEIGHT="${RESTORATION_PIXEL_WEIGHT:-1.0}"
-export RESTORATION_EDGE_WEIGHT="${RESTORATION_EDGE_WEIGHT:-0.50}"
-export RESTORATION_DICE_WEIGHT="0.0"
-export RESTORATION_STRUCTURE_WEIGHT="${RESTORATION_STRUCTURE_WEIGHT:-0.25}"
-export RESTORATION_FOREGROUND_WEIGHT="0.0"
-export RESTORATION_CONTRAST_SCALE="${RESTORATION_CONTRAST_SCALE:-0.15}"
-export RESTORATION_DECODER_CHANNELS="${RESTORATION_DECODER_CHANNELS:-128}"
 export LETTER_CODEBOOK_SEED="${LETTER_CODEBOOK_SEED:-1234}"
-export RESTORATION_SEMANTIC_ADAPTER="${RESTORATION_SEMANTIC_ADAPTER:-identity}"
-if [[ -z "${RESTORATION_EPOCH_PROBE+x}" ]]; then
-  if [[ "${RESTORATION_TRAINING_STAGE}" == "pretrain" ]]; then
-    export RESTORATION_EPOCH_PROBE="0"
-  else
-    export RESTORATION_EPOCH_PROBE="1"
-  fi
-else
-  export RESTORATION_EPOCH_PROBE
-fi
 
 echo "============================================================"
-echo "AlignmentProject: RGB restoration + local/context fusion + contrastive letter-DTW"
+echo "AlignmentProject: ResNet18 windows + ViT-Tiny context + letter-DTW"
 echo "branch       = ${BRANCH}"
 echo "commit       = ${COMMIT}"
 echo "job          = ${JOB_NAME}"
 echo "dataset      = ${DATASET}"
-echo "epochs       = ${RESTORATION_EPOCHS}"
-echo "samples      = ${RESTORATION_NUM_SAMPLES}"
-echo "learning_rate= ${RESTORATION_LEARNING_RATE}"
-echo "stage        = ${RESTORATION_TRAINING_STAGE}"
-echo "local_encoder= ${RESTORATION_LOCAL_ENCODER}"
-echo "stride_ratio = ${RESTORATION_DTW_STRIDE_RATIO} (0.50 => stride16)"
-echo "loss         = branch resolves stage-specific DTW/restoration weights"
-echo "restoration  = complete RGB window; ${RESTORATION_PIXEL_WEIGHT}*pixel + ${RESTORATION_EDGE_WEIGHT}*edge + ${RESTORATION_STRUCTURE_WEIGHT}*structure"
-echo "context      = ${RESTORATION_CONTEXT_LAYERS} Transformer layer(s); concat+projection+L2 fusion"
+echo "epochs       = ${RESNET_TINYVIT_EPOCHS}"
+echo "samples      = ${RESNET_TINYVIT_NUM_SAMPLES}"
+echo "learning_rate= ${RESNET_TINYVIT_LEARNING_RATE}"
+echo "window       = 128x32; stride_ratio=${RESNET_TINYVIT_STRIDE_RATIO} (0.50 => stride16)"
+echo "local encoder= ResNet-18; imagenet_pretrained=${RESNET18_IMAGENET_PRETRAINED}"
+echo "Tiny ViT     = dim=${TINY_VIT_EMBED_DIM}, layers=${TINY_VIT_LAYERS}, heads=${TINY_VIT_HEADS}, mlp=${TINY_VIT_MLP_DIM}"
+echo "fusion       = concat(local, contextual) -> projection -> L2 normalization"
+echo "decoder      = NONE"
+echo "loss         = ${POSITIVE_LETTER_DTW_WEIGHT}*positive_letter_DTW + ${RESNET_TINYVIT_CONTRASTIVE_WEIGHT}*negative_DTW_margin"
 echo "dtw gamma    = ${POSITIVE_LETTER_DTW_GAMMA_START} -> ${POSITIVE_LETTER_DTW_GAMMA_END} over ${POSITIVE_LETTER_DTW_ANNEAL_EPOCHS} epochs"
 echo "dtw moves    = vertical=${POSITIVE_LETTER_DTW_VERTICAL_PENALTY} horizontal=${POSITIVE_LETTER_DTW_HORIZONTAL_PENALTY} disable_horizontal_if_feasible=${POSITIVE_LETTER_DTW_DISABLE_HORIZONTAL_WHEN_FEASIBLE}"
 echo "dtw prior    = position=${POSITIVE_LETTER_DTW_POSITION_PRIOR} cost=${POSITIVE_LETTER_DTW_COST_MODE}"
-echo "negatives    = ${RESTORATION_NUM_NEGATIVES}; margin_weight=${RESTORATION_CONTRASTIVE_WEIGHT}; margin=${RESTORATION_CONTRASTIVE_MARGIN}"
-echo "pair loss    = 0 (text supervision only during training)"
+echo "negatives    = ${RESNET_TINYVIT_NUM_NEGATIVES}; margin=${RESNET_TINYVIT_CONTRASTIVE_MARGIN}"
 echo "text target  = frozen orthogonal Arabic character identities"
-echo "DTW vector   = fused(local, contextual); evaluation uses the same fused image vector"
-echo "epoch probe  = ${RESTORATION_EPOCH_PROBE}"
+echo "evaluation   = image-only fused vectors"
 echo "============================================================"
 
-# Cheap syntax preflight before torchrun starts two worker processes. This catches
-# accidental source-editing errors before the actual training entrypoint runs.
 "${PYTHON_BIN}" -m py_compile \
   train.py \
   runtime_device_setup.py \
   model_backend.py \
+  vlm_resnet18_tinyvit_positive_dtw.py \
   vlm_restoration_positive_dtw.py \
-  restoration_epoch_probe.py \
-  restoration_window_seq2seq.py \
   restoration_recommended_components.py \
   zero_shot_preprocessing.py \
   DataLoader.py \
