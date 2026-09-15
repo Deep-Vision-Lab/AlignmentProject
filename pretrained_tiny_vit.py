@@ -81,6 +81,7 @@ def initialize_tiny_vit_from_pretrained(
         source = ViTModel.from_pretrained(
             str(model_name),
             local_files_only=bool(local_files_only),
+            add_pooling_layer=False,
         )
     except OSError as exc:
         mode = "local cache" if local_files_only else "Hugging Face"
