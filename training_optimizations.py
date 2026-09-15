@@ -747,13 +747,6 @@ def optimized_train(train_module):
                 scaler.load_state_dict(resume_payload["scaler_state_dict"])
             start_epoch = int(resume_payload["epoch"]) + 1
 
-        if isinstance(model, DDP) and _flag("DDP_STATIC_GRAPH", True):
-            try:
-                model._set_static_graph()
-            except Exception as exc:
-                if train_module.CTX.is_main:
-                    print(f"DDP static graph unavailable: {exc}", flush=True)
-
         run = train_module.init_wandb(args, config)
         history = []
         best_validation = float("inf")
