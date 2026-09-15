@@ -174,7 +174,7 @@ def apply_branch_config(P):
 
     # Legacy compatibility attribute: reconstruction is intentionally disabled.
     P.restoration_weight = 0.0
-
+    # Diagnostic mode: one backward/optimizer update per batch; no accumulation.\n    P.gradient_accumulation_steps = 1\n
 
 def _is_arabic_letter(character: str) -> bool:
     codepoint = ord(character)
@@ -535,12 +535,32 @@ def attach_restoration_dtw_stages(model, P):
                 outputs.append(token_valid.float())
             return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
+        contextual_out = self.vision_norm(contextual)
+
+        # Retain intermediate activation gradients for the per-batch diagnostic.
+        # The training loop clears _gradient_probe_records before every batch.
+        if self.training and torch.is_grad_enabled():
+            local.retain_grad()
+            contextual.retain_grad()
+            fused.retain_grad()
+            fused_out.retain_grad()
+            if not hasattr(self, "_gradient_probe_records"):
+                self._gradient_probe_records = []
+            self._gradient_probe_records.append(
+                {
+                    "after_resnet18": local,
+                    "after_vit_tiny": contextual,
+                    "after_fusion": fused,
+                    "final_fused": fused_out,
+                }
+            )
+
         return {
             "semantic": fused_out,
             "fused": fused_out,
             "primitive": local_out,
             "primitive_raw": local,
-            "contextual": self.vision_norm(contextual),
+            "contextual": contextual_out,
             "ink": token_valid.float(),
             "token_valid": token_valid,
             "model_input": model_input,
