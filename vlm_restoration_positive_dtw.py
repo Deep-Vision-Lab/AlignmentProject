@@ -174,7 +174,9 @@ def apply_branch_config(P):
 
     # Legacy compatibility attribute: reconstruction is intentionally disabled.
     P.restoration_weight = 0.0
-    # Diagnostic mode: one backward/optimizer update per batch; no accumulation.\n    P.gradient_accumulation_steps = 1\n
+    # Diagnostic mode: one backward/optimizer update per batch; no accumulation.
+    P.gradient_accumulation_steps = 1
+    P.use_wandb = False
 
 def _is_arabic_letter(character: str) -> bool:
     codepoint = ord(character)
