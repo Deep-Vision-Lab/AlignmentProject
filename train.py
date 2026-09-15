@@ -104,7 +104,7 @@ from unified_line_geometry import install_training_geometry
 from vit_checkpoint_migration import install as install_vit_checkpoint_migration
 
 # Install shared optimization/runtime helpers first. The branch backend then
-# replaces compute_batch_loss with RGB restoration + positive/negative DTW.
+# replaces compute_batch_loss with positive/negative letter-DTW only.
 install_optimizations(base)
 
 install_vit_checkpoint_migration(base)
@@ -166,7 +166,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--weights",
         default=None,
-        help="Optional visual initialization. New restoration/semantic heads remain newly initialized.",
+        help="Optional compatible visual initialization. Mismatched shapes are skipped.",
     )
     return parser.parse_args()
 
@@ -231,18 +231,32 @@ def _validate_constructed_backend(model: nn.Module) -> None:
     has_vit = any(key.startswith("vit_encoder.") for key in keys)
     has_cnn = any(key.startswith("cnn_encoder.") for key in keys)
     has_bilstm = any(key.startswith("sequence_encoder.bilstm.") for key in keys)
-    visual_type = str(getattr(model_backend, "VISUAL_ENCODER_TYPE", backend)).strip().lower()
+    visual_type = str(
+        getattr(model_backend, "VISUAL_ENCODER_TYPE", backend)
+    ).strip().lower()
     if visual_type == "vit" and (not has_vit or has_cnn or has_bilstm):
         raise RuntimeError(
             "ViT branch built the wrong model: "
-            f"backend={backend} has_vit={has_vit} has_cnn={has_cnn} has_bilstm={has_bilstm}"
+            f"backend={backend} has_vit={has_vit} "
+            f"has_cnn={has_cnn} has_bilstm={has_bilstm}"
         )
-    if not hasattr(getattr(model, "vit_encoder", None), "semantic_adapter"):
-        raise RuntimeError("Restoration-DTW backend is missing semantic_adapter module")
-    if not any("stroke_decoder" in key for key in keys):
-        raise RuntimeError("Restoration-DTW backend is missing stroke_decoder parameters")
+
+    vit = getattr(model, "vit_encoder", None)
+    patch_embedding = getattr(vit, "patch_embedding", None)
+    if patch_embedding is None or patch_embedding.__class__.__name__ != (
+        "WindowSequenceResNet18Encoder"
+    ):
+        raise RuntimeError(
+            "ResNet18+TinyViT backend is missing WindowSequenceResNet18Encoder"
+        )
     if not any("fusion_head" in key for key in keys):
-        raise RuntimeError("Restoration-DTW backend is missing local/context fusion parameters")
+        raise RuntimeError(
+            "ResNet18+TinyViT backend is missing local/context fusion parameters"
+        )
+    if any("stroke_decoder" in key for key in keys):
+        raise RuntimeError(
+            "Decoder removal failed: stroke_decoder parameters are still active"
+        )
 
 
 def main() -> None:
