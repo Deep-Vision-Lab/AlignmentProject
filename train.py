@@ -291,7 +291,7 @@ def main() -> None:
                 device_ids=[0],
                 output_device=0,
                 broadcast_buffers=False,
-                find_unused_parameters=True,
+                find_unused_parameters=False,
                 gradient_as_bucket_view=True,
             )
 
@@ -304,7 +304,7 @@ def main() -> None:
                 "selected_cuda_device": RANK_DEVICE.selected_device,
                 "ddp_static_graph": False,
                 "ddp_static_graph_reason": "disabled: data-dependent DTW diagnostic graph",
-                "ddp_find_unused_parameters": True,
+                "ddp_find_unused_parameters": False,
             }
         )
 
