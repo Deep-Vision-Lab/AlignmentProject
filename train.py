@@ -269,7 +269,7 @@ def main() -> None:
         stride = base.compute_stride(
             P.window_size, P.stride_ratio, P.window_overlap_mode
         )
-        train_loader, valid_loader, _test_loader, train_sampler = (
+        train_loader, valid_loader, test_loader, train_sampler = (
             base.select_dataloaders(args)
         )
         text_encoder = base.build_text_encoder()
@@ -310,46 +310,19 @@ def main() -> None:
         )
 
         if base.CTX.is_main:
-            mode = "visual-init" if args.pretrained_weights else "scratch"
-            print("AlignmentProject ResNet18 + ViT-Tiny positive-DTW trainer", flush=True)
-            print(f"  backend      = {model_backend.MODEL_NAME}", flush=True)
-            print(f"  mode         = {mode}", flush=True)
-            print(f"  dataset      = {args.data_dir}", flush=True)
-            print(f"  dataset_type = {args.dataset_type}", flush=True)
-            print(f"  weights      = {args.pretrained_weights or '<none>'}", flush=True)
-            print(f"  output       = Weights/{args.job_id}", flush=True)
-            print(f"  epochs/lr    = {args.epochs}/{args.learning_rate}", flush=True)
-            print(f"  window/stride= {P.window_size}/{stride}", flush=True)
-            print("  local_encoder= ResNet-18 (512 -> 192 projection)", flush=True)
-            print("  context      = ViT-Tiny (D=192, 12 layers, 3 heads, MLP=768)", flush=True)
+            train_size = len(train_loader.dataset)
+            valid_size = len(valid_loader.dataset)
+            test_size = len(test_loader.dataset)
+            dataset_size = train_size + valid_size + test_size
             print(
-                f"  objective    = {P.positive_letter_dtw_weight}*positive_letter_DTW "
-                f"+ {P.restoration_contrastive_weight}*negative_margin_DTW",
+                f"DATASET path={args.data_dir} type={args.dataset_type} "
+                f"size={dataset_size} train={train_size} "
+                f"valid={valid_size} test={test_size}",
                 flush=True,
             )
             print(
-                "  dtw          = "
-                f"cost={P.positive_letter_dtw_cost_mode} "
-                f"gamma={P.positive_letter_dtw_gamma_start}->{P.positive_letter_dtw_gamma_end} "
-                f"vertical={P.positive_letter_dtw_vertical_penalty} "
-                f"horizontal={P.positive_letter_dtw_horizontal_penalty} "
-                f"no_horizontal_if_feasible="
-                f"{P.positive_letter_dtw_disable_horizontal_when_feasible}",
-                flush=True,
-            )
-            print(
-                f"  negatives    = {P.num_negatives}; image_pair_loss={P.image_pair_loss_weight}; "
-                f"variance={P.image_variance_loss_weight}",
-                flush=True,
-            )
-            print(
-                "  representations= ResNet18 local window token -> "
-                "ViT-Tiny context -> concat+projection+L2 fused DTW vector",
-                flush=True,
-            )
-            print(
-                f"  batch        = {P.batch_size} per GPU x {base.CTX.world_size} GPUs "
-                f"x {P.gradient_accumulation_steps} accumulation",
+                "MODELS encoder=ResNet-18(512->192) "
+                "vit=ViT-Tiny(dim=192,layers=12,heads=3,mlp=768)",
                 flush=True,
             )
 
