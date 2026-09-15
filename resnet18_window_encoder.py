@@ -1,6 +1,9 @@
 """Shared ResNet-18 encoder for overlapping full-height line windows."""
 from __future__ import annotations
 
+from pathlib import Path
+from urllib.parse import urlparse
+
 import torch
 import torch.nn as nn
 from torchvision.models import ResNet18_Weights, resnet18
@@ -26,6 +29,7 @@ class ResNet18WindowEncoder(nn.Module):
         stride: int = 16,
         embed_dim: int = 192,
         pretrained: bool = False,
+        local_files_only: bool = True,
     ) -> None:
         super().__init__()
         if int(input_height) != 128 or int(window_size) != 32:
@@ -35,9 +39,24 @@ class ResNet18WindowEncoder(nn.Module):
         self.stride = int(stride)
         self.embed_dim = int(embed_dim)
         self.pretrained = bool(pretrained)
+        self.local_files_only = bool(local_files_only)
 
-        weights = ResNet18_Weights.DEFAULT if self.pretrained else None
-        self.backbone = resnet18(weights=weights)
+        if self.pretrained and self.local_files_only:
+            weights = ResNet18_Weights.DEFAULT
+            filename = Path(urlparse(weights.url).path).name
+            checkpoint = Path(torch.hub.get_dir()) / "checkpoints" / filename
+            if not checkpoint.is_file():
+                raise FileNotFoundError(
+                    "Missing cached ResNet-18 ImageNet weights at "
+                    f"{checkpoint}. Run: python scripts/cache_pretrained_models.py "
+                    "before submitting the offline SLURM job."
+                )
+            self.backbone = resnet18(weights=None)
+            state = torch.load(checkpoint, map_location="cpu")
+            self.backbone.load_state_dict(state, strict=True)
+        else:
+            weights = ResNet18_Weights.DEFAULT if self.pretrained else None
+            self.backbone = resnet18(weights=weights)
         self.backbone.fc = nn.Identity()
         self.projection = nn.Sequential(
             nn.Linear(512, self.embed_dim),
