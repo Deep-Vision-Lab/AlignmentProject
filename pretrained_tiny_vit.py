@@ -115,8 +115,10 @@ def initialize_tiny_vit_from_pretrained(
         for destination, pretrained in zip(destination_layers, source_layers):
             _copy_parameter(destination.norm1.weight, pretrained.layernorm_before.weight)
             _copy_parameter(destination.norm1.bias, pretrained.layernorm_before.bias)
+            destination.norm1.eps = float(pretrained.layernorm_before.eps)
             _copy_parameter(destination.norm2.weight, pretrained.layernorm_after.weight)
             _copy_parameter(destination.norm2.bias, pretrained.layernorm_after.bias)
+            destination.norm2.eps = float(pretrained.layernorm_after.eps)
 
             query = pretrained.attention.attention.query
             key = pretrained.attention.attention.key
@@ -146,6 +148,7 @@ def initialize_tiny_vit_from_pretrained(
             raise ValueError("Destination ViT-Tiny must have a final LayerNorm.")
         _copy_parameter(vit.encoder.norm.weight, source.layernorm.weight)
         _copy_parameter(vit.encoder.norm.bias, source.layernorm.bias)
+        vit.encoder.norm.eps = float(source.layernorm.eps)
 
         one_dimensional_positions = _horizontal_position_prior(
             source.embeddings.position_embeddings,
