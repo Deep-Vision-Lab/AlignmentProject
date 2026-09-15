@@ -112,13 +112,6 @@ def install_epoch_subset_sampling(train_module) -> None:
             args_target = int(getattr(args, "num_samples", 0) or 0)
             source_cap = _synthetic_source_cap_for_train_target(target)
 
-            if train_module.CTX.is_main:
-                print(
-                    "Synthetic dataset-size policy: "
-                    f"Parameters.num_samples={target} args.num_samples={args_target} "
-                    f"source_cap={source_cap}",
-                    flush=True,
-                )
 
             # Keep the downstream args object consistent as well, but derive the
             # source cap only from Parameters.py.
@@ -135,13 +128,6 @@ def install_epoch_subset_sampling(train_module) -> None:
             #         f"test={len(test_loader.dataset)}."
             #     )
 
-            if train_module.CTX.is_main:
-                print(
-                    "Synthetic train length from Parameters.num_samples: "
-                    f"train={actual_train} valid={len(valid_loader.dataset)} "
-                    f"test={len(test_loader.dataset)} source_cap={source_cap}",
-                    flush=True,
-                )
             return train_loader, valid_loader, test_loader, train_sampler
 
         train_loader, valid_loader, test_loader, train_sampler = original_select(args)
@@ -166,14 +152,6 @@ def install_epoch_subset_sampling(train_module) -> None:
         )
         train_loader = train_module._rebuild_loader(train_loader, sampler)
 
-        if train_module.CTX.is_main:
-            print(
-                "Epoch-random real subset sampling enabled: "
-                f"pool={pool_size} samples_per_epoch={target} "
-                f"per_rank={len(sampler)} world_size={train_module.CTX.world_size} "
-                f"seed={seed} refresh=each_epoch",
-                flush=True,
-            )
         return train_loader, valid_loader, test_loader, sampler
 
     train_module.select_dataloaders = select_dataloaders
