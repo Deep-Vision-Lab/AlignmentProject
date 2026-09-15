@@ -34,7 +34,7 @@ import model_backend
 
 # Import the branch backend before exporting environment/config or constructing
 # dataloaders. This branch changes the text encoder to a frozen char codebook,
-# enables transcript negatives, and keeps evaluation image-only.
+# uses positive transcript DTW by default, and keeps evaluation image-only.
 P.export_environment()
 
 
