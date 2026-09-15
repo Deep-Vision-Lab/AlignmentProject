@@ -323,7 +323,7 @@ def main() -> None:
             print(
                 "MODELS "
                 "encoder=ResNet-18[ImageNet1K-pretrained](512->192) "
-                "vit=ViT-Tiny[facebook/deit-tiny-patch16-224-pretrained]"
+                f"vit=ViT-Tiny[{P.tiny_vit_pretrained_model}-pretrained]"
                 "(dim=192,layers=12,heads=3,mlp=768)",
                 flush=True,
             )
