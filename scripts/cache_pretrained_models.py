@@ -26,7 +26,7 @@ os.environ["HF_HOME"] = str(HF_HOME)
 from torchvision.models import ResNet18_Weights, resnet18
 from transformers import ViTModel
 
-from pretrained_tiny_vit import DEFAULT_TINY_VIT_MODEL
+DEFAULT_TINY_VIT_MODEL = "facebook/deit-tiny-patch16-224"
 
 
 def resnet_checkpoint_path() -> Path:
