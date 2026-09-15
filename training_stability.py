@@ -334,6 +334,9 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
                         flush=True,
                     )
 
+                # Do not keep the last batch graph/tensors alive after diagnostics.
+                raw_model._gradient_probe_records = []
+
                 pre_step_snapshot = (
                     _snapshot_trainable(named_trainable)
                     if post_step_guard
