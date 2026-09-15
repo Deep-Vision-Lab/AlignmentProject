@@ -591,7 +591,7 @@ def optimized_train_one_epoch(train_module):
     def train_one_epoch(model, text_encoder, criterion, optimizer, scaler, loader):
         model.train()
         text_encoder.train() if train_module.has_trainable_parameters(text_encoder) else text_encoder.eval()
-        accumulation = max(1, _integer("GRADIENT_ACCUMULATION_STEPS", 1))
+        accumulation = 1
         max_batches = max(0, _integer("PROFILE_MAX_BATCHES", 0))
         effective_batches = min(len(loader), max_batches) if max_batches else len(loader)
         clip_parameters = [
