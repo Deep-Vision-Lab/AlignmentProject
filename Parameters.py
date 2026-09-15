@@ -28,7 +28,7 @@ profile_max_batches = 0
 # Keep the current memory-safe micro-batch while preserving an effective global
 # batch of 64 on two GPUs: 8 x 4 accumulation x 2 ranks.
 batch_size = 32
-gradient_accumulation_steps = 2
+gradient_accumulation_steps = 1
 epochs = 20
 learning_rate = 1e-4
 finetune_epochs = 30
