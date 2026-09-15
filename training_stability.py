@@ -164,13 +164,13 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
     )
 
     def train_one_epoch(model, text_encoder, criterion, optimizer, scaler, loader):
+        """Diagnostic loop: exactly one backward/update per batch, no accumulation."""
         model.train()
         if train_module.has_trainable_parameters(text_encoder):
             text_encoder.train()
         else:
             text_encoder.eval()
 
-        accumulation = max(1, _env_int("GRADIENT_ACCUMULATION_STEPS", 1))
         max_batches = max(0, _env_int("PROFILE_MAX_BATCHES", 0))
         effective_batches = min(len(loader), max_batches) if max_batches else len(loader)
         clip_parameters = [
@@ -181,12 +181,30 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
         named_trainable = _trainable_named_parameters(model, text_encoder)
         trainable_parameters = [parameter for _, parameter in named_trainable]
 
+        def unwrap(module):
+            return module.module if isinstance(module, DDP) else module
+
+        def module_grad_norm(module):
+            total = None
+            for parameter in module.parameters():
+                if parameter.grad is None:
+                    continue
+                value = parameter.grad.detach().float().pow(2).sum()
+                total = value if total is None else total + value
+            if total is None:
+                return float("nan")
+            return float(total.sqrt().item())
+
+        def activation_grad_norm(tensor, backward_scale):
+            if tensor is None or tensor.grad is None:
+                return float("nan")
+            value = float(tensor.grad.detach().float().norm().item())
+            return value / max(float(backward_scale), 1.0)
+
         loss_sum = 0.0
         total_weight = 0
         stats_sum = {}
-        optimizer.zero_grad(set_to_none=True)
         epoch_started = time.perf_counter()
-        previous_end = epoch_started
         consecutive_nonfinite = 0
 
         parameters_bad = _global_any(
@@ -195,195 +213,143 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
         if parameters_bad:
             raise FloatingPointError(
                 "stability_guard: model already contains non-finite parameters "
-                "before the epoch; use model_last_finite.pth or an earlier checkpoint."
+                "before the epoch."
             )
 
         for batch_idx, batch in enumerate(loader):
             if max_batches and batch_idx >= max_batches:
                 break
-            batch_started = time.perf_counter()
-            PROFILER.add("data_wait", batch_started - previous_end)
-            is_boundary = (
-                ((batch_idx + 1) % accumulation == 0)
-                or ((batch_idx + 1) == effective_batches)
-            )
-            sync_context = nullcontext()
-            if isinstance(model, DDP) and not is_boundary:
-                sync_context = model.no_sync()
 
-            with sync_context:
-                with PROFILER.section("forward_total"):
-                    loss, stats = train_module.compute_batch_loss(
-                        model, text_encoder, criterion, batch
-                    )
+            # One optimizer update per batch. No gradient accumulation.
+            optimizer.zero_grad(set_to_none=True)
+            raw_model = unwrap(model)
+            raw_model._gradient_probe_records = []
 
-                bad_loss = _global_any(
-                    train_module,
-                    not bool(torch.isfinite(loss.detach()).all().item()),
+            with PROFILER.section("forward_total"):
+                loss, stats = train_module.compute_batch_loss(
+                    model, text_encoder, criterion, batch
                 )
-                if bad_loss:
-                    optimizer.zero_grad(set_to_none=True)
-                    consecutive_nonfinite += 1
-                    _save_last_finite(
-                        train_module,
-                        model,
-                        text_encoder,
-                        optimizer,
-                        scaler,
-                        config,
-                        job_id,
-                        batch_index=batch_idx + 1,
-                        reason="nonfinite_loss_before_backward",
-                        optimizer_state_valid=True,
+
+            bad_loss = _global_any(
+                train_module,
+                not bool(torch.isfinite(loss.detach()).all().item()),
+            )
+            if bad_loss:
+                consecutive_nonfinite += 1
+                if consecutive_nonfinite >= max_nonfinite_skips:
+                    raise FloatingPointError(
+                        "stability_guard: repeated non-finite batch losses."
                     )
+                continue
+
+            # Save the AMP scale used for this backward. Parameter gradients are
+            # unscaled by GradScaler below; retained activation gradients are not,
+            # so their reported norms are divided by this scale explicitly.
+            backward_scale = float(scaler.get_scale()) if scaler.is_enabled() else 1.0
+            with PROFILER.section("backward"):
+                scaler.scale(loss).backward()
+
+            with PROFILER.section("optimizer_and_sync"):
+                coalesced_text_allreduce(
+                    text_encoder, train_module.CTX.world_size
+                )
+                scaler.unscale_(optimizer)
+
+                gradients_bad = _global_any(
+                    train_module,
+                    not _all_gradients_finite(clip_parameters),
+                )
+                if gradients_bad:
+                    optimizer.zero_grad(set_to_none=True)
+                    scaler.update()
+                    consecutive_nonfinite += 1
                     if consecutive_nonfinite >= max_nonfinite_skips:
                         raise FloatingPointError(
-                            "stability_guard: repeated non-finite losses; rescue "
-                            "weights were saved to model_last_finite.pth"
+                            "stability_guard: repeated non-finite gradients."
                         )
-                    if train_module.CTX.is_main:
-                        print(
-                            "stability_guard skipped batch due to non-finite loss "
-                            f"batch={batch_idx + 1} consecutive={consecutive_nonfinite}/"
-                            f"{max_nonfinite_skips}",
-                            flush=True,
-                        )
-                    previous_end = time.perf_counter()
                     continue
 
-                with PROFILER.section("backward"):
-                    scaler.scale(loss / accumulation).backward()
+                vit = raw_model.vit_encoder
+                resnet_param_grad = module_grad_norm(vit.patch_embedding)
+                vit_param_grad = module_grad_norm(vit.encoder)
+                fusion_param_grad = module_grad_norm(vit.fusion_head)
 
-            if is_boundary:
-                with PROFILER.section("optimizer_and_sync"):
-                    coalesced_text_allreduce(
-                        text_encoder, train_module.CTX.world_size
+                if train_module.CTX.is_main:
+                    print(
+                        f"BATCH_LOSS batch={batch_idx + 1}/{effective_batches} "
+                        f"loss={float(loss.detach().item()):.8f}",
+                        flush=True,
                     )
-                    scaler.unscale_(optimizer)
-
-                    gradients_bad = _global_any(
-                        train_module,
-                        not _all_gradients_finite(clip_parameters),
+                    records = list(
+                        getattr(raw_model, "_gradient_probe_records", [])
                     )
-                    if gradients_bad:
-                        _save_last_finite(
-                            train_module,
-                            model,
-                            text_encoder,
-                            optimizer,
-                            scaler,
-                            config,
-                            job_id,
-                            batch_index=batch_idx + 1,
-                            reason="nonfinite_gradient_before_optimizer_step",
-                            optimizer_state_valid=True,
+                    for pass_idx, record in enumerate(records, start=1):
+                        print(
+                            f"GRAD batch={batch_idx + 1} pass={pass_idx} "
+                            "after=ResNet18 "
+                            f"activation_norm={activation_grad_norm(record.get('after_resnet18'), backward_scale):.8e}",
+                            flush=True,
                         )
-                        optimizer.zero_grad(set_to_none=True)
-                        scaler.update()
-                        consecutive_nonfinite += 1
-                        if train_module.CTX.is_main:
-                            print(
-                                "stability_guard skipped unsafe optimizer step "
-                                f"batch={batch_idx + 1} consecutive={consecutive_nonfinite}/"
-                                f"{max_nonfinite_skips}",
-                                flush=True,
-                            )
-                        if consecutive_nonfinite >= max_nonfinite_skips:
-                            raise FloatingPointError(
-                                "stability_guard: repeated non-finite gradients; "
-                                "rescue weights were saved to model_last_finite.pth"
-                            )
-                        weight = max(1, train_module._batch_size(batch))
-                        loss_sum += float(loss.detach().item()) * weight
-                        total_weight += weight
-                        train_module._accumulate_stats(stats_sum, stats, weight)
-                        previous_end = time.perf_counter()
-                        continue
-
-                    pre_step_snapshot = (
-                        _snapshot_trainable(named_trainable)
-                        if post_step_guard
-                        else None
-                    )
-                    total_grad_norm = torch.nn.utils.clip_grad_norm_(
-                        clip_parameters,
-                        max_norm=clip_norm,
-                        error_if_nonfinite=True,
-                    )
-                    if train_module.CTX.is_main:
-                        stats["gradient_norm"] = float(total_grad_norm.detach().item())
-
-                    scaler.step(optimizer)
-                    scaler.update()
-                    optimizer.zero_grad(set_to_none=True)
-
-                    parameters_bad = _global_any(
-                        train_module,
-                        not _all_parameters_finite(trainable_parameters),
-                    )
-                    if parameters_bad:
-                        if pre_step_snapshot is not None:
-                            _restore_trainable(named_trainable, pre_step_snapshot)
-                        _save_last_finite(
-                            train_module,
-                            model,
-                            text_encoder,
-                            optimizer,
-                            scaler,
-                            config,
-                            job_id,
-                            batch_index=batch_idx + 1,
-                            reason="nonfinite_parameter_after_optimizer_step_rolled_back",
-                            optimizer_state_valid=False,
+                        print(
+                            f"GRAD batch={batch_idx + 1} pass={pass_idx} "
+                            "after=ViT-Tiny "
+                            f"activation_norm={activation_grad_norm(record.get('after_vit_tiny'), backward_scale):.8e}",
+                            flush=True,
                         )
-                        raise FloatingPointError(
-                            "stability_guard: optimizer produced non-finite parameters; "
-                            "the pre-step weights were restored and saved to "
-                            "model_last_finite.pth"
+                        print(
+                            f"GRAD batch={batch_idx + 1} pass={pass_idx} "
+                            "after=Fusion "
+                            f"activation_norm={activation_grad_norm(record.get('after_fusion'), backward_scale):.8e}",
+                            flush=True,
                         )
+                    print(
+                        f"GRAD batch={batch_idx + 1} part=ResNet18 "
+                        f"parameter_norm={resnet_param_grad:.8e}",
+                        flush=True,
+                    )
+                    print(
+                        f"GRAD batch={batch_idx + 1} part=ViT-Tiny "
+                        f"parameter_norm={vit_param_grad:.8e}",
+                        flush=True,
+                    )
+                    print(
+                        f"GRAD batch={batch_idx + 1} part=Fusion "
+                        f"parameter_norm={fusion_param_grad:.8e}",
+                        flush=True,
+                    )
 
-                    consecutive_nonfinite = 0
+                pre_step_snapshot = (
+                    _snapshot_trainable(named_trainable)
+                    if post_step_guard
+                    else None
+                )
+                total_grad_norm = torch.nn.utils.clip_grad_norm_(
+                    clip_parameters,
+                    max_norm=clip_norm,
+                    error_if_nonfinite=True,
+                )
+                stats["gradient_norm"] = float(total_grad_norm.detach().item())
+
+                scaler.step(optimizer)
+                scaler.update()
+
+                parameters_bad = _global_any(
+                    train_module,
+                    not _all_parameters_finite(trainable_parameters),
+                )
+                if parameters_bad:
+                    if pre_step_snapshot is not None:
+                        _restore_trainable(named_trainable, pre_step_snapshot)
+                    raise FloatingPointError(
+                        "stability_guard: optimizer produced non-finite parameters."
+                    )
+
+                consecutive_nonfinite = 0
 
             weight = max(1, train_module._batch_size(batch))
             loss_sum += float(loss.detach().item()) * weight
             total_weight += weight
             train_module._accumulate_stats(stats_sum, stats, weight)
-            elapsed = time.perf_counter() - batch_started
-            samples_per_second = (
-                weight * train_module.CTX.world_size / max(elapsed, 1e-9)
-            )
-            train_module._accumulate_stats(
-                stats_sum,
-                {"samples_per_second": samples_per_second},
-                weight,
-            )
-
-            if train_module.CTX.is_main:
-                memory = ""
-                if train_module.P.log_memory_every_n_batches > 0 and (
-                    batch_idx == 0
-                    or (batch_idx + 1)
-                    % train_module.P.log_memory_every_n_batches
-                    == 0
-                ):
-                    memory = " " + train_module._format_memory(text_encoder)
-                grad_text = ""
-                if "gradient_norm" in stats:
-                    grad_text = f" grad_norm={stats['gradient_norm']:.4f}"
-                print(
-                    f"rank=0 batch={batch_idx + 1}/{effective_batches} "
-                    f"microbatch={weight} "
-                    f"effective_global_batch={weight * train_module.CTX.world_size * accumulation} "
-                    f"loss={loss.item():.4f} "
-                    f"norm_pos={stats.get('norm_pos', float('nan')):.4f} "
-                    f"norm_neg={stats.get('norm_neg', float('nan')):.4f} "
-                    f"gap={stats.get('gap', float('nan')):.4f}"
-                    f"{grad_text} "
-                    f"throughput={samples_per_second:.2f} samples/s "
-                    f"time={elapsed:.2f}s{memory}",
-                    flush=True,
-                )
-            previous_end = time.perf_counter()
 
         PROFILER.add("epoch_wall", time.perf_counter() - epoch_started)
         return train_module._merge_epoch_payload(
