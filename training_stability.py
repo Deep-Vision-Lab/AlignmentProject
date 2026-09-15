@@ -184,9 +184,9 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
         def unwrap(module):
             return module.module if isinstance(module, DDP) else module
 
-        def module_grad_norm(module):
+        def parameter_grad_norm(parameters):
             total = None
-            for parameter in module.parameters():
+            for parameter in parameters:
                 if parameter.grad is None:
                     continue
                 value = parameter.grad.detach().float().pow(2).sum()
@@ -271,9 +271,17 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
                     continue
 
                 vit = raw_model.vit_encoder
-                resnet_param_grad = module_grad_norm(vit.patch_embedding)
-                vit_param_grad = module_grad_norm(vit.encoder)
-                fusion_param_grad = module_grad_norm(vit.fusion_head)
+                resnet_param_grad = parameter_grad_norm(
+                    list(vit.patch_embedding.parameters())
+                    + list(vit.local_norm.parameters())
+                )
+                vit_param_grad = parameter_grad_norm(
+                    list(vit.encoder.parameters()) + [vit.position_embedding]
+                )
+                fusion_param_grad = parameter_grad_norm(
+                    list(vit.fusion_head.parameters())
+                    + list(raw_model.vision_norm.parameters())
+                )
 
                 if train_module.CTX.is_main:
                     print(
