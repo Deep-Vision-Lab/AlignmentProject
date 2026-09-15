@@ -137,3 +137,48 @@ def test_horizontal_moves_remain_available_when_text_is_longer_than_windows():
         disable_horizontal_when_feasible=True,
     )
     assert torch.isfinite(value)
+
+
+def test_gradient_probes_cover_every_active_stage():
+    model = _model()
+    model.train()
+    model._gradient_probe_records = []
+    image = torch.randn(1, 3, 128, 64)
+    bundle = model(image, return_training_bundle=True)
+
+    # Use a non-constant directional objective on the normalized DTW vectors.
+    generator = torch.Generator().manual_seed(19)
+    direction = torch.randn(
+        bundle["semantic"].shape,
+        generator=generator,
+        device=bundle["semantic"].device,
+        dtype=bundle["semantic"].dtype,
+    )
+    loss = (bundle["semantic"] * direction).sum()
+    loss.backward()
+
+    assert len(model._gradient_probe_records) == 1
+    record = model._gradient_probe_records[0]
+    for stage in (
+        "after_resnet18",
+        "after_vit_tiny",
+        "after_fusion",
+        "final_fused",
+    ):
+        gradient = record[stage].grad
+        assert gradient is not None, stage
+        assert torch.isfinite(gradient).all(), stage
+        assert float(gradient.float().norm()) > 0.0, stage
+
+    assert any(
+        parameter.grad is not None
+        for parameter in model.vit_encoder.patch_embedding.parameters()
+    )
+    assert any(
+        parameter.grad is not None
+        for parameter in model.vit_encoder.encoder.parameters()
+    )
+    assert any(
+        parameter.grad is not None
+        for parameter in model.vit_encoder.fusion_head.parameters()
+    )
