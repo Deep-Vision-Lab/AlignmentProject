@@ -388,26 +388,11 @@ def build_dataloaders(data_dir=None):
             if split_by_pair
             else _random_split_seeded(full_dataset)
         )
-        print(
-            "Loaded real Arabic manifest dataset: "
-            f"samples={len(full_dataset)} labels={_parse_real_labels() or 'all'} "
-            f"text_key={full_dataset.text_key} binarize={_real_binarize} "
-            f"method={_real_binarize_method} split_by_pair_id={split_by_pair}",
-            flush=True,
-        )
     else:
         full_dataset = _build_synthetic_dataset(data_dir)
         splits = _random_split_seeded(full_dataset)
-        print(
-            f"Loaded synthetic dataset: samples={len(full_dataset)} data_dir={data_dir}",
-            flush=True,
-        )
 
     train_ds, valid_ds, test_ds = splits
-    print(
-        f"Dataset split sizes: train={len(train_ds)} valid={len(valid_ds)} test={len(test_ds)}",
-        flush=True,
-    )
     return (
         _make_loader(train_ds, shuffle=True),
         _make_loader(valid_ds, shuffle=False),
