@@ -321,8 +321,10 @@ def main() -> None:
                 flush=True,
             )
             print(
-                "MODELS encoder=ResNet-18(512->192) "
-                "vit=ViT-Tiny(dim=192,layers=12,heads=3,mlp=768)",
+                "MODELS "
+                "encoder=ResNet-18[ImageNet1K-pretrained](512->192) "
+                "vit=ViT-Tiny[facebook/deit-tiny-patch16-224-pretrained]"
+                "(dim=192,layers=12,heads=3,mlp=768)",
                 flush=True,
             )
 
