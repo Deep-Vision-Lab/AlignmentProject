@@ -63,20 +63,6 @@ def install(base_module) -> None:
                 loaded["text_embedder_state_dict"], strict=False
             )
 
-        if base_module.CTX.is_main and removed_layers:
-            removed_indices = sorted(
-                {
-                    int(_LAYER_KEY.match(key).group(1))
-                    for key in removed_layers
-                    if _LAYER_KEY.match(key)
-                }
-            )
-            print(
-                "Loaded pretrained ViT with intentional depth migration: "
-                f"kept_layers=0..{kept_layers - 1} "
-                f"discarded_layers={removed_indices}",
-                flush=True,
-            )
         return None
 
     base_module._load_initial_states = load_initial_states
