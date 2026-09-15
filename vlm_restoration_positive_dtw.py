@@ -103,7 +103,12 @@ def apply_branch_config(P):
     P.restoration_context_layers = P.vit_layers
     P.restoration_fusion = "concat_projection_norm"
     P.restoration_local_encoder = "resnet18"
-    P.resnet18_pretrained = _env_flag("RESNET18_PRETRAINED", False)
+    P.resnet18_pretrained = _env_flag("RESNET18_PRETRAINED", True)
+    P.tiny_vit_pretrained = _env_flag("TINY_VIT_PRETRAINED", True)
+    P.tiny_vit_pretrained_model = os.environ.get(
+        "TINY_VIT_PRETRAINED_MODEL", "facebook/deit-tiny-patch16-224"
+    ).strip()
+    P.pretrained_local_only = _env_flag("PRETRAINED_LOCAL_ONLY", True)
     P.restoration_semantic_adapter = "identity"
     P.span_dtw_backend = "torch"
 
@@ -411,6 +416,7 @@ def attach_restoration_dtw_stages(model, P):
         raise TypeError("This branch expects the shared ViT window container")
 
     from resnet18_window_encoder import ResNet18WindowEncoder
+    from pretrained_tiny_vit import initialize_tiny_vit_from_pretrained
 
     vit = model.vit_encoder
     dim = int(vit.embed_dim)
@@ -429,7 +435,8 @@ def attach_restoration_dtw_stages(model, P):
         window_size=int(vit.window_size),
         stride=int(vit.stride),
         embed_dim=dim,
-        pretrained=bool(getattr(P, "resnet18_pretrained", False)),
+        pretrained=bool(getattr(P, "resnet18_pretrained", True)),
+        local_files_only=bool(getattr(P, "pretrained_local_only", True)),
     ).to(device=device, dtype=dtype)
     vit.restoration_local_encoder = "resnet18"
     vit.local_encoder_type = "resnet18"
@@ -449,6 +456,22 @@ def attach_restoration_dtw_stages(model, P):
             f"Expected ViT-Tiny MLP width 768, got {first_layer.linear1.out_features}"
         )
     vit.vit_variant = "vit_tiny_192d_12l_3h"
+
+    if bool(getattr(P, "tiny_vit_pretrained", True)):
+        initialize_tiny_vit_from_pretrained(
+            vit,
+            model_name=str(
+                getattr(
+                    P,
+                    "tiny_vit_pretrained_model",
+                    "facebook/deit-tiny-patch16-224",
+                )
+            ),
+            local_files_only=bool(getattr(P, "pretrained_local_only", True)),
+        )
+    else:
+        vit.context_pretrained = False
+        vit.context_pretrained_model = ""
 
     # Kept only for old branch metadata/API compatibility; not used in forward.
     vit.semantic_adapter = IdentitySemanticAdapter().to(device=device)
@@ -953,7 +976,11 @@ def model_config(P):
         "local_encoder_type": "resnet18",
         "restoration_local_encoder": "resnet18",
         "resnet18_pretrained": bool(P.resnet18_pretrained),
+        "resnet18_pretrained_source": "torchvision/ResNet18_Weights.DEFAULT",
         "resnet18_feature_dim": 512,
+        "tiny_vit_pretrained": bool(P.tiny_vit_pretrained),
+        "tiny_vit_pretrained_model": str(P.tiny_vit_pretrained_model),
+        "pretrained_local_only": bool(P.pretrained_local_only),
         "vit_variant": "vit_tiny",
         "vit_embed_dim": 192,
         "vit_layers": 12,
