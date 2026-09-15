@@ -839,15 +839,7 @@ def install_training_objective(train_module):
 
         train_module._load_initial_states = load_initial_states
 
-    def single_line_loss(
-        image_embedder, text_encoder, images, texts, negative_texts=None
-    ):
-        with train_module.autocast(
-            dtype=train_module.AMP_DTYPE,
-            enabled=train_module.USE_AMP,
-        ):
-            bundle = image_embedder(images, return_training_bundle=True)
-
+    def loss_from_bundle(bundle, text_encoder, texts, negative_texts=None):
         dtw, dtw_stats = positive_letter_dtw_loss(
             train_module.P,
             text_encoder,
@@ -886,28 +878,64 @@ def install_training_objective(train_module):
         }
         return total, stats
 
+    def single_line_loss(
+        image_embedder, text_encoder, images, texts, negative_texts=None
+    ):
+        with train_module.autocast(
+            dtype=train_module.AMP_DTYPE,
+            enabled=train_module.USE_AMP,
+        ):
+            bundle = image_embedder(images, return_training_bundle=True)
+        return loss_from_bundle(bundle, text_encoder, texts, negative_texts)
+
     def compute_batch_loss(image_embedder, text_encoder, criterion, batch):
         del criterion
         if isinstance(batch, dict):
             images1 = batch["images1"].to(train_module.P.device, non_blocking=True)
             images2 = batch["images2"].to(train_module.P.device, non_blocking=True)
-            loss1, stats1 = single_line_loss(
-                image_embedder,
+            if images1.shape[1:] != images2.shape[1:]:
+                raise ValueError(
+                    "Paired lines must have identical post-transform geometry for "
+                    "the single-forward DDP path, got "
+                    f"{tuple(images1.shape)} and {tuple(images2.shape)}"
+                )
+
+            pair_batch = int(images1.shape[0])
+            combined_images = torch.cat([images1, images2], dim=0)
+            with train_module.autocast(
+                dtype=train_module.AMP_DTYPE,
+                enabled=train_module.USE_AMP,
+            ):
+                combined = image_embedder(
+                    combined_images, return_training_bundle=True
+                )
+
+            bundle1 = {
+                "semantic": combined["semantic"][:pair_batch],
+                "ink": combined["ink"][:pair_batch],
+                "token_valid": combined["token_valid"][:pair_batch],
+            }
+            bundle2 = {
+                "semantic": combined["semantic"][pair_batch:],
+                "ink": combined["ink"][pair_batch:],
+                "token_valid": combined["token_valid"][pair_batch:],
+            }
+            loss1, stats1 = loss_from_bundle(
+                bundle1,
                 text_encoder,
-                images1,
                 batch["texts1"],
                 batch.get("neg_texts1"),
             )
-            loss2, stats2 = single_line_loss(
-                image_embedder,
+            loss2, stats2 = loss_from_bundle(
+                bundle2,
                 text_encoder,
-                images2,
                 batch["texts2"],
                 batch.get("neg_texts2"),
             )
             loss = 0.5 * (loss1 + loss2)
             stats = train_module.average_stats([stats1, stats2])
             stats["independent_lines_per_pair"] = 2.0
+            stats["model_forwards_per_batch"] = 1.0
             stats["total"] = float(loss.detach().item())
             return loss, stats
 
@@ -917,6 +945,7 @@ def install_training_objective(train_module):
             image_embedder, text_encoder, images, texts, negative_texts
         )
         stats["independent_lines_per_pair"] = 1.0
+        stats["model_forwards_per_batch"] = 1.0
         return loss, stats
 
     train_module.compute_batch_loss = compute_batch_loss
