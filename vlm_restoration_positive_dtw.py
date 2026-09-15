@@ -123,10 +123,13 @@ def apply_branch_config(P):
     P.keep_paired_lines_for_independent_training = True
     P.image_text_loss_on_both_lines = True
 
-    # Positive transcript DTW + negative transcript margin DTW.
-    P.num_negatives = _env_int("RESTORATION_NUM_NEGATIVES", 10)
+    # Current objective: positive transcript DTW only.
+    # Negative transcript DTW is optional and, when explicitly enabled, is
+    # limited to at most four negatives per positive sample.
+    requested_negatives = max(0, _env_int("RESTORATION_NUM_NEGATIVES", 0))
+    P.num_negatives = min(requested_negatives, 4)
     P.restoration_contrastive_weight = _env_float(
-        "RESTORATION_CONTRASTIVE_WEIGHT", 0.50
+        "RESTORATION_CONTRASTIVE_WEIGHT", 0.0
     )
     P.restoration_contrastive_margin = _env_float(
         "RESTORATION_CONTRASTIVE_MARGIN", 0.20
@@ -847,17 +850,33 @@ def install_training_objective(train_module):
             bundle["ink"],
             texts,
         )
-        contrastive, contrastive_stats = negative_letter_dtw_margin_loss(
-            train_module.P,
-            text_encoder,
-            bundle["semantic"],
-            bundle["token_valid"],
-            texts,
-            negative_texts,
+        contrastive_weight = float(
+            train_module.P.restoration_contrastive_weight
         )
+        negatives_enabled = (
+            contrastive_weight > 0.0
+            and int(train_module.P.num_negatives) > 0
+            and negative_texts is not None
+        )
+        if negatives_enabled:
+            contrastive, contrastive_stats = negative_letter_dtw_margin_loss(
+                train_module.P,
+                text_encoder,
+                bundle["semantic"],
+                bundle["token_valid"],
+                texts,
+                negative_texts,
+            )
+        else:
+            contrastive = dtw.new_zeros(())
+            contrastive_stats = {
+                "negative_letter_dtw": 0.0,
+                "contrastive_margin_loss": 0.0,
+            }
+
         total = (
             float(train_module.P.positive_letter_dtw_weight) * dtw
-            + float(train_module.P.restoration_contrastive_weight) * contrastive
+            + contrastive_weight * contrastive
         )
         stats = {
             **dtw_stats,
@@ -1001,7 +1020,12 @@ def model_config(P):
         "architecture_family": "restoration-positive-dtw-window-encoder",
         "architecture_revision": "pretrained-resnet18-deit-tiny-no-restoration",
         "training_stage": "align",
-        "training_supervision": "positive+negative letter-dtw only",
+        "training_supervision": (
+            "positive+negative letter-dtw"
+            if float(P.restoration_contrastive_weight) > 0.0
+            and int(P.num_negatives) > 0
+            else "positive letter-dtw only"
+        ),
         "local_encoder_type": "resnet18",
         "restoration_local_encoder": "resnet18",
         "resnet18_pretrained": bool(P.resnet18_pretrained),
