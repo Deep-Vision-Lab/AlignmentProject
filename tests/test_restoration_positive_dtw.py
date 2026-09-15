@@ -29,6 +29,8 @@ def _model():
     )
     config = SimpleNamespace(
         resnet18_pretrained=False,
+        tiny_vit_pretrained=False,
+        pretrained_local_only=True,
         restoration_semantic_adapter="identity",
         restoration_local_encoder="resnet18",
         restoration_training_stage="align",
