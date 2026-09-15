@@ -457,7 +457,7 @@ def attach_restoration_dtw_stages(model, P):
         )
     vit.vit_variant = "vit_tiny_192d_12l_3h"
 
-    if bool(getattr(P, "tiny_vit_pretrained", True)):
+    if bool(getattr(P, "tiny_vit_pretrained", False)):
         initialize_tiny_vit_from_pretrained(
             vit,
             model_name=str(
