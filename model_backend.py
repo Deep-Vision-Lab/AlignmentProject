@@ -97,6 +97,10 @@ def visual_model_config():
         "vit_binarize_method": "none",
         "local_encoder_type": "resnet18",
         "resnet18_pretrained": bool(P.resnet18_pretrained),
+        "resnet18_pretrained_source": "torchvision/ResNet18_Weights.DEFAULT",
+        "tiny_vit_pretrained": bool(P.tiny_vit_pretrained),
+        "tiny_vit_pretrained_model": str(P.tiny_vit_pretrained_model),
+        "pretrained_local_only": bool(P.pretrained_local_only),
         "torch_compile_visual": _flag("TORCH_COMPILE_VISUAL", False),
     }
     config.update(restoration_model_config(P))
