@@ -43,11 +43,20 @@ export POSITIVE_LETTER_DTW_DISABLE_HORIZONTAL_WHEN_FEASIBLE="${POSITIVE_LETTER_D
 export POSITIVE_LETTER_DTW_COMPETITION_TEMPERATURE="${POSITIVE_LETTER_DTW_COMPETITION_TEMPERATURE:-0.10}"
 export POSITIVE_LETTER_DTW_COST_MODE="${POSITIVE_LETTER_DTW_COST_MODE:-full_alphabet_nll}"
 export LETTER_CODEBOOK_SEED="${LETTER_CODEBOOK_SEED:-1234}"
-export RESNET18_PRETRAINED="${RESNET18_PRETRAINED:-0}"
+export PRETRAINED_CACHE_DIR="${PRETRAINED_CACHE_DIR:-${PROJECT_DIR}/Pretrained}"
+export TORCH_HOME="${TORCH_HOME:-${PRETRAINED_CACHE_DIR}/torch}"
+export HF_HOME="${HF_HOME:-${PRETRAINED_CACHE_DIR}/huggingface}"
+export RESNET18_PRETRAINED=1
+export TINY_VIT_PRETRAINED=1
+export TINY_VIT_PRETRAINED_MODEL="${TINY_VIT_PRETRAINED_MODEL:-facebook/deit-tiny-patch16-224}"
+export PRETRAINED_LOCAL_ONLY=1
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
 export TINY_VIT_DROPOUT="${TINY_VIT_DROPOUT:-0.0}"
 
-"${PYTHON_BIN}" -m py_compile   train.py   runtime_device_setup.py   model_backend.py   vlm_restoration_positive_dtw.py   resnet18_window_encoder.py   restoration_recommended_components.py   zero_shot_preprocessing.py   DataLoader.py   DataSet.py   AugmentedRealDataLoader.py   training_stability.py   training_optimizations.py   epoch_subset_sampling.py   distributed_runtime_guard.py   vit_checkpoint_migration.py
+"${PYTHON_BIN}" -m py_compile   train.py   runtime_device_setup.py   model_backend.py   vlm_restoration_positive_dtw.py   resnet18_window_encoder.py   pretrained_tiny_vit.py   scripts/cache_pretrained_models.py   restoration_recommended_components.py   zero_shot_preprocessing.py   DataLoader.py   DataSet.py   AugmentedRealDataLoader.py   training_stability.py   training_optimizations.py   epoch_subset_sampling.py   distributed_runtime_guard.py   vit_checkpoint_migration.py
 
+"${PYTHON_BIN}" scripts/cache_pretrained_models.py --check-only >/dev/null
 "${PYTHON_BIN}" -m pytest -q tests/test_restoration_positive_dtw.py >/dev/null
 
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
