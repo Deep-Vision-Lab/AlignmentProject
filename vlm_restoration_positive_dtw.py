@@ -809,13 +809,6 @@ def install_training_objective(train_module):
                         f"missing={incompatible.missing_keys[:10]} "
                         f"unexpected={incompatible.unexpected_keys[:10]}"
                     )
-            if train_module.CTX.is_main:
-                print(
-                    "Loaded visual initialization: "
-                    f"missing={len(incompatible.missing_keys)} "
-                    f"unexpected={len(incompatible.unexpected_keys)}",
-                    flush=True,
-                )
             freeze_text_encoder(text_encoder)
             return None
 
@@ -911,15 +904,6 @@ def install_training_objective(train_module):
         progress = min(1.0, max(0.0, (int(epoch) - 1) / max(1, anneal_epochs - 1)))
         gamma = start * ((end / start) ** progress)
         train_module.P.positive_letter_dtw_gamma = float(gamma)
-        if train_module.CTX.is_main:
-            print(
-                "[letter-dtw-curriculum] "
-                f"epoch={epoch} gamma={gamma:.5f} "
-                f"v_penalty={train_module.P.positive_letter_dtw_vertical_penalty:.3f} "
-                f"h_penalty={train_module.P.positive_letter_dtw_horizontal_penalty:.3f} "
-                f"position_prior={train_module.P.positive_letter_dtw_position_prior:.3f}",
-                flush=True,
-            )
 
     train_module.epoch_start_hook = epoch_start_hook
     train_module.epoch_diagnostic_hook = None
