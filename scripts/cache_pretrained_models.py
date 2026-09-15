@@ -42,7 +42,11 @@ def check_only(model_name: str) -> None:
             "Run this script once without --check-only on a node with internet."
         )
     try:
-        model = ViTModel.from_pretrained(model_name, local_files_only=True)
+        model = ViTModel.from_pretrained(
+            model_name,
+            local_files_only=True,
+            add_pooling_layer=False,
+        )
     except OSError as exc:
         raise FileNotFoundError(
             f"Missing cached ViT-Tiny weights for '{model_name}' under "
@@ -62,7 +66,7 @@ def download(model_name: str) -> None:
     del model
 
     # Transformers downloads the ImageNet-pretrained DeiT-Tiny checkpoint.
-    model = ViTModel.from_pretrained(model_name)
+    model = ViTModel.from_pretrained(model_name, add_pooling_layer=False)
     del model
 
     check_only(model_name)
