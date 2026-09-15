@@ -231,32 +231,31 @@ def _validate_constructed_backend(model: nn.Module) -> None:
     has_vit = any(key.startswith("vit_encoder.") for key in keys)
     has_cnn = any(key.startswith("cnn_encoder.") for key in keys)
     has_bilstm = any(key.startswith("sequence_encoder.bilstm.") for key in keys)
+    has_resnet18 = any(
+        key.startswith("vit_encoder.patch_embedding.backbone.layer4.")
+        for key in keys
+    )
+    has_decoder = any("stroke_decoder" in key for key in keys)
     visual_type = str(
         getattr(model_backend, "VISUAL_ENCODER_TYPE", backend)
     ).strip().lower()
     if visual_type == "vit" and (not has_vit or has_cnn or has_bilstm):
         raise RuntimeError(
             "ViT branch built the wrong model: "
-            f"backend={backend} has_vit={has_vit} "
-            f"has_cnn={has_cnn} has_bilstm={has_bilstm}"
+            f"backend={backend} has_vit={has_vit} has_cnn={has_cnn} "
+            f"has_bilstm={has_bilstm}"
         )
-
-    vit = getattr(model, "vit_encoder", None)
-    patch_embedding = getattr(vit, "patch_embedding", None)
-    if patch_embedding is None or patch_embedding.__class__.__name__ != (
-        "WindowSequenceResNet18Encoder"
-    ):
-        raise RuntimeError(
-            "ResNet18+TinyViT backend is missing WindowSequenceResNet18Encoder"
-        )
+    if not has_resnet18:
+        raise RuntimeError("ResNet18/ViT-Tiny backend is missing ResNet-18 parameters")
+    if has_decoder:
+        raise RuntimeError("Decoder parameters found even though restoration was removed")
     if not any("fusion_head" in key for key in keys):
-        raise RuntimeError(
-            "ResNet18+TinyViT backend is missing local/context fusion parameters"
-        )
-    if any("stroke_decoder" in key for key in keys):
-        raise RuntimeError(
-            "Decoder removal failed: stroke_decoder parameters are still active"
-        )
+        raise RuntimeError("Backend is missing local/context fusion parameters")
+    vit = model.vit_encoder
+    if int(vit.embed_dim) != 192:
+        raise RuntimeError(f"ViT-Tiny embed_dim must be 192, got {vit.embed_dim}")
+    if len(vit.encoder.layers) != 12:
+        raise RuntimeError("ViT-Tiny must contain 12 transformer layers")
 
 
 def main() -> None:
@@ -312,7 +311,7 @@ def main() -> None:
 
         if base.CTX.is_main:
             mode = "visual-init" if args.pretrained_weights else "scratch"
-            print("AlignmentProject restoration + positive-DTW trainer", flush=True)
+            print("AlignmentProject ResNet18 + ViT-Tiny positive-DTW trainer", flush=True)
             print(f"  backend      = {model_backend.MODEL_NAME}", flush=True)
             print(f"  mode         = {mode}", flush=True)
             print(f"  dataset      = {args.data_dir}", flush=True)
@@ -321,40 +320,31 @@ def main() -> None:
             print(f"  output       = Weights/{args.job_id}", flush=True)
             print(f"  epochs/lr    = {args.epochs}/{args.learning_rate}", flush=True)
             print(f"  window/stride= {P.window_size}/{stride}", flush=True)
-            print(
-                f"  stage        = {P.restoration_training_stage}",
-                flush=True,
-            )
-            print(
-                f"  local_encoder= {P.restoration_local_encoder}",
-                flush=True,
-            )
+            print("  local_encoder= ResNet-18 (512 -> 192 projection)", flush=True)
+            print("  context      = ViT-Tiny (D=192, 12 layers, 3 heads, MLP=768)", flush=True)
             print(
                 f"  objective    = {P.positive_letter_dtw_weight}*positive_letter_DTW "
-                f"+ {P.restoration_contrastive_weight}*negative_margin_DTW "
-                f"+ {P.restoration_weight}*RGB_restoration",
+                f"+ {P.restoration_contrastive_weight}*negative_margin_DTW",
                 flush=True,
             )
-            if P.restoration_training_stage == "align":
-                print(
-                    "  dtw          = "
-                    f"cost={P.positive_letter_dtw_cost_mode} "
-                    f"gamma={P.positive_letter_dtw_gamma_start}->{P.positive_letter_dtw_gamma_end} "
-                    f"vertical={P.positive_letter_dtw_vertical_penalty} "
-                    f"horizontal={P.positive_letter_dtw_horizontal_penalty} "
-                    f"no_horizontal_if_feasible="
-                    f"{P.positive_letter_dtw_disable_horizontal_when_feasible}",
-                    flush=True,
-                )
+            print(
+                "  dtw          = "
+                f"cost={P.positive_letter_dtw_cost_mode} "
+                f"gamma={P.positive_letter_dtw_gamma_start}->{P.positive_letter_dtw_gamma_end} "
+                f"vertical={P.positive_letter_dtw_vertical_penalty} "
+                f"horizontal={P.positive_letter_dtw_horizontal_penalty} "
+                f"no_horizontal_if_feasible="
+                f"{P.positive_letter_dtw_disable_horizontal_when_feasible}",
+                flush=True,
+            )
             print(
                 f"  negatives    = {P.num_negatives}; image_pair_loss={P.image_pair_loss_weight}; "
                 f"variance={P.image_variance_loss_weight}",
                 flush=True,
             )
             print(
-                "  representations= local RGB-restoration token -> "
-                f"{P.restoration_context_layers}-layer Transformer context -> "
-                "concat+projection+L2 fused DTW vector",
+                "  representations= ResNet18 local window token -> "
+                "ViT-Tiny context -> concat+projection+L2 fused DTW vector",
                 flush=True,
             )
             print(

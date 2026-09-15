@@ -1,13 +1,13 @@
-"""Arabic window encoder with RGB restoration, sequence context and DTW.
+"""Arabic window encoder with ResNet-18 local features, ViT-Tiny context and DTW.
 
-Recommended pipeline:
+Pipeline:
   crop outer margins -> proportional resize -> overlapping real RGB windows ->
-  local CNN -> positional Transformer context -> local/context fusion -> DTW.
+  shared ResNet-18 window encoder -> ViT-Tiny sequence context ->
+  local/context fusion -> positive/negative letter-DTW.
 
-The local token alone must reconstruct its complete original RGB window. During
-alignment training, positive and negative image-text DTW costs supervise the
-fused representation while the text character codebook remains frozen. Final
-evaluation remains image-only.
+There is intentionally no restoration decoder and no reconstruction loss on
+this revision. The frozen character codebook supervises only the fused visual
+representation during training; final evaluation remains image-only.
 """
 from __future__ import annotations
 
@@ -22,9 +22,7 @@ import torch.nn.functional as F
 from restoration_recommended_components import (
     LocalContextFusion,
     contrastive_margin_from_costs,
-    denormalize_imagenet_windows,
     line_padding_masks,
-    masked_image_restoration_loss,
 )
 
 DEFAULT_ARABIC_LETTERS = "ءآأؤإئابتثجحخدذرزسشصضطظعغفقكلمنهويىة"
@@ -52,11 +50,9 @@ def _env_flag(name, default=False):
 
 
 def apply_branch_config(P):
-    """Configure the minimal restoration + positive-DTW experiment."""
-    P.experiment_name = "vit_restoration_positive_dtw"
+    """Configure ResNet-18 local windows + canonical ViT-Tiny context + DTW."""
+    P.experiment_name = "resnet18_tinyvit_positive_dtw"
 
-    # Branch-local experiment controls make short diagnostic runs possible
-    # without editing the shared Parameters.py.
     P.epochs = _env_int("RESTORATION_EPOCHS", int(P.epochs))
     P.finetune_epochs = P.epochs
     P.learning_rate = _env_float(
@@ -64,17 +60,22 @@ def apply_branch_config(P):
     )
     P.finetune_learning_rate = P.learning_rate
     P.num_samples = _env_int("RESTORATION_NUM_SAMPLES", int(P.num_samples))
-    P.restoration_training_stage = os.environ.get(
+
+    # Restoration pretraining no longer exists.
+    requested_stage = os.environ.get(
         "RESTORATION_TRAINING_STAGE", "align"
     ).strip().lower()
-    if P.restoration_training_stage not in {"pretrain", "align"}:
-        raise ValueError("RESTORATION_TRAINING_STAGE must be pretrain or align")
+    if requested_stage not in {"", "align"}:
+        raise ValueError(
+            "The restoration decoder was removed. RESTORATION_TRAINING_STAGE "
+            "must be 'align' (Stage-A pretraining no longer exists)."
+        )
+    P.restoration_training_stage = "align"
 
-    # Real RGB geometry: crop only outer margins, keep internal spaces, resize
-    # the complete line proportionally, then slice overlapping windows.
+    # Keep the current line geometry and original RGB input.
     P.window_size = 32
     P.stride_ratio = _env_float("RESTORATION_DTW_STRIDE_RATIO", 0.50)
-    P.vit_layers = _env_int("RESTORATION_CONTEXT_LAYERS", 2)
+    P.vit_input_height = 128
     P.vit_binarize_input = False
     P.real_binarize = False
     P.real_binarize_autocontrast = False
@@ -83,7 +84,6 @@ def apply_branch_config(P):
     P.zero_shot_preserve_aspect = True
     P.zero_shot_foreground_crop = True
     P.zero_shot_source_geometry = False
-    # Set these before unified_line_geometry installs its defaults.
     os.environ["SYNTHETIC_BINARIZE"] = "0"
     os.environ["REAL_BINARIZE"] = "0"
     os.environ["REAL_BINARIZE_AUTOCONTRAST"] = "0"
@@ -91,54 +91,34 @@ def apply_branch_config(P):
     os.environ["ZERO_SHOT_PRESERVE_ASPECT"] = "1"
     os.environ["ZERO_SHOT_SOURCE_GEOMETRY"] = "0"
     os.environ["LINE_GEOMETRY_MODE"] = "crop-aspect-preserving-rgb"
+
+    # Canonical ViT-Tiny dimensions. ResNet-18 creates one token per physical
+    # window; the transformer contextualizes that window-token sequence.
+    P.vector_size = 192
+    P.vit_layers = 12
+    P.vit_heads = 3
+    P.vit_mlp_dim = 768
+    P.vit_dropout = _env_float("TINY_VIT_DROPOUT", 0.0)
     P.vit_max_tokens = max(int(getattr(P, "vit_max_tokens", 256)), 256)
-    P.restoration_context_layers = int(P.vit_layers)
+    P.restoration_context_layers = P.vit_layers
     P.restoration_fusion = "concat_projection_norm"
-    P.restoration_target_mode = "original_rgb_window"
-    # No Span-DTW/JAX objective is active on this branch.
+    P.restoration_local_encoder = "resnet18"
+    P.resnet18_pretrained = _env_flag("RESNET18_PRETRAINED", False)
+    P.restoration_semantic_adapter = "identity"
     P.span_dtw_backend = "torch"
 
-    # The target space is a fixed character identity codebook, not AraBERT spans.
+    # Frozen character identity codebook.
     P.text_encoder_type = "char"
-    # These span values are inactive, but shared optimization validation still
-    # inspects them during startup. Keep them in a harmless valid range.
     P.max_text_span_chars = 1
     P.max_text_token_chars = 1
     P.letter_codebook_seed = _env_int("LETTER_CODEBOOK_SEED", 1234)
     P.letter_codebook_vocab_size = _env_int("LETTER_CODEBOOK_VOCAB_SIZE", 4096)
-    # Informational label: actual targets accept Unicode Arabic letters after
-    # NFKC normalization rather than filtering through a closed alphabet list.
     P.letter_inventory = "unicode-arabic-letters-after-nfkc"
 
-    # New runs use a restoration-pretrained local CNN over each 128x32 window.
-    # Historical checkpoints used one full-height Conv2d projection.
-    P.restoration_local_encoder = os.environ.get(
-        "RESTORATION_LOCAL_ENCODER", "cnn_seq2seq"
-    ).strip().lower()
-    if P.restoration_local_encoder not in {"cnn_seq2seq", "fullheight_conv"}:
-        raise ValueError(
-            "RESTORATION_LOCAL_ENCODER must be cnn_seq2seq or fullheight_conv"
-        )
-
-    # New diagnostic-first architecture: supervise the primitive window encoder
-    # directly with positive letter-DTW. "identity" removes the residual
-    # 128->256->128 MLP entirely. "residual_mlp" is retained only so historical
-    # checkpoints from this branch remain loadable/evaluable.
-    P.restoration_semantic_adapter = os.environ.get(
-        "RESTORATION_SEMANTIC_ADAPTER", "identity"
-    ).strip().lower()
-    if P.restoration_semantic_adapter not in {"identity", "residual_mlp"}:
-        raise ValueError(
-            "RESTORATION_SEMANTIC_ADAPTER must be identity or residual_mlp"
-        )
-
-    # Keep both sides of an available pair only as two independent training lines.
     P.keep_paired_lines_for_independent_training = True
     P.image_text_loss_on_both_lines = True
 
-    # Transcript negatives are used only during training. Image-image evaluation
-    # remains independent of text. Ten negatives matches the established project
-    # setup and can be changed through RESTORATION_NUM_NEGATIVES.
+    # Positive transcript DTW + negative transcript margin DTW.
     P.num_negatives = _env_int("RESTORATION_NUM_NEGATIVES", 10)
     P.restoration_contrastive_weight = _env_float(
         "RESTORATION_CONTRASTIVE_WEIGHT", 0.50
@@ -154,8 +134,6 @@ def apply_branch_config(P):
     P.image_variance_loss_weight = 0.0
     P.real_filter_infeasible_span_dtw = False
 
-    # Positive-only weak letter grounding. Alignment training uses a curriculum:
-    # high gamma first (many plausible paths receive gradient), then lower gamma.
     P.positive_letter_dtw_gamma_start = _env_float(
         "POSITIVE_LETTER_DTW_GAMMA_START", 0.50
     )
@@ -169,8 +147,6 @@ def apply_branch_config(P):
     P.positive_letter_dtw_vertical_penalty = _env_float(
         "POSITIVE_LETTER_DTW_VERTICAL_PENALTY", 0.05
     )
-    # A horizontal transition advances letters without advancing image windows.
-    # The old 0.02 symmetric penalty allowed one window to absorb many letters.
     P.positive_letter_dtw_horizontal_penalty = _env_float(
         "POSITIVE_LETTER_DTW_HORIZONTAL_PENALTY", 0.30
     )
@@ -191,36 +167,13 @@ def apply_branch_config(P):
         raise ValueError(
             "POSITIVE_LETTER_DTW_COST_MODE must be cosine or full_alphabet_nll"
         )
-    # Internal blank gaps remain part of sequence geometry. Outer padding is
-    # masked explicitly with token_valid instead of deleting low-ink windows.
     P.positive_letter_dtw_min_ink = 0.0
-
-    if P.restoration_training_stage == "pretrain":
-        P.positive_letter_dtw_weight = 0.0
-        P.restoration_contrastive_weight = 0.0
-        default_restoration_weight = 1.0
-    else:
-        P.positive_letter_dtw_weight = _env_float(
-            "POSITIVE_LETTER_DTW_WEIGHT", 1.0
-        )
-        default_restoration_weight = 0.10
-
-    # Stroke restoration is pretraining supervision, then a small anti-forgetting
-    # regularizer during DTW alignment.
-    P.restoration_weight = _env_float(
-        "RESTORATION_WEIGHT", default_restoration_weight
+    P.positive_letter_dtw_weight = _env_float(
+        "POSITIVE_LETTER_DTW_WEIGHT", 1.0
     )
-    P.restoration_pixel_weight = _env_float("RESTORATION_PIXEL_WEIGHT", 1.0)
-    P.restoration_edge_weight = _env_float("RESTORATION_EDGE_WEIGHT", 0.50)
-    # Dice/foreground weighting were for binary stroke masks. The new target is
-    # the complete RGB window, so reconstruction uses pixel+edge+structure.
-    P.restoration_dice_weight = 0.0
-    P.restoration_structure_weight = _env_float(
-        "RESTORATION_STRUCTURE_WEIGHT", 0.25
-    )
-    P.restoration_foreground_weight = 0.0
-    P.restoration_contrast_scale = _env_float("RESTORATION_CONTRAST_SCALE", 0.15)
-    P.restoration_decoder_channels = _env_int("RESTORATION_DECODER_CHANNELS", 128)
+
+    # Legacy compatibility attribute: reconstruction is intentionally disabled.
+    P.restoration_weight = 0.0
 
 
 def _is_arabic_letter(character: str) -> bool:
@@ -397,43 +350,6 @@ def positive_monotonic_letter_dtw_cost(
     )
 
 
-class StrokeRestorationDecoder(nn.Module):
-    """Decode one primitive window token into a 1x128x32 soft stroke map."""
-
-    def __init__(self, dim: int, output_height: int, output_width: int, channels: int = 64):
-        super().__init__()
-        if output_height % 8 or output_width % 8:
-            raise ValueError("Restoration decoder expects H and W divisible by 8")
-        self.output_height = int(output_height)
-        self.output_width = int(output_width)
-        self.seed_height = self.output_height // 8
-        self.seed_width = self.output_width // 8
-        channels = max(16, int(channels))
-        self.channels = channels
-
-        self.project = nn.Linear(int(dim), channels * self.seed_height * self.seed_width)
-        c2 = max(16, channels // 2)
-        c3 = max(8, channels // 4)
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(channels, c2, kernel_size=4, stride=2, padding=1),
-            nn.GELU(),
-            nn.ConvTranspose2d(c2, c3, kernel_size=4, stride=2, padding=1),
-            nn.GELU(),
-            nn.ConvTranspose2d(c3, 1, kernel_size=4, stride=2, padding=1),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
-        if tokens.ndim != 3:
-            raise ValueError("Restoration decoder expects [B,T,D] tokens")
-        batch, count, _ = tokens.shape
-        x = self.project(tokens)
-        x = x.reshape(batch * count, self.channels, self.seed_height, self.seed_width)
-        x = self.decoder(x)
-        x = x.reshape(batch, count, 1, self.output_height, self.output_width)
-        return x
-
-
 class ResidualSemanticAdapter(nn.Module):
     """Map primitive visual tokens into the fixed letter identity space."""
 
@@ -485,102 +401,58 @@ def _soft_stroke_target_from_normalized_patches(patches: torch.Tensor, contrast_
     return target.unsqueeze(2)
 
 
-def stroke_restoration_loss(
-    P,
-    prediction: torch.Tensor,
-    target: torch.Tensor,
-    valid_mask: torch.Tensor | None = None,
-):
-    """Complete RGB-window reconstruction with artificial-padding masking."""
-    return masked_image_restoration_loss(
-        prediction,
-        target,
-        valid_mask,
-        pixel_weight=float(P.restoration_pixel_weight),
-        edge_weight=float(P.restoration_edge_weight),
-        structure_weight=float(P.restoration_structure_weight),
-    )
-
 def attach_restoration_dtw_stages(model, P):
-    """Install primitive->semantic and primitive->restoration branches."""
+    """Install ResNet-18 local windows, ViT-Tiny context and fused DTW features."""
     if getattr(model, "_restoration_positive_dtw_installed", False):
         return model
     if not hasattr(model, "vit_encoder"):
-        raise TypeError("Restoration-DTW branch expects the shared ViT window container")
+        raise TypeError("This branch expects the shared ViT window container")
 
-    from embeddingModel import (
-        binarize_three_channel_input,
-        sliding_window,
-        window_ink_ratio_from_patches,
-    )
+    from resnet18_window_encoder import ResNet18WindowEncoder
 
     vit = model.vit_encoder
     dim = int(vit.embed_dim)
+    if dim != 192:
+        raise ValueError(
+            f"ViT-Tiny requires a 192-D token space, got embed_dim={dim}. "
+            "Build this branch with VECTOR_SIZE=192."
+        )
+
     reference_parameter = next(vit.patch_embedding.parameters())
     device = reference_parameter.device
     dtype = reference_parameter.dtype
 
-    local_encoder_mode = str(
-        getattr(P, "restoration_local_encoder", "fullheight_conv")
-    ).strip().lower()
-    if local_encoder_mode == "cnn_seq2seq":
-        from restoration_window_seq2seq import (
-            WindowSequenceCNNEncoder,
-            WindowSequenceStrokeDecoder,
-        )
-        vit.patch_embedding = WindowSequenceCNNEncoder(
-            input_height=int(vit.input_height),
-            window_size=int(vit.window_size),
-            stride=int(vit.stride),
-            embed_dim=dim,
-            base_channels=32,
-        ).to(device=device, dtype=dtype)
-        decoder_class = WindowSequenceStrokeDecoder
-    elif local_encoder_mode == "fullheight_conv":
-        decoder_class = StrokeRestorationDecoder
-    else:
-        raise ValueError(
-            f"Unknown restoration local encoder: {local_encoder_mode!r}"
-        )
-    vit.restoration_local_encoder = local_encoder_mode
-
-    semantic_mode = str(
-        getattr(P, "restoration_semantic_adapter", "residual_mlp")
-    ).strip().lower()
-    if semantic_mode == "identity":
-        vit.semantic_adapter = IdentitySemanticAdapter().to(device=device)
-    elif semantic_mode == "residual_mlp":
-        vit.semantic_adapter = ResidualSemanticAdapter(dim).to(
-            device=device, dtype=dtype
-        )
-    else:
-        raise ValueError(
-            f"Unknown restoration semantic adapter mode: {semantic_mode!r}"
-        )
-    vit.restoration_semantic_adapter = semantic_mode
-    # The legacy semantic adapter is retained only for loading old branch
-    # checkpoints/ablations. It is not in the recommended computation graph.
-    for parameter in vit.semantic_adapter.parameters():
-        parameter.requires_grad_(False)
-
-    # The active alignment representation is always a local/context fusion.
-    vit.fusion_head = LocalContextFusion(dim).to(device=device, dtype=dtype)
-
-    vit.stroke_decoder = decoder_class(
-        dim,
-        output_height=int(vit.input_height),
-        output_width=int(vit.window_size),
-        channels=int(P.restoration_decoder_channels),
+    vit.patch_embedding = ResNet18WindowEncoder(
+        input_height=int(vit.input_height),
+        window_size=int(vit.window_size),
+        stride=int(vit.stride),
+        embed_dim=dim,
+        pretrained=bool(getattr(P, "resnet18_pretrained", False)),
     ).to(device=device, dtype=dtype)
+    vit.restoration_local_encoder = "resnet18"
+    vit.local_encoder_type = "resnet18"
 
-    # Stage A learns only the local restoration bottleneck. Stage B unfreezes
-    # positional Transformer context and the concat-projection fusion head.
-    context_trainable = str(getattr(P, "restoration_training_stage", "align")) == "align"
-    for parameter in vit.encoder.parameters():
-        parameter.requires_grad_(context_trainable)
-    vit.position_embedding.requires_grad_(context_trainable)
-    for parameter in vit.fusion_head.parameters():
-        parameter.requires_grad_(context_trainable)
+    # The shared sequence transformer is required to match ViT-Tiny.
+    if len(vit.encoder.layers) != 12:
+        raise ValueError(
+            f"Expected 12 ViT-Tiny transformer layers, got {len(vit.encoder.layers)}"
+        )
+    first_layer = vit.encoder.layers[0]
+    if int(first_layer.self_attn.num_heads) != 3:
+        raise ValueError(
+            f"Expected 3 ViT-Tiny attention heads, got {first_layer.self_attn.num_heads}"
+        )
+    if int(first_layer.linear1.out_features) != 768:
+        raise ValueError(
+            f"Expected ViT-Tiny MLP width 768, got {first_layer.linear1.out_features}"
+        )
+    vit.vit_variant = "vit_tiny_192d_12l_3h"
+
+    # Kept only for old branch metadata/API compatibility; not used in forward.
+    vit.semantic_adapter = IdentitySemanticAdapter().to(device=device)
+    vit.restoration_semantic_adapter = "identity"
+
+    vit.fusion_head = LocalContextFusion(dim).to(device=device, dtype=dtype)
 
     def encode_restoration_sequence(self, image, *, use_flip):
         if image.ndim != 4 or image.shape[1] != 3:
@@ -590,17 +462,16 @@ def attach_restoration_dtw_stages(model, P):
         if int(image.shape[3]) < self.window_size:
             raise ValueError("Input width is smaller than the window width")
 
-        # The branch preprocessor already preserves RGB; no binarization/corruption.
         model_input = image
         tokens = self.patch_embedding(model_input)
         if tokens.shape[2] != 1:
-            raise RuntimeError("Full-height patch projection must produce one token row")
+            raise RuntimeError("Window encoder must produce one token row")
         local = tokens.squeeze(2).transpose(1, 2).contiguous()
         if use_flip:
             local = torch.flip(local, dims=[1])
         local = self.local_norm(local)
 
-        token_valid, pixel_valid = line_padding_masks(
+        token_valid, _pixel_valid = line_padding_masks(
             model_input,
             window_size=self.window_size,
             stride=self.stride,
@@ -614,10 +485,10 @@ def attach_restoration_dtw_stages(model, P):
             src_key_padding_mask=~token_valid,
         )
         fused = self.fusion_head(local, contextual)
-        return fused, local, contextual, model_input, token_valid, pixel_valid
+        return fused, local, contextual, model_input, token_valid
 
     def minimal_window_forward(self, image, *, use_flip, return_model_input=False):
-        fused, local, _contextual, model_input, _token_valid, _pixel_valid = (
+        fused, local, _contextual, model_input, _token_valid = (
             self.encode_restoration_sequence(image, use_flip=use_flip)
         )
         if return_model_input:
@@ -626,8 +497,6 @@ def attach_restoration_dtw_stages(model, P):
 
     vit.encode_restoration_sequence = MethodType(encode_restoration_sequence, vit)
     vit.forward = MethodType(minimal_window_forward, vit)
-
-    original_forward = model.forward
 
     def model_forward(
         self,
@@ -638,16 +507,11 @@ def attach_restoration_dtw_stages(model, P):
         return_grouped=False,
         return_training_bundle=False,
     ):
-        fused, local, contextual, model_input, token_valid, pixel_valid = (
+        fused, local, contextual, model_input, token_valid = (
             self.vit_encoder.encode_restoration_sequence(
                 image, use_flip=self.use_flip
             )
         )
-        patches = sliding_window(model_input, self.window_size, self.stride)
-        if self.use_flip:
-            patches = torch.flip(patches, dims=[1])
-        if int(patches.shape[1]) != int(local.shape[1]):
-            raise RuntimeError("Token/window count mismatch in restoration branch")
 
         fused_out = F.normalize(
             self.vision_norm(fused).float(), p=2, dim=-1
@@ -657,7 +521,7 @@ def attach_restoration_dtw_stages(model, P):
         if not return_training_bundle:
             if show_dims:
                 print(
-                    "image embeddings: restoration recommended "
+                    "image embeddings: ResNet18 + ViT-Tiny "
                     f"fused={tuple(fused_out.shape)} local={tuple(local_out.shape)} "
                     f"context={tuple(contextual.shape)}",
                     flush=True,
@@ -668,15 +532,9 @@ def attach_restoration_dtw_stages(model, P):
             if return_grouped:
                 outputs.append(local_out)
             if return_ink:
-                # Evaluation uses this as a validity mask. Internal blank spaces
-                # remain valid; only outer artificial padding becomes zero.
                 outputs.append(token_valid.float())
             return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
-        restoration = self.vit_encoder.stroke_decoder(local)
-        target = denormalize_imagenet_windows(patches).to(
-            device=restoration.device, dtype=restoration.dtype
-        )
         return {
             "semantic": fused_out,
             "fused": fused_out,
@@ -685,9 +543,7 @@ def attach_restoration_dtw_stages(model, P):
             "contextual": self.vision_norm(contextual),
             "ink": token_valid.float(),
             "token_valid": token_valid,
-            "restoration": restoration,
-            "restoration_target": target,
-            "restoration_valid_mask": pixel_valid.to(restoration.device),
+            "model_input": model_input,
         }
 
     model.forward = MethodType(model_forward, model)
@@ -889,7 +745,7 @@ def freeze_text_encoder(text_encoder):
 
 
 def install_training_objective(train_module):
-    """Replace the shared contrastive objective with the two-loss experiment."""
+    """Install the positive-DTW + negative-margin-DTW objective."""
     from textEmbedding import OrthogonalCharEmbedding
 
     def build_text_encoder():
@@ -902,52 +758,36 @@ def install_training_objective(train_module):
 
     train_module.build_text_encoder = build_text_encoder
 
-    # Old checkpoints may contain a different text model. Do not load it into the
-    # fixed codebook; only visual weights are relevant for this branch.
     if hasattr(train_module, "_load_initial_states"):
         def load_initial_states(args, model, text_encoder):
             if args.resume:
-                raise ValueError("Resume from old objective is unsupported; start a new run")
+                raise ValueError("Resume from an old objective is unsupported; start a new run")
             if not args.pretrained_weights:
                 return None
             loaded = torch.load(args.pretrained_weights, map_location=train_module.P.device)
-            loaded_config = (
-                loaded.get("model_config", {})
-                if isinstance(loaded, dict)
-                else {}
-            )
-            loaded_family = str(
-                loaded_config.get("architecture_family", "")
-            )
-            loaded_local_encoder = str(
+            loaded_config = loaded.get("model_config", {}) if isinstance(loaded, dict) else {}
+            loaded_family = str(loaded_config.get("architecture_family", ""))
+            loaded_backbone = str(
                 loaded_config.get(
-                    "restoration_local_encoder",
-                    "fullheight_conv",
+                    "local_encoder_type",
+                    loaded_config.get("restoration_local_encoder", ""),
                 )
-            )
-            expected_local_encoder = str(
-                train_module.P.restoration_local_encoder
-            )
-            if (
-                loaded_family == "restoration-positive-dtw-window-encoder"
-                and loaded_local_encoder != expected_local_encoder
-            ):
+            ).lower()
+            if loaded_family == "restoration-positive-dtw-window-encoder" and loaded_backbone != "resnet18":
                 raise ValueError(
-                    "Restoration initialization encoder mismatch: "
-                    f"checkpoint={loaded_local_encoder} "
-                    f"current={expected_local_encoder}. "
-                    "For cnn_seq2seq alignment, first pretrain the cnn_seq2seq "
-                    "restoration stage and use that checkpoint."
+                    "This checkpoint belongs to the old restoration/CNN revision. "
+                    "The new branch uses ResNet-18 + ViT-Tiny and has no decoder; "
+                    "start a fresh run or use a checkpoint produced by this revision."
                 )
+
             state = train_module.extract_model_state(loaded)
             incompatible = model.load_state_dict(state, strict=False)
             if loaded_family == "restoration-positive-dtw-window-encoder":
                 if incompatible.missing_keys or incompatible.unexpected_keys:
                     raise RuntimeError(
-                        "Restoration pretraining checkpoint did not load exactly: "
+                        "ResNet18/ViT-Tiny checkpoint did not load exactly: "
                         f"missing={incompatible.missing_keys[:10]} "
-                        f"unexpected={incompatible.unexpected_keys[:10]}. "
-                        "Stage B must initialize the exact Stage-A encoder/decoder."
+                        f"unexpected={incompatible.unexpected_keys[:10]}"
                     )
             if train_module.CTX.is_main:
                 print(
@@ -970,29 +810,13 @@ def install_training_objective(train_module):
         ):
             bundle = image_embedder(images, return_training_bundle=True)
 
-        if float(train_module.P.positive_letter_dtw_weight) > 0.0:
-            dtw, dtw_stats = positive_letter_dtw_loss(
-                train_module.P,
-                text_encoder,
-                bundle["semantic"],
-                bundle["ink"],
-                texts,
-            )
-        else:
-            dtw = bundle["semantic"].sum() * 0.0
-            dtw_stats = {
-                "positive_letter_dtw": 0.0,
-                "dtw_windows": 0.0,
-                "dtw_letters": 0.0,
-                "dtw_gamma": float(train_module.P.positive_letter_dtw_gamma),
-                "dtw_vertical_penalty": float(
-                    train_module.P.positive_letter_dtw_vertical_penalty
-                ),
-                "dtw_horizontal_penalty": float(
-                    train_module.P.positive_letter_dtw_horizontal_penalty
-                ),
-            }
-
+        dtw, dtw_stats = positive_letter_dtw_loss(
+            train_module.P,
+            text_encoder,
+            bundle["semantic"],
+            bundle["ink"],
+            texts,
+        )
         contrastive, contrastive_stats = negative_letter_dtw_margin_loss(
             train_module.P,
             text_encoder,
@@ -1001,25 +825,13 @@ def install_training_objective(train_module):
             texts,
             negative_texts,
         )
-        restoration, pixel, edge, dice, structure = stroke_restoration_loss(
-            train_module.P,
-            bundle["restoration"],
-            bundle["restoration_target"],
-            bundle["restoration_valid_mask"],
-        )
         total = (
             float(train_module.P.positive_letter_dtw_weight) * dtw
             + float(train_module.P.restoration_contrastive_weight) * contrastive
-            + float(train_module.P.restoration_weight) * restoration
         )
         stats = {
             **dtw_stats,
             **contrastive_stats,
-            "restoration_loss": float(restoration.detach().item()),
-            "restoration_pixel": float(pixel.detach().item()),
-            "restoration_edge": float(edge.detach().item()),
-            "restoration_dice": float(dice.detach().item()),
-            "restoration_structure": float(structure.detach().item()),
             "norm_pos": float(dtw.detach().item()),
             "norm_neg": float(contrastive_stats["negative_letter_dtw"]),
             "cost_pos": float(dtw.detach().item()),
@@ -1073,24 +885,15 @@ def install_training_objective(train_module):
 
     def epoch_start_hook(*, epoch, total_epochs):
         del total_epochs
-        if str(train_module.P.restoration_training_stage) != "align":
-            train_module.P.positive_letter_dtw_gamma = float(
-                train_module.P.positive_letter_dtw_gamma_start
-            )
-            return
         start = max(1e-5, float(train_module.P.positive_letter_dtw_gamma_start))
         end = max(1e-5, float(train_module.P.positive_letter_dtw_gamma_end))
-        anneal_epochs = max(
-            1, int(train_module.P.positive_letter_dtw_anneal_epochs)
-        )
+        anneal_epochs = max(1, int(train_module.P.positive_letter_dtw_anneal_epochs))
         progress = min(1.0, max(0.0, (int(epoch) - 1) / max(1, anneal_epochs - 1)))
-        # Exponential interpolation keeps the early epochs substantially softer
-        # instead of collapsing to the near-hard endpoint immediately.
         gamma = start * ((end / start) ** progress)
         train_module.P.positive_letter_dtw_gamma = float(gamma)
         if train_module.CTX.is_main:
             print(
-                "[restoration-dtw-curriculum] "
+                "[letter-dtw-curriculum] "
                 f"epoch={epoch} gamma={gamma:.5f} "
                 f"v_penalty={train_module.P.positive_letter_dtw_vertical_penalty:.3f} "
                 f"h_penalty={train_module.P.positive_letter_dtw_horizontal_penalty:.3f} "
@@ -1099,78 +902,7 @@ def install_training_objective(train_module):
             )
 
     train_module.epoch_start_hook = epoch_start_hook
-
-    # Fixed validation-line diagnostic after every epoch. This is analysis-only:
-    # it never participates in the optimizer update.
-    probe_state = {
-        "patch_weight": None,
-        "matrix": None,
-        "training_cost": None,
-        "path": None,
-    }
-
-    def epoch_diagnostic_hook(
-        *,
-        model,
-        text_encoder,
-        valid_loader,
-        epoch,
-        job_id,
-        config,
-        device,
-    ):
-        enabled = os.environ.get("RESTORATION_EPOCH_PROBE", "1").strip().lower()
-        if enabled not in {"1", "true", "yes", "on"}:
-            return
-        from pathlib import Path
-        from restoration_epoch_probe import run_epoch_probe
-
-        probe_config = dict(config)
-        probe_config.update(
-            {
-                "positive_letter_dtw_gamma": float(
-                    train_module.P.positive_letter_dtw_gamma
-                ),
-                "positive_letter_dtw_vertical_penalty": float(
-                    train_module.P.positive_letter_dtw_vertical_penalty
-                ),
-                "positive_letter_dtw_horizontal_penalty": float(
-                    train_module.P.positive_letter_dtw_horizontal_penalty
-                ),
-                "positive_letter_dtw_position_prior": float(
-                    train_module.P.positive_letter_dtw_position_prior
-                ),
-                "positive_letter_dtw_competition_temperature": float(
-                    train_module.P.positive_letter_dtw_competition_temperature
-                ),
-                "positive_letter_dtw_cost_mode": str(
-                    train_module.P.positive_letter_dtw_cost_mode
-                ),
-            }
-        )
-        result = run_epoch_probe(
-            model=model,
-            text_encoder=text_encoder,
-            valid_loader=valid_loader,
-            epoch=int(epoch),
-            job_id=str(job_id),
-            config=probe_config,
-            weights_root=Path(train_module.__file__).resolve().parent / "Weights",
-            device=device,
-            previous_patch_weight=probe_state["patch_weight"],
-            previous_matrix=probe_state["matrix"],
-            previous_training_cost=probe_state["training_cost"],
-            previous_path=probe_state["path"],
-        )
-        probe_state["patch_weight"] = result["patch_weight"]
-        probe_state["matrix"] = result["matrix"]
-        probe_state["training_cost"] = result["training_cost"]
-        probe_state["path"] = result["path"]
-
-    train_module.epoch_diagnostic_hook = epoch_diagnostic_hook
-
-    # The historical visualization assumes contextual Span-DTW/negative losses.
-    # Disable it rather than silently plotting a different objective.
+    train_module.epoch_diagnostic_hook = None
     train_module.save_d3tw_visualization = lambda *args, **kwargs: None
 
     if hasattr(train_module, "wandb_log_epoch_metrics"):
@@ -1183,20 +915,11 @@ def install_training_objective(train_module):
                         "minimal/positive_letter_dtw": float(
                             train_stats.get("positive_letter_dtw", 0.0)
                         ),
-                        "minimal/restoration": float(
-                            train_stats.get("restoration_loss", 0.0)
+                        "minimal/contrastive_margin_dtw": float(
+                            train_stats.get("contrastive_margin_loss", 0.0)
                         ),
-                        "minimal/restoration_pixel": float(
-                            train_stats.get("restoration_pixel", 0.0)
-                        ),
-                        "minimal/restoration_edge": float(
-                            train_stats.get("restoration_edge", 0.0)
-                        ),
-                        "minimal/restoration_dice": float(
-                            train_stats.get("restoration_dice", 0.0)
-                        ),
-                        "minimal/restoration_structure": float(
-                            train_stats.get("restoration_structure", 0.0)
+                        "minimal/negative_letter_dtw": float(
+                            train_stats.get("negative_letter_dtw", 0.0)
                         ),
                         "minimal/dtw_windows": float(train_stats.get("dtw_windows", 0.0)),
                         "minimal/dtw_letters": float(train_stats.get("dtw_letters", 0.0)),
@@ -1204,18 +927,6 @@ def install_training_objective(train_module):
                             train_stats.get(
                                 "dtw_gamma",
                                 train_module.P.positive_letter_dtw_gamma,
-                            )
-                        ),
-                        "minimal/dtw_vertical_penalty": float(
-                            train_stats.get(
-                                "dtw_vertical_penalty",
-                                train_module.P.positive_letter_dtw_vertical_penalty,
-                            )
-                        ),
-                        "minimal/dtw_horizontal_penalty": float(
-                            train_stats.get(
-                                "dtw_horizontal_penalty",
-                                train_module.P.positive_letter_dtw_horizontal_penalty,
                             )
                         ),
                     },
@@ -1230,23 +941,28 @@ def install_training_objective(train_module):
 def model_config(P):
     return {
         "architecture_family": "restoration-positive-dtw-window-encoder",
-        "training_stage": str(P.restoration_training_stage),
-        "training_supervision": (
-            "original-rgb-window restoration pretraining only"
-            if str(P.restoration_training_stage) == "pretrain"
-            else "positive+negative letter-dtw + rgb-restoration regularizer"
-        ),
-        "restoration_local_encoder": str(P.restoration_local_encoder),
+        "architecture_revision": "resnet18-vit-tiny-no-restoration",
+        "training_stage": "align",
+        "training_supervision": "positive+negative letter-dtw only",
+        "local_encoder_type": "resnet18",
+        "restoration_local_encoder": "resnet18",
+        "resnet18_pretrained": bool(P.resnet18_pretrained),
+        "resnet18_feature_dim": 512,
+        "vit_variant": "vit_tiny",
+        "vit_embed_dim": 192,
+        "vit_layers": 12,
+        "vit_heads": 3,
+        "vit_mlp_dim": 768,
+        "decoder_present": False,
+        "restoration_loss_active": False,
         "primary_representation": "normalized-local-context-fusion",
-        "local_representation": "local-rgb-restoration-window",
-        "restoration_semantic_adapter": str(P.restoration_semantic_adapter),
+        "local_representation": "resnet18-window-token",
+        "restoration_semantic_adapter": "identity",
         "semantic_projection_trainable": False,
-        "dtw_supervises_primitive_directly": False,
         "dtw_representation": "normalized-local-context-fusion",
         "context_transformer_active": True,
-        "context_transformer_layers": int(P.restoration_context_layers),
+        "context_transformer_layers": 12,
         "fusion_mode": str(P.restoration_fusion),
-        "restoration_target_mode": str(P.restoration_target_mode),
         "negative_transcripts": int(P.num_negatives),
         "contrastive_dtw_weight": float(P.restoration_contrastive_weight),
         "contrastive_dtw_margin": float(P.restoration_contrastive_margin),
@@ -1279,16 +995,6 @@ def model_config(P):
         ),
         "positive_letter_dtw_cost_mode": str(P.positive_letter_dtw_cost_mode),
         "positive_letter_dtw_min_ink": float(P.positive_letter_dtw_min_ink),
-        "restoration_weight": float(P.restoration_weight),
-        "restoration_pixel_weight": float(P.restoration_pixel_weight),
-        "restoration_edge_weight": float(P.restoration_edge_weight),
-        "restoration_dice_weight": float(P.restoration_dice_weight),
-        "restoration_structure_weight": float(
-            P.restoration_structure_weight
-        ),
-        "restoration_foreground_weight": float(P.restoration_foreground_weight),
-        "restoration_contrast_scale": float(P.restoration_contrast_scale),
-        "restoration_decoder_channels": int(P.restoration_decoder_channels),
         "real_binarize": bool(P.real_binarize),
         "synthetic_binarize": False,
         "zero_shot_preprocess": True,
@@ -1298,3 +1004,4 @@ def model_config(P):
             P.keep_paired_lines_for_independent_training
         ),
     }
+

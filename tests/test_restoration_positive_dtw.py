@@ -1,36 +1,44 @@
 import torch
-
 from types import SimpleNamespace
 
 from embeddingModel import EmbeddingModel
+from resnet18_window_encoder import ResNet18WindowEncoder
 from vlm_restoration_positive_dtw import (
-    StrokeRestorationDecoder,
     _clean_letters,
     _soft_dtw_cost_matrix,
     attach_restoration_dtw_stages,
     positive_monotonic_letter_dtw_cost,
-    stroke_restoration_loss,
 )
 
 
-def test_restoration_decoder_shape_and_range():
-    decoder = StrokeRestorationDecoder(
-        dim=128,
-        output_height=128,
-        output_width=32,
-        channels=32,
+def _model():
+    model = EmbeddingModel(
+        window_size=32,
+        stride=16,
+        vector_size=192,
+        device="cpu",
+        use_flip=True,
+        input_height=128,
+        vit_layers=12,
+        vit_heads=3,
+        vit_mlp_dim=768,
+        vit_dropout=0.0,
+        vit_max_tokens=64,
+        vit_position_base_tokens=7,
+        vit_binarize_input=False,
     )
-    tokens = torch.randn(2, 7, 128)
-    restored = decoder(tokens)
-    assert restored.shape == (2, 7, 1, 128, 32)
-    assert torch.isfinite(restored).all()
-    assert float(restored.min()) >= 0.0
-    assert float(restored.max()) <= 1.0
+    config = SimpleNamespace(
+        resnet18_pretrained=False,
+        restoration_semantic_adapter="identity",
+        restoration_local_encoder="resnet18",
+        restoration_training_stage="align",
+    )
+    return attach_restoration_dtw_stages(model, config)
 
 
 def test_positive_dtw_is_differentiable():
-    visual = torch.randn(9, 128, requires_grad=True)
-    target = torch.randn(4, 128)
+    visual = torch.randn(9, 192, requires_grad=True)
+    target = torch.randn(4, 192)
     loss = positive_monotonic_letter_dtw_cost(
         visual,
         target,
@@ -46,10 +54,8 @@ def test_positive_dtw_is_differentiable():
 
 def test_matching_order_costs_less_than_reversed_order():
     generator = torch.Generator().manual_seed(7)
-    letters = torch.randn(4, 128, generator=generator)
+    letters = torch.randn(4, 192, generator=generator)
     letters = torch.nn.functional.normalize(letters, p=2, dim=-1)
-
-    # Two windows per letter in the correct monotonic order.
     visual = torch.repeat_interleave(letters, repeats=2, dim=0)
     correct = positive_monotonic_letter_dtw_cost(
         visual, letters, gamma=0.01, step_penalty=0.02
@@ -65,117 +71,44 @@ def test_unicode_arabic_cleaning_keeps_wasla_and_decomposes_ligature():
     assert cleaned == ["ٱ", "ل", "ل", "ا"]
 
 
-def test_full_model_training_bundle_has_one_token_per_window():
-    model = EmbeddingModel(
+def test_resnet18_window_encoder_keeps_one_token_per_window():
+    encoder = ResNet18WindowEncoder(
+        input_height=128,
         window_size=32,
         stride=16,
-        vector_size=128,
-        device="cpu",
-        use_flip=True,
-        input_height=128,
-        vit_layers=1,
-        vit_heads=4,
-        vit_mlp_dim=256,
-        vit_dropout=0.0,
-        vit_max_tokens=64,
-        vit_position_base_tokens=7,
-        vit_binarize_input=False,
+        embed_dim=192,
+        pretrained=False,
     )
-    config = SimpleNamespace(
-        restoration_decoder_channels=16,
-        restoration_contrast_scale=0.15,
-        restoration_semantic_adapter="identity",
-        restoration_local_encoder="cnn_seq2seq",
-        restoration_training_stage="align",
-    )
-    model = attach_restoration_dtw_stages(model, config)
-    image = torch.randn(1, 3, 128, 128)
+    image = torch.randn(1, 3, 128, 64)
+    tokens = encoder(image)
+    assert tokens.shape == (1, 192, 1, 3)
+    assert encoder.projection[0].in_features == 512
+    assert encoder.projection[0].out_features == 192
+
+
+def test_full_model_is_resnet18_tinyvit_without_decoder():
+    model = _model()
+    image = torch.randn(1, 3, 128, 64)
     bundle = model(image, return_training_bundle=True)
 
-    assert bundle["primitive"].shape == (1, 7, 128)
-    assert bundle["semantic"].shape == (1, 7, 128)
-    assert bundle["ink"].shape == (1, 7)
-    assert bundle["restoration"].shape == (1, 7, 3, 128, 32)
-    assert bundle["restoration_target"].shape == (1, 7, 3, 128, 32)
+    assert isinstance(model.vit_encoder.patch_embedding, ResNet18WindowEncoder)
+    assert model.vit_encoder.embed_dim == 192
+    assert len(model.vit_encoder.encoder.layers) == 12
+    first = model.vit_encoder.encoder.layers[0]
+    assert first.self_attn.num_heads == 3
+    assert first.linear1.out_features == 768
 
-
-
-def test_recommended_fusion_is_distinct_from_local_primitive():
-    model = EmbeddingModel(
-        window_size=32,
-        stride=16,
-        vector_size=128,
-        device="cpu",
-        use_flip=True,
-        input_height=128,
-        vit_layers=1,
-        vit_heads=4,
-        vit_mlp_dim=256,
-        vit_dropout=0.0,
-        vit_max_tokens=64,
-        vit_position_base_tokens=7,
-        vit_binarize_input=False,
-    )
-    config = SimpleNamespace(
-        restoration_decoder_channels=16,
-        restoration_contrast_scale=0.15,
-        restoration_semantic_adapter="identity",
-        restoration_local_encoder="cnn_seq2seq",
-        restoration_training_stage="align",
-    )
-    model = attach_restoration_dtw_stages(model, config)
-    image = torch.randn(1, 3, 128, 128)
-    bundle = model(image, return_training_bundle=True)
-
-    assert model.vit_encoder.restoration_semantic_adapter == "identity"
-    assert hasattr(model.vit_encoder, "fusion_head")
-    assert bundle["semantic"].shape == bundle["primitive"].shape
-    assert not torch.allclose(
-        bundle["semantic"], bundle["primitive"], atol=1e-6, rtol=1e-5
-    )
-
-
-
-def test_cnn_seq2seq_encoder_keeps_one_token_per_32px_window():
-    model = EmbeddingModel(
-        window_size=32,
-        stride=16,
-        vector_size=128,
-        device="cpu",
-        use_flip=True,
-        input_height=128,
-        vit_layers=1,
-        vit_heads=4,
-        vit_mlp_dim=256,
-        vit_dropout=0.0,
-        vit_max_tokens=64,
-        vit_position_base_tokens=7,
-        vit_binarize_input=False,
-    )
-    config = SimpleNamespace(
-        restoration_decoder_channels=64,
-        restoration_contrast_scale=0.15,
-        restoration_semantic_adapter="identity",
-        restoration_local_encoder="cnn_seq2seq",
-        restoration_training_stage="align",
-    )
-    model = attach_restoration_dtw_stages(model, config)
-    image = torch.randn(1, 3, 128, 128)
-    bundle = model(image, return_training_bundle=True)
-
-    assert model.vit_encoder.restoration_local_encoder == "cnn_seq2seq"
-    assert bundle["primitive"].shape == (1, 7, 128)
-    assert bundle["semantic"].shape == (1, 7, 128)
-    assert bundle["restoration"].shape == (1, 7, 3, 128, 32)
-    assert bundle["semantic"].shape == bundle["primitive"].shape
-    assert hasattr(model.vit_encoder, "fusion_head")
+    assert bundle["primitive"].shape == (1, 3, 192)
+    assert bundle["contextual"].shape == (1, 3, 192)
+    assert bundle["semantic"].shape == (1, 3, 192)
+    assert bundle["token_valid"].shape == (1, 3)
+    assert "restoration" not in bundle
+    assert "restoration_target" not in bundle
+    assert not hasattr(model.vit_encoder, "stroke_decoder")
+    assert not any("stroke_decoder" in key for key in model.state_dict())
 
 
 def test_disabling_horizontal_moves_removes_soft_alternative_paths_when_feasible():
-    # With T=L=2, diagonal+vertical topology is sufficient and no horizontal
-    # move is needed. On a zero matrix, allowing horizontal alternatives lowers
-    # soft-DTW through log-sum-exp entropy; disabling them leaves the diagonal
-    # route as the only cheap route.
     costs = torch.zeros(2, 2)
     allowed = _soft_dtw_cost_matrix(
         costs,
@@ -195,8 +128,6 @@ def test_disabling_horizontal_moves_removes_soft_alternative_paths_when_feasible
 
 
 def test_horizontal_moves_remain_available_when_text_is_longer_than_windows():
-    # T<L requires at least one horizontal transition to reach the final
-    # transcript character; the safety rule must therefore keep it available.
     costs = torch.zeros(2, 3)
     value = _soft_dtw_cost_matrix(
         costs,
@@ -206,43 +137,3 @@ def test_horizontal_moves_remain_available_when_text_is_longer_than_windows():
         disable_horizontal_when_feasible=True,
     )
     assert torch.isfinite(value)
-
-
-
-def test_cnn_seq2seq_token_keeps_spatial_bottleneck_projection():
-    from restoration_window_seq2seq import WindowSequenceCNNEncoder
-
-    encoder = WindowSequenceCNNEncoder(
-        input_height=128,
-        window_size=32,
-        stride=16,
-        embed_dim=128,
-        base_channels=16,
-    )
-    assert isinstance(encoder.to_token[1], torch.nn.Linear)
-    assert encoder.to_token[1].in_features == 128 * 8 * 8
-    assert encoder.to_token[1].out_features == 128
-
-
-def test_restoration_structure_loss_penalizes_same_template_for_different_targets():
-    settings = SimpleNamespace(
-        restoration_foreground_weight=2.0,
-        restoration_pixel_weight=0.0,
-        restoration_edge_weight=0.0,
-        restoration_dice_weight=0.0,
-        restoration_structure_weight=1.0,
-    )
-    target = torch.zeros(1, 2, 1, 8, 8)
-    target[0, 0, 0, 2, 1:4] = 1.0
-    target[0, 1, 0, 5, 4:7] = 1.0
-
-    collapsed = target[:, :1].repeat(1, 2, 1, 1, 1)
-    faithful = target.clone()
-
-    collapsed_loss, *_ = stroke_restoration_loss(
-        settings, collapsed, target
-    )
-    faithful_loss, *_ = stroke_restoration_loss(
-        settings, faithful, target
-    )
-    assert float(faithful_loss) < float(collapsed_loss)
