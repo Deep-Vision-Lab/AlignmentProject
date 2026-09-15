@@ -773,11 +773,7 @@ def optimized_train(train_module):
             train_module.CTX.barrier()
             started = time.perf_counter()
             PROFILER.reset()
-            if train_module.CTX.is_main:
-                print(
-                    f"epoch={epoch + 1}/{args.epochs} world_size={train_module.CTX.world_size}",
-                    flush=True,
-                )
+            train_module._diagnostic_epoch = epoch + 1
 
             train_loss, train_stats = train_module.train_one_epoch(
                 model,
@@ -888,8 +884,8 @@ def optimized_train(train_module):
             train_module.CTX.barrier()
             if train_module.CTX.is_main:
                 print(
-                    f"epoch={epoch + 1} train_loss={train_loss:.4f} "
-                    f"val_loss={val_loss:.4f} elapsed={elapsed:.1f}s",
+                    f"EPOCH_LOSS epoch={epoch + 1}/{args.epochs} "
+                    f"loss={train_loss:.8f}",
                     flush=True,
                 )
 
