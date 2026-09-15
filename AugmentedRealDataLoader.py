@@ -7,6 +7,10 @@ to load train/valid/test manifests exactly as written by the offline builder.
 """
 from __future__ import annotations
 
+
+def _diagnostic_quiet_print(*args, **kwargs):
+    return None
+
 import os
 from pathlib import Path
 
@@ -106,7 +110,7 @@ def _filter_positive_subsets(full_dataset, train_subset, valid_subset, test_subs
     )
     max_required = max(item.max_required_spans for item in stats)
     examples = [example for item in stats for example in item.examples]
-    print(
+    _diagnostic_quiet_print(
         "Filtered infeasible real Span-DTW positives: "
         f"max_image_windows={max_image_windows} "
         f"max_span_chars={max_span_chars} "
@@ -115,7 +119,7 @@ def _filter_positive_subsets(full_dataset, train_subset, valid_subset, test_subs
         flush=True,
     )
     if examples:
-        print("Filtered examples: " + " | ".join(examples[:5]), flush=True)
+        _diagnostic_quiet_print("Filtered examples: " + " | ".join(examples[:5]), flush=True)
 
     return (*filtered, stats)
 
@@ -194,7 +198,7 @@ def _build_explicit_split_dataloaders(data_dir):
     if target_train_samples > filtered_train_samples:
         train_dataset = RepeatToLengthDataset(train_dataset, target_train_samples)
 
-    print(
+    _diagnostic_quiet_print(
         "Loaded pre-augmented real Arabic dataset from explicit manifests: "
         f"root={root} "
         f"train_manifest={len(train_base)} "
@@ -207,7 +211,7 @@ def _build_explicit_split_dataloaders(data_dir):
         flush=True,
     )
     if train_stats is not None:
-        print(
+        _diagnostic_quiet_print(
             "Explicit split feasibility filter enabled: "
             f"train_removed={train_stats.removed} "
             f"valid_removed={valid_stats.removed if valid_stats is not None else 0} "
@@ -267,7 +271,7 @@ def build_dataloaders(data_dir=None):
     if target_train_samples > base_train_samples:
         train_dataset = RepeatToLengthDataset(train_dataset, target_train_samples)
 
-    print(
+    _diagnostic_quiet_print(
         "Loaded augmented real Arabic dataset: "
         f"samples={len(full_dataset)} base_train={base_train_samples} "
         f"train_per_epoch={len(train_dataset)} "
