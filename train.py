@@ -280,22 +280,20 @@ def main() -> None:
         base._broadcast_trainable_text_parameters(text_encoder)
 
         model: nn.Module = raw_model
+        # This diagnostic DTW objective is data-dependent and the paired batch
+        # performs multiple forwards. DDP static_graph is therefore unsafe.
+        os.environ["DDP_STATIC_GRAPH"] = "0"
+        os.environ["DDP_STATIC_GRAPH_EFFECTIVE"] = "0"
         static_graph = resolve_ddp_static_graph()
         if base.CTX.enabled:
-            ddp_kwargs = {
-                "device_ids": [0],
-                "output_device": 0,
-                "broadcast_buffers": False,
-                "find_unused_parameters": False,
-                "gradient_as_bucket_view": True,
-            }
-            if static_graph.enabled:
-                ddp_kwargs["static_graph"] = True
-            try:
-                model = DDP(raw_model, **ddp_kwargs)
-            except TypeError:
-                ddp_kwargs.pop("static_graph", None)
-                model = DDP(raw_model, **ddp_kwargs)
+            model = DDP(
+                raw_model,
+                device_ids=[0],
+                output_device=0,
+                broadcast_buffers=False,
+                find_unused_parameters=True,
+                gradient_as_bucket_view=True,
+            )
 
         criterion = base.build_criterion()
         config = base.model_config(stride, args)
@@ -304,8 +302,9 @@ def main() -> None:
                 "hf_home": os.environ.get("HF_HOME", ""),
                 "original_cuda_visible_devices": RANK_DEVICE.original_visible_devices,
                 "selected_cuda_device": RANK_DEVICE.selected_device,
-                "ddp_static_graph": static_graph.enabled,
-                "ddp_static_graph_reason": static_graph.description,
+                "ddp_static_graph": False,
+                "ddp_static_graph_reason": "disabled: data-dependent DTW diagnostic graph",
+                "ddp_find_unused_parameters": True,
             }
         )
 
