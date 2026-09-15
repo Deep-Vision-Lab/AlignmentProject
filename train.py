@@ -280,8 +280,9 @@ def main() -> None:
         base._broadcast_trainable_text_parameters(text_encoder)
 
         model: nn.Module = raw_model
-        # This diagnostic DTW objective is data-dependent and the paired batch
-        # performs multiple forwards. DDP static_graph is therefore unsafe.
+        # This diagnostic DTW objective is data-dependent. Paired manuscript
+        # lines are consolidated into one model forward, but static_graph is
+        # still intentionally disabled because DTW path structure varies by data.
         os.environ["DDP_STATIC_GRAPH"] = "0"
         os.environ["DDP_STATIC_GRAPH_EFFECTIVE"] = "0"
         static_graph = resolve_ddp_static_graph()
