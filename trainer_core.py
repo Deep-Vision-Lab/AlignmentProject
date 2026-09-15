@@ -1472,11 +1472,7 @@ def train(
             train_sampler.set_epoch(epoch)
         CTX.barrier()
         started = time.time()
-        if CTX.is_main:
-            print(
-                f"epoch={epoch + 1}/{args.epochs} world_size={CTX.world_size}",
-                flush=True,
-            )
+        globals()["_diagnostic_epoch"] = epoch + 1
 
         train_loss, train_stats = train_one_epoch(
             model, text_encoder, criterion, optimizer, scaler, train_loader
@@ -1552,8 +1548,8 @@ def train(
         CTX.barrier()
         if CTX.is_main:
             print(
-                f"epoch={epoch + 1} train_loss={train_loss:.4f} "
-                f"val_loss={val_loss:.4f} elapsed={time.time() - started:.1f}s",
+                f"EPOCH_LOSS epoch={epoch + 1}/{args.epochs} "
+                f"loss={train_loss:.8f}",
                 flush=True,
             )
 
