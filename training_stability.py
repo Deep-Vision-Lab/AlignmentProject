@@ -201,6 +201,7 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
             value = float(tensor.grad.detach().float().norm().item())
             return value / max(float(backward_scale), 1.0)
 
+        epoch_number = int(getattr(train_module, "_diagnostic_epoch", 0))
         loss_sum = 0.0
         total_weight = 0
         stats_sum = {}
@@ -276,7 +277,8 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
 
                 if train_module.CTX.is_main:
                     print(
-                        f"BATCH_LOSS batch={batch_idx + 1}/{effective_batches} "
+                        f"BATCH_LOSS epoch={epoch_number} "
+                        f"batch={batch_idx + 1}/{effective_batches} "
                         f"loss={float(loss.detach().item()):.8f}",
                         flush=True,
                     )
@@ -285,35 +287,41 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
                     )
                     for pass_idx, record in enumerate(records, start=1):
                         print(
-                            f"GRAD batch={batch_idx + 1} pass={pass_idx} "
+                            f"GRAD epoch={epoch_number} batch={batch_idx + 1} pass={pass_idx} "
                             "after=ResNet18 "
                             f"activation_norm={activation_grad_norm(record.get('after_resnet18'), backward_scale):.8e}",
                             flush=True,
                         )
                         print(
-                            f"GRAD batch={batch_idx + 1} pass={pass_idx} "
+                            f"GRAD epoch={epoch_number} batch={batch_idx + 1} pass={pass_idx} "
                             "after=ViT-Tiny "
                             f"activation_norm={activation_grad_norm(record.get('after_vit_tiny'), backward_scale):.8e}",
                             flush=True,
                         )
                         print(
-                            f"GRAD batch={batch_idx + 1} pass={pass_idx} "
+                            f"GRAD epoch={epoch_number} batch={batch_idx + 1} pass={pass_idx} "
                             "after=Fusion "
                             f"activation_norm={activation_grad_norm(record.get('after_fusion'), backward_scale):.8e}",
                             flush=True,
                         )
+                        print(
+                            f"GRAD epoch={epoch_number} batch={batch_idx + 1} pass={pass_idx} "
+                            "after=DTW-input "
+                            f"activation_norm={activation_grad_norm(record.get('final_fused'), backward_scale):.8e}",
+                            flush=True,
+                        )
                     print(
-                        f"GRAD batch={batch_idx + 1} part=ResNet18 "
+                        f"GRAD epoch={epoch_number} batch={batch_idx + 1} part=ResNet18 "
                         f"parameter_norm={resnet_param_grad:.8e}",
                         flush=True,
                     )
                     print(
-                        f"GRAD batch={batch_idx + 1} part=ViT-Tiny "
+                        f"GRAD epoch={epoch_number} batch={batch_idx + 1} part=ViT-Tiny "
                         f"parameter_norm={vit_param_grad:.8e}",
                         flush=True,
                     )
                     print(
-                        f"GRAD batch={batch_idx + 1} part=Fusion "
+                        f"GRAD epoch={epoch_number} batch={batch_idx + 1} part=Fusion "
                         f"parameter_norm={fusion_param_grad:.8e}",
                         flush=True,
                     )
