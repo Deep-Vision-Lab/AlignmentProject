@@ -18,15 +18,15 @@ dataset_type = "auto"  # auto | real | synthetic
 train_seed = 42
 dataset_split_seed = 42
 use_amp = True
-use_wandb = True
+use_wandb = False
 wandb_project = "alignment-vit"
 log_memory_every_n_batches = 25
 profile_training = False
 profile_max_batches = 0
 
 # 2. TRAINING / OPTIMIZATION
-# Keep the current memory-safe micro-batch while preserving an effective global
-# batch of 64 on two GPUs: 8 x 4 accumulation x 2 ranks.
+# Diagnostic training: every batch gets its own backward + optimizer step.
+# With two DDP ranks and batch_size=32, the global batch is 64 with no accumulation.
 batch_size = 32
 gradient_accumulation_steps = 1
 epochs = 20
