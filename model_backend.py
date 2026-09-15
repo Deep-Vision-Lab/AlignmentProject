@@ -1,28 +1,28 @@
-"""Branch backend for RGB restoration + contextual fused letter-DTW.
+"""Branch backend for ResNet-18 window encoding + ViT-Tiny contextual DTW.
 
-Each manuscript line is processed independently. Every physical window produces
-one local restoration token; a positional Transformer builds sequence context;
-local and contextual vectors are concatenated, projected and normalized for DTW.
-The local token alone reconstructs the complete RGB window. Training uses a
-frozen character codebook with positive and negative transcripts, while final
-alignment evaluation remains image-only.
+Each 128x32 manuscript window is encoded locally by a shared ResNet-18.
+The resulting local tokens are contextualized by a ViT-Tiny-style Transformer
+(192-D, 12 blocks, 3 heads by default), fused with their local vectors, and
+trained against a frozen Arabic character codebook with positive and negative
+letter-DTW. There is no restoration decoder or reconstruction objective.
 """
 from __future__ import annotations
 
 import os
 
 import Parameters as P
-from vlm_restoration_positive_dtw import (
+from vlm_resnet18_tinyvit_positive_dtw import (
     apply_branch_config,
-    attach_restoration_dtw_stages,
+    attach_resnet18_tinyvit_stages,
     install_training_objective,
-    model_config as restoration_model_config,
+    model_config as resnet_tinyvit_model_config,
 )
 
 apply_branch_config(P)
 P.export_environment()
 
-MODEL_NAME = "vit_restoration_positive_dtw"
+MODEL_NAME = "resnet18_tinyvit_positive_dtw"
+# Keep the shared ViT runtime path because the context container is LineWindowViT.
 VISUAL_ENCODER_TYPE = "vit"
 
 
@@ -59,7 +59,7 @@ def build_visual_model(
         device=device,
         use_flip=use_flip,
     )
-    return attach_restoration_dtw_stages(model, P)
+    return attach_resnet18_tinyvit_stages(model, P)
 
 
 def install_training_backend(base_module):
@@ -70,7 +70,7 @@ def install_training_backend(base_module):
     def constructor(
         window_size=32,
         stride=16,
-        vector_size=128,
+        vector_size=192,
         device="cuda",
         use_flip=False,
         **kwargs,
@@ -98,18 +98,19 @@ def visual_model_config():
     config = {
         "model_backend": MODEL_NAME,
         "visual_encoder_type": VISUAL_ENCODER_TYPE,
+        "local_encoder": "resnet18",
         "use_bilstm": False,
         "use_local_window_grouping": False,
-        "vit_input_height": _integer("VIT_INPUT_HEIGHT", 128),
+        "vit_input_height": int(P.vit_input_height),
         "vit_layers": int(P.vit_layers),
-        "vit_heads": _integer("VIT_HEADS", 4),
-        "vit_mlp_dim": _integer("VIT_MLP_DIM", 512),
-        "vit_dropout": _number("VIT_DROPOUT", 0.10),
+        "vit_heads": int(P.vit_heads),
+        "vit_mlp_dim": int(P.vit_mlp_dim),
+        "vit_dropout": float(P.vit_dropout),
         "vit_max_tokens": int(P.vit_max_tokens),
-        "vit_position_base_tokens": _integer("VIT_POSITION_BASE_TOKENS", 63),
+        "vit_position_base_tokens": int(P.vit_position_base_tokens),
         "vit_binarize_input": bool(P.vit_binarize_input),
         "vit_binarize_method": "none",
         "torch_compile_visual": _flag("TORCH_COMPILE_VISUAL", False),
     }
-    config.update(restoration_model_config(P))
+    config.update(resnet_tinyvit_model_config(P))
     return config
