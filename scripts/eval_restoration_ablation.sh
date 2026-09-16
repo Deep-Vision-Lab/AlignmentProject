@@ -36,4 +36,5 @@ if [[ "${SAVE_FIGURES}" == "1" ]]; then
 fi
 
 "${PYTHON_BIN}" -m py_compile Evaluation/_eval_utils.py Evaluation/eval_restoration_ablation.py
+"${PYTHON_BIN}" -m pytest -q tests/test_restoration_ablation_eval.py
 "${PYTHON_BIN}" "${args[@]}"
