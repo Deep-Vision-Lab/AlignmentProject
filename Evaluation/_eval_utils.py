@@ -44,8 +44,6 @@ class ImageFeatures:
     grouped: torch.Tensor
     ink: torch.Tensor
     image_size: tuple[int, int]
-    fused: torch.Tensor | None = None
-    shuffled_context: torch.Tensor | None = None
 
     def select(self, name: str) -> torch.Tensor:
         value = str(name).lower()
@@ -55,19 +53,7 @@ class ImageFeatures:
             return self.local
         if value == "grouped":
             return self.grouped
-        if value in {"fused", "joint"}:
-            if self.fused is None:
-                raise ValueError("fused features are unavailable for this checkpoint")
-            return self.fused
-        if value in {"shuffled", "shuffled_context", "shuffled-context"}:
-            if self.shuffled_context is None:
-                raise ValueError(
-                    "shuffled-context features are unavailable for this checkpoint"
-                )
-            return self.shuffled_context
-        raise ValueError(
-            "feature must be local, contextual, grouped, fused, or shuffled_context"
-        )
+        raise ValueError("feature must be contextual, local, or grouped")
 
 
 @dataclass(frozen=True)
@@ -246,8 +232,6 @@ def load_evaluation_models(
         from types import SimpleNamespace
         from vlm_restoration_positive_dtw import attach_restoration_dtw_stages
 
-        # Evaluation reconstructs the architecture and then loads the checkpoint
-        # state. Do not redundantly fetch/load pretrained initialization here.
         restoration_config = SimpleNamespace(
             restoration_decoder_channels=int(
                 config.get("restoration_decoder_channels", 64)
@@ -255,9 +239,6 @@ def load_evaluation_models(
             restoration_contrast_scale=float(
                 config.get("restoration_contrast_scale", 0.15)
             ),
-            resnet18_pretrained=False,
-            tiny_vit_pretrained=False,
-            pretrained_local_only=True,
         )
         image_model = attach_restoration_dtw_stages(
             image_model, restoration_config
@@ -414,22 +395,6 @@ def build_transform(dataset_type: str = "synthetic"):
     )
 
 
-def _deterministic_permutation(length: int, key: str) -> torch.Tensor:
-    """Stable non-identity permutation used for context-destruction ablations."""
-    import hashlib
-
-    length = int(length)
-    if length <= 1:
-        return torch.arange(length, dtype=torch.long)
-    digest = hashlib.sha256(str(key).encode("utf-8")).digest()
-    seed = int.from_bytes(digest[:8], byteorder="little", signed=False)
-    generator = torch.Generator(device="cpu").manual_seed(seed)
-    permutation = torch.randperm(length, generator=generator)
-    if torch.equal(permutation, torch.arange(length)):
-        permutation = torch.roll(permutation, shifts=1)
-    return permutation
-
-
 def get_image_features(
     models: EvaluationModels,
     image_path: str | os.PathLike,
@@ -439,53 +404,6 @@ def get_image_features(
         image = opened.convert("RGB")
         original_size = image.size
         tensor = build_transform(dataset_type)(image).unsqueeze(0).to(models.device)
-
-    family = str(models.config.get("architecture_family", ""))
-    if (
-        family == "restoration-positive-dtw-window-encoder"
-        and hasattr(models.image_model.vit_encoder, "encode_restoration_sequence")
-    ):
-        # Use the exact representations from this branch:
-        #   local      = ResNet-18 window token
-        #   contextual = ViT-Tiny contextual token
-        #   fused      = the actual Fusion(local, contextual) input to DTW
-        #   shuffled   = Fusion(local, permuted-context), for causal ablation.
-        with torch.no_grad():
-            fused, local_raw, contextual_raw, _model_input, token_valid = (
-                models.image_model.vit_encoder.encode_restoration_sequence(
-                    tensor, use_flip=models.image_model.use_flip
-                )
-            )
-            vision_norm = models.image_model.vision_norm
-            fused_out = F.normalize(
-                vision_norm(fused).float(), p=2, dim=-1
-            )
-            local_out = F.normalize(
-                vision_norm(local_raw).float(), p=2, dim=-1
-            )
-            contextual_out = F.normalize(
-                vision_norm(contextual_raw).float(), p=2, dim=-1
-            )
-            permutation = _deterministic_permutation(
-                contextual_raw.shape[1], str(Path(image_path).resolve())
-            ).to(contextual_raw.device)
-            shuffled_raw = contextual_raw.index_select(1, permutation)
-            shuffled_fused = models.image_model.vit_encoder.fusion_head(
-                local_raw, shuffled_raw
-            )
-            shuffled_out = F.normalize(
-                vision_norm(shuffled_fused).float(), p=2, dim=-1
-            )
-
-        return ImageFeatures(
-            contextual=contextual_out[0],
-            local=local_out[0],
-            grouped=local_out[0],
-            ink=token_valid[0].float(),
-            image_size=original_size,
-            fused=fused_out[0],
-            shuffled_context=shuffled_out[0],
-        )
 
     with torch.no_grad():
         contextual, local, grouped, ink = models.image_model(
@@ -500,8 +418,6 @@ def get_image_features(
         grouped=F.normalize(grouped[0].float(), p=2, dim=-1),
         ink=ink[0].float(),
         image_size=original_size,
-        fused=F.normalize(contextual[0].float(), p=2, dim=-1),
-        shuffled_context=None,
     )
 
 
