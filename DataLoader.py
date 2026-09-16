@@ -202,6 +202,9 @@ _pin_memory = torch.cuda.is_available()
 _persistent_workers = _num_workers > 0
 _prefetch_factor = int(os.environ.get("DATALOADER_PREFETCH", 4)) if _num_workers > 0 else None
 _split_seed = int(os.environ.get("DATASET_SPLIT_SEED", 42))
+_train_drop_last = os.environ.get("TRAIN_DROP_LAST", "0").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 
 def _make_loader(ds, shuffle):
@@ -212,7 +215,7 @@ def _make_loader(ds, shuffle):
         num_workers=_num_workers,
         pin_memory=_pin_memory,
         persistent_workers=_persistent_workers,
-        drop_last=False,
+        drop_last=bool(_train_drop_last and shuffle),
     )
     if _prefetch_factor is not None:
         kwargs["prefetch_factor"] = _prefetch_factor
