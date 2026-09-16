@@ -205,6 +205,13 @@ _split_seed = int(os.environ.get("DATASET_SPLIT_SEED", 42))
 
 
 def _make_loader(ds, shuffle):
+    # Diagnostic switch: only the training loader may drop its small final batch.
+    # Validation/test loaders always keep every sample.
+    train_drop_last = (
+        bool(shuffle)
+        and os.environ.get("TRAIN_DROP_LAST", "0").lower()
+        in {"1", "true", "yes", "on"}
+    )
     kwargs = dict(
         batch_size=batch_size,
         shuffle=shuffle,
@@ -212,7 +219,7 @@ def _make_loader(ds, shuffle):
         num_workers=_num_workers,
         pin_memory=_pin_memory,
         persistent_workers=_persistent_workers,
-        drop_last=False,
+        drop_last=train_drop_last,
     )
     if _prefetch_factor is not None:
         kwargs["prefetch_factor"] = _prefetch_factor
