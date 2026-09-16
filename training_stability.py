@@ -284,19 +284,9 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
                 )
 
                 if train_module.CTX.is_main:
-                    if isinstance(batch, dict):
-                        batch_tensor = batch.get("images1")
-                    else:
-                        batch_tensor = batch[0] if isinstance(batch, (list, tuple)) else None
-                    local_batch_size = (
-                        int(batch_tensor.shape[0])
-                        if torch.is_tensor(batch_tensor)
-                        else -1
-                    )
                     print(
                         f"BATCH_LOSS epoch={epoch_number} "
                         f"batch={batch_idx + 1}/{effective_batches} "
-                        f"local_batch={local_batch_size} "
                         f"loss={float(loss.detach().item()):.8f}",
                         flush=True,
                     )
