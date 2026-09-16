@@ -1166,13 +1166,14 @@ def select_dataloaders(args):
         return train_loader, valid_loader, test_loader, None
 
     split_seed = _env_int("DATASET_SPLIT_SEED", 42)
+    train_drop_last = _env_flag("TRAIN_DROP_LAST", False)
     train_sampler = DistributedSampler(
         train_loader.dataset,
         num_replicas=CTX.world_size,
         rank=CTX.rank,
         shuffle=True,
         seed=split_seed,
-        drop_last=False,
+        drop_last=train_drop_last,
     )
     valid_sampler = DistributedEvalSampler(
         valid_loader.dataset, rank=CTX.rank, world_size=CTX.world_size
