@@ -222,6 +222,7 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
                 break
 
             # One optimizer update per batch. No gradient accumulation.
+            batch_weight = max(1, train_module._batch_size(batch))
             optimizer.zero_grad(set_to_none=True)
             raw_model = unwrap(model)
             raw_model._gradient_probe_records = []
@@ -287,6 +288,8 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
                     print(
                         f"BATCH_LOSS epoch={epoch_number} "
                         f"batch={batch_idx + 1}/{effective_batches} "
+                        f"local_batch={batch_weight} "
+                        f"global_batch={batch_weight * train_module.CTX.world_size} "
                         f"loss={float(loss.detach().item()):.8f}",
                         flush=True,
                     )
@@ -365,7 +368,7 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
 
                 consecutive_nonfinite = 0
 
-            weight = max(1, train_module._batch_size(batch))
+            weight = batch_weight
             loss_sum += float(loss.detach().item()) * weight
             total_weight += weight
             train_module._accumulate_stats(stats_sum, stats, weight)
