@@ -70,5 +70,6 @@ export TOKENIZERS_PARALLELISM=false
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export TORCH_COMPILE_VISUAL="${TORCH_COMPILE_VISUAL:-0}"
 export GRADIENT_ACCUMULATION_STEPS=1
+export TRAIN_DROP_LAST="${TRAIN_DROP_LAST:-0}"
 
 "${TORCHRUN_BIN}"   --standalone   --nproc_per_node=2   train.py   --dataset "${DATASET}"   "$@"
