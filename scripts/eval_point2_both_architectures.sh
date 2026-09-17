@@ -4,8 +4,8 @@ set -euo pipefail
 PROJECT_DIR="${PROJECT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 DATASET="${DATASET:-${PROJECT_DIR}/DataSet/Synthetic63}"
-OLD_WEIGHTS="${OLD_WEIGHTS:-${PROJECT_DIR}/Weights/res18_tinyvit_point2/model_best.pth}"
-NEW_WEIGHTS="${NEW_WEIGHTS:-${PROJECT_DIR}/Weights/res18_physical_window_tinyvit_point2/model_best.pth}"
+OLD_WEIGHTS="${OLD_WEIGHTS:-${PROJECT_DIR}/Weights/res18_tinyvit_point2/model_latest.pth}"
+NEW_WEIGHTS="${NEW_WEIGHTS:-${PROJECT_DIR}/Weights/res18_physical_window_tinyvit_point2/model_latest.pth}"
 EVAL_SPLIT="${EVAL_SPLIT:-test}"
 N_SAMPLES="${N_SAMPLES:-100}"
 START_INDEX="${START_INDEX:-1}"
@@ -20,12 +20,12 @@ cd "${PROJECT_DIR}"
 
 [[ -f "${OLD_WEIGHTS}" ]] || {
   echo "ERROR: old checkpoint not found: ${OLD_WEIGHTS}" >&2
-  echo "Set OLD_WEIGHTS=/path/to/model_best.pth" >&2
+  echo "Set OLD_WEIGHTS=/path/to/model_latest.pth" >&2
   exit 2
 }
 [[ -f "${NEW_WEIGHTS}" ]] || {
   echo "ERROR: physical-window checkpoint not found: ${NEW_WEIGHTS}" >&2
-  echo "Set NEW_WEIGHTS=/path/to/model_best.pth" >&2
+  echo "Set NEW_WEIGHTS=/path/to/model_latest.pth" >&2
   exit 2
 }
 [[ -d "${DATASET}" || -f "${DATASET}" ]] || {
