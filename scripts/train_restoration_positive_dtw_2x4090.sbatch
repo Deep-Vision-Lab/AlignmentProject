@@ -55,13 +55,14 @@ export FORCE_DDP_STATIC_GRAPH=0
 export SPAN_DTW_BACKEND=torch
 export USE_LOCAL_HARD_NEGATIVES=0
 export USE_IMAGE_PAIR_CONTRASTIVE=0
-export HF_HUB_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
 export TINY_VIT_DROPOUT="${TINY_VIT_DROPOUT:-0.0}"
 
 "${PYTHON_BIN}" -m py_compile   train.py   runtime_device_setup.py   model_backend.py   vlm_restoration_positive_dtw.py   resnet18_window_encoder.py   pretrained_tiny_vit.py   scripts/cache_pretrained_models.py   restoration_recommended_components.py   zero_shot_preprocessing.py   DataLoader.py   DataSet.py   AugmentedRealDataLoader.py   training_stability.py   training_optimizations.py   epoch_subset_sampling.py   distributed_runtime_guard.py   vit_checkpoint_migration.py
 
+export TINY_VIT_CACHE_DIR="$("${PYTHON_BIN}" scripts/cache_pretrained_models.py --locate-vit-cache)"
 "${PYTHON_BIN}" scripts/cache_pretrained_models.py --check-only >/dev/null
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
 "${PYTHON_BIN}" -m pytest -q tests/test_restoration_positive_dtw.py >/dev/null
 
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
