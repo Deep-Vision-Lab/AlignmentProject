@@ -2,11 +2,12 @@ import torch
 from types import SimpleNamespace
 
 from embeddingModel import EmbeddingModel
+from physical_window_vit_branch import attach_physical_window_vit_stages
+from physical_window_vit_encoder import PhysicalWindowEmbedding
 from resnet18_window_encoder import ResNet18WindowEncoder
 from vlm_restoration_positive_dtw import (
     _clean_letters,
     _soft_dtw_cost_matrix,
-    attach_restoration_dtw_stages,
     positive_monotonic_letter_dtw_cost,
 )
 
@@ -35,7 +36,7 @@ def _model():
         restoration_local_encoder="resnet18",
         restoration_training_stage="align",
     )
-    return attach_restoration_dtw_stages(model, config)
+    return attach_physical_window_vit_stages(model, config)
 
 
 def test_positive_dtw_is_differentiable():
@@ -88,12 +89,54 @@ def test_resnet18_window_encoder_keeps_one_token_per_window():
     assert encoder.projection[0].out_features == 192
 
 
-def test_full_model_is_resnet18_tinyvit_without_decoder():
+def test_physical_window_vit_uses_one_whole_window_per_token():
+    encoder = PhysicalWindowEmbedding(
+        input_height=128,
+        window_size=32,
+        stride=16,
+        embed_dim=192,
+    )
+    image = torch.randn(1, 3, 128, 64)
+    windows = encoder.extract_windows(image)
+    tokens = encoder(image)
+    assert windows.shape == (1, 3, 3, 128, 32)
+    assert tokens.shape == (1, 192, 1, 3)
+    assert encoder.projection.in_features == 3 * 128 * 32
+    assert encoder.projection.out_features == 192
+
+
+def test_local_and_context_paths_receive_identical_physical_windows():
+    model = _model()
+    image = torch.arange(1 * 3 * 128 * 64, dtype=torch.float32).reshape(
+        1, 3, 128, 64
+    )
+    local_encoder = model.vit_encoder.patch_embedding
+    context_encoder = model.vit_encoder.encoder.context_window_embedding
+    local_windows = local_encoder.extract_windows(image)
+    context_windows = context_encoder.extract_windows(image)
+
+    assert local_windows.shape == context_windows.shape == (1, 3, 3, 128, 32)
+    assert torch.equal(local_windows, context_windows)
+    # Explicit geometry: x=[0:32], [16:48], [32:64].
+    assert torch.equal(local_windows[:, 0], image[:, :, :, 0:32])
+    assert torch.equal(local_windows[:, 1], image[:, :, :, 16:48])
+    assert torch.equal(local_windows[:, 2], image[:, :, :, 32:64])
+
+
+def test_full_model_is_resnet18_plus_direct_window_tinyvit_without_decoder():
     model = _model()
     image = torch.randn(1, 3, 128, 64)
     bundle = model(image, return_training_bundle=True)
 
     assert isinstance(model.vit_encoder.patch_embedding, ResNet18WindowEncoder)
+    assert isinstance(
+        model.vit_encoder.encoder.context_window_embedding,
+        PhysicalWindowEmbedding,
+    )
+    assert model.vit_encoder.context_window_height == 128
+    assert model.vit_encoder.context_window_width == 32
+    assert model.vit_encoder.context_window_stride == 16
+    assert model.vit_encoder.context_window_subdivision == "none"
     assert model.vit_encoder.embed_dim == 192
     assert len(model.vit_encoder.encoder.layers) == 12
     first = model.vit_encoder.encoder.layers[0]
@@ -148,7 +191,6 @@ def test_gradient_probes_cover_every_active_stage():
     image = torch.randn(1, 3, 128, 64)
     bundle = model(image, return_training_bundle=True)
 
-    # Use a non-constant directional objective on the normalized DTW vectors.
     generator = torch.Generator().manual_seed(19)
     direction = torch.randn(
         bundle["semantic"].shape,
@@ -178,7 +220,11 @@ def test_gradient_probes_cover_every_active_stage():
     )
     assert any(
         parameter.grad is not None
-        for parameter in model.vit_encoder.encoder.parameters()
+        for parameter in model.vit_encoder.encoder.context_window_embedding.parameters()
+    )
+    assert any(
+        parameter.grad is not None
+        for parameter in model.vit_encoder.encoder.layers.parameters()
     )
     assert any(
         parameter.grad is not None
