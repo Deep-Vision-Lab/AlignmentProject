@@ -6,14 +6,13 @@ four image-only representations from the SAME trained checkpoint:
 * local: ResNet local vector L_t
 * context: raw ViT contextual vector C_t
 * fused: trained fusion F(L_t, C_t)
-* fused_wrong_context: trained fusion F(L_t, C_pi(t)) with deterministic
-  within-line context permutation over valid windows only
+* fused_wrong_context: trained fusion F(L_t, C_pi(t)) with deterministic,
+  DIFFERENT within-line context permutations for the two paired lines
 
 The evaluator is image-to-image only; no text encoder is loaded.
 """
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 import torch
@@ -114,21 +113,35 @@ def load_point2_visual_models(checkpoint, device="auto", expected_branch="auto")
     return models
 
 
-def _permuted_context(contextual: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
-    """Deterministically move valid contextual tokens to the wrong positions."""
+def _permuted_context(
+    contextual: torch.Tensor,
+    valid: torch.Tensor,
+    *,
+    side: int,
+) -> torch.Tensor:
+    """Move valid context tokens differently on line 1 and line 2.
+
+    Using one identical roll on both manuscript lines could preserve an
+    artificial correspondence. Side 1 therefore rolls by about half the valid
+    line, while side 2 rolls in the opposite direction by about one third.
+    Artificial padding is excluded from both permutations.
+    """
+    if int(side) not in {1, 2}:
+        raise ValueError("side must be 1 or 2")
+
     permuted = contextual.clone()
     for sample_index in range(int(contextual.shape[0])):
         valid_indices = torch.where(valid[sample_index].bool())[0]
         count = int(valid_indices.numel())
         if count <= 1:
             continue
-        shift = max(1, count // 2)
+        shift = max(1, count // 2) if int(side) == 1 else -max(1, count // 3)
         source = torch.roll(valid_indices, shifts=shift, dims=0)
         permuted[sample_index, valid_indices] = contextual[sample_index, source]
     return permuted
 
 
-def _encode_line(models, image_path, mode: str) -> ImageFeatures:
+def _encode_line(models, image_path, mode: str, *, side: int) -> ImageFeatures:
     mode = str(mode).strip().lower()
     if mode not in POINT2_MODES:
         raise ValueError(f"Unknown Point-2 representation {mode!r}")
@@ -161,7 +174,9 @@ def _encode_line(models, image_path, mode: str) -> ImageFeatures:
             image_model.vision_norm(fused_raw).float(), p=2, dim=-1
         )
 
-        wrong_context_raw = _permuted_context(context_raw, token_valid)
+        wrong_context_raw = _permuted_context(
+            context_raw, token_valid, side=side
+        )
         fused_wrong_raw = vit.fusion_head(local_raw, wrong_context_raw)
         fused_wrong = F.normalize(
             image_model.vision_norm(fused_wrong_raw).float(), p=2, dim=-1
@@ -189,4 +204,6 @@ def _encode_line(models, image_path, mode: str) -> ImageFeatures:
 
 def point2_pair_features(models, image1, image2, mode: str):
     """Return pair-local features for one of the four Point-2 ablations."""
-    return _encode_line(models, image1, mode), _encode_line(models, image2, mode)
+    first = _encode_line(models, image1, mode, side=1)
+    second = _encode_line(models, image2, mode, side=2)
+    return first, second
