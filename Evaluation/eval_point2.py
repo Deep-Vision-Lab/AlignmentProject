@@ -53,7 +53,6 @@ def main(argv=None):
         point2_pair_features(models, image1, image2, mode)
     )
 
-    # Keep the mode visible to logs and any child utilities.
     os.environ["POINT2_EVAL_REPRESENTATION"] = mode
 
     from Evaluation import eval_yelda
@@ -71,8 +70,9 @@ def main(argv=None):
                 "context": "normalized raw ViT contextual vector C_t",
                 "fused": "trained normalized fusion F(L_t,C_t)",
                 "fused_wrong_context": (
-                    "trained fusion F(L_t,C_pi(t)) with deterministic half-line "
-                    "roll over valid contextual tokens"
+                    "trained fusion F(L_t,C_pi(t)); valid context positions are "
+                    "deterministically permuted differently on the two paired lines "
+                    "to destroy contextual correspondence while preserving local vectors"
                 ),
             }[mode]
             payload.setdefault("arguments", {})["point2_representation"] = mode
