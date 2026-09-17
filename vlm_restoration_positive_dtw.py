@@ -580,6 +580,7 @@ def attach_restoration_dtw_stages(model, P):
                     "after_vit_tiny": contextual,
                     "after_fusion": fused,
                     "final_fused": fused_out,
+                    "token_valid": token_valid,
                 }
             )
 
