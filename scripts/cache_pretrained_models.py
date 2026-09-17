@@ -34,6 +34,67 @@ def resnet_checkpoint_path() -> Path:
     return TORCH_HOME / "hub" / "checkpoints" / filename
 
 
+def _vit_cache_candidates() -> list[Path]:
+    candidates: list[Path] = []
+
+    explicit = os.environ.get("TINY_VIT_CACHE_DIR")
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+
+    hub_cache = os.environ.get("HF_HUB_CACHE")
+    if hub_cache:
+        candidates.append(Path(hub_cache).expanduser())
+
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        candidates.append(Path(hf_home).expanduser() / "hub")
+
+    transformers_cache = os.environ.get("TRANSFORMERS_CACHE")
+    if transformers_cache:
+        candidates.append(Path(transformers_cache).expanduser())
+
+    # Project-specific cache used by this branch.
+    candidates.append(PROJECT_ROOT / "Pretrained" / "huggingface" / "hub")
+    # Standard Hugging Face cache used by earlier interactive downloads.
+    candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
+
+    unique: list[Path] = []
+    seen = set()
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve()
+        key = str(resolved)
+        if key not in seen:
+            unique.append(resolved)
+            seen.add(key)
+    return unique
+
+
+def locate_vit_cache(model_name: str) -> Path:
+    errors = []
+    for candidate in _vit_cache_candidates():
+        if not candidate.exists():
+            continue
+        try:
+            model = ViTModel.from_pretrained(
+                model_name,
+                local_files_only=True,
+                cache_dir=str(candidate),
+                add_pooling_layer=False,
+            )
+        except OSError as exc:
+            errors.append(f"{candidate}: {exc}")
+            continue
+        del model
+        return candidate
+
+    checked = ", ".join(str(path) for path in _vit_cache_candidates())
+    raise FileNotFoundError(
+        f"Missing cached ViT-Tiny weights for '{model_name}'. "
+        f"Checked cache directories: {checked}. "
+        "Run this script once without --check-only on a node with internet."
+    )
+
+
 def check_only(model_name: str) -> None:
     checkpoint = resnet_checkpoint_path()
     if not checkpoint.is_file():
@@ -41,19 +102,7 @@ def check_only(model_name: str) -> None:
             f"Missing cached ResNet-18 ImageNet weights: {checkpoint}. "
             "Run this script once without --check-only on a node with internet."
         )
-    try:
-        model = ViTModel.from_pretrained(
-            model_name,
-            local_files_only=True,
-            add_pooling_layer=False,
-        )
-    except OSError as exc:
-        raise FileNotFoundError(
-            f"Missing cached ViT-Tiny weights for '{model_name}' under "
-            f"HF_HOME={HF_HOME}. Run this script once without --check-only "
-            "on a node with internet."
-        ) from exc
-    del model
+    locate_vit_cache(model_name)
 
 
 def download(model_name: str) -> None:
@@ -78,6 +127,7 @@ def download(model_name: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check-only", action="store_true")
+    parser.add_argument("--locate-vit-cache", action="store_true")
     parser.add_argument(
         "--vit-model",
         default=os.environ.get(
@@ -85,7 +135,9 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
-    if args.check_only:
+    if args.locate_vit_cache:
+        print(locate_vit_cache(args.vit_model))
+    elif args.check_only:
         check_only(args.vit_model)
     else:
         download(args.vit_model)
