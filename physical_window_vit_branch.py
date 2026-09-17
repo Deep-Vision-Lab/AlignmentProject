@@ -49,8 +49,9 @@ def attach_physical_window_vit_stages(model, P):
     device = reference_parameter.device
     dtype = reference_parameter.dtype
 
-    # Local path: exact physical window -> pretrained ResNet-18 -> 192-D local.
-    vit.local_encoder = ResNet18WindowEncoder(
+    # Keep patch_embedding as the LOCAL ResNet encoder so the existing shared
+    # gradient diagnostic still reports ResNet18 parameter_norm correctly.
+    vit.patch_embedding = ResNet18WindowEncoder(
         input_height=int(vit.input_height),
         window_size=int(vit.window_size),
         stride=int(vit.stride),
@@ -59,10 +60,10 @@ def attach_physical_window_vit_stages(model, P):
         local_files_only=bool(getattr(P, "pretrained_local_only", True)),
     ).to(device=device, dtype=dtype)
 
-    # Context path: exact SAME physical window -> direct pixel projection -> ViT.
-    # Replacing the original Conv2d also guarantees there are no unused trainable
-    # patch-embedding parameters under DDP static_graph.
-    vit.patch_embedding = PhysicalWindowEmbedding(
+    # Register the raw physical-window projection under the ViT encoder. The
+    # shared diagnostic defines ViT-Tiny parameter_norm from encoder.parameters(),
+    # so this keeps the new input projection inside the correct gradient group.
+    vit.encoder.context_window_embedding = PhysicalWindowEmbedding(
         input_height=int(vit.input_height),
         window_size=int(vit.window_size),
         stride=int(vit.stride),
@@ -123,13 +124,13 @@ def attach_physical_window_vit_stages(model, P):
         model_input = image
 
         # LOCAL: ResNet sees explicit 128x32 / stride-16 physical windows.
-        local_tokens = self.local_encoder(model_input)
+        local_tokens = self.patch_embedding(model_input)
         if local_tokens.shape[2] != 1:
             raise RuntimeError("ResNet local encoder must produce one token row")
         local = local_tokens.squeeze(2).transpose(1, 2).contiguous()
 
-        # CONTEXT INPUT: ViT receives the same explicit physical windows directly.
-        context_tokens = self.patch_embedding(model_input)
+        # CONTEXT INPUT: ViT receives the SAME explicit physical windows directly.
+        context_tokens = self.encoder.context_window_embedding(model_input)
         if context_tokens.shape[2] != 1:
             raise RuntimeError("Physical-window ViT embedding must produce one token row")
         context_seed = context_tokens.squeeze(2).transpose(1, 2).contiguous()
