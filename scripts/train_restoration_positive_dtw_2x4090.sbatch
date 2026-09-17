@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=res18_tinyvit_dtw
+#SBATCH --job-name=physical_window_vit
 #SBATCH --partition=rtx4090
 #SBATCH --gpus=rtx_4090:2
 #SBATCH --ntasks=1
@@ -23,7 +23,7 @@ mkdir -p out
 [[ -x "${TORCHRUN_BIN}" ]] || { echo "ERROR: torchrun not executable: ${TORCHRUN_BIN}" >&2; exit 2; }
 [[ -d "${DATASET}" ]] || { echo "ERROR: dataset not found: ${DATASET}" >&2; exit 2; }
 
-export JOB_NAME="${JOB_NAME:-res18_tinyvit_dtw_s16}"
+export JOB_NAME="${JOB_NAME:-res18_physical_window_tinyvit_s16}"
 export RESTORATION_EPOCHS="${RESTORATION_EPOCHS:-20}"
 export RESTORATION_NUM_SAMPLES="${RESTORATION_NUM_SAMPLES:-6000}"
 export RESTORATION_LEARNING_RATE="${RESTORATION_LEARNING_RATE:-1e-4}"
@@ -57,7 +57,26 @@ export USE_LOCAL_HARD_NEGATIVES=0
 export USE_IMAGE_PAIR_CONTRASTIVE=0
 export TINY_VIT_DROPOUT="${TINY_VIT_DROPOUT:-0.0}"
 
-"${PYTHON_BIN}" -m py_compile   train.py   runtime_device_setup.py   model_backend.py   vlm_restoration_positive_dtw.py   resnet18_window_encoder.py   pretrained_tiny_vit.py   scripts/cache_pretrained_models.py   restoration_recommended_components.py   zero_shot_preprocessing.py   DataLoader.py   DataSet.py   AugmentedRealDataLoader.py   training_stability.py   training_optimizations.py   epoch_subset_sampling.py   distributed_runtime_guard.py   vit_checkpoint_migration.py
+"${PYTHON_BIN}" -m py_compile \
+  train.py \
+  runtime_device_setup.py \
+  model_backend.py \
+  physical_window_vit_encoder.py \
+  physical_window_vit_branch.py \
+  vlm_restoration_positive_dtw.py \
+  resnet18_window_encoder.py \
+  pretrained_tiny_vit.py \
+  scripts/cache_pretrained_models.py \
+  restoration_recommended_components.py \
+  zero_shot_preprocessing.py \
+  DataLoader.py \
+  DataSet.py \
+  AugmentedRealDataLoader.py \
+  training_stability.py \
+  training_optimizations.py \
+  epoch_subset_sampling.py \
+  distributed_runtime_guard.py \
+  vit_checkpoint_migration.py
 
 export TINY_VIT_CACHE_DIR="$("${PYTHON_BIN}" scripts/cache_pretrained_models.py --locate-vit-cache)"
 "${PYTHON_BIN}" scripts/cache_pretrained_models.py --check-only >/dev/null
@@ -71,8 +90,13 @@ export TOKENIZERS_PARALLELISM=false
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export TORCH_COMPILE_VISUAL="${TORCH_COMPILE_VISUAL:-0}"
 export GRADIENT_ACCUMULATION_STEPS=1
-export TRAIN_DROP_LAST="${TRAIN_DROP_LAST:-0}"
+export TRAIN_DROP_LAST="${TRAIN_DROP_LAST:-1}"
 export POINT2_DIAGNOSTICS="${POINT2_DIAGNOSTICS:-1}"
 export POINT2_DIAGNOSTIC_EVERY="${POINT2_DIAGNOSTIC_EVERY:-1}"
 
-"${TORCHRUN_BIN}"   --standalone   --nproc_per_node=2   train.py   --dataset "${DATASET}"   "$@"
+"${TORCHRUN_BIN}" \
+  --standalone \
+  --nproc_per_node=2 \
+  train.py \
+  --dataset "${DATASET}" \
+  "$@"
