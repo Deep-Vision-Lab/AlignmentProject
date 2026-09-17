@@ -30,6 +30,26 @@ from Evaluation._eval_utils import (
 POINT2_MODES = ("local", "context", "fused", "fused_wrong_context")
 
 
+def _disable_incompatible_mha_fastpath() -> bool:
+    """Disable PyTorch's native MHA inference fastpath when available.
+
+    The Tiny ViT used by this project has three attention heads. PyTorch 2.0's
+    native inference fastpath can raise ``Only support when num_heads is even``
+    for odd-head MultiheadAttention. Training does not hit that path, but
+    eval+inference_mode does. Disabling only this optimization keeps the exact
+    learned attention computation while avoiding the incompatible kernel.
+    """
+    backend = getattr(torch.backends, "mha", None)
+    setter = getattr(backend, "set_fastpath_enabled", None)
+    if callable(setter):
+        setter(False)
+        return True
+    return False
+
+
+_MHA_FASTPATH_DISABLED = _disable_incompatible_mha_fastpath()
+
+
 def _flag(value) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
@@ -159,7 +179,12 @@ def _encode_line(models, image_path, mode: str, *, side: int) -> ImageFeatures:
     if encoder is None:
         raise RuntimeError("Checkpoint model does not expose a restoration sequence encoder")
 
-    with torch.inference_mode():
+    # Normal path: the MHA fastpath has been disabled, so inference_mode keeps
+    # evaluation cheap. Fallback: if this PyTorch build has no public MHA
+    # fastpath switch, keep autograd enabled; that also prevents selection of
+    # the incompatible native inference kernel while leaving model.eval() set.
+    forward_context = torch.inference_mode if _MHA_FASTPATH_DISABLED else torch.enable_grad
+    with forward_context():
         fused_raw, local_raw, context_raw, _model_input, token_valid = encoder(
             tensor, use_flip=image_model.use_flip
         )
@@ -187,9 +212,9 @@ def _encode_line(models, image_path, mode: str, *, side: int) -> ImageFeatures:
         "context": context,
         "fused": fused,
         "fused_wrong_context": fused_wrong,
-    }[mode][0]
+    }[mode][0].detach()
 
-    local_out = local[0]
+    local_out = local[0].detach()
     if not torch.isfinite(selected).all() or not torch.isfinite(local_out).all():
         raise ValueError("Non-finite Point-2 image embeddings")
 
@@ -197,7 +222,7 @@ def _encode_line(models, image_path, mode: str, *, side: int) -> ImageFeatures:
         contextual=selected,
         local=local_out,
         grouped=local_out,
-        ink=token_valid[0].float(),
+        ink=token_valid[0].float().detach(),
         image_size=original_size,
     )
 
