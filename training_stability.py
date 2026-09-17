@@ -19,6 +19,7 @@ import time
 
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from training_optimizations import (
@@ -41,6 +42,87 @@ def _env_flag(name: str, default: bool) -> bool:
     if value is None:
         return bool(default)
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _valid_token_rows(tensor: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
+    value = tensor.detach().float()
+    if mask is None:
+        return value.reshape(-1, value.shape[-1])
+    valid = mask.detach().bool()
+    if valid.shape != value.shape[:2]:
+        return value.reshape(-1, value.shape[-1])
+    selected = value[valid]
+    return selected if selected.numel() else value.reshape(-1, value.shape[-1])
+
+
+def _point2_representation_diagnostics(vit, record: dict) -> dict[str, float]:
+    """Observation-only local/context/fusion diagnostics; never enters the loss."""
+    local = record.get("after_resnet18")
+    contextual = record.get("after_vit_tiny")
+    fused = record.get("after_fusion")
+    mask = record.get("token_valid")
+    if local is None or contextual is None or fused is None:
+        return {}
+
+    with torch.no_grad():
+        local_d = local.detach()
+        context_d = contextual.detach()
+        fused_d = fused.detach()
+
+        local_rows = _valid_token_rows(local_d, mask)
+        context_rows = _valid_token_rows(context_d, mask)
+        fused_rows = _valid_token_rows(fused_d, mask)
+
+        local_norm = local_rows.norm(dim=-1).mean()
+        context_norm = context_rows.norm(dim=-1).mean()
+        local_context_cos = F.cosine_similarity(
+            local_rows, context_rows, dim=-1
+        ).mean()
+        context_delta_rel = (
+            (context_rows - local_rows).norm(dim=-1)
+            / local_rows.norm(dim=-1).clamp_min(1e-8)
+        ).mean()
+
+        zeros_local = torch.zeros_like(local_d)
+        zeros_context = torch.zeros_like(context_d)
+        no_context = vit.fusion_head(local_d, zeros_context)
+        no_local = vit.fusion_head(zeros_local, context_d)
+
+        # Deterministically misalign context with its local window without using
+        # RNG (and therefore without perturbing training randomness).
+        token_count = int(context_d.shape[1])
+        shift = max(1, token_count // 2)
+        permuted_context = torch.roll(context_d, shifts=shift, dims=1)
+        permuted = vit.fusion_head(local_d, permuted_context)
+
+        no_context_rows = _valid_token_rows(no_context, mask)
+        no_local_rows = _valid_token_rows(no_local, mask)
+        permuted_rows = _valid_token_rows(permuted, mask)
+
+        context_sensitivity = (
+            1.0
+            - F.cosine_similarity(fused_rows, no_context_rows, dim=-1).mean()
+        )
+        local_sensitivity = (
+            1.0
+            - F.cosine_similarity(fused_rows, no_local_rows, dim=-1).mean()
+        )
+        permuted_context_sensitivity = (
+            1.0
+            - F.cosine_similarity(fused_rows, permuted_rows, dim=-1).mean()
+        )
+
+    return {
+        "local_norm": float(local_norm.item()),
+        "context_norm": float(context_norm.item()),
+        "local_context_cos": float(local_context_cos.item()),
+        "context_delta_rel": float(context_delta_rel.item()),
+        "context_sensitivity": float(context_sensitivity.item()),
+        "local_sensitivity": float(local_sensitivity.item()),
+        "permuted_context_sensitivity": float(
+            permuted_context_sensitivity.item()
+        ),
+    }
 
 
 def _global_any(train_module, value: bool) -> bool:
@@ -296,7 +378,24 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
                     records = list(
                         getattr(raw_model, "_gradient_probe_records", [])
                     )
+                    point2_enabled = _env_flag("POINT2_DIAGNOSTICS", True)
+                    point2_every = max(1, _env_int("POINT2_DIAGNOSTIC_EVERY", 1))
                     for pass_idx, record in enumerate(records, start=1):
+                        if point2_enabled and (batch_idx + 1) % point2_every == 0:
+                            diag = _point2_representation_diagnostics(vit, record)
+                            if diag:
+                                print(
+                                    f"POINT2 epoch={epoch_number} batch={batch_idx + 1} "
+                                    f"pass={pass_idx} "
+                                    f"local_norm={diag['local_norm']:.8e} "
+                                    f"context_norm={diag['context_norm']:.8e} "
+                                    f"local_context_cos={diag['local_context_cos']:.8f} "
+                                    f"context_delta_rel={diag['context_delta_rel']:.8f} "
+                                    f"context_sensitivity={diag['context_sensitivity']:.8f} "
+                                    f"local_sensitivity={diag['local_sensitivity']:.8f} "
+                                    f"permuted_context_sensitivity={diag['permuted_context_sensitivity']:.8f}",
+                                    flush=True,
+                                )
                         print(
                             f"GRAD epoch={epoch_number} batch={batch_idx + 1} pass={pass_idx} "
                             "after=ResNet18 "
