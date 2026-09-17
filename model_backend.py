@@ -1,27 +1,34 @@
-"""Branch backend for ResNet-18 + ViT-Tiny contextual letter-DTW.
+"""Branch backend for ResNet local + direct physical-window ViT context DTW.
 
-Each manuscript line is processed independently. Overlapping 128x32 RGB windows
-are encoded by one shared ResNet-18, projected to 192-D local tokens, then
-contextualized by a canonical ViT-Tiny transformer core (12 layers, 3 heads,
-768-D MLP). Local and contextual vectors are fused for DTW. There is no decoder
-or restoration loss.
+Each manuscript line is processed with two aligned visual paths using exactly
+same 128x32 RGB windows at stride 16:
+
+* local path: window -> pretrained ResNet-18 -> 192-D local token L_t
+* context path: SAME window pixels -> direct linear ViT token -> pretrained
+  ViT-Tiny transformer sequence -> contextual token C_t
+
+L_t and C_t are fused for positive letter-DTW. The contextual path never
+consumes ResNet vectors and never subdivides the physical window into smaller
+custom patches.
 """
 from __future__ import annotations
 
 import os
 
 import Parameters as P
+from physical_window_vit_branch import attach_physical_window_vit_stages
 from vlm_restoration_positive_dtw import (
     apply_branch_config,
-    attach_restoration_dtw_stages,
     install_training_objective,
     model_config as restoration_model_config,
 )
 
 apply_branch_config(P)
+P.experiment_name = "resnet18_physical_window_tinyvit_positive_dtw"
+P.restoration_context_input = "direct_physical_128x32_rgb_window"
 P.export_environment()
 
-MODEL_NAME = "resnet18_tinyvit_positive_dtw"
+MODEL_NAME = "resnet18_physical_window_tinyvit_positive_dtw"
 VISUAL_ENCODER_TYPE = "vit"
 
 
@@ -44,7 +51,7 @@ def build_visual_model(
         device=device,
         use_flip=use_flip,
     )
-    return attach_restoration_dtw_stages(model, P)
+    return attach_physical_window_vit_stages(model, P)
 
 
 def install_training_backend(base_module):
@@ -85,7 +92,16 @@ def visual_model_config():
         "visual_encoder_type": VISUAL_ENCODER_TYPE,
         "use_bilstm": False,
         "use_local_window_grouping": False,
-        "vit_input_height": 128,
+        "window_height": 128,
+        "window_width": 32,
+        "window_stride": int(round(P.window_size * P.stride_ratio)),
+        "local_encoder_type": "resnet18",
+        "local_input": "physical_rgb_128x32_window",
+        "resnet18_pretrained": bool(P.resnet18_pretrained),
+        "resnet18_pretrained_source": "torchvision/ResNet18_Weights.DEFAULT",
+        "context_input": "same_physical_rgb_128x32_window",
+        "context_window_subdivision": "none",
+        "context_patch_projection": "flatten(3x128x32)->linear(192)+layernorm",
         "vit_variant": "vit_tiny",
         "vit_layers": int(P.vit_layers),
         "vit_heads": int(P.vit_heads),
@@ -95,12 +111,11 @@ def visual_model_config():
         "vit_position_base_tokens": int(getattr(P, "vit_position_base_tokens", 63)),
         "vit_binarize_input": False,
         "vit_binarize_method": "none",
-        "local_encoder_type": "resnet18",
-        "resnet18_pretrained": bool(P.resnet18_pretrained),
-        "resnet18_pretrained_source": "torchvision/ResNet18_Weights.DEFAULT",
         "tiny_vit_pretrained": bool(P.tiny_vit_pretrained),
         "tiny_vit_pretrained_model": str(P.tiny_vit_pretrained_model),
+        "tiny_vit_pretrained_scope": "transformer+position; physical-window projection is new",
         "pretrained_local_only": bool(P.pretrained_local_only),
+        "fusion": "concat_projection_norm",
         "torch_compile_visual": _flag("TORCH_COMPILE_VISUAL", False),
     }
     config.update(restoration_model_config(P))
