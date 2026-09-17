@@ -89,10 +89,24 @@ def _point2_representation_diagnostics(vit, record: dict) -> dict[str, float]:
         no_local = vit.fusion_head(zeros_local, context_d)
 
         # Deterministically misalign context with its local window without using
-        # RNG (and therefore without perturbing training randomness).
-        token_count = int(context_d.shape[1])
-        shift = max(1, token_count // 2)
-        permuted_context = torch.roll(context_d, shifts=shift, dims=1)
+        # RNG (and therefore without perturbing training randomness). Permute
+        # only valid line tokens so artificial padding cannot drive the result.
+        permuted_context = context_d.clone()
+        for sample_index in range(int(context_d.shape[0])):
+            if mask is None:
+                valid_indices = torch.arange(
+                    context_d.shape[1], device=context_d.device
+                )
+            else:
+                valid_indices = torch.where(mask[sample_index].detach().bool())[0]
+            count = int(valid_indices.numel())
+            if count <= 1:
+                continue
+            shift = max(1, count // 2)
+            source_indices = torch.roll(valid_indices, shifts=shift, dims=0)
+            permuted_context[sample_index, valid_indices] = context_d[
+                sample_index, source_indices
+            ]
         permuted = vit.fusion_head(local_d, permuted_context)
 
         no_context_rows = _valid_token_rows(no_context, mask)
