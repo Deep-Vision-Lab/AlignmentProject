@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=res18_tinyvit_dtw
+#SBATCH --job-name=res18_tinyvit_point2
 #SBATCH --partition=rtx4090
 #SBATCH --gpus=rtx_4090:2
 #SBATCH --ntasks=1
