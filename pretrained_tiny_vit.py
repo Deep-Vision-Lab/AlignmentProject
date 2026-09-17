@@ -9,6 +9,7 @@ Only the DeiT transformer/position weights are transferred. DeiT's original
 from __future__ import annotations
 
 import math
+import os
 
 import torch
 import torch.nn.functional as F
@@ -78,9 +79,11 @@ def initialize_tiny_vit_from_pretrained(
         ) from exc
 
     try:
+        cache_dir = os.environ.get("TINY_VIT_CACHE_DIR") or None
         source = ViTModel.from_pretrained(
             str(model_name),
             local_files_only=bool(local_files_only),
+            cache_dir=cache_dir,
             add_pooling_layer=False,
         )
     except OSError as exc:
