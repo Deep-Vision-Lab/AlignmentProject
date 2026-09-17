@@ -57,7 +57,12 @@ def main(argv=None):
 
     from Evaluation import eval_yelda
 
-    eval_yelda.main(downstream)
+    result = eval_yelda.main(downstream)
+    if result not in {None, 0}:
+        raise SystemExit(
+            f"Point-2 representation {mode!r} failed: one or more selected pairs "
+            "could not be evaluated. See the errors above; comparison output is invalid."
+        )
 
     output_dir = _arg_value(remaining, "--output-dir")
     if output_dir:
