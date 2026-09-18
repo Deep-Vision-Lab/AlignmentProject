@@ -93,7 +93,7 @@ from Evaluation._eval_utils import (
     load_evaluation_models,
     needleman_wunsch,
 )
-from Evaluation.sw_core import build_match_scores, resolve_score_mode
+from Evaluation.sw_core import build_match_scores, resolve_score_mode, smith_waterman
 from Evaluation.sw_dataset import (
     display_image,
     load_arabic_dataset_pairs,
@@ -105,6 +105,7 @@ from Evaluation.trace_components import (
     component_metrics,
     nw_component_path,
     nw_traceback_boundaries,
+    sw_component_path,
     save_alignment_visualization,
     save_numeric_evidence,
 )
@@ -1011,6 +1012,89 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
             features2.ink.detach().cpu().numpy(),
         )
 
+        # Local Smith-Waterman diagnostic on the SAME cosine/match-score matrix.
+        # This is not used to replace the historical NW metrics yet. It answers
+        # whether a visually good fused band is being missed only because global
+        # NW is forced to connect both sequence endpoints.
+        sw_path, sw_score, sw_dp_full, sw_traceback = smith_waterman(
+            cosine,
+            threshold=float(args.threshold),
+            gap_penalty=float(args.gap),
+            return_traceback=True,
+            match_scores=match_scores,
+        )
+        sw_component = sw_component_path(sw_path, sw_traceback, match_scores)
+        sw_trace_steps = max(1, len(sw_traceback) - 1)
+        sw_normalized = float(sw_score) / float(sw_trace_steps)
+        sw_intervals1 = component_intervals_px(
+            sw_component,
+            0,
+            cosine.shape[0],
+            arr1.shape[1],
+            bool(models.image_model.use_flip),
+            window_size=getattr(models.image_model, "window_size", None),
+            stride=getattr(models.image_model, "stride", None),
+        )
+        sw_intervals2 = component_intervals_px(
+            sw_component,
+            1,
+            cosine.shape[1],
+            arr2.shape[1],
+            bool(models.image_model.use_flip),
+            window_size=getattr(models.image_model, "window_size", None),
+            stride=getattr(models.image_model, "stride", None),
+        )
+        sw_result_view = SimpleNamespace(
+            score=float(sw_score),
+            normalized_score=float(sw_normalized),
+        )
+        save_alignment_visualization(
+            arr1=arr1,
+            arr2=arr2,
+            features1=features1,
+            features2=features2,
+            full_path=sw_path,
+            component_path=sw_component,
+            traceback=sw_traceback,
+            heatmap_matrix=cosine,
+            heatmap_label="raw cosine similarity + local SW traceback",
+            score=float(sw_score),
+            normalized_score=float(sw_normalized),
+            output=output_dir / "cosine_similarity_sw_trace_values.png",
+            use_flip=bool(models.image_model.use_flip),
+            pair=pair,
+            score_mode=resolved_mode + "+ink",
+            algorithm="Smith-Waterman",
+            traceback_label="SW traceback: local DP maximum → zero boundary",
+            traceback_start_label="local DP maximum",
+            traceback_end_label="local zero boundary",
+            binarized=pair.preprocess_domain(1) == "real" or pair.preprocess_domain(2) == "real",
+            annotate_values=True,
+            window_size=getattr(models.image_model, "window_size", None),
+            stride=getattr(models.image_model, "stride", None),
+        )
+        np.save(
+            output_dir / "sw_dp_scores.npy",
+            np.asarray(sw_dp_full[1:, 1:], dtype=np.float32),
+        )
+        np.savetxt(
+            output_dir / "sw_dp_scores.csv",
+            np.asarray(sw_dp_full[1:, 1:], dtype=np.float32),
+            delimiter=",",
+            fmt="%.8f",
+        )
+        save_numeric_evidence(
+            output_dir / "cosine_similarity_sw_trace_values.png",
+            algorithm="Smith-Waterman",
+            raw_similarity=cosine,
+            match_scores=match_scores,
+            component_path=sw_component,
+            full_path=sw_path,
+            traceback=sw_traceback,
+            intervals1=sw_intervals1,
+            intervals2=sw_intervals2,
+        )
+
         result = needleman_wunsch(
             match_scores,
             gap_penalty=float(args.gap),
@@ -1100,6 +1184,8 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
         )
         matrix_mean_cosine = float(np.mean(cosine)) if cosine.size else None
         matrix_std_cosine = float(np.std(cosine)) if cosine.size else None
+        sw_supported_cosines = [float(cosine[i, j]) for i, j in sw_component]
+        sw_metrics = component_metrics(sw_component, cosine.shape)
         mean_path_cosine = (
             float(np.mean(supported_cosines)) if supported_cosines else None
         )
@@ -1145,6 +1231,15 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
             "matrix_std_cosine": matrix_std_cosine,
             "path_cosine_margin": path_cosine_margin,
             "path_cosine_z": path_cosine_z,
+            "sw_score": float(sw_score),
+            "normalized_sw_score": float(sw_normalized),
+            "sw_mean_path_cosine": (
+                float(np.mean(sw_supported_cosines)) if sw_supported_cosines else None
+            ),
+            "sw_path_steps": int(len(sw_component)),
+            "sw_component_count": int(sw_metrics.get("component_count", 0)),
+            "sw_line1_intervals_px": sw_intervals1,
+            "sw_line2_intervals_px": sw_intervals2,
             "line1_intervals_px": intervals1,
             "line2_intervals_px": intervals2,
             "gt_mask1": str(pair.gt_mask1) if pair.gt_mask1 else "",
