@@ -1,0 +1,451 @@
+#!/usr/bin/env python3
+"""Point 3: inspect the actual trained image->letter DTW geometry.
+
+For each fixed synthetic test pair this diagnostic saves:
+- exact model inputs using checkpoint training preprocessing;
+- the actual letter-DTW cost matrix used by training (full-alphabet NLL or cosine);
+- the same position prior used by training;
+- a hard minimum-cost path using the same vertical/horizontal transition penalties;
+- every path point projected back to the exact 32-pixel physical window at stride 16;
+- an image->image fused-cosine hard-DTW path as a separate structural diagnostic.
+
+The image->letter hard path is an argmin interpretation of the Soft-DTW
+objective; it is not itself the differentiable Soft-DTW loss.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+
+from Evaluation import eval_img_align_nw_diagnostic as pair_loader
+from Evaluation._eval_utils import (
+    build_transform,
+    compute_similarity,
+    load_evaluation_models,
+)
+from Evaluation.eval_yelda import configure_geometry, synthetic_split
+from Evaluation.yelda_geometry import prepare_line, source_intervals
+from vlm_restoration_positive_dtw import (
+    _clean_letters,
+    _soft_dtw_cost_matrix,
+    letter_dtw_cost_matrix,
+)
+
+
+def _hard_monotonic_path(
+    cell_costs: np.ndarray,
+    *,
+    vertical_penalty: float,
+    horizontal_penalty: float,
+    disable_horizontal_when_feasible: bool,
+):
+    costs = np.asarray(cell_costs, dtype=np.float64)
+    if costs.ndim != 2 or min(costs.shape) < 1:
+        raise ValueError(f"Expected non-empty [T,L] costs, got {costs.shape}")
+    t_count, l_count = costs.shape
+    h_penalty = float(horizontal_penalty)
+    if disable_horizontal_when_feasible and t_count >= l_count:
+        h_penalty = 1e4
+
+    dp = np.full((t_count, l_count), np.inf, dtype=np.float64)
+    back = np.full((t_count, l_count), -1, dtype=np.int8)  # 0 diag, 1 vertical, 2 horizontal
+    dp[0, 0] = costs[0, 0]
+
+    for i in range(t_count):
+        for j in range(l_count):
+            if i == 0 and j == 0:
+                continue
+            choices = []
+            if i > 0 and j > 0:
+                choices.append((dp[i - 1, j - 1], 0))
+            if i > 0:
+                choices.append((dp[i - 1, j] + float(vertical_penalty), 1))
+            if j > 0:
+                choices.append((dp[i, j - 1] + h_penalty, 2))
+            value, direction = min(choices, key=lambda item: (item[0], item[1]))
+            dp[i, j] = costs[i, j] + value
+            back[i, j] = direction
+
+    i, j = t_count - 1, l_count - 1
+    path = [(i, j)]
+    while i > 0 or j > 0:
+        direction = int(back[i, j])
+        if direction == 0:
+            i -= 1
+            j -= 1
+        elif direction == 1:
+            i -= 1
+        elif direction == 2:
+            j -= 1
+        else:
+            raise RuntimeError(f"Invalid traceback at {(i, j)}")
+        path.append((i, j))
+    path.reverse()
+    return path, dp
+
+
+def _position_prior(costs: np.ndarray, weight: float):
+    result = np.asarray(costs, dtype=np.float64).copy()
+    t_count, l_count = result.shape
+    if weight > 0 and t_count > 1 and l_count > 1:
+        ipos = np.linspace(0.0, 1.0, t_count)
+        lpos = np.linspace(0.0, 1.0, l_count)
+        result += float(weight) * np.abs(ipos[:, None] - lpos[None, :])
+    return result
+
+
+def _physical_window(sequence_index, count, *, width, window, stride, use_flip):
+    physical_index = count - 1 - int(sequence_index) if use_flip else int(sequence_index)
+    left = physical_index * int(stride)
+    right = min(int(width), left + int(window))
+    return physical_index, float(left), float(right)
+
+
+def _write_image_text_path(
+    path_file,
+    path,
+    letters,
+    effective_costs,
+    *,
+    geometry,
+    window_size,
+    stride,
+    use_flip,
+):
+    width = int(geometry["canvas_width"])
+    count = int(effective_costs.shape[0])
+    with path_file.open("w", newline="", encoding="utf-8") as handle:
+        fields = [
+            "step", "sequence_window", "physical_window", "canvas_x0", "canvas_x1",
+            "source_x0", "source_x1", "letter_index", "letter", "cell_cost"
+        ]
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for step, (i, j) in enumerate(path):
+            physical, x0, x1 = _physical_window(
+                i, count, width=width, window=window_size, stride=stride, use_flip=use_flip
+            )
+            source = source_intervals([[x0, x1]], geometry)[0]
+            writer.writerow({
+                "step": step,
+                "sequence_window": i,
+                "physical_window": physical,
+                "canvas_x0": x0,
+                "canvas_x1": x1,
+                "source_x0": source[0],
+                "source_x1": source[1],
+                "letter_index": j,
+                "letter": letters[j],
+                "cell_cost": float(effective_costs[i, j]),
+            })
+
+
+def _hard_image_image(similarity):
+    costs = 1.0 - np.asarray(similarity, dtype=np.float64)
+    return _hard_monotonic_path(
+        costs,
+        vertical_penalty=0.0,
+        horizontal_penalty=0.0,
+        disable_horizontal_when_feasible=False,
+    )[0]
+
+
+def _write_image_image_path(
+    path_file,
+    path,
+    similarity,
+    geometry1,
+    geometry2,
+    *,
+    window_size,
+    stride,
+    use_flip,
+):
+    n, m = similarity.shape
+    with path_file.open("w", newline="", encoding="utf-8") as handle:
+        fields = [
+            "step", "line1_sequence_window", "line1_physical_window",
+            "line1_canvas_x0", "line1_canvas_x1", "line1_source_x0", "line1_source_x1",
+            "line2_sequence_window", "line2_physical_window",
+            "line2_canvas_x0", "line2_canvas_x1", "line2_source_x0", "line2_source_x1",
+            "cosine",
+        ]
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for step, (i, j) in enumerate(path):
+            p1, a0, a1 = _physical_window(
+                i, n, width=int(geometry1["canvas_width"]), window=window_size,
+                stride=stride, use_flip=use_flip
+            )
+            p2, b0, b1 = _physical_window(
+                j, m, width=int(geometry2["canvas_width"]), window=window_size,
+                stride=stride, use_flip=use_flip
+            )
+            s1 = source_intervals([[a0, a1]], geometry1)[0]
+            s2 = source_intervals([[b0, b1]], geometry2)[0]
+            writer.writerow({
+                "step": step,
+                "line1_sequence_window": i,
+                "line1_physical_window": p1,
+                "line1_canvas_x0": a0,
+                "line1_canvas_x1": a1,
+                "line1_source_x0": s1[0],
+                "line1_source_x1": s1[1],
+                "line2_sequence_window": j,
+                "line2_physical_window": p2,
+                "line2_canvas_x0": b0,
+                "line2_canvas_x1": b1,
+                "line2_source_x0": s2[0],
+                "line2_source_x1": s2[1],
+                "cosine": float(similarity[i, j]),
+            })
+
+
+def _heatmap(matrix, path, output, title, xlabel, ylabel, *, vmin=None, vmax=None):
+    fig, ax = plt.subplots(figsize=(14, 8))
+    image = ax.imshow(matrix, aspect="auto", origin="upper", vmin=vmin, vmax=vmax)
+    ax.plot([j for i, j in path], [i for i, j in path], linewidth=2.0)
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    fig.colorbar(image, ax=ax)
+    fig.savefig(output, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _transcript_path(dataset, pair, side):
+    dataset_index = int(pair.manifest_position)
+    return Path(dataset) / "texts" / f"text{side}_{dataset_index}.txt"
+
+
+def _extract_training_bundle(models, image_path):
+    from PIL import Image
+    with Image.open(image_path) as opened:
+        tensor = build_transform("synthetic")(opened.convert("RGB")).unsqueeze(0).to(models.device)
+    with torch.inference_mode():
+        bundle = models.image_model(tensor, return_training_bundle=True)
+    return bundle
+
+
+def _namespace(config):
+    defaults = {
+        "positive_letter_dtw_cost_mode": "full_alphabet_nll",
+        "positive_letter_dtw_competition_temperature": 0.10,
+        "positive_letter_dtw_vertical_penalty": 0.05,
+        "positive_letter_dtw_horizontal_penalty": 0.30,
+        "positive_letter_dtw_position_prior": 0.15,
+        "positive_letter_dtw_disable_horizontal_when_feasible": True,
+        "positive_letter_dtw_gamma_end": 0.05,
+    }
+    defaults.update(config)
+    return SimpleNamespace(**defaults)
+
+
+def select_pairs(dataset, split, training_samples, split_seed, start_index, n_samples):
+    layout, pairs = pair_loader.load_pairs(Path(dataset), split)
+    if layout != "synthetic":
+        raise ValueError("Point-3 training-path validation currently requires the synthetic dataset")
+    pairs = synthetic_split(pairs, split, training_samples, split_seed)
+    start = start_index - 1
+    selected = pairs[start:] if n_samples == 0 else pairs[start:start + n_samples]
+    if not selected:
+        raise ValueError("No pairs selected")
+    return selected
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dataset", required=True)
+    ap.add_argument("--weights", required=True)
+    ap.add_argument("--output-dir", required=True)
+    ap.add_argument("--split", choices=("train", "valid", "test"), default="test")
+    ap.add_argument("--training-samples", type=int, default=6000)
+    ap.add_argument("--split-seed", type=int, default=42)
+    ap.add_argument("--start-index", type=int, default=1)
+    ap.add_argument("--n-samples", type=int, default=10)
+    ap.add_argument("--device", default="cuda")
+    ap.add_argument("--image-preprocessing", choices=("original", "training"), default="training")
+    args = ap.parse_args()
+
+    output = Path(args.output_dir).expanduser().resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    models = load_evaluation_models(args.weights, args.device, load_text_model=True)
+    if models.text_model is None:
+        raise RuntimeError("Point 3 requires the frozen training character codebook")
+    if str(models.config.get("text_encoder_type", "")) != "char":
+        raise RuntimeError("Point 3 expects the restoration character-codebook checkpoint")
+
+    configure_geometry(models.config, args.image_preprocessing)
+    P = _namespace(models.config)
+    window_size = int(models.config.get("window_size", 32))
+    stride = int(models.config.get("stride", 16))
+    use_flip = bool(models.image_model.use_flip)
+    selected = select_pairs(
+        args.dataset, args.split, args.training_samples, args.split_seed,
+        args.start_index, args.n_samples
+    )
+    pair_rows = []
+
+    for pair in selected:
+        pair_dir = output / f"pair_{int(pair.manifest_position):05d}"
+        pair_dir.mkdir(parents=True, exist_ok=True)
+        prepared = []
+        geometries = []
+        bundles = []
+        for side in (1, 2):
+            image, geometry = prepare_line(
+                getattr(pair, f"image{side}"),
+                pair.preprocess_domain(side),
+                args.image_preprocessing,
+            )
+            image_path = pair_dir / f"line{side}_model_input.png"
+            image.save(image_path)
+            prepared.append(image_path)
+            geometries.append(geometry)
+            bundles.append(_extract_training_bundle(models, image_path))
+
+            text_path = _transcript_path(args.dataset, pair, side)
+            if not text_path.is_file():
+                raise FileNotFoundError(f"Missing transcript: {text_path}")
+            text = text_path.read_text(encoding="utf-8")
+            letters = _clean_letters(text)
+            visual = bundles[-1]["semantic"][0]
+            valid = bundles[-1]["token_valid"][0].bool()
+            if bool(valid.any()):
+                visual = visual[valid]
+            with torch.inference_mode():
+                raw = letter_dtw_cost_matrix(P, models.text_model, visual, letters)
+                soft = _soft_dtw_cost_matrix(
+                    raw,
+                    gamma=float(getattr(P, "positive_letter_dtw_gamma_end", 0.05)),
+                    vertical_penalty=float(P.positive_letter_dtw_vertical_penalty),
+                    horizontal_penalty=float(P.positive_letter_dtw_horizontal_penalty),
+                    position_prior_weight=float(P.positive_letter_dtw_position_prior),
+                    disable_horizontal_when_feasible=bool(
+                        P.positive_letter_dtw_disable_horizontal_when_feasible
+                    ),
+                )
+            raw_np = raw.detach().cpu().numpy()
+            effective = _position_prior(
+                raw_np, float(P.positive_letter_dtw_position_prior)
+            )
+            path, dp = _hard_monotonic_path(
+                effective,
+                vertical_penalty=float(P.positive_letter_dtw_vertical_penalty),
+                horizontal_penalty=float(P.positive_letter_dtw_horizontal_penalty),
+                disable_horizontal_when_feasible=bool(
+                    P.positive_letter_dtw_disable_horizontal_when_feasible
+                ),
+            )
+            np.save(pair_dir / f"line{side}_letter_cost_raw.npy", raw_np.astype(np.float32))
+            np.savetxt(pair_dir / f"line{side}_letter_cost_raw.csv", raw_np, delimiter=",")
+            np.save(pair_dir / f"line{side}_letter_cost_effective.npy", effective.astype(np.float32))
+            np.savetxt(pair_dir / f"line{side}_letter_cost_effective.csv", effective, delimiter=",")
+            np.savetxt(pair_dir / f"line{side}_hard_dtw_dp.csv", dp, delimiter=",")
+            _write_image_text_path(
+                pair_dir / f"line{side}_image_to_text_path.csv",
+                path,
+                letters,
+                effective,
+                geometry=geometry,
+                window_size=window_size,
+                stride=stride,
+                use_flip=use_flip,
+            )
+            _heatmap(
+                effective,
+                path,
+                pair_dir / f"line{side}_image_to_text_path.png",
+                f"Line {side}: actual training cost + hard minimum path; soft-DTW={float(soft):.5f}",
+                "Transcript letter index",
+                "Image window index (model sequence order)",
+            )
+            (pair_dir / f"line{side}_letters.json").write_text(
+                json.dumps({"letters": letters}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+        first = bundles[0]["semantic"][0]
+        second = bundles[1]["semantic"][0]
+        first = first[bundles[0]["token_valid"][0].bool()]
+        second = second[bundles[1]["token_valid"][0].bool()]
+        similarity = compute_similarity(first, second).detach().cpu().numpy()
+        image_path = _hard_image_image(similarity)
+        np.save(pair_dir / "image_to_image_cosine.npy", similarity.astype(np.float32))
+        np.savetxt(pair_dir / "image_to_image_cosine.csv", similarity, delimiter=",")
+        _write_image_image_path(
+            pair_dir / "image_to_image_path.csv",
+            image_path,
+            similarity,
+            geometries[0],
+            geometries[1],
+            window_size=window_size,
+            stride=stride,
+            use_flip=use_flip,
+        )
+        _heatmap(
+            similarity,
+            image_path,
+            pair_dir / "image_to_image_path.png",
+            "Fused image-to-image hard DTW (structural diagnostic only)",
+            "Line 2 window index",
+            "Line 1 window index",
+            vmin=-1.0,
+            vmax=1.0,
+        )
+        pair_rows.append({
+            "pair_id": pair.pair_id,
+            "dataset_index": int(pair.manifest_position),
+            "line1_windows": int(similarity.shape[0]),
+            "line2_windows": int(similarity.shape[1]),
+            "image_image_path_points": len(image_path),
+        })
+
+    with (output / "point3_pairs.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(pair_rows[0]))
+        writer.writeheader()
+        writer.writerows(pair_rows)
+
+    metadata = {
+        "point": 3,
+        "purpose": "verify training DTW chooses plausible physical locations",
+        "checkpoint": str(Path(args.weights).resolve()),
+        "dataset": str(Path(args.dataset).resolve()),
+        "pairs": len(selected),
+        "image_preprocessing": args.image_preprocessing,
+        "window_size": window_size,
+        "stride": stride,
+        "use_flip": use_flip,
+        "training_cost_mode": str(P.positive_letter_dtw_cost_mode),
+        "competition_temperature": float(P.positive_letter_dtw_competition_temperature),
+        "vertical_penalty": float(P.positive_letter_dtw_vertical_penalty),
+        "horizontal_penalty": float(P.positive_letter_dtw_horizontal_penalty),
+        "position_prior": float(P.positive_letter_dtw_position_prior),
+        "disable_horizontal_when_feasible": bool(
+            P.positive_letter_dtw_disable_horizontal_when_feasible
+        ),
+        "hard_path_note": (
+            "The saved image-to-letter hard path is the minimum-cost path under the "
+            "same cell costs and transition penalties; training itself used Soft-DTW."
+        ),
+        "image_to_image_note": (
+            "Image-to-image hard DTW is a structural diagnostic and was not a training loss."
+        ),
+    }
+    (output / "summary.json").write_text(
+        json.dumps(metadata, indent=2, allow_nan=False), encoding="utf-8"
+    )
+    print(json.dumps(metadata, indent=2))
+
+
+if __name__ == "__main__":
+    main()
