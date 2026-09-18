@@ -57,6 +57,9 @@ def main(argv=None):
     # Show heatmaps in the same logical sequence order used by Arabic training:
     # index 0 is the rightmost physical window and indices advance right-to-left.
     os.environ.setdefault("EVAL_HEATMAP_ORDER", "logical")
+    # For Point-2, show the local Smith-Waterman route on the primary cosine
+    # heatmap. Preserve the global NW route in a separate diagnostic figure.
+    os.environ.setdefault("EVAL_COSINE_TRACE", "sw")
 
     from Evaluation import eval_yelda
 
