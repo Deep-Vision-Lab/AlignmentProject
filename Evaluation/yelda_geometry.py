@@ -8,9 +8,75 @@ import zero_shot_preprocessing as preprocessing
 from zero_shot_geometry import _ink_bbox
 
 
+def _tight_foreground_crop_with_metadata(image: Image.Image):
+    """Crop to the detected foreground exactly, with no artificial outer margin."""
+    source = image.convert("RGB")
+    gray_for_mask = ImageOps.autocontrast(source.convert("L"))
+    gray = np.asarray(gray_for_mask, dtype=np.uint8)
+    mask = preprocessing._ink_mask(gray)
+    ys, xs = np.nonzero(mask)
+    if xs.size < 4 or ys.size < 4:
+        box = (0, 0, source.width, source.height)
+    else:
+        box = (
+            int(xs.min()),
+            int(ys.min()),
+            int(xs.max()) + 1,
+            int(ys.max()) + 1,
+        )
+    cropped = source.crop(box)
+    metadata = {
+        "source_width": int(source.width),
+        "source_height": int(source.height),
+        "crop_left": int(box[0]),
+        "crop_top": int(box[1]),
+        "crop_right": int(box[2]),
+        "crop_bottom": int(box[3]),
+        "crop_width": int(box[2] - box[0]),
+        "crop_height": int(box[3] - box[1]),
+        "crop_margin_x": 0.0,
+        "crop_margin_y": 0.0,
+    }
+    return cropped, metadata
+
+
+def _tight_resize_to_height(image: Image.Image, metadata: dict, target_height: int = 128):
+    """Resize a cropped line to the model height without any surrounding canvas."""
+    source = image.convert("RGB")
+    scale = float(target_height) / max(1.0, float(source.height))
+    new_width = max(32, int(round(float(source.width) * scale)))
+    resized = source.resize((new_width, int(target_height)), Image.Resampling.BILINEAR)
+    geometry = dict(metadata)
+    geometry.update(
+        {
+            "scale_x": float(new_width / max(1, source.width)),
+            "scale_y": float(target_height / max(1, source.height)),
+            "resize_scale": float(scale),
+            "resized_width": int(new_width),
+            "resized_height": int(target_height),
+            "offset_x": 0,
+            "offset_y": 0,
+            "canvas_width": int(new_width),
+            "canvas_height": int(target_height),
+            "binarize": False,
+            "crop_foreground": True,
+            "preserve_aspect": True,
+            "artificial_padding": False,
+            "autocontrast": False,
+            "auto_invert": False,
+            "image_preprocessing": "tight",
+            "color_mode": "RGB",
+        }
+    )
+    return resized, geometry
+
+
 def prepare_line(path, domain, image_preprocessing="original"):
     with Image.open(path) as opened:
         original = opened.convert("RGB")
+    if image_preprocessing == "tight":
+        cropped, metadata = _tight_foreground_crop_with_metadata(original)
+        return _tight_resize_to_height(cropped, metadata, target_height=128)
     if image_preprocessing == "original":
         # Keep every source pixel in the field of view. Do not use the training
         # preprocessor: even binarize=False still grayscales/crops/scales ink.
@@ -27,7 +93,10 @@ def prepare_line(path, domain, image_preprocessing="original"):
             "autocontrast": False, "auto_invert": False,
         }
     if image_preprocessing != "training":
-        raise ValueError(f"Unknown image preprocessing: {image_preprocessing}")
+        raise ValueError(
+            f"Unknown image preprocessing: {image_preprocessing}; "
+            "use original, training, or tight"
+        )
     processor = preprocessing.build_preprocessor(domain, training=False)
     if hasattr(processor, "preprocess_with_metadata"):
         processed, geometry = processor.preprocess_with_metadata(original)
