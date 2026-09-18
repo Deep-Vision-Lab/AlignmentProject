@@ -807,6 +807,8 @@ def write_report(summary: dict, output: Path) -> None:
     retrieval = summary.get("retrieval", {})
     discrimination = retrieval.get("pair_discrimination", {})
     sparse = summary.get("sparse_intervals")
+    cycle = summary.get("cycle_consistency", {})
+    robustness = summary.get("robustness", {})
     lines = [
         "# Real quantitative alignment evaluation",
         "",
@@ -831,6 +833,8 @@ def write_report(summary: dict, output: Path) -> None:
         f"- Pair AUROC: {_format_metric(discrimination.get('auroc'))}",
         f"- Pair average precision: {_format_metric(discrimination.get('average_precision'))}",
         f"- Thresholded F1: {_format_metric(discrimination.get('f1'))}",
+        f"- Threshold source: {_format_metric(discrimination.get('threshold_source'))}",
+        f"- Equal error rate: {_format_metric(discrimination.get('equal_error_rate'))}",
     ]
     if sparse:
         lines.extend(
@@ -846,11 +850,34 @@ def write_report(summary: dict, output: Path) -> None:
     lines.extend(
         [
             "",
+            "## Cycle consistency (diagnostic only)",
+            "",
+            f"- Mean cycle error (windows): {_format_metric(cycle.get('mean_cycle_error_windows'))}",
+            f"- Mean normalized cycle error: {_format_metric(cycle.get('mean_cycle_error_normalized'))}",
+            f"- Return within 1/2/4 windows: "
+            f"{_format_metric(cycle.get('within_1_window'))} / "
+            f"{_format_metric(cycle.get('within_2_windows'))} / "
+            f"{_format_metric(cycle.get('within_4_windows'))}",
+            "",
+            "## Perturbation stability (diagnostic only)",
+            "",
+            f"- Mean endpoint drift: {_format_metric(robustness.get('mean_endpoint_drift'))}",
+            f"- Mean prediction interval IoU vs baseline: "
+            f"{_format_metric(robustness.get('mean_prediction_interval_iou'))}",
+            f"- SW-score coefficient of variation: "
+            f"{_format_metric(robustness.get('mean_sw_score_coefficient_of_variation'))}",
+            f"- Path-length coefficient of variation: "
+            f"{_format_metric(robustness.get('mean_path_length_coefficient_of_variation'))}",
+            "",
             "## Interpretation",
             "",
-            "Crop localization has exact targets but uses a crop from the same real line. "
-            "Retrieval/discrimination tests real-to-real matching. Sparse intervals, when "
-            "provided, are the strongest direct localization measure.",
+            "Controlled crop localization has exact coordinates but is same-line "
+            "re-localization, not independent cross-manuscript localization. "
+            "Retrieval/discrimination tests real-to-real pair recognition. Sparse "
+            "manual intervals, when provided, are the strongest direct cross-line "
+            "localization measure. Cycle consistency and perturbation stability are "
+            "diagnostics only. Internal SW/NW scores and path cosine are not "
+            "localization accuracy.",
             "",
         ]
     )
@@ -889,8 +916,12 @@ def parse_args() -> argparse.Namespace:
         default="normalized_sw",
     )
     parser.add_argument("--interval-manifest", default="")
+    parser.add_argument("--cycle-pairs", type=int, default=80)
+    parser.add_argument("--robustness-pairs", type=int, default=30)
+    parser.add_argument("--robustness-modes", default="blur,contrast,brightness,noise,horizontal_scale,vertical_shift,erosion,dilation")
+    parser.add_argument("--min-ink", type=float, default=0.02)
     args = parser.parse_args()
-    for name in ("crop_lines", "crops_per_line", "retrieval_queries", "retrieval_pool_size", "calibration_queries"):
+    for name in ("crop_lines", "crops_per_line", "retrieval_queries", "retrieval_pool_size", "calibration_queries", "cycle_pairs", "robustness_pairs"):
         if getattr(args, name) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
     return args
@@ -918,6 +949,25 @@ def main() -> None:
     )
     _sparse_rows, sparse_summary = run_sparse_intervals(runtime, models, args, output)
 
+    from Evaluation.quantitative_diagnostics import (
+        run_cycle_consistency,
+        run_robustness,
+    )
+    cycle_rows, cycle_summary = run_cycle_consistency(
+        runtime, models, pairs, args, output
+    )
+    robustness_rows, robustness_summary = run_robustness(
+        runtime, models, pairs, args, output
+    )
+
+    per_sample = []
+    per_sample.extend({"benchmark": "controlled_crop", **row} for row in _crop_rows)
+    per_sample.extend({"benchmark": "retrieval", **row} for row in _retrieval_rows)
+    per_sample.extend({"benchmark": "sparse_interval", **row} for row in _sparse_rows)
+    per_sample.extend({"benchmark": "cycle_consistency", **row} for row in cycle_rows)
+    per_sample.extend({"benchmark": "robustness", **row} for row in robustness_rows)
+    _write_csv(output / "per_sample.csv", per_sample)
+
     summary = {
         "checkpoint": str(Path(args.weights).resolve()),
         "model_backend": str(models.config.get("model_backend", "cnn_bilstm")),
@@ -933,6 +983,13 @@ def main() -> None:
         "crop_localization": crop_summary,
         "retrieval": retrieval_summary,
         "sparse_intervals": sparse_summary,
+        "cycle_consistency": cycle_summary,
+        "robustness": robustness_summary,
+        "evaluation_claims": {
+            "localization_accuracy_sources": ["controlled_crop", "sparse_intervals"],
+            "pair_recognition_sources": ["retrieval", "pair_discrimination"],
+            "diagnostic_only": ["cycle_consistency", "robustness", "mean_path_cosine", "normalized_sw_score"],
+        },
     }
     (output / "summary.json").write_text(
         json.dumps(_json_ready(summary), ensure_ascii=False, indent=2), encoding="utf-8"
