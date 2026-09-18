@@ -1048,6 +1048,18 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
             score=float(sw_score),
             normalized_score=float(sw_normalized),
         )
+        cosine_trace_mode = str(
+            os.environ.get("EVAL_COSINE_TRACE", "nw")
+        ).strip().lower()
+        if cosine_trace_mode not in {"nw", "sw"}:
+            raise ValueError(
+                f"Unknown EVAL_COSINE_TRACE={cosine_trace_mode!r}; use nw or sw"
+            )
+        sw_cosine_output = (
+            output_dir / "cosine_similarity_values.png"
+            if cosine_trace_mode == "sw"
+            else output_dir / "cosine_similarity_sw_trace_values.png"
+        )
         save_alignment_visualization(
             arr1=arr1,
             arr2=arr2,
@@ -1060,7 +1072,7 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
             heatmap_label="raw cosine similarity + local SW traceback",
             score=float(sw_score),
             normalized_score=float(sw_normalized),
-            output=output_dir / "cosine_similarity_sw_trace_values.png",
+            output=sw_cosine_output,
             use_flip=bool(models.image_model.use_flip),
             pair=pair,
             score_mode=resolved_mode + "+ink",
@@ -1084,7 +1096,7 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
             fmt="%.8f",
         )
         save_numeric_evidence(
-            output_dir / "cosine_similarity_sw_trace_values.png",
+            sw_cosine_output,
             algorithm="Smith-Waterman",
             raw_similarity=cosine,
             match_scores=match_scores,
@@ -1130,8 +1142,14 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
             full_path, component_path, traceback, cosine,
             (f"joint similarity: local weight={args.local_weight:.2f}, contextual weight={1-args.local_weight:.2f}"
              if getattr(args, "representation", "") == "joint"
-             else "raw cosine similarity (every window-pair value shown)"),
-            result, resolved_mode, output_dir / "cosine_similarity_values.png",
+             else "raw cosine similarity + global NW traceback"),
+            result,
+            resolved_mode,
+            (
+                output_dir / "cosine_similarity_nw_trace_values.png"
+                if cosine_trace_mode == "sw"
+                else output_dir / "cosine_similarity_values.png"
+            ),
         )
         _visualize(
             models, pair, arr1, arr2, features1, features2,
