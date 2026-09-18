@@ -54,6 +54,9 @@ def main(argv=None):
     )
 
     os.environ["POINT2_EVAL_REPRESENTATION"] = mode
+    # Show heatmaps in the same logical sequence order used by Arabic training:
+    # index 0 is the rightmost physical window and indices advance right-to-left.
+    os.environ.setdefault("EVAL_HEATMAP_ORDER", "logical")
 
     from Evaluation import eval_yelda
 
