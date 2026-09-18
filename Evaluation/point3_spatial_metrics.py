@@ -9,8 +9,9 @@ Metrics:
 - GT/predicted interval center error in pixels and normalized by source width
 - explicit 128x32, stride-16 window classification accuracy / precision / recall / F1
 - GT-region success requiring >= N consecutive predicted-positive windows
+- predicted line coverage and whole-line prediction rate
 
-The script never changes model outputs.  It only audits spatial correctness.
+The script never changes model outputs. It only audits spatial correctness.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from PIL import Image
 
 WINDOW_WIDTH = 32
 WINDOW_STRIDE = 16
+WHOLE_LINE_THRESHOLD = 0.95
 
 
 def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
@@ -124,6 +126,21 @@ def _region_success(pred_labels, gt_intervals, width, min_windows):
     return successes, supports
 
 
+def _coverage(intervals, width):
+    if not intervals or width <= 0:
+        return 0.0
+    merged = []
+    for a, b in sorted((max(0.0, float(a)), min(float(width), float(b))) for a, b in intervals):
+        if b <= a:
+            continue
+        if not merged or a > merged[-1][1]:
+            merged.append([a, b])
+        else:
+            merged[-1][1] = max(merged[-1][1], b)
+    covered = sum(b - a for a, b in merged)
+    return covered / float(width)
+
+
 def _mean(values):
     vals = [float(v) for v in values if v is not None and math.isfinite(float(v))]
     return float(np.mean(vals)) if vals else None
@@ -174,6 +191,8 @@ def main():
             successes, supports = _region_success(
                 pred_labels, gt, width, args.min_consecutive_windows
             )
+            pred_coverage = _coverage(pred, width)
+            gt_coverage = _coverage(gt, width)
 
             row.update({
                 f"line{side}_pred_regions": len(pred),
@@ -187,6 +206,9 @@ def main():
                     max(supports) if supports else 0
                 ),
                 f"line{side}_mask_iou": s.get(f"line{side}_mask_iou"),
+                f"line{side}_pred_coverage": pred_coverage,
+                f"line{side}_gt_coverage": gt_coverage,
+                f"line{side}_whole_line_prediction": pred_coverage >= WHOLE_LINE_THRESHOLD,
             })
             row.update({f"line{side}_{k}": v for k, v in wm.items()})
             side_successes.extend(successes)
@@ -205,11 +227,17 @@ def main():
         w.writeheader()
         w.writerows(rows)
 
+    whole_flags = [
+        bool(r.get(f"line{s}_whole_line_prediction"))
+        for r in rows for s in (1, 2)
+        if r.get(f"line{s}_whole_line_prediction") is not None
+    ]
     summary = {
         "pairs": len(rows),
         "window_width": WINDOW_WIDTH,
         "window_stride": WINDOW_STRIDE,
         "min_consecutive_windows": args.min_consecutive_windows,
+        "whole_line_threshold": WHOLE_LINE_THRESHOLD,
         "mean_mask_iou": _mean(r.get("mean_mask_iou") for r in rows),
         "mean_center_error_px": _mean(
             r.get(f"line{s}_center_error_px") for r in rows for s in (1, 2)
@@ -232,17 +260,19 @@ def main():
         "mean_word_level_success_rate": _mean(
             r.get("word_level_success_rate") for r in rows
         ),
-        "whole_line_prediction_rate": float(np.mean([
-            any(
-                len(r.get(f"line{s}_source_intervals_px", [])) == 1
-                and r.get(f"line{s}_source_intervals_px", [[1, 0]])[0][0] <= 0
-                for s in (1, 2)
-            )
-            for r in []
-        ])) if False else None,
+        "mean_predicted_line_coverage": _mean(
+            r.get(f"line{s}_pred_coverage") for r in rows for s in (1, 2)
+        ),
+        "mean_gt_line_coverage": _mean(
+            r.get(f"line{s}_gt_coverage") for r in rows for s in (1, 2)
+        ),
+        "whole_line_prediction_rate": (
+            float(np.mean(whole_flags)) if whole_flags else None
+        ),
         "note": (
-            "Center/window/word-support metrics are intended to catch broad whole-line "
-            "predictions that can obtain nontrivial mask IoU without precise localization."
+            "Center/window/word-support and line-coverage metrics are intended to catch "
+            "broad whole-line predictions that can obtain nontrivial mask IoU without "
+            "precise localization."
         ),
     }
     (out / "point3_summary.json").write_text(
