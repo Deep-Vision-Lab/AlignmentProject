@@ -1,0 +1,181 @@
+{
+  "index": 4230,
+  "pair_id": "synthetic_4230",
+  "source_type": "synthetic",
+  "side1_type": "synthetic",
+  "side2_type": "synthetic",
+  "side1_preprocess": "synthetic",
+  "side2_preprocess": "synthetic",
+  "label_type": "",
+  "text_score": 0.0,
+  "split": "test",
+  "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_4230.png",
+  "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_4230.png",
+  "nw_score": 10.58513069152832,
+  "normalized_nw_score": 0.16801794748457652,
+  "feature": "contextual",
+  "score_mode": "raw",
+  "score_clip": 4.0,
+  "threshold": 0.0,
+  "gap": -0.3,
+  "line1_windows": 63,
+  "line2_windows": 63,
+  "gap_steps": 22,
+  "mean_path_cosine": 0.3705577693498609,
+  "mean_full_path_cosine": 0.33048334982819283,
+  "matrix_mean_cosine": 0.054300256073474884,
+  "matrix_std_cosine": 0.21761231124401093,
+  "path_cosine_margin": 0.316257513276386,
+  "path_cosine_z": 1.453307082988348,
+  "line1_intervals_px": [
+    [
+      920.0,
+      1024.0
+    ],
+    [
+      616.0,
+      856.0
+    ],
+    [
+      0.0,
+      568.0
+    ]
+  ],
+  "line2_intervals_px": [
+    [
+      936.0,
+      1024.0
+    ],
+    [
+      520.0,
+      712.0
+    ],
+    [
+      0.0,
+      520.0
+    ]
+  ],
+  "gt_mask1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask1_4230.png",
+  "gt_mask2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask2_4230.png",
+  "path_steps": 44,
+  "traceback_steps": 74,
+  "warp_steps": 22,
+  "component_count": 3,
+  "full_match_steps": 52,
+  "bridged_trace_steps": 16,
+  "component_bridge_limit": 2,
+  "component_support_floor": 0.0,
+  "line1_path_windows": 44,
+  "line2_path_windows": 44,
+  "line1_span_windows": 56,
+  "line2_span_windows": 49,
+  "line1_path_fraction": 0.6984126984126984,
+  "line2_path_fraction": 0.6984126984126984,
+  "line1_matched_fraction": 0.8888888888888888,
+  "line2_matched_fraction": 0.7777777777777778,
+  "line1_path_start": 0,
+  "line1_path_end": 62,
+  "line2_path_start": 0,
+  "line2_path_end": 62,
+  "line1_component_ranges": "[[0,5],[10,24],[28,62]]",
+  "line2_component_ranges": "[[0,4],[19,30],[31,62]]",
+  "line1_mask_iou": 0.49264705882352944,
+  "line1_mask_dice": 0.6600985221674877,
+  "line1_mask_precision": 0.5142543859649122,
+  "line1_mask_recall": 0.9214145383104125,
+  "line2_mask_iou": 0.47393939393939394,
+  "line2_mask_dice": 0.6430921052631579,
+  "line2_mask_precision": 0.48875,
+  "line2_mask_recall": 0.9399038461538461,
+  "matrix_csv_cosine": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260918_175807/physical_window_vit/fused_wrong_context/pair_04230/matrices/nw_match_scores_values_cosine.csv",
+  "matrix_csv_match": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260918_175807/physical_window_vit/fused_wrong_context/pair_04230/matrices/nw_match_scores_values_match_score.csv",
+  "evidence_json": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260918_175807/physical_window_vit/fused_wrong_context/pair_04230/evidence/nw_match_scores_values_trace.json",
+  "mean_mask_iou": 0.48329322638146166,
+  "line1_source_intervals_px": [
+    [
+      920.0,
+      1024.0
+    ],
+    [
+      616.0,
+      856.0
+    ],
+    [
+      0.0,
+      568.0
+    ]
+  ],
+  "line2_source_intervals_px": [
+    [
+      936.0,
+      1024.0
+    ],
+    [
+      520.0,
+      712.0
+    ],
+    [
+      0.0,
+      520.0
+    ]
+  ],
+  "representation": "primary",
+  "local_weight": null,
+  "geometry": [
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 0,
+      "crop_top": 38,
+      "crop_width": 1024,
+      "crop_height": 53,
+      "crop_right": 1024,
+      "crop_bottom": 91,
+      "crop_margin_x": 0.025,
+      "crop_margin_y": 0.15,
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "resize_scale": 1.0,
+      "resized_width": 1024,
+      "resized_height": 53,
+      "offset_x": 0,
+      "offset_y": 37,
+      "canvas_width": 1024,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": true,
+      "image_preprocessing": "training",
+      "autocontrast": true,
+      "auto_invert": true
+    },
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 0,
+      "crop_top": 25,
+      "crop_width": 1024,
+      "crop_height": 79,
+      "crop_right": 1024,
+      "crop_bottom": 104,
+      "crop_margin_x": 0.025,
+      "crop_margin_y": 0.15,
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "resize_scale": 1.0,
+      "resized_width": 1024,
+      "resized_height": 79,
+      "offset_x": 0,
+      "offset_y": 24,
+      "canvas_width": 1024,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": true,
+      "image_preprocessing": "training",
+      "autocontrast": true,
+      "auto_invert": true
+    }
+  ],
+  "mask_coordinate_system": "source_image"
+}

@@ -1,0 +1,165 @@
+{
+  "index": 1172,
+  "pair_id": "synthetic_1172",
+  "source_type": "synthetic",
+  "side1_type": "synthetic",
+  "side2_type": "synthetic",
+  "side1_preprocess": "synthetic",
+  "side2_preprocess": "synthetic",
+  "label_type": "",
+  "text_score": 0.0,
+  "split": "test",
+  "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_1172.png",
+  "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_1172.png",
+  "nw_score": 17.87636947631836,
+  "normalized_nw_score": 0.2837518964494978,
+  "feature": "contextual",
+  "score_mode": "raw",
+  "score_clip": 4.0,
+  "threshold": 0.0,
+  "gap": -0.3,
+  "line1_windows": 63,
+  "line2_windows": 63,
+  "gap_steps": 32,
+  "mean_path_cosine": 0.6966303988144948,
+  "mean_full_path_cosine": 0.5846033986816381,
+  "matrix_mean_cosine": 0.02127545326948166,
+  "matrix_std_cosine": 0.21614553034305573,
+  "path_cosine_margin": 0.6753549455450132,
+  "path_cosine_z": 3.124538103902137,
+  "line1_intervals_px": [
+    [
+      344.0,
+      1024.0
+    ],
+    [
+      0.0,
+      200.0
+    ]
+  ],
+  "line2_intervals_px": [
+    [
+      376.0,
+      888.0
+    ],
+    [
+      136.0,
+      280.0
+    ]
+  ],
+  "gt_mask1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask1_1172.png",
+  "gt_mask2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask2_1172.png",
+  "path_steps": 39,
+  "traceback_steps": 79,
+  "warp_steps": 32,
+  "component_count": 2,
+  "full_match_steps": 47,
+  "bridged_trace_steps": 15,
+  "component_bridge_limit": 2,
+  "component_support_floor": 0.0,
+  "line1_path_windows": 39,
+  "line2_path_windows": 39,
+  "line1_span_windows": 54,
+  "line2_span_windows": 41,
+  "line1_path_fraction": 0.6190476190476191,
+  "line2_path_fraction": 0.6190476190476191,
+  "line1_matched_fraction": 0.8571428571428571,
+  "line2_matched_fraction": 0.6507936507936508,
+  "line1_path_start": 0,
+  "line1_path_end": 62,
+  "line2_path_start": 8,
+  "line2_path_end": 54,
+  "line1_component_ranges": "[[0,41],[51,62]]",
+  "line2_component_ranges": "[[8,39],[46,54]]",
+  "line1_mask_iou": 0.7636363636363637,
+  "line1_mask_dice": 0.865979381443299,
+  "line1_mask_precision": 0.7636363636363637,
+  "line1_mask_recall": 1.0,
+  "line2_mask_iou": 0.797085201793722,
+  "line2_mask_dice": 0.8870867124142233,
+  "line2_mask_precision": 0.797085201793722,
+  "line2_mask_recall": 1.0,
+  "matrix_csv_cosine": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260918_175807/old_resnet_token_vit/fused/pair_01172/matrices/nw_match_scores_values_cosine.csv",
+  "matrix_csv_match": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260918_175807/old_resnet_token_vit/fused/pair_01172/matrices/nw_match_scores_values_match_score.csv",
+  "evidence_json": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260918_175807/old_resnet_token_vit/fused/pair_01172/evidence/nw_match_scores_values_trace.json",
+  "mean_mask_iou": 0.7803607827150428,
+  "line1_source_intervals_px": [
+    [
+      344.0,
+      1024.0
+    ],
+    [
+      0.0,
+      200.0
+    ]
+  ],
+  "line2_source_intervals_px": [
+    [
+      322.7826086956522,
+      1024.0
+    ],
+    [
+      0.0,
+      189.2173913043478
+    ]
+  ],
+  "representation": "primary",
+  "local_weight": null,
+  "geometry": [
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 0,
+      "crop_top": 34,
+      "crop_width": 1024,
+      "crop_height": 60,
+      "crop_right": 1024,
+      "crop_bottom": 94,
+      "crop_margin_x": 0.025,
+      "crop_margin_y": 0.15,
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "resize_scale": 1.0,
+      "resized_width": 1024,
+      "resized_height": 60,
+      "offset_x": 0,
+      "offset_y": 34,
+      "canvas_width": 1024,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": true,
+      "image_preprocessing": "training",
+      "autocontrast": true,
+      "auto_invert": true
+    },
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 0,
+      "crop_top": 0,
+      "crop_width": 1024,
+      "crop_height": 128,
+      "crop_right": 1024,
+      "crop_bottom": 128,
+      "crop_margin_x": 0.025,
+      "crop_margin_y": 0.15,
+      "scale_x": 0.71875,
+      "scale_y": 0.71875,
+      "resize_scale": 0.71875,
+      "resized_width": 736,
+      "resized_height": 92,
+      "offset_x": 144,
+      "offset_y": 18,
+      "canvas_width": 1024,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": true,
+      "image_preprocessing": "training",
+      "autocontrast": true,
+      "auto_invert": true
+    }
+  ],
+  "mask_coordinate_system": "source_image"
+}
