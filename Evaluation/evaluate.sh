@@ -274,7 +274,7 @@ if [[ "${EVAL_MODE}" == "quantitative" || "${EVAL_MODE}" == "all" ]]; then
     --auto-calibrate-sw "${AUTO_CALIBRATE_SW}"
     --sw-calibration-lines "${SW_CALIBRATION_LINES}"
     --sw-calibration-thresholds "${SW_CALIBRATION_THRESHOLDS}"
-    --sw-calibration-gaps "${SW_CALIBRATION_GAPS}"
+    --sw-calibration-gaps="${SW_CALIBRATION_GAPS}"
     --cycle-pairs "${CYCLE_PAIRS}"
     --robustness-pairs "${ROBUSTNESS_PAIRS}"
     --robustness-modes "${ROBUSTNESS_MODES}"
