@@ -164,7 +164,7 @@ def _padded_query(crop: np.ndarray, background: int = 255) -> np.ndarray:
     return canvas
 
 
-def _load_pairs(runtime, args) -> list:
+def _load_pairs(runtime, args, split: str | None = None) -> list:
     loader_args = SimpleNamespace(
         data_dir=args.real_data_dir,
         arabic_manifest=args.arabic_manifest,
@@ -173,7 +173,7 @@ def _load_pairs(runtime, args) -> list:
         real_min_text_score=args.real_min_text_score,
         real_validate_paths=True,
         split_seed=args.split_seed,
-        real_split=args.real_split,
+        real_split=split or args.real_split,
     )
     pairs = runtime.dataset.load_arabic_dataset_pairs(loader_args)
     if not pairs:
@@ -435,20 +435,46 @@ def _best_f1_threshold(labels, scores) -> float:
     return float(best)
 
 
-def run_retrieval(runtime, models, pairs, args, output: Path) -> tuple[list[dict], list[dict], dict]:
-    rng = random.Random(args.seed + 17)
+def _equal_error_rate(labels: Sequence[int], scores: Sequence[float]) -> tuple[float | None, float | None]:
+    if not labels or len(set(int(v) for v in labels)) < 2:
+        return None, None
+    unique = sorted(set(float(value) for value in scores))
+    candidates = [unique[0] - 1e-6, *unique, unique[-1] + 1e-6]
+    best = None
+    for threshold in candidates:
+        stats = _classification_at_threshold(labels, scores, threshold)
+        fp, tn = stats["fp"], stats["tn"]
+        fn, tp = stats["fn"], stats["tp"]
+        fpr = fp / max(1, fp + tn)
+        fnr = fn / max(1, fn + tp)
+        candidate = (abs(fpr - fnr), 0.5 * (fpr + fnr), float(threshold))
+        if best is None or candidate < best:
+            best = candidate
+    return float(best[1]), float(best[2])
+
+
+def _score_candidate_pools(
+    runtime,
+    models,
+    pairs,
+    args,
+    *,
+    seed_offset: int,
+    query_limit: int,
+    label: str,
+) -> tuple[list[dict], list[dict]]:
+    rng = random.Random(args.seed + seed_offset)
     selected = list(pairs)
     rng.shuffle(selected)
-    selected = selected[: args.retrieval_queries]
-    candidate_pairs = list(pairs)
+    selected = selected[: min(query_limit, len(selected))]
     retrieval_rows: list[dict] = []
     score_rows: list[dict] = []
-    with tempfile.TemporaryDirectory(prefix="real_retrieval_quant_") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix=f"real_{label}_quant_") as temp_dir:
         get_features = _feature_cache(runtime, models, "real", Path(temp_dir))
         for query_order, pair in enumerate(selected, start=1):
             negatives = [
                 item
-                for item in candidate_pairs
+                for item in pairs
                 if item.pair_id != pair.pair_id
                 and Path(item.image2).resolve() != Path(pair.image2).resolve()
             ]
@@ -465,8 +491,10 @@ def run_retrieval(runtime, models, pairs, args, output: Path) -> tuple[list[dict
                 candidates.append((rank_score, is_positive, candidate, aligned))
                 score_rows.append(
                     {
+                        "split_role": label,
                         "query_order": query_order,
                         "query_pair_id": pair.pair_id,
+                        "query_label_type": pair.label_type,
                         "candidate_pair_id": candidate.pair_id,
                         "is_positive": is_positive,
                         "ranking_score": rank_score,
@@ -485,6 +513,7 @@ def run_retrieval(runtime, models, pairs, args, output: Path) -> tuple[list[dict
             )
             retrieval_rows.append(
                 {
+                    "split_role": label,
                     "query_order": query_order,
                     "query_pair_id": pair.pair_id,
                     "label_type": pair.label_type,
@@ -500,45 +529,107 @@ def run_retrieval(runtime, models, pairs, args, output: Path) -> tuple[list[dict
                 }
             )
             print(
-                f"retrieval {query_order}: rank={positive_rank}/{len(candidates)} "
+                f"{label} retrieval {query_order}: rank={positive_rank}/{len(candidates)} "
                 f"pair_id={pair.pair_id}",
                 flush=True,
             )
+    return retrieval_rows, score_rows
 
-    labels = [int(row["is_positive"]) for row in score_rows]
-    scores = [float(row["ranking_score"]) for row in score_rows]
-    calibration_mask = [int(row["query_order"]) % 5 == 0 for row in score_rows]
-    if not any(calibration_mask) or all(calibration_mask):
-        calibration_mask = [index % 5 == 0 for index in range(len(score_rows))]
-    calibration_labels = [label for label, flag in zip(labels, calibration_mask) if flag]
-    calibration_scores = [score for score, flag in zip(scores, calibration_mask) if flag]
-    test_labels = [label for label, flag in zip(labels, calibration_mask) if not flag]
-    test_scores = [score for score, flag in zip(scores, calibration_mask) if not flag]
-    if not test_labels or len(set(test_labels)) < 2:
-        test_labels, test_scores = labels, scores
-    threshold = _best_f1_threshold(calibration_labels or labels, calibration_scores or scores)
+
+def _retrieval_summary(rows: Sequence[dict]) -> dict:
+    return {
+        "queries": len(rows),
+        "recall_at_1": _mean(row["recall_at_1"] for row in rows),
+        "recall_at_5": _mean(row["recall_at_5"] for row in rows),
+        "recall_at_10": _mean(row["recall_at_10"] for row in rows),
+        "mrr": _mean(row["reciprocal_rank"] for row in rows),
+        "map": _mean(row["average_precision"] for row in rows),
+        "mean_pool_size": _mean(row["pool_size"] for row in rows),
+    }
+
+
+def run_retrieval(
+    runtime,
+    models,
+    pairs,
+    calibration_pairs,
+    args,
+    output: Path,
+) -> tuple[list[dict], list[dict], dict]:
+    retrieval_rows, score_rows = _score_candidate_pools(
+        runtime,
+        models,
+        pairs,
+        args,
+        seed_offset=17,
+        query_limit=args.retrieval_queries,
+        label="test",
+    )
+    calibration_query_limit = min(args.calibration_queries, len(calibration_pairs))
+    _calibration_retrieval, calibration_scores_rows = _score_candidate_pools(
+        runtime,
+        models,
+        calibration_pairs,
+        args,
+        seed_offset=1017,
+        query_limit=calibration_query_limit,
+        label="validation",
+    )
+
+    test_labels = [int(row["is_positive"]) for row in score_rows]
+    test_scores = [float(row["ranking_score"]) for row in score_rows]
+    calibration_labels = [int(row["is_positive"]) for row in calibration_scores_rows]
+    calibration_scores = [float(row["ranking_score"]) for row in calibration_scores_rows]
+    if len(set(calibration_labels)) < 2:
+        raise RuntimeError(
+            "Validation calibration must contain both positive and negative comparisons"
+        )
+
+    threshold = _best_f1_threshold(calibration_labels, calibration_scores)
+    eer, eer_threshold = _equal_error_rate(test_labels, test_scores)
+    discrimination = {
+        "threshold_source": "validation_split",
+        "validation_queries": calibration_query_limit,
+        "validation_comparisons": len(calibration_labels),
+        "test_comparisons": len(test_labels),
+        "auroc": _roc_auc(test_labels, test_scores),
+        "auprc": _average_precision(test_labels, test_scores),
+        "average_precision": _average_precision(test_labels, test_scores),
+        "equal_error_rate": eer,
+        "equal_error_rate_threshold": eer_threshold,
+        **_classification_at_threshold(test_labels, test_scores, threshold),
+    }
+
+    by_label = {}
+    for label_type in sorted({str(row.get("label_type", "")) for row in retrieval_rows}):
+        if not label_type:
+            continue
+        label_retrieval = [row for row in retrieval_rows if str(row.get("label_type")) == label_type]
+        label_scores_rows = [
+            row for row in score_rows if str(row.get("query_label_type")) == label_type
+        ]
+        label_labels = [int(row["is_positive"]) for row in label_scores_rows]
+        label_scores = [float(row["ranking_score"]) for row in label_scores_rows]
+        label_summary = _retrieval_summary(label_retrieval)
+        label_summary["pair_discrimination"] = {
+            "comparisons": len(label_labels),
+            "auroc": _roc_auc(label_labels, label_scores),
+            "auprc": _average_precision(label_labels, label_scores),
+            **_classification_at_threshold(label_labels, label_scores, threshold),
+        }
+        by_label[label_type] = label_summary
 
     summary = {
-        "queries": len(retrieval_rows),
-        "pool_size": args.retrieval_pool_size,
+        **_retrieval_summary(retrieval_rows),
+        "requested_pool_size": args.retrieval_pool_size,
         "ranking_score": args.ranking_score,
-        "recall_at_1": _mean(row["recall_at_1"] for row in retrieval_rows),
-        "recall_at_5": _mean(row["recall_at_5"] for row in retrieval_rows),
-        "recall_at_10": _mean(row["recall_at_10"] for row in retrieval_rows),
-        "mrr": _mean(row["reciprocal_rank"] for row in retrieval_rows),
-        "map": _mean(row["average_precision"] for row in retrieval_rows),
-        "pair_discrimination": {
-            "calibration_comparisons": len(calibration_labels),
-            "test_comparisons": len(test_labels),
-            "auroc": _roc_auc(test_labels, test_scores),
-            "average_precision": _average_precision(test_labels, test_scores),
-            **_classification_at_threshold(test_labels, test_scores, threshold),
-        },
+        "pair_discrimination": discrimination,
+        "by_label": by_label,
     }
     _write_csv(output / "retrieval_results.csv", retrieval_rows)
     _write_csv(output / "pair_classification.csv", score_rows)
+    _write_csv(output / "validation_pair_classification.csv", calibration_scores_rows)
     return retrieval_rows, score_rows, summary
-
 
 def _manifest_records(path: Path) -> list[dict]:
     if path.suffix.lower() == ".csv":
@@ -721,6 +812,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--degradations", default="none,blur,contrast,noise,morphology")
     parser.add_argument("--retrieval-queries", type=int, default=80)
     parser.add_argument("--retrieval-pool-size", type=int, default=20)
+    parser.add_argument("--calibration-queries", type=int, default=40,
+                        help="Validation-split queries used only to choose the classification threshold")
     parser.add_argument(
         "--ranking-score",
         choices=("normalized_sw", "mean_cosine", "hybrid"),
@@ -728,7 +821,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--interval-manifest", default="")
     args = parser.parse_args()
-    for name in ("crop_lines", "crops_per_line", "retrieval_queries", "retrieval_pool_size"):
+    for name in ("crop_lines", "crops_per_line", "retrieval_queries", "retrieval_pool_size", "calibration_queries"):
         if getattr(args, name) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
     return args
@@ -743,6 +836,7 @@ def main() -> None:
         args.weights, device=args.device, load_text_model=False
     )
     pairs = _load_pairs(runtime, args)
+    calibration_pairs = _load_pairs(runtime, args, split="valid")
     print(
         f"quantitative_real backend={models.config.get('model_backend', 'cnn_bilstm')} "
         f"pairs={len(pairs)} split={args.real_split} labels={args.labels}",
@@ -751,7 +845,7 @@ def main() -> None:
 
     _crop_rows, crop_summary = run_crop_localization(runtime, models, pairs, args, output)
     _retrieval_rows, _score_rows, retrieval_summary = run_retrieval(
-        runtime, models, pairs, args, output
+        runtime, models, pairs, calibration_pairs, args, output
     )
     _sparse_rows, sparse_summary = run_sparse_intervals(runtime, models, args, output)
 
@@ -761,6 +855,7 @@ def main() -> None:
         "real_split": args.real_split,
         "labels": args.labels,
         "available_pairs": len(pairs),
+        "validation_calibration_pairs": len(calibration_pairs),
         "feature": args.feature,
         "score_mode": args.score_mode,
         "threshold": args.threshold,
