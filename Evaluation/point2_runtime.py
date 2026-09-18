@@ -24,6 +24,7 @@ from Evaluation._eval_utils import (
     EvaluationModels,
     ImageFeatures,
     _model_state,
+    _force_odd_head_mha_reference_path,
     build_transform,
 )
 
@@ -127,6 +128,14 @@ def load_point2_visual_models(checkpoint, device="auto", expected_branch="auto")
 
     model.load_state_dict(_model_state(checkpoint), strict=True)
     model.eval()
+    odd_head_mha_modules = _force_odd_head_mha_reference_path(model)
+    if odd_head_mha_modules:
+        print(
+            "Point-2/6 attention compatibility: forced reference MHA path for "
+            f"{len(odd_head_mha_modules)} odd-head module(s): "
+            + ", ".join(odd_head_mha_modules),
+            flush=True,
+        )
 
     models = EvaluationModels(model, None, config, checkpoint, dev)
     models.pair_cross_attention = None
