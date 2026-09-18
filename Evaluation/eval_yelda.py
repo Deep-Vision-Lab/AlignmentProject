@@ -53,8 +53,16 @@ def parse_args(argv=None):
         choices=("auto", "hierarchy", "cross", "spatial", "restoration"),
         default="auto",
     )
-    parser.add_argument("--image-preprocessing", choices=("original", "training"), default="original",
-                        help="original: full RGB image resized to 1024x128, without cropping, padding or binarization")
+    parser.add_argument(
+        "--image-preprocessing",
+        choices=("original", "training", "tight"),
+        default="tight",
+        help=(
+            "tight: exact foreground crop, RGB, resize to height 128 with variable width "
+            "and no artificial white canvas; training: checkpoint fixed-canvas geometry; "
+            "original: full-image 1024x128 resize"
+        ),
+    )
     parser.add_argument("--representation", choices=("joint", "primary", "local", "independent"), default="joint")
     parser.add_argument(
         "--alignment-unit",
@@ -128,6 +136,19 @@ def balanced_pairs(pairs):
 
 
 def configure_geometry(config, image_preprocessing="original"):
+    if image_preprocessing == "tight":
+        return {
+            "line_height": 128,
+            "line_width": "variable",
+            "line_geometry_mode": "tight-foreground-no-padding",
+            "color_mode": "RGB",
+            "binarize": False,
+            "crop_foreground": True,
+            "padding": False,
+            "preserve_aspect": True,
+            "autocontrast": False,
+            "auto_invert": False,
+        }
     if int(config.get("line_height", 128)) != 128 or int(config.get("line_width", 1024)) != 1024:
         raise ValueError("This evaluator currently supports the trained 128x1024 line canvas")
     if image_preprocessing == "original":
