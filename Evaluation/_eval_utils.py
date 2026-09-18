@@ -47,6 +47,34 @@ def _disable_incompatible_mha_fastpath() -> bool:
 _MHA_FASTPATH_DISABLED = _disable_incompatible_mha_fastpath()
 
 
+def _force_odd_head_mha_reference_path(model: torch.nn.Module) -> tuple[str, ...]:
+    """Force odd-head MultiheadAttention modules off PyTorch's native eval fastpath.
+
+    PyTorch 2.0 can route eval/no-grad self-attention through
+    torch._native_multi_head_attention, which rejects odd num_heads.  The
+    restoration TinyViT uses 3 heads.  Setting ONLY those MHA modules to
+    training mode bypasses that native fastpath.  This is mathematically safe
+    for the current checkpoint because attention dropout is exactly 0.0; the
+    surrounding model remains in eval mode, so ResNet BatchNorm and all other
+    evaluation behavior are unchanged.
+    """
+    patched: list[str] = []
+    for name, module in model.named_modules():
+        if not isinstance(module, torch.nn.MultiheadAttention):
+            continue
+        if int(module.num_heads) % 2 == 0:
+            continue
+        dropout = float(module.dropout)
+        if dropout != 0.0:
+            raise RuntimeError(
+                "Cannot safely force odd-head MHA to the reference path when "
+                f"dropout is nonzero: module={name!r}, dropout={dropout}"
+            )
+        module.train(True)
+        patched.append(name)
+    return tuple(patched)
+
+
 @dataclass
 class EvaluationModels:
     image_model: EmbeddingModel
@@ -301,6 +329,14 @@ def load_evaluation_models(
             f"missing keys: {serious_missing[:10]}"
         )
     image_model.eval()
+    odd_head_mha_modules = _force_odd_head_mha_reference_path(image_model)
+    if odd_head_mha_modules:
+        print(
+            "Evaluation attention compatibility: forced reference MHA path for "
+            f"{len(odd_head_mha_modules)} odd-head module(s): "
+            + ", ".join(odd_head_mha_modules),
+            flush=True,
+        )
 
     text_model = None
     text_type = str(
