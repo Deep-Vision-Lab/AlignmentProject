@@ -29,15 +29,15 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
 def _disable_incompatible_mha_fastpath() -> bool:
-    \"\"\"Disable PyTorch native MHA inference fastpath for odd-head TinyViT.
+    """Disable PyTorch native MHA inference fastpath for odd-head TinyViT.
 
     The project uses DeiT-Tiny with 3 attention heads. PyTorch 2.0's native
     inference fastpath can reject odd head counts in eval/no-grad mode even
     though the normal attention implementation supports 3 heads correctly.
     This changes only kernel selection, not model weights or attention math.
-    \"\"\"
-    backend = getattr(torch.backends, \"mha\", None)
-    setter = getattr(backend, \"set_fastpath_enabled\", None)
+    """
+    backend = getattr(torch.backends, "mha", None)
+    setter = getattr(backend, "set_fastpath_enabled", None)
     if callable(setter):
         setter(False)
         return True
