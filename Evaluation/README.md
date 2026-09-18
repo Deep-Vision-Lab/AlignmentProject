@@ -107,6 +107,7 @@ Optional:
 
 ```text
 pair_id
+coordinate_space   # source (default) or canvas
 ```
 
 By default, interval coordinates are interpreted in the **original source-image
