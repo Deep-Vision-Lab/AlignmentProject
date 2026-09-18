@@ -10,7 +10,7 @@ EVAL_SPLIT="${EVAL_SPLIT:-test}"
 N_SAMPLES="${N_SAMPLES:-100}"
 START_INDEX="${START_INDEX:-1}"
 DEVICE="${DEVICE:-cuda}"
-IMAGE_PREPROCESSING="${IMAGE_PREPROCESSING:-original}"
+IMAGE_PREPROCESSING="${IMAGE_PREPROCESSING:-training}"
 SCORE_MODE="${SCORE_MODE:-raw}"
 MIN_ALIGNED_WINDOWS="${MIN_ALIGNED_WINDOWS:-5}"
 TAG="${TAG:-$(date +%Y%m%d_%H%M%S)}"
@@ -34,6 +34,7 @@ cd "${PROJECT_DIR}"
 }
 
 "${PYTHON_BIN}" -m py_compile \
+  Evaluation/_eval_utils.py \
   Evaluation/point2_runtime.py \
   Evaluation/eval_point2.py \
   Evaluation/compare_point2_eval_runs.py \
@@ -51,6 +52,38 @@ if not torch.cuda.is_available():
 print("CUDA device 0 =", torch.cuda.get_device_name(0))
 PY
 fi
+
+# Reconstruct BOTH checkpoint architectures and run a complete visual forward
+# before starting the eight expensive representation runs. This catches
+# checkpoint/architecture mismatches and the PyTorch-2.0 odd-head MHA issue
+# immediately.
+OLD_WEIGHTS="${OLD_WEIGHTS}" NEW_WEIGHTS="${NEW_WEIGHTS}" DEVICE="${DEVICE}" \
+"${PYTHON_BIN}" - <<'PY'
+import os
+import torch
+from Evaluation.yelda_runtime import read_checkpoint
+from Evaluation.point2_runtime import load_point2_visual_models
+
+device = os.environ.get("DEVICE", "cuda")
+for label, env_name in (
+    ("old_resnet_token_vit", "OLD_WEIGHTS"),
+    ("physical_window_vit", "NEW_WEIGHTS"),
+):
+    checkpoint = read_checkpoint(os.environ[env_name])
+    models = load_point2_visual_models(checkpoint, device, "restoration")
+    dummy = torch.zeros((1, 3, 128, 1024), device=models.device)
+    with torch.inference_mode():
+        contextual, local, grouped, ink = models.image_model(
+            dummy, return_local=True, return_grouped=True, return_ink=True
+        )
+    print(
+        f"Point-2 preflight {label}: OK",
+        "contextual=", tuple(contextual.shape),
+        "local=", tuple(local.shape),
+        "grouped=", tuple(grouped.shape),
+        "ink=", tuple(ink.shape),
+    )
+PY
 
 echo "============================================================"
 echo "Point-2: old ResNet-token ViT vs physical-window ViT"
