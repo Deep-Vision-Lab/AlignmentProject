@@ -144,7 +144,7 @@ def load_visual_models(checkpoint, device="auto", expected_branch="auto"):
 
 def configure_image_preprocessing(models, image_preprocessing):
     """Override pixel binarization for the original-image evaluation experiment."""
-    if image_preprocessing not in {"original", "training"}:
+    if image_preprocessing not in {"original", "training", "tight"}:
         raise ValueError(f"Unknown image preprocessing: {image_preprocessing}")
     checkpoint_binarize = flag(models.config.get("vit_binarize_input", False))
     effective = checkpoint_binarize if image_preprocessing == "training" else False
