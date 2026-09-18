@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import torch
 import torch.nn.functional as F
 from PIL import Image
+from torchvision import transforms
 
 from embeddingModel import EmbeddingModel
 from Evaluation._eval_utils import (
@@ -25,7 +26,8 @@ from Evaluation._eval_utils import (
     ImageFeatures,
     _model_state,
     _force_odd_head_mha_reference_path,
-    build_transform,
+    IMAGENET_MEAN,
+    IMAGENET_STD,
 )
 
 POINT2_MODES = ("local", "context", "fused", "fused_wrong_context")
@@ -178,7 +180,14 @@ def _encode_line(models, image_path, mode: str, *, side: int) -> ImageFeatures:
     with Image.open(image_path) as opened:
         image = opened.convert("RGB")
         original_size = image.size
-        tensor = build_transform("synthetic")(image).unsqueeze(0).to(models.device)
+        # The image has already been prepared by yelda_geometry. Do not resize
+        # it again here: tight evaluation intentionally keeps variable width.
+        tensor = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+            ]
+        )(image).unsqueeze(0).to(models.device)
 
     image_model = models.image_model
     vit = image_model.vit_encoder
