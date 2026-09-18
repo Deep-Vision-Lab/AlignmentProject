@@ -35,7 +35,7 @@ case "${EVAL_MODE}" in
   *) echo "ERROR: EVAL_MODE must be qualitative, quantitative, or all" >&2; exit 2 ;;
 esac
 
-RUN_TAG="${RUN_TAG:-$(basename "$(dirname "${WEIGHTS}")")}"
+RUN_TAG="${RUN_TAG:-$(basename "$(dirname "${WEIGHTS}")")_$(date +%Y%m%d_%H%M%S)}"
 REAL_DATA_DIR="${REAL_DATA_DIR:-${PROJECT_DIR}/DataSet/ArabicDataset}"
 ARABIC_MANIFEST="${ARABIC_MANIFEST:-${REAL_DATA_DIR}/dataset_manifest.jsonl}"
 REAL_SPLIT="${REAL_SPLIT:-test}"
@@ -65,15 +65,32 @@ CALIBRATION_QUERIES="${CALIBRATION_QUERIES:-40}"
 RANKING_SCORE="${RANKING_SCORE:-normalized_sw}"
 INTERVAL_MANIFEST="${INTERVAL_MANIFEST:-}"
 
-# Label-free diagnostics.
+# Label-free real-data diagnostics.
 CYCLE_PAIRS="${CYCLE_PAIRS:-80}"
 ROBUSTNESS_PAIRS="${ROBUSTNESS_PAIRS:-30}"
 ROBUSTNESS_MODES="${ROBUSTNESS_MODES:-blur,contrast,brightness,noise,horizontal_scale,vertical_shift,erosion,dilation}"
 MIN_INK="${MIN_INK:-0.02}"
 
+# Six-point checklist continuation.
+SYNTHETIC_DATASET="${SYNTHETIC_DATASET:-${PROJECT_DIR}/DataSet/Synthetic63}"
+RUN_POINT3="${RUN_POINT3:-1}"
+POINT3_SAMPLES="${POINT3_SAMPLES:-10}"
+RUN_POINT45="${RUN_POINT45:-1}"
+POINT45_SAMPLES="${POINT45_SAMPLES:-100}"
+POINT45_MIN_WINDOWS="${POINT45_MIN_WINDOWS:-5}"
+POINT45_MIN_IOU="${POINT45_MIN_IOU:-0.50}"
+RUN_POINT6="${RUN_POINT6:-1}"
+POINT6_LINE_PAIRS="${POINT6_LINE_PAIRS:-80}"
+POINT6_QUERIES="${POINT6_QUERIES:-100}"
+POINT6_TOP_K="${POINT6_TOP_K:-5}"
+POINT6_VISUALIZE="${POINT6_VISUALIZE:-20}"
+
 RESULTS_ROOT="${RESULTS_ROOT:-${PROJECT_DIR}/Results/Evaluation/Restoration/${RUN_TAG}}"
 QUALITATIVE_DIR="${QUALITATIVE_DIR:-${RESULTS_ROOT}/Qualitative}"
 QUANTITATIVE_DIR="${QUANTITATIVE_DIR:-${RESULTS_ROOT}/Quantitative}"
+POINT3_DIR="${POINT3_DIR:-${RESULTS_ROOT}/Point3_TrainingPaths}"
+POINT45_ROOT="${POINT45_ROOT:-${RESULTS_ROOT}/Point45_SpatialCorrectness}"
+POINT6_DIR="${POINT6_DIR:-${RESULTS_ROOT}/Point6_WindowNeighbors}"
 
 [[ -d "${REAL_DATA_DIR}" ]] || {
   echo "ERROR: real dataset directory not found: ${REAL_DATA_DIR}" >&2
@@ -85,6 +102,10 @@ QUANTITATIVE_DIR="${QUANTITATIVE_DIR:-${RESULTS_ROOT}/Quantitative}"
 }
 if [[ -n "${INTERVAL_MANIFEST}" && ! -f "${INTERVAL_MANIFEST}" ]]; then
   echo "ERROR: sparse interval manifest not found: ${INTERVAL_MANIFEST}" >&2
+  exit 2
+fi
+if [[ ("${EVAL_MODE}" == "quantitative" || "${EVAL_MODE}" == "all") && ! -d "${SYNTHETIC_DATASET}" ]]; then
+  echo "ERROR: synthetic dataset for Points 3-5 not found: ${SYNTHETIC_DATASET}" >&2
   exit 2
 fi
 
@@ -108,6 +129,7 @@ print_config() {
     "  feature             = ${FEATURE} (restoration contextual = trained fused output)" \
     "  model input         = original RGB, full-image 1024x128 resize, no binarization" \
     "  checkpoint geometry = expected physical windows 128x32, stride 16" \
+    "  checklist           = P3:${RUN_POINT3} P4-5:${RUN_POINT45} P6:${RUN_POINT6}" \
     "  results             = ${RESULTS_ROOT}"
 }
 
@@ -172,7 +194,12 @@ python -m py_compile \
   Evaluation/eval_img_align_sw.py \
   Evaluation/sw_runner.py \
   Evaluation/quantitative_real.py \
-  Evaluation/quantitative_diagnostics.py
+  Evaluation/quantitative_diagnostics.py \
+  Evaluation/eval_point3_training_paths.py \
+  Evaluation/eval_point2.py \
+  Evaluation/point2_runtime.py \
+  Evaluation/point3_spatial_metrics.py \
+  Evaluation/eval_point6_window_neighbors.py
 
 print_config
 mkdir -p "${RESULTS_ROOT}"
@@ -246,6 +273,70 @@ if [[ "${EVAL_MODE}" == "quantitative" || "${EVAL_MODE}" == "all" ]]; then
     COMMAND+=(--interval-manifest "${INTERVAL_MANIFEST}")
   fi
   "${COMMAND[@]}"
+
+  if [[ "${RUN_POINT3}" == "1" ]]; then
+    mkdir -p "${POINT3_DIR}"
+    python -u -m Evaluation.eval_point3_training_paths \
+      --dataset "${SYNTHETIC_DATASET}" \
+      --weights "${WEIGHTS}" \
+      --output-dir "${POINT3_DIR}" \
+      --split test \
+      --training-samples 6000 \
+      --split-seed "${SPLIT_SEED}" \
+      --n-samples "${POINT3_SAMPLES}" \
+      --device cuda \
+      --image-preprocessing training
+  fi
+
+  if [[ "${RUN_POINT45}" == "1" ]]; then
+    POINT45_EVAL="${POINT45_ROOT}/fused"
+    POINT45_METRICS="${POINT45_ROOT}/metrics"
+    mkdir -p "${POINT45_ROOT}"
+    python -u -m Evaluation.eval_point2 \
+      --point2-representation fused \
+      --dataset "${SYNTHETIC_DATASET}" \
+      --weights "${WEIGHTS}" \
+      --branch restoration \
+      --alignment-unit window \
+      --word-support-floor 0.0 \
+      --min-aligned-windows "${POINT45_MIN_WINDOWS}" \
+      --image-preprocessing original \
+      --split test \
+      --training-samples 6000 \
+      --split-seed "${SPLIT_SEED}" \
+      --n-samples "${POINT45_SAMPLES}" \
+      --start-index 1 \
+      --device cuda \
+      --score-mode raw \
+      --threshold 0.0 \
+      --gap -0.30 \
+      --output-dir "${POINT45_EVAL}"
+
+    python -u Evaluation/point3_spatial_metrics.py \
+      --eval-root "${POINT45_EVAL}" \
+      --output-dir "${POINT45_METRICS}" \
+      --min-consecutive-windows "${POINT45_MIN_WINDOWS}" \
+      --min-region-iou "${POINT45_MIN_IOU}"
+  fi
+
+  if [[ "${RUN_POINT6}" == "1" ]]; then
+    mkdir -p "${POINT6_DIR}"
+    python -u -m Evaluation.eval_point6_window_neighbors \
+      --dataset "${REAL_DATA_DIR}" \
+      --weights "${WEIGHTS}" \
+      --output-dir "${POINT6_DIR}" \
+      --split "${REAL_SPLIT}" \
+      --split-seed "${SPLIT_SEED}" \
+      --labels "${LABELS}" \
+      --line-pairs "${POINT6_LINE_PAIRS}" \
+      --queries "${POINT6_QUERIES}" \
+      --top-k "${POINT6_TOP_K}" \
+      --visualize-queries "${POINT6_VISUALIZE}" \
+      --min-ink "${MIN_INK}" \
+      --seed "${EVAL_SEED}" \
+      --device cuda \
+      --image-preprocessing original
+  fi
 fi
 
 echo "Evaluation complete: ${RESULTS_ROOT}"
