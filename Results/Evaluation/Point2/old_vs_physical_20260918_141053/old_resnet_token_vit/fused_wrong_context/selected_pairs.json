@@ -1,0 +1,72 @@
+[
+  {
+    "pair_id": "synthetic_4230",
+    "index": 4230,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_4230.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_4230.png"
+  },
+  {
+    "pair_id": "synthetic_1172",
+    "index": 1172,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_1172.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_1172.png"
+  },
+  {
+    "pair_id": "synthetic_2762",
+    "index": 2762,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_2762.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_2762.png"
+  },
+  {
+    "pair_id": "synthetic_132",
+    "index": 132,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_132.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_132.png"
+  },
+  {
+    "pair_id": "synthetic_1817",
+    "index": 1817,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_1817.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_1817.png"
+  },
+  {
+    "pair_id": "synthetic_2716",
+    "index": 2716,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_2716.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_2716.png"
+  },
+  {
+    "pair_id": "synthetic_712",
+    "index": 712,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_712.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_712.png"
+  },
+  {
+    "pair_id": "synthetic_617",
+    "index": 617,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_617.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_617.png"
+  },
+  {
+    "pair_id": "synthetic_2415",
+    "index": 2415,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_2415.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_2415.png"
+  },
+  {
+    "pair_id": "synthetic_4254",
+    "index": 4254,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_4254.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_4254.png"
+  }
+]

@@ -1,0 +1,129 @@
+{
+  "index": 712,
+  "pair_id": "synthetic_712",
+  "source_type": "synthetic",
+  "side1_type": "synthetic",
+  "side2_type": "synthetic",
+  "side1_preprocess": "synthetic",
+  "side2_preprocess": "synthetic",
+  "label_type": "",
+  "text_score": 0.0,
+  "split": "test",
+  "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_712.png",
+  "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_712.png",
+  "nw_score": 18.52431869506836,
+  "normalized_nw_score": 0.29403680468362475,
+  "feature": "contextual",
+  "score_mode": "raw",
+  "score_clip": 4.0,
+  "threshold": 0.0,
+  "gap": -0.3,
+  "line1_windows": 63,
+  "line2_windows": 63,
+  "gap_steps": 24,
+  "mean_path_cosine": 0.6525737663829013,
+  "mean_full_path_cosine": 0.5043981710047114,
+  "matrix_mean_cosine": 0.0475778765976429,
+  "matrix_std_cosine": 0.260501503944397,
+  "path_cosine_margin": 0.6049958897852584,
+  "path_cosine_z": 2.32242762757482,
+  "line1_intervals_px": [
+    [
+      72.0,
+      856.0
+    ]
+  ],
+  "line2_intervals_px": [
+    [
+      248.0,
+      984.0
+    ]
+  ],
+  "gt_mask1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask1_712.png",
+  "gt_mask2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask2_712.png",
+  "path_steps": 38,
+  "traceback_steps": 75,
+  "warp_steps": 24,
+  "component_count": 1,
+  "full_match_steps": 51,
+  "bridged_trace_steps": 14,
+  "component_bridge_limit": 2,
+  "component_support_floor": 0.0,
+  "line1_path_windows": 38,
+  "line2_path_windows": 38,
+  "line1_span_windows": 49,
+  "line2_span_windows": 46,
+  "line1_path_fraction": 0.6031746031746031,
+  "line2_path_fraction": 0.6031746031746031,
+  "line1_matched_fraction": 0.7777777777777778,
+  "line2_matched_fraction": 0.7301587301587301,
+  "line1_path_start": 10,
+  "line1_path_end": 58,
+  "line2_path_start": 2,
+  "line2_path_end": 47,
+  "line1_component_ranges": "[[10,58]]",
+  "line2_component_ranges": "[[2,47]]",
+  "line1_mask_iou": 0.44114002478314746,
+  "line1_mask_dice": 0.6122098022355976,
+  "line1_mask_precision": 0.45408163265306123,
+  "line1_mask_recall": 0.9393139841688655,
+  "line2_mask_iou": 0.47127937336814624,
+  "line2_mask_dice": 0.6406388642413487,
+  "line2_mask_precision": 0.4904891304347826,
+  "line2_mask_recall": 0.9232736572890026,
+  "matrix_csv_cosine": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260918_141053/old_resnet_token_vit/fused/pair_00712/matrices/nw_match_scores_values_cosine.csv",
+  "matrix_csv_match": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260918_141053/old_resnet_token_vit/fused/pair_00712/matrices/nw_match_scores_values_match_score.csv",
+  "evidence_json": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260918_141053/old_resnet_token_vit/fused/pair_00712/evidence/nw_match_scores_values_trace.json",
+  "mean_mask_iou": 0.45620969907564685,
+  "line1_source_intervals_px": [
+    [
+      72.0,
+      856.0
+    ]
+  ],
+  "line2_source_intervals_px": [
+    [
+      248.0,
+      984.0
+    ]
+  ],
+  "representation": "primary",
+  "local_weight": null,
+  "geometry": [
+    {
+      "image_preprocessing": "original",
+      "color_mode": "RGB",
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 0,
+      "crop_width": 1024,
+      "scale_x": 1.0,
+      "offset_x": 0,
+      "canvas_width": 1024,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": false,
+      "preserve_aspect": false,
+      "autocontrast": false,
+      "auto_invert": false
+    },
+    {
+      "image_preprocessing": "original",
+      "color_mode": "RGB",
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 0,
+      "crop_width": 1024,
+      "scale_x": 1.0,
+      "offset_x": 0,
+      "canvas_width": 1024,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": false,
+      "preserve_aspect": false,
+      "autocontrast": false,
+      "auto_invert": false
+    }
+  ],
+  "mask_coordinate_system": "source_image"
+}
