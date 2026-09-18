@@ -63,6 +63,10 @@ RETRIEVAL_QUERIES="${RETRIEVAL_QUERIES:-100}"
 RETRIEVAL_POOL_SIZE="${RETRIEVAL_POOL_SIZE:-20}"
 CALIBRATION_QUERIES="${CALIBRATION_QUERIES:-40}"
 RANKING_SCORE="${RANKING_SCORE:-normalized_sw}"
+AUTO_CALIBRATE_SW="${AUTO_CALIBRATE_SW:-1}"
+SW_CALIBRATION_LINES="${SW_CALIBRATION_LINES:-20}"
+SW_CALIBRATION_THRESHOLDS="${SW_CALIBRATION_THRESHOLDS:-0.0,0.15,0.30,0.45}"
+SW_CALIBRATION_GAPS="${SW_CALIBRATION_GAPS:--0.15,-0.30,-0.45}"
 INTERVAL_MANIFEST="${INTERVAL_MANIFEST:-}"
 
 # Label-free real-data diagnostics.
@@ -127,8 +131,9 @@ print_config() {
     "  real data           = ${REAL_DATA_DIR}" \
     "  split / labels      = ${REAL_SPLIT} / ${LABELS}" \
     "  feature             = ${FEATURE} (restoration contextual = trained fused output)" \
-    "  model input         = original RGB, full-image 1024x128 resize, no binarization" \
-    "  checkpoint geometry = expected physical windows 128x32, stride 16" \
+    "  model input         = original RGB with checkpoint training geometry; no binarization" \
+    "  geometry            = crop outer blank margins + preserve aspect ratio + 1024x128 canvas" \
+    "  checkpoint windows  = physical 128x32, stride 16" \
     "  checklist           = P3:${RUN_POINT3} P4-5:${RUN_POINT45} P6:${RUN_POINT6}" \
     "  results             = ${RESULTS_ROOT}"
 }
@@ -155,14 +160,16 @@ fi
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 
-# Current experiment policy: preserve original RGB pixels for evaluation.
-# ZERO_SHOT_PREPROCESS=0 gives a deterministic full-image resize without
-# foreground crop, aspect-ratio padding, autocontrast, or binarization.
+# Match the checkpoint's training geometry while preserving original RGB
+# intensities.  This removes only outer blank margins, preserves aspect ratio,
+# and records the crop/scale transform so predicted windows can be mapped back
+# to source-image coordinates.  Do NOT binarize.
 export LINE_HEIGHT=128
 export LINE_WIDTH=1024
-export ZERO_SHOT_PREPROCESS=0
-export ZERO_SHOT_PRESERVE_ASPECT=0
-export ZERO_SHOT_FOREGROUND_CROP=0
+export LINE_GEOMETRY_MODE="${LINE_GEOMETRY_MODE:-crop-aspect-preserving-rgb}"
+export ZERO_SHOT_PREPROCESS=1
+export ZERO_SHOT_PRESERVE_ASPECT=1
+export ZERO_SHOT_FOREGROUND_CROP=1
 export REAL_BINARIZE=0
 export SYNTHETIC_BINARIZE=0
 export REAL_BINARIZE_AUTOCONTRAST=0
@@ -264,6 +271,10 @@ if [[ "${EVAL_MODE}" == "quantitative" || "${EVAL_MODE}" == "all" ]]; then
     --retrieval-pool-size "${RETRIEVAL_POOL_SIZE}"
     --calibration-queries "${CALIBRATION_QUERIES}"
     --ranking-score "${RANKING_SCORE}"
+    --auto-calibrate-sw "${AUTO_CALIBRATE_SW}"
+    --sw-calibration-lines "${SW_CALIBRATION_LINES}"
+    --sw-calibration-thresholds "${SW_CALIBRATION_THRESHOLDS}"
+    --sw-calibration-gaps "${SW_CALIBRATION_GAPS}"
     --cycle-pairs "${CYCLE_PAIRS}"
     --robustness-pairs "${ROBUSTNESS_PAIRS}"
     --robustness-modes "${ROBUSTNESS_MODES}"
@@ -300,7 +311,7 @@ if [[ "${EVAL_MODE}" == "quantitative" || "${EVAL_MODE}" == "all" ]]; then
       --alignment-unit window \
       --word-support-floor 0.0 \
       --min-aligned-windows "${POINT45_MIN_WINDOWS}" \
-      --image-preprocessing original \
+      --image-preprocessing training \
       --split test \
       --training-samples 6000 \
       --split-seed "${SPLIT_SEED}" \
@@ -335,7 +346,7 @@ if [[ "${EVAL_MODE}" == "quantitative" || "${EVAL_MODE}" == "all" ]]; then
       --min-ink "${MIN_INK}" \
       --seed "${EVAL_SEED}" \
       --device cuda \
-      --image-preprocessing original
+      --image-preprocessing training
   fi
 fi
 
