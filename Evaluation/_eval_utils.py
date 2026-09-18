@@ -28,6 +28,25 @@ IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
+def _disable_incompatible_mha_fastpath() -> bool:
+    \"\"\"Disable PyTorch native MHA inference fastpath for odd-head TinyViT.
+
+    The project uses DeiT-Tiny with 3 attention heads. PyTorch 2.0's native
+    inference fastpath can reject odd head counts in eval/no-grad mode even
+    though the normal attention implementation supports 3 heads correctly.
+    This changes only kernel selection, not model weights or attention math.
+    \"\"\"
+    backend = getattr(torch.backends, \"mha\", None)
+    setter = getattr(backend, \"set_fastpath_enabled\", None)
+    if callable(setter):
+        setter(False)
+        return True
+    return False
+
+
+_MHA_FASTPATH_DISABLED = _disable_incompatible_mha_fastpath()
+
+
 @dataclass
 class EvaluationModels:
     image_model: EmbeddingModel
@@ -239,6 +258,20 @@ def load_evaluation_models(
             restoration_contrast_scale=float(
                 config.get("restoration_contrast_scale", 0.15)
             ),
+            restoration_semantic_adapter=str(
+                config.get("restoration_semantic_adapter", "identity")
+            ),
+            restoration_local_encoder=str(
+                config.get("restoration_local_encoder", "resnet18")
+            ),
+            # Checkpoint state is loaded immediately, so evaluation does not
+            # need to fetch pretrained initialization again.
+            resnet18_pretrained=False,
+            tiny_vit_pretrained=False,
+            tiny_vit_pretrained_model=str(
+                config.get("tiny_vit_pretrained_model", "facebook/deit-tiny-patch16-224")
+            ),
+            pretrained_local_only=True,
         )
         image_model = attach_restoration_dtw_stages(
             image_model, restoration_config
