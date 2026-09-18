@@ -21,14 +21,15 @@ EVAL_MODE=all
 Run the launcher from the repository root on the login node. It submits its own
 one-GPU Slurm job. Do not wrap it in another `sbatch`.
 
-The current default evaluation image policy is the one used for the recent
-Point-2/Point-3 work:
+The default evaluation image policy now matches the checkpoint's training
+geometry while preserving the original RGB signal:
 
-- original RGB pixels;
-- deterministic full-image resize to `1024x128`;
-- no binarization;
-- no foreground crop;
-- no aspect-ratio padding;
+- original RGB intensities;
+- remove only outer blank margins using the same foreground-bound logic as training;
+- preserve aspect ratio;
+- place the result on the same `1024x128` training canvas;
+- no binarization, autocontrast, or automatic inversion;
+- keep the crop/scale metadata so model-window coordinates can be mapped back to the original source image;
 - checkpoint window geometry (current model: physical `128x32` windows, stride `16`);
 - `FEATURE=contextual`, which for the restoration checkpoint is the trained
   normalized local+context fused representation.
@@ -84,9 +85,12 @@ Pair discrimination reports:
 - equal error rate;
 - precision / recall / F1 / accuracy.
 
-The classification threshold is selected **only from the validation split** and
-then applied unchanged to the test comparisons. Pair-ID groups remain intact in
-the real-data split logic.
+The pair-classification threshold is selected **only from the validation split**
+and then applied unchanged to the test comparisons. In addition, the Smith-Waterman
+match threshold and gap penalty are calibrated on controlled localization examples
+from the validation split before any final test-set scoring. The selected SW
+hyperparameters are then locked for the test benchmarks. Pair-ID groups remain
+intact in the real-data split logic.
 
 ### 3. Sparse real cross-line interval benchmark
 
@@ -105,7 +109,11 @@ Optional:
 pair_id
 ```
 
-Coordinates are measured on the `1024x128` evaluation canvas.
+By default, interval coordinates are interpreted in the **original source-image
+coordinate system**. The evaluator maps model predictions from the training canvas
+back through the stored crop/scale transform before computing IoU, boundary error,
+and center error. For legacy annotations, set `coordinate_space=canvas` per record
+to use preprocessed-canvas coordinates explicitly.
 
 Reported metrics:
 
@@ -171,6 +179,7 @@ validation_pair_classification.csv
 sparse_intervals.csv          # only when INTERVAL_MANIFEST is supplied
 cycle_consistency.csv
 robustness.csv
+sw_calibration.csv
 ```
 
 Internal quantities such as `normalized_sw_score`, `mean_path_cosine`, or
