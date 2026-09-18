@@ -155,8 +155,6 @@ def _write_image_text_path(
                 window=window_size,
                 stride=stride,
                 use_flip=use_flip,
-                sequence_indices=valid_sequence_indices[-1],
-                total_window_count=total_window_counts[-1],
             )
             source_x0, source_x1, source_mapped = _source_interval_or_none(
                 x0, x1, geometry
@@ -424,6 +422,8 @@ def main():
                 window_size=window_size,
                 stride=stride,
                 use_flip=use_flip,
+                sequence_indices=valid_sequence_indices[-1],
+                total_window_count=total_window_counts[-1],
             )
             _heatmap(
                 effective,
