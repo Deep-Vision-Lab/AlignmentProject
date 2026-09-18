@@ -468,7 +468,13 @@ def save_alignment_visualization(
         axes[1].set_title("no supported component", fontsize=9)
 
     ax = fig.add_subplot(grid[2])
-    shown = physical_matrix(matrix, bool(use_flip))
+    heatmap_order = str(os.environ.get("EVAL_HEATMAP_ORDER", "physical")).strip().lower()
+    if heatmap_order not in {"physical", "logical"}:
+        raise ValueError(
+            f"Unknown EVAL_HEATMAP_ORDER={heatmap_order!r}; use physical or logical"
+        )
+    logical_view = heatmap_order == "logical"
+    shown = matrix if logical_view else physical_matrix(matrix, bool(use_flip))
     finite = shown[np.isfinite(shown)]
     if finite.size and float(finite.min()) >= 0.0:
         upper = max(1e-6, float(np.percentile(finite, 98)))
@@ -488,7 +494,11 @@ def save_alignment_visualization(
     if annotate_values:
         _annotate_values(ax, shown, image, value_decimals, annotation_fontsize)
 
-    shown_trace = physical_traceback(traceback, n1, n2, bool(use_flip))
+    shown_trace = (
+        np.asarray(traceback, dtype=np.float32)
+        if logical_view
+        else physical_traceback(traceback, n1, n2, bool(use_flip))
+    )
     if len(shown_trace) >= 2:
         xs = shown_trace[:, 0] - 0.5
         ys = shown_trace[:, 1] - 0.5
@@ -514,17 +524,25 @@ def save_alignment_visualization(
         )
 
     if full_path:
-        displayed = [physical_pair(row, col, n1, n2, bool(use_flip)) for row, col in full_path]
+        displayed = (
+            [(int(row), int(col)) for row, col in full_path]
+            if logical_view
+            else [physical_pair(row, col, n1, n2, bool(use_flip)) for row, col in full_path]
+        )
         ax.scatter(
             [col for row, col in displayed], [row for row, col in displayed],
             s=29, facecolors="none", edgecolors="yellow", linewidths=1.1,
             label="all diagonal traceback matches", zorder=9,
         )
     if component_path:
-        displayed = [
-            physical_pair(row, col, n1, n2, bool(use_flip))
-            for row, col in component_path
-        ]
+        displayed = (
+            [(int(row), int(col)) for row, col in component_path]
+            if logical_view
+            else [
+                physical_pair(row, col, n1, n2, bool(use_flip))
+                for row, col in component_path
+            ]
+        )
         ax.scatter(
             [col for row, col in displayed], [row for row, col in displayed],
             s=20, facecolors="cyan", edgecolors="black", linewidths=0.45,
@@ -533,10 +551,17 @@ def save_alignment_visualization(
 
     ax.set_xlim(-0.5, n2 - 0.5)
     ax.set_ylim(n1 - 0.5, -0.5)
-    ax.set_xlabel("line B physical windows: left → right")
-    ax.set_ylabel("line A physical windows: left → right, top → bottom")
+    if logical_view:
+        direction = "right → left; index 0 = rightmost" if use_flip else "left → right"
+        ax.set_xlabel(f"line B logical windows: {direction}")
+        ax.set_ylabel(f"line A logical windows: {direction}, top → bottom")
+        coordinate_label = "training/logical order"
+    else:
+        ax.set_xlabel("line B physical windows: left → right")
+        ax.set_ylabel("line A physical windows: left → right, top → bottom")
+        coordinate_label = "physical coordinates"
     ax.set_title(
-        f"{heatmap_label} | physical coordinates | bridge≤{getattr(component_path, 'bridge_limit', 0)}"
+        f"{heatmap_label} | {coordinate_label} | bridge≤{getattr(component_path, 'bridge_limit', 0)}"
     )
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.07), ncol=2, fontsize=7)
     fig.colorbar(image, ax=ax, fraction=0.025, pad=0.015, label=heatmap_label)
