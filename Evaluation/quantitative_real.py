@@ -245,9 +245,15 @@ def _feature_cache(runtime, models, dataset_type: str, temp_root: Path | None = 
                 if temp_root is None:
                     raise ValueError("temp_root is required for real feature caching")
                 if resolved not in prepared:
-                    array = runtime.dataset.display_image(feature_path, "real")
+                    # Use the same deterministic crop/aspect-preserving RGB geometry
+                    # as training, then feed the already-prepared canvas through the
+                    # synthetic tensor transform so geometry is not applied twice.
+                    from Evaluation.yelda_geometry import prepare_line
+                    prepared_image, _geometry = prepare_line(
+                        feature_path, "real", "training"
+                    )
                     prepared_path = temp_root / f"real_{len(prepared):06d}.png"
-                    Image.fromarray(array).save(prepared_path)
+                    prepared_image.save(prepared_path)
                     prepared[resolved] = prepared_path
                 feature_path = prepared[resolved]
                 feature_dataset_type = "synthetic"
@@ -257,6 +263,129 @@ def _feature_cache(runtime, models, dataset_type: str, temp_root: Path | None = 
         return cache[key]
 
     return get
+
+
+def calibrate_sw_on_validation(runtime, models, pairs, args, output: Path) -> dict:
+    """Choose SW threshold/gap on validation-only controlled localization.
+
+    The calibration target is external and spatial: a known crop interval on a
+    real validation line.  Test pairs are never inspected during selection.
+    """
+    thresholds = _csv_values(args.sw_calibration_thresholds, float)
+    gaps = _csv_values(args.sw_calibration_gaps, float)
+    if not thresholds or not gaps:
+        raise ValueError("SW calibration thresholds/gaps must not be empty")
+
+    rng = np.random.default_rng(args.seed + 303)
+    line_paths = []
+    seen = set()
+    for pair in pairs:
+        for path in (pair.image1, pair.image2):
+            resolved = str(Path(path).resolve())
+            if resolved not in seen:
+                seen.add(resolved)
+                line_paths.append(Path(path))
+    random.Random(args.seed + 303).shuffle(line_paths)
+    line_paths = line_paths[: min(args.sw_calibration_lines, len(line_paths))]
+    if not line_paths:
+        raise RuntimeError("No validation lines available for SW calibration")
+
+    examples = []
+    with tempfile.TemporaryDirectory(prefix="sw_calibration_") as temp_dir:
+        temp_root = Path(temp_dir)
+        get_features = _feature_cache(runtime, models, "real", temp_root)
+        for example_id, line_path in enumerate(line_paths, start=1):
+            from Evaluation.yelda_geometry import prepare_line
+
+            prepared_image, _geometry = prepare_line(line_path, "real", "training")
+            array = np.asarray(prepared_image.convert("RGB"))
+            _height, width = array.shape[:2]
+            ink = _ink_mask(array)
+            crop_width = max(16, int(round(width * 0.30)))
+            gt_start = _crop_start(ink, crop_width, rng)
+            gt_end = min(width, gt_start + crop_width)
+            crop = array[:, gt_start:gt_end]
+            # Use a deterministic mild degradation so calibration is not a
+            # trivial pixel-identity lookup.
+            query = _padded_query(_degrade_crop(crop, "blur", rng))
+            query_path = temp_root / f"calibration_query_{example_id:05d}.png"
+            Image.fromarray(query).save(query_path)
+            query_features = runtime.utils.get_image_features(
+                models, query_path, "synthetic"
+            )
+            target_features = get_features(line_path)
+            examples.append(
+                (query_features, target_features, float(gt_start), float(gt_end), width)
+            )
+
+        rows = []
+        for threshold in thresholds:
+            for gap in gaps:
+                probe = SimpleNamespace(**vars(args))
+                probe.threshold = float(threshold)
+                probe.gap = float(gap)
+                ious = []
+                boundary_errors = []
+                for query_features, target_features, gt_start, gt_end, width in examples:
+                    aligned = _alignment(runtime, query_features, target_features, probe)
+                    region = aligned["region"]
+                    if region.empty:
+                        pred_start = pred_end = 0.0
+                    else:
+                        pred_start, pred_end = runtime.utils.patch_range_to_pixels(
+                            region.line2_start,
+                            region.line2_end + 1,
+                            aligned["line2_windows"],
+                            width,
+                            bool(models.image_model.use_flip),
+                        )
+                    ious.append(_interval_iou((pred_start, pred_end), (gt_start, gt_end)))
+                    boundary_errors.append(
+                        0.5 * (
+                            abs(pred_start - gt_start) + abs(pred_end - gt_end)
+                        )
+                    )
+                rows.append(
+                    {
+                        "threshold": float(threshold),
+                        "gap": float(gap),
+                        "validation_examples": len(examples),
+                        "mean_iou": _mean(ious),
+                        "median_iou": _median(ious),
+                        "success_iou_050": _mean(v >= 0.50 for v in ious),
+                        "mean_boundary_mae_px": _mean(boundary_errors),
+                    }
+                )
+
+    # Primary target is localization IoU. Ties prefer Success@0.50, then lower
+    # boundary error, then smaller absolute threshold/gap magnitude.
+    def rank_key(row):
+        return (
+            -float(row["mean_iou"] if row["mean_iou"] is not None else -1.0),
+            -float(row["success_iou_050"] if row["success_iou_050"] is not None else -1.0),
+            float(row["mean_boundary_mae_px"] if row["mean_boundary_mae_px"] is not None else 1e12),
+            abs(float(row["threshold"])),
+            abs(float(row["gap"])),
+        )
+
+    best = min(rows, key=rank_key)
+    for row in rows:
+        row["selected"] = int(
+            row["threshold"] == best["threshold"] and row["gap"] == best["gap"]
+        )
+    _write_csv(output / "sw_calibration.csv", rows)
+    return {
+        "split": "validation",
+        "examples": len(examples),
+        "objective": "maximize controlled-crop interval IoU",
+        "selected_threshold": float(best["threshold"]),
+        "selected_gap": float(best["gap"]),
+        "selected_mean_iou": best["mean_iou"],
+        "selected_success_iou_050": best["success_iou_050"],
+        "selected_boundary_mae_px": best["mean_boundary_mae_px"],
+        "threshold_candidates": thresholds,
+        "gap_candidates": gaps,
+    }
 
 
 def run_crop_localization(runtime, models, pairs, args, output: Path) -> tuple[list[dict], dict]:
@@ -284,7 +413,9 @@ def run_crop_localization(runtime, models, pairs, args, output: Path) -> tuple[l
         example_id = 0
         crop_id = 0
         for line_index, line_path in enumerate(line_paths, start=1):
-            array = runtime.dataset.display_image(line_path, "real")
+            from Evaluation.yelda_geometry import prepare_line
+            prepared_image, _geometry = prepare_line(line_path, "real", "training")
+            array = np.asarray(prepared_image.convert("RGB"))
             _height, width = array.shape[:2]
             ink = _ink_mask(array)
             border_values = np.concatenate(
@@ -707,22 +838,47 @@ def run_sparse_intervals(runtime, models, args, output: Path) -> tuple[list[dict
             )
             region = aligned["region"]
             if region.empty:
-                pred1 = pred2 = (0.0, 0.0)
+                pred1_canvas = pred2_canvas = (0.0, 0.0)
             else:
-                pred1 = runtime.utils.patch_range_to_pixels(
+                pred1_canvas = runtime.utils.patch_range_to_pixels(
                     region.line1_start,
                     region.line1_end + 1,
                     aligned["line1_windows"],
                     CANVAS_WIDTH,
                     bool(models.image_model.use_flip),
                 )
-                pred2 = runtime.utils.patch_range_to_pixels(
+                pred2_canvas = runtime.utils.patch_range_to_pixels(
                     region.line2_start,
                     region.line2_end + 1,
                     aligned["line2_windows"],
                     CANVAS_WIDTH,
                     bool(models.image_model.use_flip),
                 )
+
+            coordinate_space = str(
+                record.get("coordinate_space", "source")
+            ).strip().lower()
+            if coordinate_space in {"source", "source_image", "original"}:
+                from Evaluation.yelda_geometry import prepare_line, source_intervals
+
+                _prepared1, geometry1 = prepare_line(image1, "real", "training")
+                _prepared2, geometry2 = prepare_line(image2, "real", "training")
+                mapped1 = source_intervals([pred1_canvas], geometry1)
+                mapped2 = source_intervals([pred2_canvas], geometry2)
+                pred1 = tuple(mapped1[0]) if mapped1 else (0.0, 0.0)
+                pred2 = tuple(mapped2[0]) if mapped2 else (0.0, 0.0)
+                canonical_space = "source_image"
+            elif coordinate_space in {
+                "canvas", "evaluation_canvas", "preprocessed", "training_canvas"
+            }:
+                pred1, pred2 = pred1_canvas, pred2_canvas
+                canonical_space = "training_canvas_1024x128"
+            else:
+                raise ValueError(
+                    f"Unknown coordinate_space={coordinate_space!r}; "
+                    "use source or canvas"
+                )
+
             gt1 = (
                 float(record["line1_start_px"]),
                 float(record["line1_end_px"]),
@@ -750,6 +906,11 @@ def run_sparse_intervals(runtime, models, args, output: Path) -> tuple[list[dict
                     "pair_id": record.get("pair_id", index),
                     "image1": str(image1),
                     "image2": str(image2),
+                    "coordinate_space": canonical_space,
+                    "line1_pred_canvas_start_px": pred1_canvas[0],
+                    "line1_pred_canvas_end_px": pred1_canvas[1],
+                    "line2_pred_canvas_start_px": pred2_canvas[0],
+                    "line2_pred_canvas_end_px": pred2_canvas[1],
                     "line1_gt_start_px": gt1[0],
                     "line1_gt_end_px": gt1[1],
                     "line1_pred_start_px": pred1[0],
@@ -791,7 +952,9 @@ def run_sparse_intervals(runtime, models, args, output: Path) -> tuple[list[dict
         "both_success_iou_030": _mean(row["both_iou_030"] for row in rows),
         "both_success_iou_050": _mean(row["both_iou_050"] for row in rows),
         "both_success_iou_075": _mean(row["both_iou_075"] for row in rows),
-        "coordinate_system": "preprocessed 1024x128 evaluation canvas",
+        "coordinate_system": (
+            "source-image by default; per-record coordinate_space=canvas is supported"
+        ),
     }
     _write_csv(output / "sparse_intervals.csv", rows)
     return rows, summary
@@ -914,6 +1077,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--calibration-queries", type=int, default=40,
                         help="Validation-split queries used only to choose the classification threshold")
     parser.add_argument(
+        "--auto-calibrate-sw",
+        type=int,
+        choices=(0, 1),
+        default=1,
+        help="Select SW threshold/gap using validation-only controlled localization",
+    )
+    parser.add_argument("--sw-calibration-lines", type=int, default=20)
+    parser.add_argument(
+        "--sw-calibration-thresholds", default="0.0,0.15,0.30,0.45"
+    )
+    parser.add_argument(
+        "--sw-calibration-gaps", default="-0.15,-0.30,-0.45"
+    )
+    parser.add_argument(
         "--ranking-score",
         choices=("normalized_sw", "mean_cosine", "hybrid"),
         default="normalized_sw",
@@ -924,7 +1101,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--robustness-modes", default="blur,contrast,brightness,noise,horizontal_scale,vertical_shift,erosion,dilation")
     parser.add_argument("--min-ink", type=float, default=0.02)
     args = parser.parse_args()
-    for name in ("crop_lines", "crops_per_line", "retrieval_queries", "retrieval_pool_size", "calibration_queries", "cycle_pairs", "robustness_pairs"):
+    for name in ("crop_lines", "crops_per_line", "retrieval_queries", "retrieval_pool_size", "calibration_queries", "sw_calibration_lines", "cycle_pairs", "robustness_pairs"):
         if getattr(args, name) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
     return args
@@ -951,6 +1128,21 @@ def main() -> None:
         f"pairs={len(pairs)} split={args.real_split} labels={args.labels}",
         flush=True,
     )
+
+    requested_threshold = float(args.threshold)
+    requested_gap = float(args.gap)
+    sw_calibration = None
+    if int(args.auto_calibrate_sw) == 1:
+        sw_calibration = calibrate_sw_on_validation(
+            runtime, models, calibration_pairs, args, output
+        )
+        args.threshold = float(sw_calibration["selected_threshold"])
+        args.gap = float(sw_calibration["selected_gap"])
+        print(
+            "Locked validation-selected SW parameters for test: "
+            f"threshold={args.threshold:.4f} gap={args.gap:.4f}",
+            flush=True,
+        )
 
     _crop_rows, crop_summary = run_crop_localization(runtime, models, pairs, args, output)
     _retrieval_rows, _score_rows, retrieval_summary = run_retrieval(
@@ -989,6 +1181,9 @@ def main() -> None:
         "score_mode": args.score_mode,
         "threshold": args.threshold,
         "gap": args.gap,
+        "requested_threshold_before_calibration": requested_threshold,
+        "requested_gap_before_calibration": requested_gap,
+        "sw_alignment_calibration": sw_calibration,
         "seed": args.seed,
         "input_policy": {
             "zero_shot_preprocess": str(os.environ.get("ZERO_SHOT_PREPROCESS", "")),
