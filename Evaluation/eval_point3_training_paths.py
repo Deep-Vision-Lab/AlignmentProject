@@ -110,6 +110,14 @@ def _physical_window(sequence_index, count, *, width, window, stride, use_flip):
     return physical_index, float(left), float(right)
 
 
+def _source_interval_or_none(x0, x1, geometry):
+    """Map one canvas interval to source pixels, tolerating pure padding."""
+    mapped = source_intervals([[float(x0), float(x1)]], geometry)
+    if not mapped:
+        return None, None, False
+    return float(mapped[0][0]), float(mapped[0][1]), True
+
+
 def _write_image_text_path(
     path_file,
     path,
@@ -120,29 +128,49 @@ def _write_image_text_path(
     window_size,
     stride,
     use_flip,
+    sequence_indices,
+    total_window_count,
 ):
+    """Write DTW rows using original sequence indices after valid-token filtering."""
     width = int(geometry["canvas_width"])
-    count = int(effective_costs.shape[0])
+    if len(sequence_indices) != int(effective_costs.shape[0]):
+        raise ValueError(
+            "Filtered DTW row count does not match sequence-index mapping: "
+            f"rows={effective_costs.shape[0]} indices={len(sequence_indices)}"
+        )
     with path_file.open("w", newline="", encoding="utf-8") as handle:
         fields = [
-            "step", "sequence_window", "physical_window", "canvas_x0", "canvas_x1",
-            "source_x0", "source_x1", "letter_index", "letter", "cell_cost"
+            "step", "dtw_window_index", "sequence_window", "physical_window",
+            "canvas_x0", "canvas_x1", "source_x0", "source_x1",
+            "source_mapped", "letter_index", "letter", "cell_cost"
         ]
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         for step, (i, j) in enumerate(path):
+            sequence_index = int(sequence_indices[int(i)])
             physical, x0, x1 = _physical_window(
-                i, count, width=width, window=window_size, stride=stride, use_flip=use_flip
+                sequence_index,
+                int(total_window_count),
+                width=width,
+                window=window_size,
+                stride=stride,
+                use_flip=use_flip,
+                sequence_indices=valid_sequence_indices[-1],
+                total_window_count=total_window_counts[-1],
             )
-            source = source_intervals([[x0, x1]], geometry)[0]
+            source_x0, source_x1, source_mapped = _source_interval_or_none(
+                x0, x1, geometry
+            )
             writer.writerow({
                 "step": step,
-                "sequence_window": i,
+                "dtw_window_index": int(i),
+                "sequence_window": sequence_index,
                 "physical_window": physical,
                 "canvas_x0": x0,
                 "canvas_x1": x1,
-                "source_x0": source[0],
-                "source_x1": source[1],
+                "source_x0": source_x0,
+                "source_x1": source_x1,
+                "source_mapped": int(source_mapped),
                 "letter_index": j,
                 "letter": letters[j],
                 "cell_cost": float(effective_costs[i, j]),
@@ -169,43 +197,71 @@ def _write_image_image_path(
     window_size,
     stride,
     use_flip,
+    line1_sequence_indices,
+    line2_sequence_indices,
+    line1_total_window_count,
+    line2_total_window_count,
 ):
+    """Write image-image path with filtered DTW indices mapped to original windows."""
     n, m = similarity.shape
+    if len(line1_sequence_indices) != n or len(line2_sequence_indices) != m:
+        raise ValueError(
+            "Filtered image-image matrix does not match sequence-index maps: "
+            f"matrix={similarity.shape}, maps="
+            f"{len(line1_sequence_indices)},{len(line2_sequence_indices)}"
+        )
     with path_file.open("w", newline="", encoding="utf-8") as handle:
         fields = [
-            "step", "line1_sequence_window", "line1_physical_window",
-            "line1_canvas_x0", "line1_canvas_x1", "line1_source_x0", "line1_source_x1",
-            "line2_sequence_window", "line2_physical_window",
-            "line2_canvas_x0", "line2_canvas_x1", "line2_source_x0", "line2_source_x1",
+            "step",
+            "line1_dtw_window_index", "line1_sequence_window",
+            "line1_physical_window", "line1_canvas_x0", "line1_canvas_x1",
+            "line1_source_x0", "line1_source_x1", "line1_source_mapped",
+            "line2_dtw_window_index", "line2_sequence_window",
+            "line2_physical_window", "line2_canvas_x0", "line2_canvas_x1",
+            "line2_source_x0", "line2_source_x1", "line2_source_mapped",
             "cosine",
         ]
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         for step, (i, j) in enumerate(path):
+            seq1 = int(line1_sequence_indices[int(i)])
+            seq2 = int(line2_sequence_indices[int(j)])
             p1, a0, a1 = _physical_window(
-                i, n, width=int(geometry1["canvas_width"]), window=window_size,
-                stride=stride, use_flip=use_flip
+                seq1,
+                int(line1_total_window_count),
+                width=int(geometry1["canvas_width"]),
+                window=window_size,
+                stride=stride,
+                use_flip=use_flip,
             )
             p2, b0, b1 = _physical_window(
-                j, m, width=int(geometry2["canvas_width"]), window=window_size,
-                stride=stride, use_flip=use_flip
+                seq2,
+                int(line2_total_window_count),
+                width=int(geometry2["canvas_width"]),
+                window=window_size,
+                stride=stride,
+                use_flip=use_flip,
             )
-            s1 = source_intervals([[a0, a1]], geometry1)[0]
-            s2 = source_intervals([[b0, b1]], geometry2)[0]
+            s1x0, s1x1, s1mapped = _source_interval_or_none(a0, a1, geometry1)
+            s2x0, s2x1, s2mapped = _source_interval_or_none(b0, b1, geometry2)
             writer.writerow({
                 "step": step,
-                "line1_sequence_window": i,
+                "line1_dtw_window_index": int(i),
+                "line1_sequence_window": seq1,
                 "line1_physical_window": p1,
                 "line1_canvas_x0": a0,
                 "line1_canvas_x1": a1,
-                "line1_source_x0": s1[0],
-                "line1_source_x1": s1[1],
-                "line2_sequence_window": j,
+                "line1_source_x0": s1x0,
+                "line1_source_x1": s1x1,
+                "line1_source_mapped": int(s1mapped),
+                "line2_dtw_window_index": int(j),
+                "line2_sequence_window": seq2,
                 "line2_physical_window": p2,
                 "line2_canvas_x0": b0,
                 "line2_canvas_x1": b1,
-                "line2_source_x0": s2[0],
-                "line2_source_x1": s2[1],
+                "line2_source_x0": s2x0,
+                "line2_source_x1": s2x1,
+                "line2_source_mapped": int(s2mapped),
                 "cosine": float(similarity[i, j]),
             })
 
@@ -301,6 +357,8 @@ def main():
         prepared = []
         geometries = []
         bundles = []
+        valid_sequence_indices = []
+        total_window_counts = []
         for side in (1, 2):
             image, geometry = prepare_line(
                 getattr(pair, f"image{side}"),
@@ -318,10 +376,16 @@ def main():
                 raise FileNotFoundError(f"Missing transcript: {text_path}")
             text = text_path.read_text(encoding="utf-8")
             letters = _clean_letters(text)
-            visual = bundles[-1]["semantic"][0]
+            visual_full = bundles[-1]["semantic"][0]
             valid = bundles[-1]["token_valid"][0].bool()
-            if bool(valid.any()):
-                visual = visual[valid]
+            indices = torch.where(valid)[0]
+            if int(indices.numel()) == 0:
+                raise RuntimeError(
+                    f"No valid visual tokens for pair={pair.pair_id} side={side}"
+                )
+            valid_sequence_indices.append([int(v) for v in indices.tolist()])
+            total_window_counts.append(int(visual_full.shape[0]))
+            visual = visual_full[indices]
             with torch.inference_mode():
                 raw = letter_dtw_cost_matrix(P, models.text_model, visual, letters)
                 soft = _soft_dtw_cost_matrix(
@@ -374,10 +438,12 @@ def main():
                 encoding="utf-8",
             )
 
-        first = bundles[0]["semantic"][0]
-        second = bundles[1]["semantic"][0]
-        first = first[bundles[0]["token_valid"][0].bool()]
-        second = second[bundles[1]["token_valid"][0].bool()]
+        first = bundles[0]["semantic"][0][
+            torch.tensor(valid_sequence_indices[0], device=bundles[0]["semantic"].device)
+        ]
+        second = bundles[1]["semantic"][0][
+            torch.tensor(valid_sequence_indices[1], device=bundles[1]["semantic"].device)
+        ]
         similarity = compute_similarity(first, second).detach().cpu().numpy()
         image_path = _hard_image_image(similarity)
         np.save(pair_dir / "image_to_image_cosine.npy", similarity.astype(np.float32))
@@ -391,6 +457,10 @@ def main():
             window_size=window_size,
             stride=stride,
             use_flip=use_flip,
+            line1_sequence_indices=valid_sequence_indices[0],
+            line2_sequence_indices=valid_sequence_indices[1],
+            line1_total_window_count=total_window_counts[0],
+            line2_total_window_count=total_window_counts[1],
         )
         _heatmap(
             similarity,
@@ -436,6 +506,11 @@ def main():
         "hard_path_note": (
             "The saved image-to-letter hard path is the minimum-cost path under the "
             "same cell costs and transition penalties; training itself used Soft-DTW."
+        ),
+        "source_mapping_note": (
+            "DTW rows are mapped through the original pre-filter sequence index. "
+            "Windows entirely inside preprocessing padding are retained in the "
+            "diagnostic with source_mapped=0 and blank source coordinates."
         ),
         "image_to_image_note": (
             "Image-to-image hard DTW is a structural diagnostic and was not a training loss."
