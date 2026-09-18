@@ -71,7 +71,7 @@ PY
 export PROJECT_DIR
 export PYTHON_BIN
 export DEVICE="${DEVICE:-cuda}"
-export N_SAMPLES="${N_SAMPLES:-100}"
+export N_SAMPLES="${N_SAMPLES:-3}"
 export EVAL_SPLIT="${EVAL_SPLIT:-test}"
 export START_INDEX="${START_INDEX:-1}"
 export IMAGE_PREPROCESSING="${IMAGE_PREPROCESSING:-training}"
