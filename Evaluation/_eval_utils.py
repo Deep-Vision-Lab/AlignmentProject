@@ -428,6 +428,53 @@ def build_transform(dataset_type: str = "synthetic"):
     )
 
 
+def _visual_ink_ratios(
+    image: Image.Image,
+    *,
+    window_size: int,
+    stride: int,
+    expected_count: int,
+    use_flip: bool,
+    contrast_threshold: float = 0.08,
+) -> torch.Tensor:
+    """Estimate actual foreground occupancy for each physical RGB window.
+
+    This is evaluation metadata only. It does not alter visual embeddings.
+    Restoration checkpoints historically returned token-validity as ink;
+    on fixed-width lines that cannot suppress blank handwriting windows.
+    """
+    rgb = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+    gray = (
+        0.2989 * rgb[:, :, 0]
+        + 0.5870 * rgb[:, :, 1]
+        + 0.1140 * rgb[:, :, 2]
+    )
+    height, width = gray.shape
+    border_h = max(1, int(round(height * 0.05)))
+    border_w = max(1, int(round(width * 0.02)))
+    border = np.concatenate(
+        [
+            gray[:border_h].reshape(-1),
+            gray[-border_h:].reshape(-1),
+            gray[:, :border_w].reshape(-1),
+            gray[:, -border_w:].reshape(-1),
+        ]
+    )
+    background = float(np.median(border))
+    foreground = np.abs(gray - background) >= float(contrast_threshold)
+    ratios = []
+    for index in range(int(expected_count)):
+        left = index * int(stride)
+        right = min(width, left + int(window_size))
+        if left >= width or right <= left:
+            ratios.append(0.0)
+        else:
+            ratios.append(float(np.mean(foreground[:, left:right])))
+    if use_flip:
+        ratios.reverse()
+    return torch.tensor(ratios, dtype=torch.float32)
+
+
 def get_image_features(
     models: EvaluationModels,
     image_path: str | os.PathLike,
@@ -436,7 +483,8 @@ def get_image_features(
     with Image.open(image_path) as opened:
         image = opened.convert("RGB")
         original_size = image.size
-        tensor = build_transform(dataset_type)(image).unsqueeze(0).to(models.device)
+        model_image = build_transform(dataset_type)(image)
+        tensor = model_image.unsqueeze(0).to(models.device)
 
     with torch.no_grad():
         contextual, local, grouped, ink = models.image_model(
@@ -445,11 +493,36 @@ def get_image_features(
             return_grouped=True,
             return_ink=True,
         )
+
+    resolved_ink = ink[0].float().detach().cpu()
+    if (
+        str(models.config.get("architecture_family", ""))
+        == "restoration-positive-dtw-window-encoder"
+    ):
+        # Estimate occupancy on the exact post-transform RGB canvas used by
+        # the embeddings; this changes only SW blank-window metadata.
+        denorm = model_image.detach().cpu().clone()
+        mean = denorm.new_tensor(IMAGENET_MEAN).view(3, 1, 1)
+        std = denorm.new_tensor(IMAGENET_STD).view(3, 1, 1)
+        rgb_tensor = (denorm * std + mean).clamp(0.0, 1.0)
+        rgb_uint8 = (
+            rgb_tensor.permute(1, 2, 0).numpy() * 255.0
+        ).round().astype(np.uint8)
+        resolved_ink = _visual_ink_ratios(
+            Image.fromarray(rgb_uint8),
+            window_size=int(models.config.get("window_size", 32)),
+            stride=_compute_stride(models.config),
+            expected_count=int(contextual.shape[1]),
+            use_flip=bool(models.image_model.use_flip),
+            contrast_threshold=float(models.config.get("ink_contrast_threshold", 0.15))
+            * 0.5,
+        )
+
     return ImageFeatures(
         contextual=F.normalize(contextual[0].float(), p=2, dim=-1),
         local=F.normalize(local[0].float(), p=2, dim=-1),
         grouped=F.normalize(grouped[0].float(), p=2, dim=-1),
-        ink=ink[0].float(),
+        ink=resolved_ink.to(contextual.device),
         image_size=original_size,
     )
 
