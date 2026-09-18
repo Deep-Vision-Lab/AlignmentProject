@@ -900,6 +900,38 @@ def run_sparse_intervals(runtime, models, args, output: Path) -> tuple[list[dict
             center1 = abs(0.5 * sum(pred1) - 0.5 * sum(gt1))
             center2 = abs(0.5 * sum(pred2) - 0.5 * sum(gt2))
             center_error_px = 0.5 * (center1 + center2)
+
+            # Window errors are always defined on the model canvas, because one
+            # window stride is 16 canvas pixels. Source-image pixels can have a
+            # different scale after crop/aspect-preserving preprocessing.
+            if canonical_space == "source_image":
+                def _source_to_canvas(interval, geometry):
+                    return (
+                        float(geometry["offset_x"])
+                        + (float(interval[0]) - float(geometry["crop_left"]))
+                        * float(geometry["scale_x"]),
+                        float(geometry["offset_x"])
+                        + (float(interval[1]) - float(geometry["crop_left"]))
+                        * float(geometry["scale_x"]),
+                    )
+
+                gt1_canvas = _source_to_canvas(gt1, geometry1)
+                gt2_canvas = _source_to_canvas(gt2, geometry2)
+            else:
+                gt1_canvas, gt2_canvas = gt1, gt2
+
+            boundary_errors_canvas = [
+                abs(pred1_canvas[0] - gt1_canvas[0]),
+                abs(pred1_canvas[1] - gt1_canvas[1]),
+                abs(pred2_canvas[0] - gt2_canvas[0]),
+                abs(pred2_canvas[1] - gt2_canvas[1]),
+            ]
+            boundary_mae_windows = float(np.mean(boundary_errors_canvas)) / max(1, stride)
+            center1_canvas = abs(0.5 * sum(pred1_canvas) - 0.5 * sum(gt1_canvas))
+            center2_canvas = abs(0.5 * sum(pred2_canvas) - 0.5 * sum(gt2_canvas))
+            center_error_windows = (
+                0.5 * (center1_canvas + center2_canvas) / max(1, stride)
+            )
             rows.append(
                 {
                     "index": index,
@@ -924,9 +956,9 @@ def run_sparse_intervals(runtime, models, args, output: Path) -> tuple[list[dict
                     "mean_two_line_iou": pair_mean_iou,
                     "joint_iou_geometric": joint,
                     "boundary_mae_px": boundary_mae_px,
-                    "boundary_mae_windows": boundary_mae_px / max(1, stride),
+                    "boundary_mae_windows": boundary_mae_windows,
                     "center_error_px": center_error_px,
-                    "center_error_windows": center_error_px / max(1, stride),
+                    "center_error_windows": center_error_windows,
                     "both_iou_030": int(iou1 >= 0.30 and iou2 >= 0.30),
                     "both_iou_050": int(iou1 >= 0.50 and iou2 >= 0.50),
                     "both_iou_075": int(iou1 >= 0.75 and iou2 >= 0.75),
@@ -974,6 +1006,7 @@ def write_report(summary: dict, output: Path) -> None:
     sparse = summary.get("sparse_intervals")
     cycle = summary.get("cycle_consistency", {})
     robustness = summary.get("robustness", {})
+    sw_calibration = summary.get("sw_alignment_calibration") or {}
     lines = [
         "# Real quantitative alignment evaluation",
         "",
@@ -981,6 +1014,12 @@ def write_report(summary: dict, output: Path) -> None:
         f"- Backend: `{summary['model_backend']}`",
         f"- Split: `{summary['real_split']}`",
         f"- Labels: `{summary['labels']}`",
+        "",
+        "## Validation-only SW calibration",
+        "",
+        f"- Selected threshold: {_format_metric(sw_calibration.get('selected_threshold'))}",
+        f"- Selected gap penalty: {_format_metric(sw_calibration.get('selected_gap'))}",
+        f"- Validation mean crop IoU: {_format_metric(sw_calibration.get('selected_mean_iou'))}",
         "",
         "## Automatic crop localization",
         "",
