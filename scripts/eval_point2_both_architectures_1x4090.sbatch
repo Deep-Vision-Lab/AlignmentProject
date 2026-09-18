@@ -23,30 +23,22 @@ mkdir -p out
   exit 2
 }
 
-# Slurm should own GPU visibility inside the batch job. A stale
-# CUDA_VISIBLE_DEVICES inherited from the submit shell can make CUDA count a
-# device through NVML but fail runtime initialization. Record the incoming
-# state, then prefer Slurm's explicit single-GPU mapping before Python imports
-# torch.
-echo "GPU environment before normalization:"
+# IMPORTANT: Do not remap CUDA_VISIBLE_DEVICES from SLURM_JOB_GPUS or
+# SLURM_STEP_GPUS on this cluster.
+#
+# Slurm/cgroup GPU isolation already exposes the allocated physical GPU as a
+# job-local logical device, normally CUDA device 0.  For example, a job may
+# report SLURM_JOB_GPUS=2 while CUDA_VISIBLE_DEVICES=0 and nvidia-smi -L shows
+# exactly one GPU as GPU 0.  Replacing CUDA_VISIBLE_DEVICES with the physical or
+# step index would hide the only device from CUDA.
+#
+# Therefore preserve the CUDA_VISIBLE_DEVICES value Slurm installed for the
+# batch job exactly as-is.
+echo "GPU environment (preserved from Slurm):"
 echo "  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-<unset>}"
 echo "  SLURM_JOB_GPUS=${SLURM_JOB_GPUS-<unset>}"
 echo "  SLURM_STEP_GPUS=${SLURM_STEP_GPUS-<unset>}"
 echo "  SLURM_GPU_INDEX=${SLURM_GPU_INDEX-<unset>}"
-
-_slurm_gpu=""
-for _candidate in "${SLURM_STEP_GPUS-}" "${SLURM_JOB_GPUS-}" "${SLURM_GPU_INDEX-}"; do
-  if [[ "${_candidate}" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
-    _slurm_gpu="${_candidate%%,*}"
-    break
-  fi
-done
-if [[ -n "${_slurm_gpu}" ]]; then
-  export CUDA_VISIBLE_DEVICES="${_slurm_gpu}"
-fi
-
-echo "GPU environment after normalization:"
-echo "  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-<unset>}"
 
 if command -v nvidia-smi >/dev/null 2>&1; then
   echo "nvidia-smi -L:"
@@ -69,8 +61,9 @@ print("  device_count         =", torch.cuda.device_count())
 print("  is_available         =", torch.cuda.is_available())
 if not torch.cuda.is_available():
     raise SystemExit(
-        "CUDA preflight failed. If nvidia-smi above also failed, this is a node/driver allocation issue. "
-        "If nvidia-smi worked, inspect CUDA_VISIBLE_DEVICES and the PyTorch CUDA runtime."
+        "CUDA preflight failed. Slurm GPU visibility was preserved exactly. "
+        "If nvidia-smi above sees the allocated GPU but torch still cannot initialize CUDA, "
+        "this is a node/runtime issue rather than a remapping issue."
     )
 print("  device 0             =", torch.cuda.get_device_name(0))
 PY
