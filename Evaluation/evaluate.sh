@@ -208,6 +208,32 @@ python -m py_compile \
   Evaluation/point3_spatial_metrics.py \
   Evaluation/eval_point6_window_neighbors.py
 
+
+# Exercise one complete visual forward under inference_mode before the expensive
+# evaluation starts. This specifically catches the PyTorch-2.0 odd-head native
+# MHA incompatibility and checkpoint reconstruction problems immediately.
+WEIGHTS="${WEIGHTS}" python - <<'PY'
+import os
+import torch
+from Evaluation._eval_utils import load_evaluation_models
+
+models = load_evaluation_models(
+    os.environ["WEIGHTS"], device="cuda", load_text_model=False
+)
+dummy = torch.zeros((1, 3, 128, 1024), device=models.device)
+with torch.inference_mode():
+    contextual, local, grouped, ink = models.image_model(
+        dummy, return_local=True, return_grouped=True, return_ink=True
+    )
+print(
+    "Visual forward preflight: OK",
+    "contextual=", tuple(contextual.shape),
+    "local=", tuple(local.shape),
+    "grouped=", tuple(grouped.shape),
+    "ink=", tuple(ink.shape),
+)
+PY
+
 print_config
 mkdir -p "${RESULTS_ROOT}"
 
