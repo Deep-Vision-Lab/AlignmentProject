@@ -276,88 +276,118 @@ def run_crop_localization(runtime, models, pairs, args, output: Path) -> tuple[l
     if not fractions or not degradations:
         raise ValueError("crop_fractions and degradations must not be empty")
 
+    stride = int(models.config.get("stride", 16))
     rows: list[dict] = []
     with tempfile.TemporaryDirectory(prefix="real_crop_quant_") as temp_dir:
         temp_root = Path(temp_dir)
         real_features = _feature_cache(runtime, models, "real", temp_root)
         example_id = 0
+        crop_id = 0
         for line_index, line_path in enumerate(line_paths, start=1):
             array = runtime.dataset.display_image(line_path, "real")
             _height, width = array.shape[:2]
             ink = _ink_mask(array)
-            background = int(np.median(np.concatenate((array[0].reshape(-1), array[-1].reshape(-1)))))
+            border_values = np.concatenate(
+                (array[0].reshape(-1), array[-1].reshape(-1))
+            )
+            background = int(np.median(border_values))
             target_features = real_features(line_path)
-            for _local_index in range(args.crops_per_line):
-                example_id += 1
-                fraction = fractions[(example_id - 1) % len(fractions)]
-                degradation = degradations[(example_id - 1) % len(degradations)]
+            for local_index in range(args.crops_per_line):
+                crop_id += 1
+                fraction = fractions[local_index % len(fractions)]
                 crop_width = max(16, int(round(width * fraction)))
                 gt_start = _crop_start(ink, crop_width, rng)
                 gt_end = min(width, gt_start + crop_width)
-                crop = array[:, gt_start:gt_end]
-                crop = _degrade_crop(crop, degradation, rng)
-                query = _padded_query(crop, background=background)
-                query_path = temp_root / f"query_{example_id:06d}.png"
-                Image.fromarray(query).save(query_path)
-                query_features = runtime.utils.get_image_features(models, query_path, "synthetic")
-                aligned = _alignment(runtime, query_features, target_features, args)
-                region = aligned["region"]
-                if region.empty:
-                    pred_start = pred_end = 0.0
-                else:
-                    pred_start, pred_end = runtime.utils.patch_range_to_pixels(
-                        region.line2_start,
-                        region.line2_end + 1,
-                        aligned["line2_windows"],
-                        width,
-                        bool(models.image_model.use_flip),
+                clean_crop = array[:, gt_start:gt_end]
+                for degradation in degradations:
+                    example_id += 1
+                    crop = _degrade_crop(clean_crop, degradation, rng)
+                    query = _padded_query(crop, background=background)
+                    query_path = temp_root / f"query_{example_id:06d}.png"
+                    Image.fromarray(query).save(query_path)
+                    query_features = runtime.utils.get_image_features(
+                        models, query_path, "synthetic"
                     )
-                iou = _interval_iou((pred_start, pred_end), (gt_start, gt_end))
-                boundary_error = (abs(pred_start - gt_start) + abs(pred_end - gt_end)) / 2.0
-                center_error = abs((pred_start + pred_end - gt_start - gt_end) / 2.0)
-                rows.append(
-                    {
-                        "example_id": example_id,
-                        "line_index": line_index,
-                        "image": str(line_path),
-                        "crop_fraction": float(fraction),
-                        "degradation": degradation,
-                        "gt_start_px": float(gt_start),
-                        "gt_end_px": float(gt_end),
-                        "pred_start_px": float(pred_start),
-                        "pred_end_px": float(pred_end),
-                        "interval_iou": iou,
-                        "boundary_mae_px": float(boundary_error),
-                        "boundary_mae_normalized": float(boundary_error / max(1, width)),
-                        "center_error_px": float(center_error),
-                        "center_error_normalized": float(center_error / max(1, width)),
-                        "sw_score": aligned["score"],
-                        "normalized_sw_score": aligned["normalized_score"],
-                        "mean_path_cosine": aligned["mean_path_cosine"],
-                        "path_steps": int(region.path_steps),
-                        "target_windows": aligned["line2_windows"],
-                        "score_mode": aligned["score_mode"],
-                    }
-                )
-                print(
-                    f"crop {example_id}: iou={iou:.3f} boundary={boundary_error:.1f}px "
-                    f"fraction={fraction:.2f} degradation={degradation}",
-                    flush=True,
-                )
+                    aligned = _alignment(
+                        runtime, query_features, target_features, args
+                    )
+                    region = aligned["region"]
+                    if region.empty:
+                        pred_start = pred_end = 0.0
+                    else:
+                        pred_start, pred_end = runtime.utils.patch_range_to_pixels(
+                            region.line2_start,
+                            region.line2_end + 1,
+                            aligned["line2_windows"],
+                            width,
+                            bool(models.image_model.use_flip),
+                        )
+                    iou = _interval_iou(
+                        (pred_start, pred_end), (gt_start, gt_end)
+                    )
+                    boundary_error = (
+                        abs(pred_start - gt_start) + abs(pred_end - gt_end)
+                    ) / 2.0
+                    center_error = abs(
+                        (pred_start + pred_end - gt_start - gt_end) / 2.0
+                    )
+                    rows.append(
+                        {
+                            "example_id": example_id,
+                            "crop_id": crop_id,
+                            "line_index": line_index,
+                            "image": str(line_path),
+                            "crop_fraction": float(fraction),
+                            "degradation": degradation,
+                            "gt_start_px": float(gt_start),
+                            "gt_end_px": float(gt_end),
+                            "pred_start_px": float(pred_start),
+                            "pred_end_px": float(pred_end),
+                            "interval_iou": iou,
+                            "boundary_mae_px": float(boundary_error),
+                            "boundary_mae_windows": float(boundary_error / max(1, stride)),
+                            "boundary_mae_normalized": float(boundary_error / max(1, width)),
+                            "center_error_px": float(center_error),
+                            "center_error_windows": float(center_error / max(1, stride)),
+                            "center_error_normalized": float(center_error / max(1, width)),
+                            "sw_score": aligned["score"],
+                            "normalized_sw_score": aligned["normalized_score"],
+                            "mean_path_cosine": aligned["mean_path_cosine"],
+                            "path_steps": int(region.path_steps),
+                            "target_windows": aligned["line2_windows"],
+                            "score_mode": aligned["score_mode"],
+                        }
+                    )
+                    print(
+                        f"crop {example_id}: iou={iou:.3f} "
+                        f"boundary={boundary_error:.1f}px "
+                        f"fraction={fraction:.2f} degradation={degradation}",
+                        flush=True,
+                    )
 
     def summarize(items):
         return {
             "examples": len(items),
+            "unique_crops": len({row["crop_id"] for row in items}),
             "mean_iou": _mean(row["interval_iou"] for row in items),
             "median_iou": _median(row["interval_iou"] for row in items),
             "success_iou_030": _mean(row["interval_iou"] >= 0.30 for row in items),
             "success_iou_050": _mean(row["interval_iou"] >= 0.50 for row in items),
             "success_iou_070": _mean(row["interval_iou"] >= 0.70 for row in items),
             "mean_boundary_mae_px": _mean(row["boundary_mae_px"] for row in items),
+            "mean_boundary_mae_windows": _mean(
+                row["boundary_mae_windows"] for row in items
+            ),
             "mean_center_error_px": _mean(row["center_error_px"] for row in items),
+            "mean_center_error_windows": _mean(
+                row["center_error_windows"] for row in items
+            ),
         }
 
     summary = summarize(rows)
+    summary["benchmark_type"] = "controlled_same_line_crop_relocalization"
+    summary["cross_manuscript_localization"] = False
+    summary["window_stride_px"] = stride
     summary["by_degradation"] = {
         mode: summarize([row for row in rows if row["degradation"] == mode])
         for mode in degradations
@@ -370,7 +400,6 @@ def run_crop_localization(runtime, models, pairs, args, output: Path) -> tuple[l
     }
     _write_csv(output / "crop_localization.csv", rows)
     return rows, summary
-
 
 def _roc_auc(labels: Sequence[int], scores: Sequence[float]) -> float | None:
     positives = [score for label, score in zip(labels, scores) if int(label) == 1]
@@ -661,12 +690,19 @@ def run_sparse_intervals(runtime, models, args, output: Path) -> tuple[list[dict
     manifest = Path(args.interval_manifest)
     records = _manifest_records(manifest)
     rows = []
+    stride = int(models.config.get("stride", 16))
     with tempfile.TemporaryDirectory(prefix="real_sparse_quant_") as temp_dir:
         get_features = _feature_cache(runtime, models, "real", Path(temp_dir))
         for index, record in enumerate(records, start=1):
-            image1 = _resolve_annotation_path(str(record["image1"]), manifest, Path(args.real_data_dir))
-            image2 = _resolve_annotation_path(str(record["image2"]), manifest, Path(args.real_data_dir))
-            aligned = _alignment(runtime, get_features(image1), get_features(image2), args)
+            image1 = _resolve_annotation_path(
+                str(record["image1"]), manifest, Path(args.real_data_dir)
+            )
+            image2 = _resolve_annotation_path(
+                str(record["image2"]), manifest, Path(args.real_data_dir)
+            )
+            aligned = _alignment(
+                runtime, get_features(image1), get_features(image2), args
+            )
             region = aligned["region"]
             if region.empty:
                 pred1 = pred2 = (0.0, 0.0)
@@ -685,10 +721,27 @@ def run_sparse_intervals(runtime, models, args, output: Path) -> tuple[list[dict
                     CANVAS_WIDTH,
                     bool(models.image_model.use_flip),
                 )
-            gt1 = (float(record["line1_start_px"]), float(record["line1_end_px"]))
-            gt2 = (float(record["line2_start_px"]), float(record["line2_end_px"]))
+            gt1 = (
+                float(record["line1_start_px"]),
+                float(record["line1_end_px"]),
+            )
+            gt2 = (
+                float(record["line2_start_px"]),
+                float(record["line2_end_px"]),
+            )
             iou1, iou2 = _interval_iou(pred1, gt1), _interval_iou(pred2, gt2)
+            pair_mean_iou = 0.5 * (iou1 + iou2)
             joint = math.sqrt(max(0.0, iou1 * iou2))
+            boundary_errors = [
+                abs(pred1[0] - gt1[0]),
+                abs(pred1[1] - gt1[1]),
+                abs(pred2[0] - gt2[0]),
+                abs(pred2[1] - gt2[1]),
+            ]
+            boundary_mae_px = float(np.mean(boundary_errors))
+            center1 = abs(0.5 * sum(pred1) - 0.5 * sum(gt1))
+            center2 = abs(0.5 * sum(pred2) - 0.5 * sum(gt2))
+            center_error_px = 0.5 * (center1 + center2)
             rows.append(
                 {
                     "index": index,
@@ -705,25 +758,41 @@ def run_sparse_intervals(runtime, models, args, output: Path) -> tuple[list[dict
                     "line2_pred_start_px": pred2[0],
                     "line2_pred_end_px": pred2[1],
                     "line2_iou": iou2,
-                    "joint_iou": joint,
+                    "mean_two_line_iou": pair_mean_iou,
+                    "joint_iou_geometric": joint,
+                    "boundary_mae_px": boundary_mae_px,
+                    "boundary_mae_windows": boundary_mae_px / max(1, stride),
+                    "center_error_px": center_error_px,
+                    "center_error_windows": center_error_px / max(1, stride),
                     "both_iou_030": int(iou1 >= 0.30 and iou2 >= 0.30),
                     "both_iou_050": int(iou1 >= 0.50 and iou2 >= 0.50),
+                    "both_iou_075": int(iou1 >= 0.75 and iou2 >= 0.75),
                     "normalized_sw_score": aligned["normalized_score"],
                     "mean_path_cosine": aligned["mean_path_cosine"],
                 }
             )
     summary = {
+        "benchmark_type": "sparse_manual_cross_line_intervals",
         "annotations": len(rows),
+        "window_stride_px": stride,
         "mean_line1_iou": _mean(row["line1_iou"] for row in rows),
         "mean_line2_iou": _mean(row["line2_iou"] for row in rows),
-        "mean_joint_iou": _mean(row["joint_iou"] for row in rows),
+        "mean_two_line_iou": _mean(row["mean_two_line_iou"] for row in rows),
+        "mean_joint_iou_geometric": _mean(
+            row["joint_iou_geometric"] for row in rows
+        ),
+        "mean_boundary_mae_px": _mean(row["boundary_mae_px"] for row in rows),
+        "mean_boundary_mae_windows": _mean(
+            row["boundary_mae_windows"] for row in rows
+        ),
+        "mean_center_error_px": _mean(row["center_error_px"] for row in rows),
         "both_success_iou_030": _mean(row["both_iou_030"] for row in rows),
         "both_success_iou_050": _mean(row["both_iou_050"] for row in rows),
+        "both_success_iou_075": _mean(row["both_iou_075"] for row in rows),
         "coordinate_system": "preprocessed 1024x128 evaluation canvas",
     }
     _write_csv(output / "sparse_intervals.csv", rows)
     return rows, summary
-
 
 def _format_metric(value) -> str:
     if value is None:
@@ -807,8 +876,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--threshold", type=float, default=0.45)
     parser.add_argument("--gap", type=float, default=-0.30)
     parser.add_argument("--crop-lines", type=int, default=80)
-    parser.add_argument("--crops-per-line", type=int, default=3)
-    parser.add_argument("--crop-fractions", default="0.20,0.35,0.50")
+    parser.add_argument("--crops-per-line", type=int, default=5)
+    parser.add_argument("--crop-fractions", default="0.10,0.20,0.30,0.40,0.50")
     parser.add_argument("--degradations", default="none,blur,contrast,noise,morphology")
     parser.add_argument("--retrieval-queries", type=int, default=80)
     parser.add_argument("--retrieval-pool-size", type=int, default=20)
