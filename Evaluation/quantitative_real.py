@@ -582,6 +582,7 @@ def run_retrieval(
     models,
     pairs,
     calibration_pairs,
+    calibration_split: str,
     args,
     output: Path,
 ) -> tuple[list[dict], list[dict], dict]:
@@ -602,7 +603,7 @@ def run_retrieval(
         args,
         seed_offset=1017,
         query_limit=calibration_query_limit,
-        label="validation",
+        label=f"calibration_{calibration_split}",
     )
 
     test_labels = [int(row["is_positive"]) for row in score_rows]
@@ -617,9 +618,10 @@ def run_retrieval(
     threshold = _best_f1_threshold(calibration_labels, calibration_scores)
     eer, eer_threshold = _equal_error_rate(test_labels, test_scores)
     discrimination = {
-        "threshold_source": "validation_split",
-        "validation_queries": calibration_query_limit,
-        "validation_comparisons": len(calibration_labels),
+        "threshold_source": f"{calibration_split}_split",
+        "calibration_split": calibration_split,
+        "calibration_queries": calibration_query_limit,
+        "calibration_comparisons": len(calibration_labels),
         "test_comparisons": len(test_labels),
         "auroc": _roc_auc(test_labels, test_scores),
         "auprc": _average_precision(test_labels, test_scores),
@@ -843,7 +845,8 @@ def write_report(summary: dict, output: Path) -> None:
                 "## Sparse real intervals",
                 "",
                 f"- Annotations: {_format_metric(sparse.get('annotations'))}",
-                f"- Mean joint IoU: {_format_metric(sparse.get('mean_joint_iou'))}",
+                f"- Mean two-line IoU: {_format_metric(sparse.get('mean_two_line_iou'))}",
+                f"- Geometric JointIoU: {_format_metric(sparse.get('mean_joint_iou_geometric'))}",
                 f"- Both lines Success@0.50: {_format_metric(sparse.get('both_success_iou_050'))}",
             ]
         )
@@ -936,7 +939,13 @@ def main() -> None:
         args.weights, device=args.device, load_text_model=False
     )
     pairs = _load_pairs(runtime, args)
-    calibration_pairs = _load_pairs(runtime, args, split="valid")
+    if args.real_split == "all":
+        raise ValueError(
+            "Quantitative pair discrimination requires a held-out split; "
+            "use --real-split test (recommended), valid, or train instead of all."
+        )
+    calibration_split = "train" if args.real_split == "valid" else "valid"
+    calibration_pairs = _load_pairs(runtime, args, split=calibration_split)
     print(
         f"quantitative_real backend={models.config.get('model_backend', 'cnn_bilstm')} "
         f"pairs={len(pairs)} split={args.real_split} labels={args.labels}",
@@ -945,7 +954,7 @@ def main() -> None:
 
     _crop_rows, crop_summary = run_crop_localization(runtime, models, pairs, args, output)
     _retrieval_rows, _score_rows, retrieval_summary = run_retrieval(
-        runtime, models, pairs, calibration_pairs, args, output
+        runtime, models, pairs, calibration_pairs, calibration_split, args, output
     )
     _sparse_rows, sparse_summary = run_sparse_intervals(runtime, models, args, output)
 
@@ -974,12 +983,21 @@ def main() -> None:
         "real_split": args.real_split,
         "labels": args.labels,
         "available_pairs": len(pairs),
-        "validation_calibration_pairs": len(calibration_pairs),
+        "calibration_split": calibration_split,
+        "calibration_pairs": len(calibration_pairs),
         "feature": args.feature,
         "score_mode": args.score_mode,
         "threshold": args.threshold,
         "gap": args.gap,
         "seed": args.seed,
+        "input_policy": {
+            "zero_shot_preprocess": str(os.environ.get("ZERO_SHOT_PREPROCESS", "")),
+            "real_binarize": str(os.environ.get("REAL_BINARIZE", "")),
+            "preserve_aspect": str(os.environ.get("ZERO_SHOT_PRESERVE_ASPECT", "")),
+            "foreground_crop": str(os.environ.get("ZERO_SHOT_FOREGROUND_CROP", "")),
+            "line_height": int(os.environ.get("LINE_HEIGHT", "128")),
+            "line_width": int(os.environ.get("LINE_WIDTH", "1024")),
+        },
         "crop_localization": crop_summary,
         "retrieval": retrieval_summary,
         "sparse_intervals": sparse_summary,
