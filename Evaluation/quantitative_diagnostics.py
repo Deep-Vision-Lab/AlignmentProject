@@ -68,7 +68,9 @@ def run_cycle_consistency(runtime, models, pairs, args, output: Path):
     selected = selected[: min(args.cycle_pairs, len(selected))]
     rows = []
     with tempfile.TemporaryDirectory(prefix="cycle_quant_") as tmp:
-        get_features = _feature_cache(runtime, models, "real", Path(tmp))
+        get_features = _feature_cache(
+            runtime, models, "real", Path(tmp), args.image_preprocessing
+        )
         for order, pair in enumerate(selected, start=1):
             left = get_features(pair.image1)
             right = get_features(pair.image2)
@@ -203,13 +205,19 @@ def run_robustness(runtime, models, pairs, args, output: Path):
 
     with tempfile.TemporaryDirectory(prefix="robustness_quant_") as tmp:
         root = Path(tmp)
-        get_features = _feature_cache(runtime, models, "real", root)
+        get_features = _feature_cache(
+            runtime, models, "real", root, args.image_preprocessing
+        )
         for order, pair in enumerate(selected, start=1):
             left_features = get_features(pair.image1)
             right_features = get_features(pair.image2)
             baseline = _alignment(runtime, left_features, right_features, args)
             base_left, base_right = _region_intervals(runtime, models, baseline)
-            line2 = runtime.dataset.display_image(pair.image2, "real")
+            from Evaluation.yelda_geometry import prepare_line
+            prepared_line2, _geometry = prepare_line(
+                pair.image2, "real", args.image_preprocessing
+            )
+            line2 = np.asarray(prepared_line2.convert("RGB"))
             score_values = [float(baseline["normalized_score"])]
             path_lengths = [len(baseline["path"])]
             pair_rows = []
