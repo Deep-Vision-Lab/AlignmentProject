@@ -129,7 +129,10 @@ PY
   tests/test_restoration_positive_dtw.py
 
 DATASET="${DATASET}" "${PYTHON_BIN}" - <<'PY'
+import math
 import os
+import random
+from collections import defaultdict
 from pathlib import Path
 
 from RealDataSet import ArabicManifestIndependentLineDataset
@@ -141,10 +144,38 @@ dataset = ArabicManifestIndependentLineDataset(
     text_key="text_original_path",
     validate_paths=False,
 )
+
+groups = defaultdict(list)
+for index, sample in enumerate(dataset.samples):
+    groups[str(sample["pair_id"])].append(index)
+group_ids = list(groups)
+random.Random(42).shuffle(group_ids)
+train_target = int(0.6 * len(dataset))
+valid_target = int(0.2 * len(dataset))
+train = []
+valid = []
+test = []
+for group_id in group_ids:
+    if len(train) < train_target:
+        train.extend(groups[group_id])
+    elif len(valid) < valid_target:
+        valid.extend(groups[group_id])
+    else:
+        test.extend(groups[group_id])
+
+world_size = 2
+batch_size_per_rank = 32
+samples_per_rank = math.ceil(len(train) / world_size)
+expected_batches = math.ceil(samples_per_rank / batch_size_per_rank)
+
 print("Independent-line dataset census:")
-print("  unique lines =", len(dataset))
-print("  source pages =", len({sample["pair_id"] for sample in dataset.samples}))
-print("  objective    = each line vs its own transcript; pair labels unused")
+print("  unique lines       =", len(dataset))
+print("  source pages       =", len(groups))
+print("  train/valid/test   =", len(train), len(valid), len(test))
+print("  batch size / rank  =", batch_size_per_rank)
+print("  DDP world size     =", world_size)
+print("  expected train batches / rank =", expected_batches)
+print("  objective          = each line vs its own transcript; pair labels unused")
 PY
 
 # Save a few transformed ArabicDataset examples before spending GPU time.
