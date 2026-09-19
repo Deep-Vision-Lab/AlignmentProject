@@ -1,6 +1,7 @@
 """Full-image RGB or training preprocessing, with source-mask coordinates."""
 from __future__ import annotations
 
+import os
 import numpy as np
 from PIL import Image, ImageOps
 
@@ -114,6 +115,69 @@ def _crop_resize_fixed_1024(
     return resized, geometry
 
 
+
+def _wide_side_padding_1024(
+    image: Image.Image,
+    *,
+    side_padding_px: int = 144,
+    target_width: int = 1024,
+    target_height: int = 128,
+    target_ink_height: int = 92,
+):
+    """Training-like crop/aspect resize with guaranteed wide white side margins.
+
+    The foreground crop matches the training preprocessor. The only intentional
+    ablation is a maximum content width of target_width - 2*side_padding_px.
+    This guarantees at least side_padding_px of white canvas on both left and
+    right while retaining RGB, aspect ratio, and the 1024x128 model canvas.
+    """
+    source = image.convert("RGB")
+    cropped, metadata = preprocessing.foreground_crop_with_metadata(source)
+
+    side_padding_px = max(0, min(int(side_padding_px), (int(target_width) - 32) // 2))
+    max_content_width = max(32, int(target_width) - 2 * side_padding_px)
+
+    scale = min(
+        float(target_ink_height) / max(1.0, float(cropped.height)),
+        float(max_content_width) / max(1.0, float(cropped.width)),
+    )
+    new_width = max(1, min(max_content_width, int(round(cropped.width * scale))))
+    new_height = max(1, min(int(target_height), int(round(cropped.height * scale))))
+    resized = cropped.resize((new_width, new_height), Image.Resampling.BILINEAR)
+
+    canvas = Image.new("RGB", (int(target_width), int(target_height)), color=(255, 255, 255))
+    offset_x = (int(target_width) - new_width) // 2
+    offset_y = (int(target_height) - new_height) // 2
+    canvas.paste(resized, (offset_x, offset_y))
+
+    geometry = dict(metadata)
+    geometry.update(
+        {
+            "scale_x": float(new_width / max(1, cropped.width)),
+            "scale_y": float(new_height / max(1, cropped.height)),
+            "resize_scale": float(scale),
+            "resized_width": int(new_width),
+            "resized_height": int(new_height),
+            "offset_x": int(offset_x),
+            "offset_y": int(offset_y),
+            "canvas_width": int(target_width),
+            "canvas_height": int(target_height),
+            "binarize": False,
+            "crop_foreground": True,
+            "preserve_aspect": True,
+            "artificial_padding": True,
+            "image_preprocessing": "wide_side_padding",
+            "color_mode": "RGB",
+            "requested_min_side_padding_px": int(side_padding_px),
+            "actual_left_padding_px": int(offset_x),
+            "actual_right_padding_px": int(target_width - (offset_x + new_width)),
+            "target_ink_height_pixels": int(target_ink_height),
+            "autocontrast": False,
+            "auto_invert": False,
+        }
+    )
+    return canvas, geometry
+
 def prepare_line(path, domain, image_preprocessing="original"):
     with Image.open(path) as opened:
         original = opened.convert("RGB")
@@ -127,6 +191,15 @@ def prepare_line(path, domain, image_preprocessing="original"):
             metadata,
             target_width=1024,
             target_height=128,
+        )
+    if image_preprocessing == "wide_side_padding":
+        side_padding = int(os.environ.get("EVAL_SIDE_PADDING_PX", "144"))
+        return _wide_side_padding_1024(
+            original,
+            side_padding_px=side_padding,
+            target_width=1024,
+            target_height=128,
+            target_ink_height=92,
         )
     if image_preprocessing == "original":
         # Keep every source pixel in the field of view. Do not use the training
@@ -146,7 +219,7 @@ def prepare_line(path, domain, image_preprocessing="original"):
     if image_preprocessing != "training":
         raise ValueError(
             f"Unknown image preprocessing: {image_preprocessing}; "
-            "use original, training, tight, or cropped_1024"
+            "use original, training, tight, cropped_1024, or wide_side_padding"
         )
     processor = preprocessing.build_preprocessor(domain, training=False)
     if hasattr(processor, "preprocess_with_metadata"):
