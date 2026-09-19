@@ -17,6 +17,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import random
 import tempfile
 from dataclasses import dataclass
@@ -256,6 +257,10 @@ def main():
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--image-preprocessing", choices=("original", "training"), default="original")
     args = ap.parse_args()
+
+    os.environ["EVAL_TIGHT_NO_PADDING"] = (
+        "1" if args.image_preprocessing == "tight" else "0"
+    )
 
     output = Path(args.output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
