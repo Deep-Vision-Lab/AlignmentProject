@@ -132,43 +132,69 @@ def _weighted_mass_bounds(weights: np.ndarray, low=0.001, high=0.999):
 
 
 def foreground_detection_mask_with_metadata(image: Image.Image):
-    """Build a TEMPORARY robust foreground mask without changing RGB pixels.
+    """Build a TEMPORARY adaptive foreground mask without changing RGB pixels.
 
-    Real manuscript scans contain border speckles and paper texture.  A raw
-    min/max over all thresholded pixels lets one outlier force a full-image
-    crop.  Instead, estimate the paper intensity from the border, threshold the
-    absolute contrast from that paper value, then use foreground-mass quantiles
-    to ignore isolated outliers.  The mask is for geometry only.
+    Manuscript paper is not a flat color: illumination, stains and page texture
+    can differ strongly from one side of a line crop to the other. A single
+    global background estimate therefore marks large paper regions as
+    foreground. Estimate the slowly varying local paper background with a wide
+    Gaussian blur and detect only high-frequency dark/light stroke contrast.
     """
     source = image.convert("RGB")
-    gray = np.asarray(source.convert("L"), dtype=np.uint8)
-    border = _border_values(gray)
-    background_gray = float(np.median(border)) if border.size else 255.0
+    gray_image = source.convert("L")
+    gray = np.asarray(gray_image, dtype=np.uint8)
+    height, width = gray.shape
 
-    contrast = np.abs(gray.astype(np.float32) - background_gray)
+    radius = max(
+        5.0,
+        float(os.environ.get(
+            "ZERO_SHOT_CROP_BACKGROUND_RADIUS",
+            str(max(8.0, min(32.0, height * 0.08))),
+        )),
+    )
+    smooth = np.asarray(
+        gray_image.filter(ImageFilter.GaussianBlur(radius=radius)),
+        dtype=np.float32,
+    )
+    gray_f = gray.astype(np.float32)
+
+    dark_contrast = np.clip(smooth - gray_f, 0.0, 255.0)
+    light_contrast = np.clip(gray_f - smooth, 0.0, 255.0)
+
+    # Choose the stroke polarity with the stronger sparse high-frequency tail.
+    dark_strength = float(np.quantile(dark_contrast, 0.995))
+    light_strength = float(np.quantile(light_contrast, 0.995))
+    if dark_strength >= light_strength:
+        contrast = dark_contrast
+        polarity = "dark_ink"
+    else:
+        contrast = light_contrast
+        polarity = "light_ink"
+
     contrast_u8 = np.clip(contrast, 0, 255).astype(np.uint8)
     otsu = int(otsu_threshold(contrast_u8))
-    # A floor prevents low-amplitude paper texture from becoming foreground.
     threshold = max(
-        int(os.environ.get("ZERO_SHOT_CROP_MIN_CONTRAST", "12")),
+        int(os.environ.get("ZERO_SHOT_CROP_MIN_CONTRAST", "10")),
         otsu,
     )
     mask = contrast_u8 >= threshold
 
-    # Suppress rows/columns that contain only a couple of isolated noisy pixels
-    # before computing the robust mass envelope.
-    row_counts = mask.sum(axis=1).astype(np.float64)
-    col_counts = mask.sum(axis=0).astype(np.float64)
+    # A real text row/column contains several stroke pixels. Remove isolated
+    # speckles before taking the support envelope.
     min_row_pixels = max(
-        2,
-        int(round(gray.shape[1] * float(os.environ.get("ZERO_SHOT_CROP_MIN_ROW_FRACTION", "0.003")))),
+        3,
+        int(round(width * float(
+            os.environ.get("ZERO_SHOT_CROP_MIN_ROW_FRACTION", "0.006")
+        ))),
     )
     min_col_pixels = max(
         2,
-        int(round(gray.shape[0] * float(os.environ.get("ZERO_SHOT_CROP_MIN_COL_FRACTION", "0.010")))),
+        int(round(height * float(
+            os.environ.get("ZERO_SHOT_CROP_MIN_COL_FRACTION", "0.015")
+        ))),
     )
-    row_keep = row_counts >= min_row_pixels
-    col_keep = col_counts >= min_col_pixels
+    row_keep = mask.sum(axis=1) >= min_row_pixels
+    col_keep = mask.sum(axis=0) >= min_col_pixels
     filtered = mask & row_keep[:, None] & col_keep[None, :]
 
     if int(filtered.sum()) < 8:
@@ -176,12 +202,15 @@ def foreground_detection_mask_with_metadata(image: Image.Image):
 
     row_mass = filtered.sum(axis=1)
     col_mass = filtered.sum(axis=0)
-    y0, y1 = _weighted_mass_bounds(row_mass, low=0.002, high=0.998)
-    x0, x1 = _weighted_mass_bounds(col_mass, low=0.001, high=0.999)
+    y0, y1 = _weighted_mass_bounds(row_mass, low=0.004, high=0.996)
+    x0, x1 = _weighted_mass_bounds(col_mass, low=0.002, high=0.998)
 
     metadata = {
-        "crop_detector": "paper-contrast-projection-mass",
-        "crop_background_gray": background_gray,
+        "crop_detector": "adaptive-local-background-projection",
+        "crop_background_blur_radius": float(radius),
+        "crop_stroke_polarity": polarity,
+        "crop_dark_strength_q995": dark_strength,
+        "crop_light_strength_q995": light_strength,
         "crop_contrast_threshold": int(threshold),
         "crop_otsu_contrast_threshold": int(otsu),
         "crop_min_row_pixels": int(min_row_pixels),
