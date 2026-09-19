@@ -162,7 +162,19 @@ if bool(config.get("pack_valid_windows", False)):
         "Synthetic checkpoint reports packed/rebased windows, but this launcher "
         "is configured for the fixed 63-position Point-2 grid."
     )
+
+checkpoint_vit_dropout = float(config.get("vit_dropout", 0.0))
+requested_vit_dropout = float(os.environ.get("TINY_VIT_DROPOUT", "0.0"))
+print("  checkpoint vit_dropout   =", checkpoint_vit_dropout)
+print("  requested vit_dropout    =", requested_vit_dropout)
+if abs(checkpoint_vit_dropout - requested_vit_dropout) > 1e-9:
+    raise SystemExit(
+        "TinyViT dropout mismatch between synthetic checkpoint and real fine-tune: "
+        f"checkpoint={checkpoint_vit_dropout} real={requested_vit_dropout}"
+    )
+
 print("  window semantics         = fixed 63-position grid; outer padding masked")
+print("  last partial train batch = dropped (synthetic gradient-spike fix)")
 PY
 
 "${PYTHON_BIN}" -m pytest -q \
@@ -209,7 +221,12 @@ for group_id in group_ids:
 
 world_size = 2
 batch_size_per_rank = 32
-samples_per_rank = math.ceil(len(train) / world_size)
+samples_per_rank = (
+    math.ceil((len(train) - world_size) / world_size)
+    if len(train) % world_size != 0
+    else len(train) // world_size
+)
+samples_per_rank = max(0, samples_per_rank)
 expected_batches = samples_per_rank // batch_size_per_rank
 
 print("All-page-line dataset census:")
