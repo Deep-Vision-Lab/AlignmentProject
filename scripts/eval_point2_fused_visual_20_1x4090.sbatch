@@ -20,6 +20,7 @@ N_SAMPLES="${N_SAMPLES:-20}"
 START_INDEX="${START_INDEX:-1}"
 THRESHOLD="${THRESHOLD:-0.10}"
 CROP_MODE="${CROP_MODE:-vertical_borders}"
+IMAGE_PREPROCESSING="${IMAGE_PREPROCESSING:-wide_side_padding}"
 SIDE_PADDING_PX="${SIDE_PADDING_PX:-144}"
 TAG="${TAG:-$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_DIR}/Results/Evaluation/Point2/fused_visual_20_${TAG}}"
@@ -81,12 +82,16 @@ if [[ "${CUDA_RC}" -ne 0 ]]; then
   ls -l /dev/nvidia* 2>&1 || true
   echo >&2
   echo "Recommended resubmission excluding this node:" >&2
-  echo "  sbatch --exclude=${BAD_NODE} --export=ALL,DATASET=${DATASET},WEIGHTS=${WEIGHTS},N_SAMPLES=${N_SAMPLES},START_INDEX=${START_INDEX},THRESHOLD=${THRESHOLD},CROP_MODE=${CROP_MODE},OUTPUT_DIR=${OUTPUT_DIR} scripts/eval_point2_fused_visual_20_1x4090.sbatch" >&2
+  echo "  sbatch --exclude=${BAD_NODE} --export=ALL,DATASET=${DATASET},WEIGHTS=${WEIGHTS},N_SAMPLES=${N_SAMPLES},START_INDEX=${START_INDEX},THRESHOLD=${THRESHOLD},CROP_MODE=${CROP_MODE},IMAGE_PREPROCESSING=${IMAGE_PREPROCESSING},OUTPUT_DIR=${OUTPUT_DIR} scripts/eval_point2_fused_visual_20_1x4090.sbatch" >&2
   exit "${CUDA_RC}"
 fi
 
 export EVAL_SIDE_PADDING_PX="${SIDE_PADDING_PX}"
 export ZERO_SHOT_CROP_MODE="${CROP_MODE}"
+export REAL_SYNTHETIC_STYLE=0
+export REAL_BINARIZE=0
+export REAL_BINARIZE_AUTO_INVERT=0
+export REAL_BINARIZE_AUTOCONTRAST=0
 
 echo "============================================================"
 echo "Point-2 fused-only visual inspection"
@@ -95,7 +100,7 @@ echo "dataset           = ${DATASET}"
 echo "samples           = ${N_SAMPLES}"
 echo "start_index       = ${START_INDEX}"
 echo "representation    = fused"
-echo "preprocessing     = wide_side_padding"
+echo "preprocessing     = ${IMAGE_PREPROCESSING}"
 echo "side padding px   = ${SIDE_PADDING_PX}"
 echo "crop mode         = ${ZERO_SHOT_CROP_MODE}"
 echo "cosine threshold  = ${THRESHOLD}"
@@ -110,7 +115,7 @@ echo "============================================================"
   --alignment-unit window \
   --word-support-floor 0.0 \
   --min-aligned-windows 5 \
-  --image-preprocessing wide_side_padding \
+  --image-preprocessing "${IMAGE_PREPROCESSING}" \
   --split test \
   --training-samples 6000 \
   --split-seed 42 \
