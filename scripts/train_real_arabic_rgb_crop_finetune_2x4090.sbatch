@@ -130,6 +130,7 @@ PY
 
 "${PYTHON_BIN}" -m pytest -q \
   tests/test_real_rgb_crop_preprocessing.py \
+  tests/test_vertical_side_border_crop.py \
   tests/test_real_independent_lines.py \
   tests/test_resnet18_packed_windows.py \
   tests/test_restoration_positive_dtw.py
