@@ -60,6 +60,7 @@ def _draw_bbox(image: Image.Image, box):
 
 
 def _draw_side_border_overlay(image: Image.Image, mask: np.ndarray, crop_meta: dict):
+    """Draw every detected structural frame edge plus the final RGB crop."""
     out = image.convert("RGB").copy()
     draw = ImageDraw.Draw(out)
     left, right, border_meta = detect_vertical_side_borders(mask)
@@ -77,6 +78,39 @@ def _draw_side_border_overlay(image: Image.Image, mask: np.ndarray, crop_meta: d
             width=3,
         )
 
+    # Horizontal runs in crop_meta are produced by the exact frame-aware
+    # training preprocessor, so visualize those exact decisions rather than a
+    # second approximation.
+    top = crop_meta.get("horizontal_border_top_run")
+    bottom = crop_meta.get("horizontal_border_bottom_run")
+    frame_x0 = int(crop_meta.get("crop_left", 0))
+    frame_x1 = max(
+        frame_x0,
+        int(crop_meta.get("crop_right", out.width)) - 1,
+    )
+    if top is not None:
+        draw.rectangle(
+            (
+                frame_x0,
+                int(top[0]),
+                frame_x1,
+                max(int(top[0]), int(top[1]) - 1),
+            ),
+            outline=(0, 210, 80),
+            width=3,
+        )
+    if bottom is not None:
+        draw.rectangle(
+            (
+                frame_x0,
+                int(bottom[0]),
+                frame_x1,
+                max(int(bottom[0]), int(bottom[1]) - 1),
+            ),
+            outline=(190, 0, 255),
+            width=3,
+        )
+
     draw.rectangle(
         (
             int(crop_meta["crop_left"]),
@@ -87,7 +121,19 @@ def _draw_side_border_overlay(image: Image.Image, mask: np.ndarray, crop_meta: d
         outline=(255, 0, 0),
         width=3,
     )
-    return out, border_meta
+
+    frame_meta = {
+        **border_meta,
+        "horizontal_border_top_run": top,
+        "horizontal_border_bottom_run": bottom,
+        "vertical_crop_used_top_frame": bool(
+            crop_meta.get("vertical_crop_used_top_frame", False)
+        ),
+        "vertical_crop_used_bottom_frame": bool(
+            crop_meta.get("vertical_crop_used_bottom_frame", False)
+        ),
+    }
+    return out, frame_meta
 
 
 def _save_mask(mask: np.ndarray, path: Path):
@@ -215,7 +261,7 @@ def main():
         stem = f"sample_{sample_index:03d}"
         original.save(output / f"{stem}_01_original_rgb.png")
         _save_mask(mask, output / f"{stem}_02_temporary_foreground_mask.png")
-        side_overlay, side_border_meta = _draw_side_border_overlay(
+        side_overlay, frame_border_meta = _draw_side_border_overlay(
             original, mask, crop_meta
         )
         side_overlay.save(output / f"{stem}_03_side_borders_and_crop_overlay.png")
@@ -314,7 +360,12 @@ def main():
                 ),
                 "removed_outer_padding_windows": 0,
                 "crop": crop_meta,
-                "side_borders": side_border_meta,
+                "side_borders": {
+                    key: value
+                    for key, value in frame_border_meta.items()
+                    if key.startswith("side_border_")
+                },
+                "frame_borders": frame_border_meta,
                 "detection": detection_meta,
                 "resize": resize_meta,
                 "normalized_tensor": _tensor_stats(model_input),
