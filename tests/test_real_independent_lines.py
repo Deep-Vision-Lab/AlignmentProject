@@ -3,7 +3,10 @@ from pathlib import Path
 
 from PIL import Image
 
-from RealDataSet import ArabicManifestIndependentLineDataset
+from RealDataSet import (
+    ArabicAllPageLinesDataset,
+    ArabicManifestIndependentLineDataset,
+)
 
 
 def _write_line(root: Path, name: str, text: str):
@@ -106,3 +109,72 @@ def test_independent_manifest_ignores_pair_labels(tmp_path: Path):
 
     dataset = ArabicManifestIndependentLineDataset(manifest)
     assert len(dataset) == 2
+
+
+def _write_page_side(root: Path, pair_name: str, side: str, page_pixels, lines):
+    side_dir = root / "DatasetPairs" / "page_pairs" / pair_name / side
+    lines_dir = side_dir / "linesImages"
+    text_dir = side_dir / "text" / "final" / "original"
+    lines_dir.mkdir(parents=True, exist_ok=True)
+    text_dir.mkdir(parents=True, exist_ok=True)
+
+    Image.new("RGB", (80, 120), page_pixels).save(side_dir / "original_image.png")
+    for line_no, text, shade in lines:
+        Image.new("RGB", (160, 40), (shade, shade, shade)).save(
+            lines_dir / f"line_{line_no:02d}.png"
+        )
+        (text_dir / f"line_{line_no:02d}.txt").write_text(text, encoding="utf-8")
+
+
+def test_all_page_lines_includes_lines_without_pair_manifest_entries(tmp_path: Path):
+    # Page A has two lines, but pretend only line 1 would have appeared in a
+    # line-pair manifest. The direct page scan must still retain line 2.
+    _write_page_side(
+        tmp_path,
+        "pair_000001",
+        "A",
+        (210, 205, 195),
+        [(1, "السطر الأول", 200), (2, "السطر غير المحاذى", 180)],
+    )
+    _write_page_side(
+        tmp_path,
+        "pair_000001",
+        "B",
+        (225, 220, 210),
+        [(1, "سطر آخر", 170)],
+    )
+
+    dataset = ArabicAllPageLinesDataset(tmp_path, transform=None)
+
+    assert len(dataset) == 3
+    texts = {dataset[index][0].strip() for index in range(len(dataset))}
+    assert "السطر غير المحاذى" in texts
+    assert texts == {"السطر الأول", "السطر غير المحاذى", "سطر آخر"}
+    assert dataset.scan_stats["unique_lines"] == 3
+    assert dataset.scan_stats["unique_pages"] == 2
+
+
+def test_all_page_lines_deduplicates_same_page_copied_into_multiple_pairs(tmp_path: Path):
+    # Exact copies of one source page appear in two different candidate pairs.
+    page_lines = [(1, "واحد", 190), (2, "اثنان", 175)]
+    _write_page_side(
+        tmp_path,
+        "pair_000001",
+        "A",
+        (200, 198, 190),
+        page_lines,
+    )
+    _write_page_side(
+        tmp_path,
+        "pair_000002",
+        "B",
+        (200, 198, 190),
+        page_lines,
+    )
+
+    dataset = ArabicAllPageLinesDataset(tmp_path, transform=None)
+
+    assert len(dataset) == 2
+    assert dataset.scan_stats["unique_pages"] == 1
+    assert dataset.scan_stats["duplicate_page_line_copies_removed"] == 2
+    assert len({sample["pair_id"] for sample in dataset.samples}) == 1
