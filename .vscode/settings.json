@@ -21,6 +21,11 @@
         "Weights/**",
         "wandb/**",
         "out/**",
+        "DataSet/**",
+        "Pretrained/**",
+        "logs/**",
+        "Evaluation/**",
+        "zero_shot_runtime/**",
         "data/**",
         "datasets/**"
     ],
@@ -34,6 +39,11 @@
         "**/TrainResults/**": true,
         "**/Weights/**": true,
         "**/out/**": true,
+        "**/DataSet/**": true,
+        "**/Pretrained/**": true,
+        "**/logs/**": true,
+        "**/Evaluation/**": true,
+        "**/zero_shot_runtime/**": true,
         "**/data/**": true,
         "**/datasets/**": true
     },
@@ -43,6 +53,11 @@
         "**/TrainResults": true,
         "**/Weights": true,
         "**/out": true,
+        "**/DataSet": true,
+        "**/Pretrained": true,
+        "**/logs": true,
+        "**/Evaluation": true,
+        "**/zero_shot_runtime": true,
         "**/data": true,
         "**/datasets": true
 

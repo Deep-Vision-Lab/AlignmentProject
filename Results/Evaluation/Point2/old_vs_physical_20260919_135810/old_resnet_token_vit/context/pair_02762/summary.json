@@ -1,0 +1,217 @@
+{
+  "index": 2762,
+  "pair_id": "synthetic_2762",
+  "source_type": "synthetic",
+  "side1_type": "synthetic",
+  "side2_type": "synthetic",
+  "side1_preprocess": "synthetic",
+  "side2_preprocess": "synthetic",
+  "label_type": "",
+  "text_score": 0.0,
+  "split": "test",
+  "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_2762.png",
+  "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_2762.png",
+  "nw_score": -6.326621055603027,
+  "normalized_nw_score": -0.03811217503375318,
+  "primary_algorithm": "smith_waterman",
+  "primary_score": 13.899636268615723,
+  "normalized_primary_score": 0.21060054952448065,
+  "feature": "contextual",
+  "score_mode": "raw",
+  "score_clip": 4.0,
+  "threshold": 0.0,
+  "gap": -0.3,
+  "line1_windows": 62,
+  "line2_windows": 166,
+  "gap_steps": 104,
+  "mean_path_cosine": 0.27462200524418484,
+  "mean_full_path_cosine": 0.24354253916610633,
+  "matrix_mean_cosine": 0.1531730741262436,
+  "matrix_std_cosine": 0.16888737678527832,
+  "path_cosine_margin": 0.12144893111794125,
+  "path_cosine_z": 0.7191119515838663,
+  "sw_score": 13.899636268615723,
+  "normalized_sw_score": 0.21060054952448065,
+  "sw_mean_path_cosine": 0.27462200524418484,
+  "sw_path_steps": 56,
+  "sw_component_count": 1,
+  "sw_line1_intervals_px": [
+    [
+      0.0,
+      1009.0
+    ]
+  ],
+  "sw_line2_intervals_px": [
+    [
+      952.0,
+      2008.0
+    ]
+  ],
+  "line1_intervals_px": [
+    [
+      0.0,
+      1009.0
+    ]
+  ],
+  "line2_intervals_px": [
+    [
+      952.0,
+      2008.0
+    ]
+  ],
+  "nw_line1_intervals_px": [
+    [
+      776.0,
+      888.0
+    ],
+    [
+      648.0,
+      760.0
+    ],
+    [
+      472.0,
+      648.0
+    ],
+    [
+      264.0,
+      456.0
+    ],
+    [
+      120.0,
+      264.0
+    ]
+  ],
+  "nw_line2_intervals_px": [
+    [
+      2072.0,
+      2232.0
+    ],
+    [
+      1640.0,
+      1768.0
+    ],
+    [
+      1288.0,
+      1560.0
+    ],
+    [
+      872.0,
+      1128.0
+    ],
+    [
+      632.0,
+      824.0
+    ]
+  ],
+  "gt_mask1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask1_2762.png",
+  "gt_mask2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask2_2762.png",
+  "path_steps": 56,
+  "traceback_steps": 66,
+  "warp_steps": 4,
+  "component_count": 1,
+  "full_match_steps": 62,
+  "bridged_trace_steps": 10,
+  "component_bridge_limit": 2,
+  "component_support_floor": 0.0,
+  "line1_path_windows": 56,
+  "line2_path_windows": 56,
+  "line1_span_windows": 62,
+  "line2_span_windows": 66,
+  "line1_path_fraction": 0.9032258064516129,
+  "line2_path_fraction": 0.3373493975903614,
+  "line1_matched_fraction": 1.0,
+  "line2_matched_fraction": 0.39759036144578314,
+  "line1_path_start": 0,
+  "line1_path_end": 61,
+  "line2_path_start": 41,
+  "line2_path_end": 106,
+  "line1_component_ranges": "[[0,61]]",
+  "line2_component_ranges": "[[41,106]]",
+  "line1_mask_iou": 0.35777998017839446,
+  "line1_mask_dice": 0.527007299270073,
+  "line1_mask_precision": 0.35777998017839446,
+  "line1_mask_recall": 1.0,
+  "line2_mask_iou": 0.006631299734748011,
+  "line2_mask_dice": 0.013175230566534914,
+  "line2_mask_precision": 0.012594458438287154,
+  "line2_mask_recall": 0.013812154696132596,
+  "matrix_csv_cosine": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_135810/old_resnet_token_vit/context/pair_02762/matrices/nw_match_scores_values_cosine.csv",
+  "matrix_csv_match": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_135810/old_resnet_token_vit/context/pair_02762/matrices/nw_match_scores_values_match_score.csv",
+  "evidence_json": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_135810/old_resnet_token_vit/context/pair_02762/evidence/nw_match_scores_values_trace.json",
+  "mean_mask_iou": 0.18220563995657124,
+  "line1_source_intervals_px": [
+    [
+      10.0,
+      1019.0
+    ]
+  ],
+  "line2_source_intervals_px": [
+    [
+      367.0444527456107,
+      763.0937616735151
+    ]
+  ],
+  "representation": "primary",
+  "local_weight": null,
+  "geometry": [
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 10,
+      "crop_top": 0,
+      "crop_right": 1019,
+      "crop_bottom": 128,
+      "crop_width": 1009,
+      "crop_height": 128,
+      "crop_margin_x": 0.0,
+      "crop_margin_y": 0.0,
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "resize_scale": 1.0,
+      "resized_width": 1009,
+      "resized_height": 128,
+      "offset_x": 0,
+      "offset_y": 0,
+      "canvas_width": 1009,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": true,
+      "artificial_padding": false,
+      "autocontrast": false,
+      "auto_invert": false,
+      "image_preprocessing": "tight",
+      "color_mode": "RGB"
+    },
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 10,
+      "crop_top": 40,
+      "crop_right": 1014,
+      "crop_bottom": 88,
+      "crop_width": 1004,
+      "crop_height": 48,
+      "crop_margin_x": 0.0,
+      "crop_margin_y": 0.0,
+      "scale_x": 2.6663346613545817,
+      "scale_y": 2.6666666666666665,
+      "resize_scale": 2.6666666666666665,
+      "resized_width": 2677,
+      "resized_height": 128,
+      "offset_x": 0,
+      "offset_y": 0,
+      "canvas_width": 2677,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": true,
+      "artificial_padding": false,
+      "autocontrast": false,
+      "auto_invert": false,
+      "image_preprocessing": "tight",
+      "color_mode": "RGB"
+    }
+  ],
+  "mask_coordinate_system": "source_image"
+}

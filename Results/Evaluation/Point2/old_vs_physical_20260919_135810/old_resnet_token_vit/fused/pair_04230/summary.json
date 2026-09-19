@@ -1,0 +1,249 @@
+{
+  "index": 4230,
+  "pair_id": "synthetic_4230",
+  "source_type": "synthetic",
+  "side1_type": "synthetic",
+  "side2_type": "synthetic",
+  "side1_preprocess": "synthetic",
+  "side2_preprocess": "synthetic",
+  "label_type": "",
+  "text_score": 0.0,
+  "split": "test",
+  "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_4230.png",
+  "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_4230.png",
+  "nw_score": 15.190895080566406,
+  "normalized_nw_score": 0.07830358288951755,
+  "primary_algorithm": "smith_waterman",
+  "primary_score": 24.789583206176758,
+  "normalized_primary_score": 0.16749718382551865,
+  "feature": "contextual",
+  "score_mode": "raw",
+  "score_clip": 4.0,
+  "threshold": 0.0,
+  "gap": -0.3,
+  "line1_windows": 194,
+  "line2_windows": 130,
+  "gap_steps": 68,
+  "mean_path_cosine": 0.3225562237203121,
+  "mean_full_path_cosine": 0.271814607114585,
+  "matrix_mean_cosine": 0.06861716508865356,
+  "matrix_std_cosine": 0.2318277359008789,
+  "path_cosine_margin": 0.25393905863165855,
+  "path_cosine_z": 1.095378245596263,
+  "sw_score": 24.789583206176758,
+  "normalized_sw_score": 0.16749718382551865,
+  "sw_mean_path_cosine": 0.3225562237203121,
+  "sw_path_steps": 106,
+  "sw_component_count": 3,
+  "sw_line1_intervals_px": [
+    [
+      2520.0,
+      2680.0
+    ],
+    [
+      840.0,
+      2472.0
+    ],
+    [
+      440.0,
+      776.0
+    ]
+  ],
+  "sw_line2_intervals_px": [
+    [
+      1928.0,
+      2105.0
+    ],
+    [
+      328.0,
+      1880.0
+    ],
+    [
+      24.0,
+      328.0
+    ]
+  ],
+  "line1_intervals_px": [
+    [
+      2520.0,
+      2680.0
+    ],
+    [
+      840.0,
+      2472.0
+    ],
+    [
+      440.0,
+      776.0
+    ]
+  ],
+  "line2_intervals_px": [
+    [
+      1928.0,
+      2105.0
+    ],
+    [
+      328.0,
+      1880.0
+    ],
+    [
+      24.0,
+      328.0
+    ]
+  ],
+  "nw_line1_intervals_px": [
+    [
+      1448.0,
+      2456.0
+    ],
+    [
+      1128.0,
+      1400.0
+    ],
+    [
+      152.0,
+      1080.0
+    ]
+  ],
+  "nw_line2_intervals_px": [
+    [
+      1000.0,
+      1864.0
+    ],
+    [
+      760.0,
+      984.0
+    ],
+    [
+      72.0,
+      760.0
+    ]
+  ],
+  "gt_mask1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask1_4230.png",
+  "gt_mask2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask2_4230.png",
+  "path_steps": 106,
+  "traceback_steps": 148,
+  "warp_steps": 27,
+  "component_count": 3,
+  "full_match_steps": 121,
+  "bridged_trace_steps": 35,
+  "component_bridge_limit": 2,
+  "component_support_floor": 0.0,
+  "line1_path_windows": 106,
+  "line2_path_windows": 106,
+  "line1_span_windows": 133,
+  "line2_span_windows": 126,
+  "line1_path_fraction": 0.5463917525773195,
+  "line2_path_fraction": 0.8153846153846154,
+  "line1_matched_fraction": 0.6855670103092784,
+  "line2_matched_fraction": 0.9692307692307692,
+  "line1_path_start": 27,
+  "line1_path_end": 166,
+  "line2_path_start": 0,
+  "line2_path_end": 128,
+  "line1_component_ranges": "[[27,36],[40,141],[146,166]]",
+  "line2_component_ranges": "[[0,9],[13,109],[110,128]]",
+  "line1_mask_iou": 0.599195710455764,
+  "line1_mask_dice": 0.7493713327745181,
+  "line1_mask_precision": 0.6535087719298246,
+  "line1_mask_recall": 0.8781925343811395,
+  "line2_mask_iou": 0.42842430484037075,
+  "line2_mask_dice": 0.5998558038932948,
+  "line2_mask_precision": 0.42842430484037075,
+  "line2_mask_recall": 1.0,
+  "matrix_csv_cosine": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_135810/old_resnet_token_vit/fused/pair_04230/matrices/nw_match_scores_values_cosine.csv",
+  "matrix_csv_match": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_135810/old_resnet_token_vit/fused/pair_04230/matrices/nw_match_scores_values_match_score.csv",
+  "evidence_json": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_135810/old_resnet_token_vit/fused/pair_04230/evidence/nw_match_scores_values_trace.json",
+  "mean_mask_iou": 0.5138100076480674,
+  "line1_source_intervals_px": [
+    [
+      817.2692430533376,
+      868.5244330884701
+    ],
+    [
+      279.08974768444585,
+      801.8926860427978
+    ],
+    [
+      150.9517725966145,
+      258.58767167039287
+    ]
+  ],
+  "line2_source_intervals_px": [
+    [
+      928.6622327790974,
+      1013.0000000000001
+    ],
+    [
+      166.28693586698338,
+      905.790973871734
+    ],
+    [
+      21.435629453681713,
+      166.28693586698338
+    ]
+  ],
+  "representation": "primary",
+  "local_weight": null,
+  "geometry": [
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 10,
+      "crop_top": 44,
+      "crop_right": 1013,
+      "crop_bottom": 85,
+      "crop_width": 1003,
+      "crop_height": 41,
+      "crop_margin_x": 0.0,
+      "crop_margin_y": 0.0,
+      "scale_x": 3.1216350947158524,
+      "scale_y": 3.1219512195121952,
+      "resize_scale": 3.1219512195121952,
+      "resized_width": 3131,
+      "resized_height": 128,
+      "offset_x": 0,
+      "offset_y": 0,
+      "canvas_width": 3131,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": true,
+      "artificial_padding": false,
+      "autocontrast": false,
+      "auto_invert": false,
+      "image_preprocessing": "tight",
+      "color_mode": "RGB"
+    },
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 10,
+      "crop_top": 34,
+      "crop_right": 1013,
+      "crop_bottom": 95,
+      "crop_width": 1003,
+      "crop_height": 61,
+      "crop_margin_x": 0.0,
+      "crop_margin_y": 0.0,
+      "scale_x": 2.098703888334995,
+      "scale_y": 2.098360655737705,
+      "resize_scale": 2.098360655737705,
+      "resized_width": 2105,
+      "resized_height": 128,
+      "offset_x": 0,
+      "offset_y": 0,
+      "canvas_width": 2105,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": true,
+      "artificial_padding": false,
+      "autocontrast": false,
+      "auto_invert": false,
+      "image_preprocessing": "tight",
+      "color_mode": "RGB"
+    }
+  ],
+  "mask_coordinate_system": "source_image"
+}
