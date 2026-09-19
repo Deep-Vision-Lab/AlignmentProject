@@ -341,6 +341,173 @@ def detect_vertical_side_borders(mask: np.ndarray):
     return left, right, metadata
 
 
+def _merge_close_runs(runs, max_gap: int):
+    if not runs:
+        return []
+    merged = [list(runs[0])]
+    for start, end in runs[1:]:
+        if int(start) - int(merged[-1][1]) <= int(max_gap):
+            merged[-1][1] = int(end)
+        else:
+            merged.append([int(start), int(end)])
+    return [tuple(item) for item in merged]
+
+
+def _dominant_text_row_band(mask: np.ndarray, excluded_column_runs=()):
+    """Find the main handwriting band while rejecting neighboring rows.
+
+    Line crops occasionally contain part of the preceding/following manuscript
+    line. Side borders are removed temporarily before the row projection so
+    they cannot connect otherwise separate horizontal text bands. Selection
+    prefers substantial foreground mass near the vertical center of the crop;
+    edge-touching bands are penalized because they are usually leaked neighbor
+    lines from the source page.
+    """
+    work = np.asarray(mask, dtype=bool).copy()
+    if work.ndim != 2:
+        raise ValueError("dominant text-band detector expects a 2-D mask")
+    height, width = work.shape
+
+    erase_pad = max(1, int(round(width * 0.002)))
+    for run in excluded_column_runs or ():
+        if run is None:
+            continue
+        start, end = map(int, run)
+        work[:, max(0, start - erase_pad) : min(width, end + erase_pad)] = False
+
+    row_mass = work.sum(axis=1).astype(np.float64)
+    if float(row_mass.sum()) <= 0.0:
+        return None, work, {"dominant_row_candidate_runs": []}
+
+    smooth_width = max(3, int(round(height * 0.025)))
+    if smooth_width % 2 == 0:
+        smooth_width += 1
+    kernel = np.ones(smooth_width, dtype=np.float64) / float(smooth_width)
+    smoothed = np.convolve(row_mass, kernel, mode="same")
+    positive = smoothed[smoothed > 0.0]
+    if positive.size == 0:
+        return None, work, {"dominant_row_candidate_runs": []}
+
+    # A deliberately permissive floor keeps dots/diacritics associated with the
+    # main band. Nearby fragments are merged before a band is selected.
+    floor = max(1.0, float(np.quantile(positive, 0.55)) * 0.20)
+    active_runs = _contiguous_true_runs(smoothed >= floor)
+    active_runs = _merge_close_runs(
+        active_runs,
+        max_gap=max(3, int(round(height * 0.055))),
+    )
+    if not active_runs:
+        return None, work, {"dominant_row_candidate_runs": []}
+
+    center_y = 0.5 * float(height)
+    half_height = max(1.0, center_y)
+    scored = []
+    for start, end in active_runs:
+        if end <= start:
+            continue
+        mass = float(row_mass[start:end].sum())
+        if mass <= 0.0:
+            continue
+        band_center = 0.5 * float(start + end)
+        center_distance = min(1.0, abs(band_center - center_y) / half_height)
+        center_factor = 1.0 - 0.35 * center_distance
+        edge_factor = 0.72 if start <= 1 or end >= height - 1 else 1.0
+        score = mass * center_factor * edge_factor
+        scored.append((score, int(start), int(end), mass))
+
+    if not scored:
+        return None, work, {
+            "dominant_row_candidate_runs": [list(run) for run in active_runs]
+        }
+
+    score, start, end, mass = max(scored, key=lambda item: item[0])
+    pad_y = max(3, int(round((end - start) * 0.18)))
+    y0 = max(0, start - pad_y)
+    y1 = min(height, end + pad_y)
+    meta = {
+        "dominant_row_candidate_runs": [list(run) for run in active_runs],
+        "dominant_row_selected_run": [int(start), int(end)],
+        "dominant_row_selected_mass": float(mass),
+        "dominant_row_selected_score": float(score),
+        "dominant_row_safety_margin": int(pad_y),
+    }
+    return (int(y0), int(y1)), work, meta
+
+
+def _crop_with_partial_side_borders(
+    source: Image.Image,
+    mask: np.ndarray,
+    detector_meta: dict,
+):
+    """Crop leaked neighboring lines when a full side-border pair is absent.
+
+    With one reliable vertical border, that border remains a hard horizontal
+    boundary and only the missing side is estimated from the selected text
+    band. With no reliable side border, both horizontal limits come from that
+    band. The source RGB pixels are never thresholded or altered.
+    """
+    left, right, border_meta = detect_vertical_side_borders(mask)
+    if border_meta["side_border_pair_valid"]:
+        return None, {**detector_meta, **border_meta}
+
+    excluded_runs = [
+        tuple(run) for run in border_meta.get("side_border_candidate_runs", [])
+    ]
+    band, work_mask, band_meta = _dominant_text_row_band(
+        mask,
+        excluded_column_runs=excluded_runs,
+    )
+    if band is None:
+        return None, {**detector_meta, **border_meta, **band_meta}
+    y0, y1 = band
+
+    band_mask = np.asarray(work_mask[y0:y1], dtype=bool)
+    col_mass = band_mask.sum(axis=0).astype(np.float64)
+    if float(col_mass.sum()) <= 0.0:
+        return None, {**detector_meta, **border_meta, **band_meta}
+
+    proj_x0, proj_x1 = _weighted_mass_bounds(col_mass, low=0.002, high=0.998)
+    pad_x = max(2, int(round((proj_x1 - proj_x0) * 0.02)))
+    proj_x0 = max(0, int(proj_x0) - pad_x)
+    proj_x1 = min(source.width, int(proj_x1) + pad_x)
+
+    inset = max(1, int(os.environ.get("ZERO_SHOT_BORDER_CROP_INSET", "2")))
+    one_sided = (left is None) ^ (right is None)
+    if one_sided and left is not None:
+        x0 = min(source.width - 1, int(left[1]) + inset)
+        x1 = int(proj_x1)
+        crop_mode = "single_left_vertical_border"
+    elif one_sided and right is not None:
+        x0 = int(proj_x0)
+        x1 = max(x0 + 1, int(right[0]) - inset)
+        crop_mode = "single_right_vertical_border"
+    else:
+        # No side, or two incompatible candidates: trust the selected text band
+        # rather than treating a likely false border as a hard boundary.
+        x0, x1 = int(proj_x0), int(proj_x1)
+        crop_mode = "dominant_text_band_projection"
+
+    x0 = max(0, min(source.width - 1, int(x0)))
+    x1 = max(x0 + 1, min(source.width, int(x1)))
+    if x1 - x0 < 32 or y1 <= y0:
+        return None, {**detector_meta, **border_meta, **band_meta}
+
+    metadata = {
+        **detector_meta,
+        **border_meta,
+        **band_meta,
+        "crop_mode": crop_mode,
+        "crop_detector": "dominant-text-band-with-partial-side-borders",
+        "crop_raw_support_left": int(x0),
+        "crop_raw_support_top": int(y0),
+        "crop_raw_support_right": int(x1),
+        "crop_raw_support_bottom": int(y1),
+        "side_border_crop_inset": int(inset),
+        "projection_horizontal_margin": int(pad_x),
+    }
+    return (int(x0), int(y0), int(x1), int(y1)), metadata
+
+
 def _crop_between_vertical_borders(source: Image.Image, mask: np.ndarray, detector_meta: dict):
     """Crop inside detected side borders, then trim vertical whitespace safely."""
     left, right, border_meta = detect_vertical_side_borders(mask)
@@ -358,8 +525,6 @@ def _crop_between_vertical_borders(source: Image.Image, mask: np.ndarray, detect
     else:
         y0, y1 = 0, source.height
 
-    # Only add a vertical safety margin here.  Horizontally, the detected side
-    # borders themselves define the crop boundary.
     vertical_margin = float(os.environ.get("ZERO_SHOT_BORDER_VERTICAL_MARGIN", "0.12"))
     pad_y = max(2, int(round((y1 - y0) * vertical_margin)))
     y0 = max(0, int(y0) - pad_y)
@@ -382,6 +547,7 @@ def _crop_between_vertical_borders(source: Image.Image, mask: np.ndarray, detect
     }
     return (int(x0), int(y0), int(x1), int(y1)), metadata
 
+
 def foreground_crop_with_metadata(
     image: Image.Image,
     margin_x=0.025,
@@ -403,13 +569,23 @@ def foreground_crop_with_metadata(
             margin_x = 0.0
             margin_y = 0.0
         else:
-            # Safe fallback if a line does not contain two reliable structural
-            # borders. Keep the robust projection behavior and record fallback.
-            x0 = int(detector_meta["crop_raw_support_left"])
-            y0 = int(detector_meta["crop_raw_support_top"])
-            x1 = int(detector_meta["crop_raw_support_right"])
-            y1 = int(detector_meta["crop_raw_support_bottom"])
-            detector_meta["crop_mode"] = "vertical_borders_fallback_projection"
+            partial_box, detector_meta = _crop_with_partial_side_borders(
+                source, mask, detector_meta
+            )
+            if partial_box is not None:
+                x0, y0, x1, y1 = partial_box
+                # This helper already supplies both the structural/projection
+                # horizontal safety and the vertical band safety margin.
+                margin_x = 0.0
+                margin_y = 0.0
+            else:
+                # Last-resort fallback only when no reliable dominant band can
+                # be isolated. Preserve the previous robust projection behavior.
+                x0 = int(detector_meta["crop_raw_support_left"])
+                y0 = int(detector_meta["crop_raw_support_top"])
+                x1 = int(detector_meta["crop_raw_support_right"])
+                y1 = int(detector_meta["crop_raw_support_bottom"])
+                detector_meta["crop_mode"] = "vertical_borders_fallback_projection"
     elif mode in {"robust", "robust_projection", "paper_contrast"}:
         mask, detector_meta = foreground_detection_mask_with_metadata(source)
         x0 = int(detector_meta["crop_raw_support_left"])
