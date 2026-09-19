@@ -236,7 +236,7 @@ def _feature_cache(
     models,
     dataset_type: str,
     temp_root: Path | None = None,
-    image_preprocessing: str = "cropped_1024",
+    image_preprocessing: str = "training",
 ):
     cache: dict[tuple[str, str], object] = {}
     prepared: dict[str, Path] = {}
@@ -1113,8 +1113,8 @@ def parse_args() -> argparse.Namespace:
         choices=("original", "training", "tight", "cropped_1024"),
         default="training",
         help=(
-            "cropped_1024 crops outer whitespace and resizes the remaining RGB line "
-            "directly to exactly 1024x128 with no padding"
+            "training reproduces the checkpoint preprocessing: foreground crop, "
+            "aspect-preserving scale to the training ink height, and white 1024x128 canvas"
         ),
     )
     parser.add_argument("--real-data-dir", default="DataSet/ArabicDataset")
