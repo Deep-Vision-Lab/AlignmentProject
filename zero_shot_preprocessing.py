@@ -103,34 +103,145 @@ def _ink_mask(gray: np.ndarray) -> np.ndarray:
     return dark_ink if _border_mean(gray) >= 127.5 else light_ink
 
 
+def _border_values(values: np.ndarray) -> np.ndarray:
+    height, width = values.shape
+    border_h = max(1, int(round(height * 0.05)))
+    border_w = max(1, int(round(width * 0.01)))
+    return np.concatenate(
+        [
+            values[:border_h, :].reshape(-1),
+            values[-border_h:, :].reshape(-1),
+            values[:, :border_w].reshape(-1),
+            values[:, -border_w:].reshape(-1),
+        ]
+    )
+
+
+def _weighted_mass_bounds(weights: np.ndarray, low=0.001, high=0.999):
+    """Ignore tiny isolated foreground mass when finding a 1-D support bbox."""
+    weights = np.asarray(weights, dtype=np.float64).reshape(-1)
+    total = float(weights.sum())
+    if total <= 0:
+        return 0, int(weights.size)
+    cumulative = np.cumsum(weights)
+    lo = int(np.searchsorted(cumulative, total * float(low), side="left"))
+    hi = int(np.searchsorted(cumulative, total * float(high), side="left")) + 1
+    lo = max(0, min(lo, weights.size - 1))
+    hi = max(lo + 1, min(hi, weights.size))
+    return lo, hi
+
+
+def foreground_detection_mask_with_metadata(image: Image.Image):
+    """Build a TEMPORARY robust foreground mask without changing RGB pixels.
+
+    Real manuscript scans contain border speckles and paper texture.  A raw
+    min/max over all thresholded pixels lets one outlier force a full-image
+    crop.  Instead, estimate the paper intensity from the border, threshold the
+    absolute contrast from that paper value, then use foreground-mass quantiles
+    to ignore isolated outliers.  The mask is for geometry only.
+    """
+    source = image.convert("RGB")
+    gray = np.asarray(source.convert("L"), dtype=np.uint8)
+    border = _border_values(gray)
+    background_gray = float(np.median(border)) if border.size else 255.0
+
+    contrast = np.abs(gray.astype(np.float32) - background_gray)
+    contrast_u8 = np.clip(contrast, 0, 255).astype(np.uint8)
+    otsu = int(otsu_threshold(contrast_u8))
+    # A floor prevents low-amplitude paper texture from becoming foreground.
+    threshold = max(
+        int(os.environ.get("ZERO_SHOT_CROP_MIN_CONTRAST", "12")),
+        otsu,
+    )
+    mask = contrast_u8 >= threshold
+
+    # Suppress rows/columns that contain only a couple of isolated noisy pixels
+    # before computing the robust mass envelope.
+    row_counts = mask.sum(axis=1).astype(np.float64)
+    col_counts = mask.sum(axis=0).astype(np.float64)
+    min_row_pixels = max(
+        2,
+        int(round(gray.shape[1] * float(os.environ.get("ZERO_SHOT_CROP_MIN_ROW_FRACTION", "0.003")))),
+    )
+    min_col_pixels = max(
+        2,
+        int(round(gray.shape[0] * float(os.environ.get("ZERO_SHOT_CROP_MIN_COL_FRACTION", "0.010")))),
+    )
+    row_keep = row_counts >= min_row_pixels
+    col_keep = col_counts >= min_col_pixels
+    filtered = mask & row_keep[:, None] & col_keep[None, :]
+
+    if int(filtered.sum()) < 8:
+        filtered = mask
+
+    row_mass = filtered.sum(axis=1)
+    col_mass = filtered.sum(axis=0)
+    y0, y1 = _weighted_mass_bounds(row_mass, low=0.002, high=0.998)
+    x0, x1 = _weighted_mass_bounds(col_mass, low=0.001, high=0.999)
+
+    metadata = {
+        "crop_detector": "paper-contrast-projection-mass",
+        "crop_background_gray": background_gray,
+        "crop_contrast_threshold": int(threshold),
+        "crop_otsu_contrast_threshold": int(otsu),
+        "crop_min_row_pixels": int(min_row_pixels),
+        "crop_min_col_pixels": int(min_col_pixels),
+        "crop_mask_pixels": int(mask.sum()),
+        "crop_filtered_mask_pixels": int(filtered.sum()),
+        "crop_raw_support_left": int(x0),
+        "crop_raw_support_top": int(y0),
+        "crop_raw_support_right": int(x1),
+        "crop_raw_support_bottom": int(y1),
+    }
+    return filtered, metadata
+
+
 def foreground_crop_with_metadata(
     image: Image.Image,
     margin_x=0.025,
     margin_y=0.15,
 ):
-    """Use a temporary gray foreground mask to crop the ORIGINAL image.
-
-    The detector may autocontrast the temporary grayscale copy, but the returned
-    crop keeps the source RGB/color/intensity values unchanged.
-    """
+    """Locate handwriting with a temporary mask, crop untouched ORIGINAL RGB."""
     source = image.convert("RGB")
-    gray_for_mask = ImageOps.autocontrast(source.convert("L"))
-    gray = np.asarray(gray_for_mask, dtype=np.uint8)
-    mask = _ink_mask(gray)
-    ys, xs = np.nonzero(mask)
-    if xs.size < 4 or ys.size < 4:
-        box = (0, 0, source.width, source.height)
+    mode = os.environ.get("ZERO_SHOT_CROP_MODE", "legacy_otsu").strip().lower()
+
+    if mode in {"robust", "robust_projection", "paper_contrast"}:
+        mask, detector_meta = foreground_detection_mask_with_metadata(source)
+        x0 = int(detector_meta["crop_raw_support_left"])
+        y0 = int(detector_meta["crop_raw_support_top"])
+        x1 = int(detector_meta["crop_raw_support_right"])
+        y1 = int(detector_meta["crop_raw_support_bottom"])
+        if int(mask.sum()) < 4 or x1 <= x0 or y1 <= y0:
+            x0, y0, x1, y1 = 0, 0, source.width, source.height
+        detector_meta["crop_mode"] = "robust_projection"
     else:
-        x0, x1 = int(xs.min()), int(xs.max()) + 1
-        y0, y1 = int(ys.min()), int(ys.max()) + 1
-        pad_x = max(2, int(round((x1 - x0) * float(margin_x))))
-        pad_y = max(2, int(round((y1 - y0) * float(margin_y))))
-        box = (
-            max(0, x0 - pad_x),
-            max(0, y0 - pad_y),
-            min(gray.shape[1], x1 + pad_x),
-            min(gray.shape[0], y1 + pad_y),
-        )
+        gray_for_mask = ImageOps.autocontrast(source.convert("L"))
+        gray = np.asarray(gray_for_mask, dtype=np.uint8)
+        mask = _ink_mask(gray)
+        ys, xs = np.nonzero(mask)
+        if xs.size < 4 or ys.size < 4:
+            x0, y0, x1, y1 = 0, 0, source.width, source.height
+        else:
+            x0, x1 = int(xs.min()), int(xs.max()) + 1
+            y0, y1 = int(ys.min()), int(ys.max()) + 1
+        detector_meta = {
+            "crop_mode": "legacy_otsu",
+            "crop_detector": "autocontrast-otsu-minmax",
+            "crop_mask_pixels": int(mask.sum()),
+            "crop_raw_support_left": int(x0),
+            "crop_raw_support_top": int(y0),
+            "crop_raw_support_right": int(x1),
+            "crop_raw_support_bottom": int(y1),
+        }
+
+    pad_x = max(2, int(round((x1 - x0) * float(margin_x))))
+    pad_y = max(2, int(round((y1 - y0) * float(margin_y))))
+    box = (
+        max(0, x0 - pad_x),
+        max(0, y0 - pad_y),
+        min(source.width, x1 + pad_x),
+        min(source.height, y1 + pad_y),
+    )
     cropped = source.crop(box)
     metadata = {
         "source_width": int(source.width),
@@ -143,6 +254,7 @@ def foreground_crop_with_metadata(
         "crop_height": int(box[3] - box[1]),
         "crop_margin_x": float(margin_x),
         "crop_margin_y": float(margin_y),
+        **detector_meta,
     }
     return cropped, metadata
 
