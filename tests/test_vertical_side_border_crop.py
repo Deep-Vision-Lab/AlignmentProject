@@ -112,7 +112,7 @@ def test_single_side_border_rejects_neighboring_line_from_above(monkeypatch):
 
     assert box is not None
     x0, y0, x1, y1 = box
-    assert meta["crop_mode"] == "single_left_frame_border_with_horizontal_frame"
+    assert meta["crop_mode"] == "single_left_frame_border"
     assert x0 >= 40
     assert x1 > 535
     # The leaked line above is removed while the intended line and safety
@@ -145,7 +145,7 @@ def test_no_side_borders_rejects_neighboring_line_from_above():
 
     assert box is not None
     x0, y0, x1, y1 = box
-    assert meta["crop_mode"] == "horizontal_or_text_frame_projection_with_horizontal_frame"
+    assert meta["crop_mode"] == "horizontal_or_text_frame_projection"
     assert y0 > 20
     assert y0 < 64
     assert y1 > 102
