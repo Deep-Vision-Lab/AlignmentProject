@@ -131,8 +131,8 @@ print_config() {
     "  real data           = ${REAL_DATA_DIR}" \
     "  split / labels      = ${REAL_SPLIT} / ${LABELS}" \
     "  feature             = ${FEATURE} (restoration contextual = trained fused output)" \
-    "  model input         = foreground crop resized directly to 1024x128 RGB; no padding" \
-    "  geometry            = crop outer whitespace first, then exact 1024x128 resize; no white canvas padding" \
+    "  model input         = exact checkpoint training preprocessing; RGB, no binarization" \
+    "  geometry            = foreground crop + aspect-preserving scale to ~92px ink height + white 1024x128 canvas" \
     "  checkpoint windows  = physical 128x32, stride 16" \
     "  checklist           = P3:${RUN_POINT3} P4-5:${RUN_POINT45} P6:${RUN_POINT6}" \
     "  results             = ${RESULTS_ROOT}"
@@ -276,7 +276,7 @@ if [[ "${EVAL_MODE}" == "quantitative" || "${EVAL_MODE}" == "all" ]]; then
     --weights "${WEIGHTS}"
     --output-dir "${QUANTITATIVE_DIR}"
     --device cuda
-    --image-preprocessing cropped_1024
+    --image-preprocessing training
     --real-data-dir "${REAL_DATA_DIR}"
     --arabic-manifest "${ARABIC_MANIFEST}"
     --real-split "${REAL_SPLIT}"
@@ -323,7 +323,7 @@ if [[ "${EVAL_MODE}" == "quantitative" || "${EVAL_MODE}" == "all" ]]; then
       --split-seed "${SPLIT_SEED}" \
       --n-samples "${POINT3_SAMPLES}" \
       --device cuda \
-      --image-preprocessing cropped_1024
+      --image-preprocessing training
   fi
 
   if [[ "${RUN_POINT45}" == "1" ]]; then
@@ -338,7 +338,7 @@ if [[ "${EVAL_MODE}" == "quantitative" || "${EVAL_MODE}" == "all" ]]; then
       --alignment-unit window \
       --word-support-floor 0.0 \
       --min-aligned-windows "${POINT45_MIN_WINDOWS}" \
-      --image-preprocessing cropped_1024 \
+      --image-preprocessing training \
       --split test \
       --training-samples 6000 \
       --split-seed "${SPLIT_SEED}" \
@@ -373,7 +373,7 @@ if [[ "${EVAL_MODE}" == "quantitative" || "${EVAL_MODE}" == "all" ]]; then
       --min-ink "${MIN_INK}" \
       --seed "${EVAL_SEED}" \
       --device cuda \
-      --image-preprocessing cropped_1024
+      --image-preprocessing training
   fi
 fi
 
