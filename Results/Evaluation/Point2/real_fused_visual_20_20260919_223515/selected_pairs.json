@@ -1,0 +1,79 @@
+[
+  {
+    "pair_id": "pair_000021",
+    "index": 1,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000021/A/linesImages/line_10.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000021/B/linesImages/line_07.png"
+  },
+  {
+    "pair_id": "pair_000010",
+    "index": 2,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/A/linesImages/line_03.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/B/linesImages/line_13.png"
+  },
+  {
+    "pair_id": "pair_000021",
+    "index": 6,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000021/A/linesImages/line_13.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000021/B/linesImages/line_01.png"
+  },
+  {
+    "pair_id": "pair_000010",
+    "index": 3,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/A/linesImages/line_03.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/B/linesImages/line_12.png"
+  },
+  {
+    "pair_id": "pair_000010",
+    "index": 4,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/A/linesImages/line_05.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/B/linesImages/line_14.png"
+  },
+  {
+    "pair_id": "pair_000010",
+    "index": 5,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/A/linesImages/line_04.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/B/linesImages/line_14.png"
+  },
+  {
+    "pair_id": "pair_000010",
+    "index": 7,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/A/linesImages/line_04.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/B/linesImages/line_13.png"
+  },
+  {
+    "pair_id": "pair_000010",
+    "index": 8,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/A/linesImages/line_01.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/B/linesImages/line_11.png"
+  },
+  {
+    "pair_id": "pair_000010",
+    "index": 9,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/A/linesImages/line_15.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/B/linesImages/line_07.png"
+  },
+  {
+    "pair_id": "pair_000010",
+    "index": 10,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/A/linesImages/line_03.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/B/linesImages/line_03.png"
+  },
+  {
+    "pair_id": "pair_000010",
+    "index": 11,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/A/linesImages/line_02.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000010/B/linesImages/line_12.png"
+  }
+]
