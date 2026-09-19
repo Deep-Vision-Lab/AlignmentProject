@@ -23,6 +23,7 @@ mkdir -p out
 [[ -x "${TORCHRUN_BIN}" ]] || { echo "ERROR: torchrun not executable: ${TORCHRUN_BIN}" >&2; exit 2; }
 [[ -d "${DATASET}" ]] || { echo "ERROR: dataset not found: ${DATASET}" >&2; exit 2; }
 
+export MODEL_BACKEND_VARIANT="physical_window"
 export JOB_NAME="${JOB_NAME:-res18_physical_window_tinyvit_s16}"
 export RESTORATION_EPOCHS="${RESTORATION_EPOCHS:-20}"
 export RESTORATION_NUM_SAMPLES="${RESTORATION_NUM_SAMPLES:-6000}"
