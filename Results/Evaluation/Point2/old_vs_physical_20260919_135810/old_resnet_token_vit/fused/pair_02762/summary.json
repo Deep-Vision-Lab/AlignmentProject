@@ -1,0 +1,233 @@
+{
+  "index": 2762,
+  "pair_id": "synthetic_2762",
+  "source_type": "synthetic",
+  "side1_type": "synthetic",
+  "side2_type": "synthetic",
+  "side1_preprocess": "synthetic",
+  "side2_preprocess": "synthetic",
+  "label_type": "",
+  "text_score": 0.0,
+  "split": "test",
+  "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_2762.png",
+  "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_2762.png",
+  "nw_score": -10.126544952392578,
+  "normalized_nw_score": -0.06100328284573842,
+  "primary_algorithm": "smith_waterman",
+  "primary_score": 9.548649787902832,
+  "normalized_primary_score": 0.17051160335540771,
+  "feature": "contextual",
+  "score_mode": "raw",
+  "score_clip": 4.0,
+  "threshold": 0.0,
+  "gap": -0.3,
+  "line1_windows": 62,
+  "line2_windows": 166,
+  "gap_steps": 106,
+  "mean_path_cosine": 0.3722828131701265,
+  "mean_full_path_cosine": 0.26060959666055883,
+  "matrix_mean_cosine": 0.024297349154949188,
+  "matrix_std_cosine": 0.21521033346652985,
+  "path_cosine_margin": 0.3479854640151773,
+  "path_cosine_z": 1.6169551824485096,
+  "sw_score": 9.548649787902832,
+  "normalized_sw_score": 0.17051160335540771,
+  "sw_mean_path_cosine": 0.3722828131701265,
+  "sw_path_steps": 35,
+  "sw_component_count": 2,
+  "sw_line1_intervals_px": [
+    [
+      520.0,
+      1009.0
+    ],
+    [
+      248.0,
+      456.0
+    ]
+  ],
+  "sw_line2_intervals_px": [
+    [
+      408.0,
+      952.0
+    ],
+    [
+      56.0,
+      280.0
+    ]
+  ],
+  "line1_intervals_px": [
+    [
+      520.0,
+      1009.0
+    ],
+    [
+      248.0,
+      456.0
+    ]
+  ],
+  "line2_intervals_px": [
+    [
+      408.0,
+      952.0
+    ],
+    [
+      56.0,
+      280.0
+    ]
+  ],
+  "nw_line1_intervals_px": [
+    [
+      744.0,
+      1009.0
+    ],
+    [
+      600.0,
+      744.0
+    ],
+    [
+      296.0,
+      424.0
+    ],
+    [
+      104.0,
+      216.0
+    ]
+  ],
+  "nw_line2_intervals_px": [
+    [
+      2376.0,
+      2677.0
+    ],
+    [
+      2072.0,
+      2296.0
+    ],
+    [
+      1208.0,
+      1416.0
+    ],
+    [
+      568.0,
+      744.0
+    ]
+  ],
+  "gt_mask1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask1_2762.png",
+  "gt_mask2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask2_2762.png",
+  "path_steps": 35,
+  "traceback_steps": 56,
+  "warp_steps": 9,
+  "component_count": 2,
+  "full_match_steps": 47,
+  "bridged_trace_steps": 13,
+  "component_bridge_limit": 2,
+  "component_support_floor": 0.0,
+  "line1_path_windows": 35,
+  "line2_path_windows": 35,
+  "line1_span_windows": 43,
+  "line2_span_windows": 48,
+  "line1_path_fraction": 0.5645161290322581,
+  "line2_path_fraction": 0.21084337349397592,
+  "line1_matched_fraction": 0.6935483870967742,
+  "line2_matched_fraction": 0.2891566265060241,
+  "line1_path_start": 0,
+  "line1_path_end": 46,
+  "line2_path_start": 107,
+  "line2_path_end": 162,
+  "line1_component_ranges": "[[0,29],[34,46]]",
+  "line2_component_ranges": "[[107,140],[149,162]]",
+  "line1_mask_iou": 0.43360433604336046,
+  "line1_mask_dice": 0.6049149338374291,
+  "line1_mask_precision": 0.45911047345767575,
+  "line1_mask_recall": 0.8864265927977839,
+  "line2_mask_iou": 0.8011049723756906,
+  "line2_mask_dice": 0.8895705521472392,
+  "line2_mask_precision": 1.0,
+  "line2_mask_recall": 0.8011049723756906,
+  "matrix_csv_cosine": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_135810/old_resnet_token_vit/fused/pair_02762/matrices/nw_match_scores_values_cosine.csv",
+  "matrix_csv_match": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_135810/old_resnet_token_vit/fused/pair_02762/matrices/nw_match_scores_values_match_score.csv",
+  "evidence_json": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_135810/old_resnet_token_vit/fused/pair_02762/evidence/nw_match_scores_values_trace.json",
+  "mean_mask_iou": 0.6173546542095255,
+  "line1_source_intervals_px": [
+    [
+      530.0,
+      1019.0
+    ],
+    [
+      258.0,
+      466.0
+    ]
+  ],
+  "line2_source_intervals_px": [
+    [
+      163.0190511766903,
+      367.0444527456107
+    ],
+    [
+      31.002614867388868,
+      115.01307433694434
+    ]
+  ],
+  "representation": "primary",
+  "local_weight": null,
+  "geometry": [
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 10,
+      "crop_top": 0,
+      "crop_right": 1019,
+      "crop_bottom": 128,
+      "crop_width": 1009,
+      "crop_height": 128,
+      "crop_margin_x": 0.0,
+      "crop_margin_y": 0.0,
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "resize_scale": 1.0,
+      "resized_width": 1009,
+      "resized_height": 128,
+      "offset_x": 0,
+      "offset_y": 0,
+      "canvas_width": 1009,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": true,
+      "artificial_padding": false,
+      "autocontrast": false,
+      "auto_invert": false,
+      "image_preprocessing": "tight",
+      "color_mode": "RGB"
+    },
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 10,
+      "crop_top": 40,
+      "crop_right": 1014,
+      "crop_bottom": 88,
+      "crop_width": 1004,
+      "crop_height": 48,
+      "crop_margin_x": 0.0,
+      "crop_margin_y": 0.0,
+      "scale_x": 2.6663346613545817,
+      "scale_y": 2.6666666666666665,
+      "resize_scale": 2.6666666666666665,
+      "resized_width": 2677,
+      "resized_height": 128,
+      "offset_x": 0,
+      "offset_y": 0,
+      "canvas_width": 2677,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": true,
+      "artificial_padding": false,
+      "autocontrast": false,
+      "auto_invert": false,
+      "image_preprocessing": "tight",
+      "color_mode": "RGB"
+    }
+  ],
+  "mask_coordinate_system": "source_image"
+}

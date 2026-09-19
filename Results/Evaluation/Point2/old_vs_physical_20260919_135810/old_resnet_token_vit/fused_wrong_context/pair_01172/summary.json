@@ -1,0 +1,233 @@
+{
+  "index": 1172,
+  "pair_id": "synthetic_1172",
+  "source_type": "synthetic",
+  "side1_type": "synthetic",
+  "side2_type": "synthetic",
+  "side1_preprocess": "synthetic",
+  "side2_preprocess": "synthetic",
+  "label_type": "",
+  "text_score": 0.0,
+  "split": "test",
+  "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_1172.png",
+  "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_1172.png",
+  "nw_score": -13.06060791015625,
+  "normalized_nw_score": -0.0754948434113078,
+  "primary_algorithm": "smith_waterman",
+  "primary_score": 9.131535530090332,
+  "normalized_primary_score": 0.13428728720721075,
+  "feature": "contextual",
+  "score_mode": "raw",
+  "score_clip": 4.0,
+  "threshold": 0.0,
+  "gap": -0.3,
+  "line1_windows": 173,
+  "line2_windows": 62,
+  "gap_steps": 113,
+  "mean_path_cosine": 0.3254013028091345,
+  "mean_full_path_cosine": 0.23693706833503464,
+  "matrix_mean_cosine": 0.03509882092475891,
+  "matrix_std_cosine": 0.20548467338085175,
+  "path_cosine_margin": 0.2903024818843756,
+  "path_cosine_z": 1.4127695127233155,
+  "sw_score": 9.131535530090332,
+  "normalized_sw_score": 0.13428728720721075,
+  "sw_mean_path_cosine": 0.3254013028091345,
+  "sw_path_steps": 39,
+  "sw_component_count": 2,
+  "sw_line1_intervals_px": [
+    [
+      1976.0,
+      2680.0
+    ],
+    [
+      1816.0,
+      1976.0
+    ]
+  ],
+  "sw_line2_intervals_px": [
+    [
+      392.0,
+      1018.0
+    ],
+    [
+      152.0,
+      344.0
+    ]
+  ],
+  "line1_intervals_px": [
+    [
+      1976.0,
+      2680.0
+    ],
+    [
+      1816.0,
+      1976.0
+    ]
+  ],
+  "line2_intervals_px": [
+    [
+      392.0,
+      1018.0
+    ],
+    [
+      152.0,
+      344.0
+    ]
+  ],
+  "nw_line1_intervals_px": [
+    [
+      2184.0,
+      2664.0
+    ],
+    [
+      1912.0,
+      2136.0
+    ],
+    [
+      1256.0,
+      1384.0
+    ],
+    [
+      472.0,
+      584.0
+    ]
+  ],
+  "nw_line2_intervals_px": [
+    [
+      568.0,
+      968.0
+    ],
+    [
+      472.0,
+      568.0
+    ],
+    [
+      248.0,
+      328.0
+    ],
+    [
+      24.0,
+      120.0
+    ]
+  ],
+  "gt_mask1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask1_1172.png",
+  "gt_mask2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask2_1172.png",
+  "path_steps": 39,
+  "traceback_steps": 68,
+  "warp_steps": 13,
+  "component_count": 2,
+  "full_match_steps": 55,
+  "bridged_trace_steps": 18,
+  "component_bridge_limit": 2,
+  "component_support_floor": 0.0,
+  "line1_path_windows": 39,
+  "line2_path_windows": 39,
+  "line1_span_windows": 54,
+  "line2_span_windows": 50,
+  "line1_path_fraction": 0.2254335260115607,
+  "line2_path_fraction": 0.6290322580645161,
+  "line1_matched_fraction": 0.31213872832369943,
+  "line2_matched_fraction": 0.8064516129032258,
+  "line1_path_start": 6,
+  "line1_path_end": 59,
+  "line2_path_start": 0,
+  "line2_path_end": 52,
+  "line1_component_ranges": "[[6,49],[50,59]]",
+  "line2_component_ranges": "[[0,37],[41,52]]",
+  "line1_mask_iou": 0.3647711511789182,
+  "line1_mask_dice": 0.5345528455284553,
+  "line1_mask_precision": 0.842948717948718,
+  "line1_mask_recall": 0.3913690476190476,
+  "line2_mask_iou": 0.5482233502538071,
+  "line2_mask_dice": 0.7081967213114754,
+  "line2_mask_precision": 0.6633906633906634,
+  "line2_mask_recall": 0.759493670886076,
+  "matrix_csv_cosine": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_135810/old_resnet_token_vit/fused_wrong_context/pair_01172/matrices/nw_match_scores_values_cosine.csv",
+  "matrix_csv_match": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_135810/old_resnet_token_vit/fused_wrong_context/pair_01172/matrices/nw_match_scores_values_match_score.csv",
+  "evidence_json": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_135810/old_resnet_token_vit/fused_wrong_context/pair_01172/evidence/nw_match_scores_values_trace.json",
+  "mean_mask_iou": 0.4564972507163626,
+  "line1_source_intervals_px": [
+    [
+      722.2247755834829,
+      975.2603231597845
+    ],
+    [
+      664.7166965888689,
+      722.2247755834829
+    ]
+  ],
+  "line2_source_intervals_px": [
+    [
+      399.9194499017682,
+      1021.0
+    ],
+    [
+      161.80550098231828,
+      352.2966601178782
+    ]
+  ],
+  "representation": "primary",
+  "local_weight": null,
+  "geometry": [
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 12,
+      "crop_top": 41,
+      "crop_right": 1013,
+      "crop_bottom": 87,
+      "crop_width": 1001,
+      "crop_height": 46,
+      "crop_margin_x": 0.0,
+      "crop_margin_y": 0.0,
+      "scale_x": 2.7822177822177823,
+      "scale_y": 2.782608695652174,
+      "resize_scale": 2.782608695652174,
+      "resized_width": 2785,
+      "resized_height": 128,
+      "offset_x": 0,
+      "offset_y": 0,
+      "canvas_width": 2785,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": true,
+      "artificial_padding": false,
+      "autocontrast": false,
+      "auto_invert": false,
+      "image_preprocessing": "tight",
+      "color_mode": "RGB"
+    },
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 11,
+      "crop_top": 0,
+      "crop_right": 1021,
+      "crop_bottom": 127,
+      "crop_width": 1010,
+      "crop_height": 127,
+      "crop_margin_x": 0.0,
+      "crop_margin_y": 0.0,
+      "scale_x": 1.007920792079208,
+      "scale_y": 1.0078740157480315,
+      "resize_scale": 1.0078740157480315,
+      "resized_width": 1018,
+      "resized_height": 128,
+      "offset_x": 0,
+      "offset_y": 0,
+      "canvas_width": 1018,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": true,
+      "artificial_padding": false,
+      "autocontrast": false,
+      "auto_invert": false,
+      "image_preprocessing": "tight",
+      "color_mode": "RGB"
+    }
+  ],
+  "mask_coordinate_system": "source_image"
+}
