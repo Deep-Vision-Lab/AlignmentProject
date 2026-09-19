@@ -9,6 +9,7 @@ from vlm_restoration_positive_dtw import (
     _clean_letters,
     _soft_dtw_cost_matrix,
     positive_monotonic_letter_dtw_cost,
+    strong_sigreg_loss,
 )
 
 
@@ -230,3 +231,47 @@ def test_gradient_probes_cover_every_active_stage():
         parameter.grad is not None
         for parameter in model.vit_encoder.fusion_head.parameters()
     )
+
+
+
+def test_strong_sigreg_penalizes_collapsed_pre_l2_embeddings_and_backpropagates():
+    generator = torch.Generator().manual_seed(123)
+    gaussian = torch.randn(8, 16, 192, generator=generator, requires_grad=True)
+    valid = torch.ones(8, 16, dtype=torch.bool)
+
+    # Fix the global RNG before each call so both distributions see the same
+    # random observer directions.
+    torch.manual_seed(77)
+    gaussian_loss, gaussian_stats = strong_sigreg_loss(
+        gaussian,
+        valid,
+        sketch_dim=32,
+        num_knots=17,
+        t_min=-5.0,
+        t_max=5.0,
+        min_samples=32,
+    )
+
+    collapsed = torch.zeros(8, 16, 192, requires_grad=True)
+    collapsed = collapsed + 0.25
+    torch.manual_seed(77)
+    collapsed_loss, collapsed_stats = strong_sigreg_loss(
+        collapsed,
+        valid,
+        sketch_dim=32,
+        num_knots=17,
+        t_min=-5.0,
+        t_max=5.0,
+        min_samples=32,
+    )
+
+    assert torch.isfinite(gaussian_loss)
+    assert torch.isfinite(collapsed_loss)
+    assert float(collapsed_loss) > float(gaussian_loss)
+    assert gaussian_stats["sigreg_samples"] == 128.0
+    assert collapsed_stats["sigreg_dim_std_min"] == 0.0
+
+    gaussian_loss.backward()
+    assert gaussian.grad is not None
+    assert torch.isfinite(gaussian.grad).all()
+    assert float(gaussian.grad.norm()) > 0.0
