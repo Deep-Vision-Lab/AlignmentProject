@@ -132,6 +132,7 @@ def visual_model_config():
         "tiny_vit_pretrained_model": str(P.tiny_vit_pretrained_model),
         "pretrained_local_only": bool(P.pretrained_local_only),
         "fusion": "concat_projection_norm",
+        "fusion_dropout": float(os.environ.get("FUSION_DROPOUT", "0.0")),
         "torch_compile_visual": _flag("TORCH_COMPILE_VISUAL", False),
     }
     if _VARIANT == "physical_window":
