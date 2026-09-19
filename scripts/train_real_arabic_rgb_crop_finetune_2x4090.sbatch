@@ -46,6 +46,10 @@ export REAL_BINARIZE_AUTOCONTRAST=0
 export REAL_AUGMENT=0
 export REAL_MANIFEST_NAME="dataset_manifest_full_pairs.jsonl"
 export REAL_INDEPENDENT_LINES=1
+# Critical for the small real dataset: scan every line image + its own
+# transcript directly from page_pairs, including lines with no aligned partner.
+# Pair labels/positive partners are not required by the positive image->text DTW.
+export REAL_ALL_PAGE_LINES=1
 export REAL_DATASET_LABELS="all"
 export REAL_TEXT_KEY="${REAL_TEXT_KEY:-text_original_path}"
 export REAL_MIN_TEXT_SCORE="${REAL_MIN_TEXT_SCORE:-0.0}"
@@ -176,11 +180,11 @@ import random
 from collections import defaultdict
 from pathlib import Path
 
-from RealDataSet import ArabicManifestIndependentLineDataset
+from RealDataSet import ArabicAllPageLinesDataset
 
 root = Path(os.environ["DATASET"])
-dataset = ArabicManifestIndependentLineDataset(
-    root / "dataset_manifest_full_pairs.jsonl",
+dataset = ArabicAllPageLinesDataset(
+    root,
     transform=None,
     text_key="text_original_path",
     validate_paths=False,
@@ -209,9 +213,10 @@ batch_size_per_rank = 32
 samples_per_rank = math.ceil(len(train) / world_size)
 expected_batches = math.ceil(samples_per_rank / batch_size_per_rank)
 
-print("Independent-line dataset census:")
+print("All-page-line dataset census:")
 print("  unique lines       =", len(dataset))
 print("  source pages       =", len(groups))
+print("  scan stats         =", dataset.scan_stats)
 print("  train/valid/test   =", len(train), len(valid), len(test))
 print("  batch size / rank  =", batch_size_per_rank)
 print("  DDP world size     =", world_size)
@@ -239,8 +244,10 @@ echo "output geometry      = 1024x128, aspect preserved"
 echo "crop detector        = frame-aware: left/right/top/bottom rules + handwriting fallback"
 echo "window sequence      = fixed 63-window synthetic grid; outer padding MASKED, not repacked"
 echo "online augmentation  = disabled"
-echo "training view        = ALL unique independent lines (A+B, deduplicated)"
-echo "pair labels          = ignored"
+echo "training view        = ALL real page lines + own transcript (aligned or unaligned)"
+echo "dataset source       = direct page-side scan; pair manifest is NOT the sample filter"
+echo "duplicate copies     = deduplicated by source-page image fingerprint + line number"
+echo "pair labels          = ignored; positive partner line NOT required"
 echo "TinyViT dropout      = ${TINY_VIT_DROPOUT}"
 echo "fusion dropout       = ${FUSION_DROPOUT}"
 echo "============================================================"
