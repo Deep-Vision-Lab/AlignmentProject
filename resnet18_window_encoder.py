@@ -82,15 +82,69 @@ class ResNet18WindowEncoder(nn.Module):
         )
         return patches.permute(0, 3, 1, 2, 4).contiguous()
 
-    def forward(self, line: torch.Tensor) -> torch.Tensor:
-        patches = self.extract_windows(line)
-        batch, count, channels, height, width = patches.shape
-        flat = patches.reshape(batch * count, channels, height, width)
+    def _encode_flat_windows(self, flat: torch.Tensor) -> torch.Tensor:
         features = self.backbone(flat)
         if features.ndim != 2 or int(features.shape[1]) != 512:
             raise RuntimeError(
                 f"ResNet-18 must return [N,512], got {tuple(features.shape)}"
             )
-        tokens = self.projection(features)
+        return self.projection(features)
+
+    def forward_packed(
+        self,
+        line: torch.Tensor,
+        token_valid: torch.Tensor,
+        *,
+        use_flip: bool = False,
+    ):
+        """Encode only content-overlapping windows, then pad token sequences.
+
+        token_valid is in physical left-to-right window order. Completely
+        artificial side-padding windows are never passed through ResNet-18.
+        Internal blank gaps remain selected because the mask spans the complete
+        content rectangle.
+        """
+        patches = self.extract_windows(line)
+        batch, count, channels, height, width = patches.shape
+        if token_valid.shape != (batch, count):
+            raise ValueError(
+                "token_valid shape must match extracted windows: "
+                f"{tuple(token_valid.shape)} != {(batch, count)}"
+            )
+        token_valid = token_valid.to(device=patches.device, dtype=torch.bool)
+        lengths = token_valid.sum(dim=1).to(dtype=torch.long)
+        if int(lengths.max().item()) <= 0:
+            raise RuntimeError("No valid content windows were detected")
+
+        selected = patches[token_valid]
+        encoded = self._encode_flat_windows(
+            selected.reshape(-1, channels, height, width)
+        )
+
+        max_length = int(lengths.max().item())
+        packed = encoded.new_zeros((batch, max_length, self.embed_dim))
+        packed_valid = torch.zeros(
+            (batch, max_length), dtype=torch.bool, device=encoded.device
+        )
+        cursor = 0
+        for batch_index in range(batch):
+            length = int(lengths[batch_index].item())
+            current = encoded[cursor : cursor + length]
+            cursor += length
+            if use_flip:
+                current = torch.flip(current, dims=[0])
+            packed[batch_index, :length] = current
+            packed_valid[batch_index, :length] = True
+
+        return (
+            packed.transpose(1, 2).unsqueeze(2).contiguous(),
+            packed_valid,
+        )
+
+    def forward(self, line: torch.Tensor) -> torch.Tensor:
+        patches = self.extract_windows(line)
+        batch, count, channels, height, width = patches.shape
+        flat = patches.reshape(batch * count, channels, height, width)
+        tokens = self._encode_flat_windows(flat)
         tokens = tokens.reshape(batch, count, self.embed_dim)
         return tokens.transpose(1, 2).unsqueeze(2).contiguous()
