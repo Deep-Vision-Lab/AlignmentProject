@@ -19,6 +19,7 @@ WEIGHTS="${WEIGHTS:-${PROJECT_DIR}/Weights/res18_tinyvit_point2/model_latest.pth
 N_SAMPLES="${N_SAMPLES:-20}"
 START_INDEX="${START_INDEX:-1}"
 THRESHOLD="${THRESHOLD:-0.10}"
+CROP_MODE="${CROP_MODE:-vertical_borders}"
 SIDE_PADDING_PX="${SIDE_PADDING_PX:-144}"
 TAG="${TAG:-$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_DIR}/Results/Evaluation/Point2/fused_visual_20_${TAG}}"
@@ -53,6 +54,7 @@ print("  probe     = OK")
 PY
 
 export EVAL_SIDE_PADDING_PX="${SIDE_PADDING_PX}"
+export ZERO_SHOT_CROP_MODE="${CROP_MODE}"
 
 echo "============================================================"
 echo "Point-2 fused-only visual inspection"
@@ -63,6 +65,7 @@ echo "start_index       = ${START_INDEX}"
 echo "representation    = fused"
 echo "preprocessing     = wide_side_padding"
 echo "side padding px   = ${SIDE_PADDING_PX}"
+echo "crop mode         = ${ZERO_SHOT_CROP_MODE}"
 echo "cosine threshold  = ${THRESHOLD}"
 echo "output            = ${OUTPUT_DIR}"
 echo "============================================================"
