@@ -449,12 +449,32 @@ class ResizeAndBinarize:
         return Image.fromarray(binary, mode="L").convert("RGB")
 
 
+def _resize_height_only_no_padding(image: Image.Image, height: int = 128) -> Image.Image:
+    """Preserve a prepared line's aspect ratio and variable width with no canvas padding."""
+    image = image.convert("RGB")
+    if int(image.height) == int(height):
+        return image
+    scale = float(height) / max(1.0, float(image.height))
+    width = max(32, int(round(float(image.width) * scale)))
+    return image.resize((width, int(height)), Image.Resampling.BILINEAR)
+
+
 def build_transform(dataset_type: str = "synthetic"):
-    first = (
-        ResizeAndBinarize((128, 1024), enabled=True)
-        if str(dataset_type).lower() == "real"
-        else transforms.Resize((128, 1024))
-    )
+    tight_no_padding = os.environ.get("EVAL_TIGHT_NO_PADDING", "0").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    if tight_no_padding:
+        # prepare_line(..., "tight") has already cropped the foreground. Do not
+        # silently stretch it back to the historical 1024-pixel canvas here.
+        first = transforms.Lambda(
+            lambda image: _resize_height_only_no_padding(image, 128)
+        )
+    else:
+        first = (
+            ResizeAndBinarize((128, 1024), enabled=True)
+            if str(dataset_type).lower() == "real"
+            else transforms.Resize((128, 1024))
+        )
     return transforms.Compose(
         [
             first,
