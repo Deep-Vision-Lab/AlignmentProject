@@ -191,3 +191,151 @@ class ArabicManifestLinePairDataset(Dataset):
             result["bridge_shared_texts"] = list(bridge.get("shared_texts") or [])
             result["bridge_shared_boxes_px"] = list(bridge.get("shared_boxes_px") or [])
         return result
+
+
+class ArabicManifestIndependentLineDataset(Dataset):
+    """Flatten a full pair manifest into unique independent line/text samples.
+
+    Pair labels and pair compatibility are intentionally ignored. Every A/B side
+    that has its own line image and transcript becomes one training example.
+    Repeated appearances of the same line across pair combinations are
+    deduplicated by (line_image_path, text_path).
+
+    This is the correct view for the current positive image->transcript DTW
+    objective, which does not require an aligned partner line.
+    """
+
+    def __init__(
+        self,
+        manifest_path,
+        transform=None,
+        text_key: str = "text_original_path",
+        max_samples: Optional[int] = None,
+        validate_paths: bool = False,
+    ):
+        self.manifest_path = Path(manifest_path).expanduser().resolve()
+        if not self.manifest_path.is_file():
+            raise FileNotFoundError(
+                f"Real-dataset manifest not found: {self.manifest_path}"
+            )
+        self.root = self.manifest_path.parent
+        self.transform = transform
+        self.text_key = str(text_key)
+
+        seen = set()
+        samples = []
+        with self.manifest_path.open("r", encoding="utf-8") as handle:
+            for line_number, raw_line in enumerate(handle, start=1):
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    row = json.loads(raw_line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"Invalid JSON in {self.manifest_path} at line "
+                        f"{line_number}: {exc}"
+                    ) from exc
+
+                for side_name in ("A", "B"):
+                    side = row.get(side_name)
+                    if not isinstance(side, dict):
+                        continue
+                    image_path = side.get("line_image_path")
+                    text_path = side.get(self.text_key)
+                    if not image_path or not text_path:
+                        continue
+
+                    key = (str(image_path), str(text_path))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+
+                    # Keep all lines from the same source page in the same split.
+                    page_group = (
+                        side.get("original_image")
+                        or side.get("page_dir")
+                        or f"{row.get('pair_id', 'row')}:{side_name}"
+                    )
+                    samples.append(
+                        {
+                            "line_image_path": image_path,
+                            "text_path": text_path,
+                            "text_key": self.text_key,
+                            "pair_id": str(page_group),
+                            "source_pair_id": str(row.get("pair_id", "")),
+                            "side": side_name,
+                            "line_idx": int(side.get("line_idx", -1)),
+                            "page_dir": str(side.get("page_dir", "")),
+                            "original_image": str(side.get("original_image", "")),
+                            "surah_number": row.get("surah_number"),
+                            "surah_name": row.get("surah_name"),
+                        }
+                    )
+
+        if max_samples is not None and int(max_samples) > 0:
+            samples = samples[: min(len(samples), int(max_samples))]
+        if not samples:
+            raise ValueError(
+                "No independent line/text examples found in "
+                f"{self.manifest_path}"
+            )
+        self.samples = samples
+
+        if validate_paths:
+            self._validate_all_paths()
+
+    def __len__(self):
+        return len(self.samples)
+
+    def _candidate_paths(self, path_value) -> Iterable[Path]:
+        path = Path(path_value).expanduser()
+        if path.is_absolute():
+            yield path
+            return
+        yield self.root / path
+        yield Path.cwd() / path
+        yield self.root.parent / path
+
+    def _resolve(self, path_value) -> Path:
+        candidates = []
+        for candidate in self._candidate_paths(path_value):
+            candidate = candidate.resolve()
+            candidates.append(candidate)
+            if candidate.exists():
+                return candidate
+        rendered = "\n  - ".join(str(path) for path in candidates)
+        raise FileNotFoundError(
+            f"Could not resolve manifest path {path_value!r}. Tried:\n  - "
+            f"{rendered}"
+        )
+
+    def _read_text(self, path_value) -> str:
+        path = self._resolve(path_value)
+        with path.open("r", encoding="utf-8") as handle:
+            return " " + handle.read().strip() + " "
+
+    def _read_image(self, path_value):
+        path = self._resolve(path_value)
+        with Image.open(path) as image:
+            image = image.convert("RGB")
+            if self.transform is not None:
+                return self.transform(image)
+            return image.copy()
+
+    def _validate_all_paths(self) -> None:
+        for sample_idx, sample in enumerate(self.samples):
+            try:
+                self._resolve(sample["line_image_path"])
+                self._resolve(sample["text_path"])
+            except FileNotFoundError as exc:
+                raise FileNotFoundError(
+                    "Invalid independent-line sample "
+                    f"index={sample_idx}: {exc}"
+                ) from exc
+
+    def __getitem__(self, idx):
+        sample = self.samples[int(idx)]
+        image = self._read_image(sample["line_image_path"])
+        text = self._read_text(sample["text_path"])
+        return text, image
