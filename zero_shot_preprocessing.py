@@ -341,6 +341,158 @@ def detect_vertical_side_borders(mask: np.ndarray):
     return left, right, metadata
 
 
+
+def detect_horizontal_frame_borders(mask: np.ndarray):
+    """Detect long structural frame lines above and/or below the handwriting.
+
+    Unlike Arabic baselines and connected strokes, a page/frame rule occupies
+    most columns of the candidate crop.  Detection is performed on the
+    temporary foreground mask only; the returned boundaries are later applied
+    to the untouched RGB source.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    if mask.ndim != 2:
+        raise ValueError("horizontal frame detector expects a 2-D mask")
+    height, width = mask.shape
+    if height <= 1 or width <= 1:
+        empty = {
+            "horizontal_border_detector": "near-full-width-mask-connectivity",
+            "horizontal_border_top_run": None,
+            "horizontal_border_bottom_run": None,
+            "horizontal_border_pair_valid": False,
+            "horizontal_border_candidate_runs": [],
+        }
+        return None, None, empty
+
+    radius = max(
+        1,
+        int(os.environ.get("ZERO_SHOT_HORIZONTAL_BORDER_NEIGHBORHOOD", "2")),
+    )
+    min_coverage = float(
+        os.environ.get("ZERO_SHOT_HORIZONTAL_BORDER_MIN_COVERAGE", "0.58")
+    )
+    edge_fraction = float(
+        os.environ.get("ZERO_SHOT_HORIZONTAL_BORDER_EDGE_FRACTION", "0.42")
+    )
+
+    coverage = np.zeros(height, dtype=np.float32)
+    for y in range(height):
+        y0 = max(0, y - radius)
+        y1 = min(height, y + radius + 1)
+        columns = mask[y0:y1, :].any(axis=0)
+        coverage[y] = float(columns.mean())
+
+    candidates = coverage >= min_coverage
+    runs = _contiguous_true_runs(candidates)
+
+    top_limit = int(round(height * edge_fraction))
+    bottom_limit = int(round(height * (1.0 - edge_fraction)))
+    top_runs = [run for run in runs if (run[0] + run[1]) // 2 <= top_limit]
+    bottom_runs = [run for run in runs if (run[0] + run[1]) // 2 >= bottom_limit]
+
+    def _score(run):
+        start, end = run
+        return float(coverage[start:end].max())
+
+    def _choose_top(items):
+        if not items:
+            return None
+        best = max(_score(run) for run in items)
+        strong = [run for run in items if _score(run) >= best - 0.06]
+        # The innermost strong rule is the actual boundary of the text frame.
+        return max(strong, key=lambda run: run[1])
+
+    def _choose_bottom(items):
+        if not items:
+            return None
+        best = max(_score(run) for run in items)
+        strong = [run for run in items if _score(run) >= best - 0.06]
+        return min(strong, key=lambda run: run[0])
+
+    top = _choose_top(top_runs)
+    bottom = _choose_bottom(bottom_runs)
+    valid_pair = (
+        top is not None
+        and bottom is not None
+        and int(bottom[0]) - int(top[1])
+        >= max(12, int(round(height * 0.12)))
+    )
+
+    metadata = {
+        "horizontal_border_detector": "near-full-width-mask-connectivity",
+        "horizontal_border_min_coverage": float(min_coverage),
+        "horizontal_border_neighborhood_radius": int(radius),
+        "horizontal_border_top_run": list(top) if top is not None else None,
+        "horizontal_border_bottom_run": list(bottom) if bottom is not None else None,
+        "horizontal_border_pair_valid": bool(valid_pair),
+        "horizontal_border_candidate_runs": [list(run) for run in runs],
+        "horizontal_border_top_coverage": (
+            float(coverage[top[0]:top[1]].max()) if top is not None else None
+        ),
+        "horizontal_border_bottom_coverage": (
+            float(coverage[bottom[0]:bottom[1]].max()) if bottom is not None else None
+        ),
+    }
+    return top, bottom, metadata
+
+
+def _erase_horizontal_frame_candidates(mask: np.ndarray, horizontal_meta: dict):
+    """Remove structural horizontal rules only from the TEMP detection mask."""
+    work = np.asarray(mask, dtype=bool).copy()
+    height = int(work.shape[0])
+    pad = max(
+        1,
+        int(os.environ.get("ZERO_SHOT_HORIZONTAL_BORDER_ERASE_PAD", "2")),
+    )
+    for run in horizontal_meta.get("horizontal_border_candidate_runs", []) or []:
+        start, end = map(int, run)
+        work[max(0, start - pad) : min(height, end + pad), :] = False
+    return work
+
+
+def _resolve_vertical_crop_from_frame(
+    mask: np.ndarray,
+    *,
+    fallback_band=None,
+):
+    """Use top/bottom frame rules as hard bounds and projection elsewhere."""
+    top, bottom, meta = detect_horizontal_frame_borders(mask)
+    clean = _erase_horizontal_frame_candidates(mask, meta)
+
+    band, _work, band_meta = _dominant_text_row_band(clean)
+    if band is None:
+        band = fallback_band
+    if band is None:
+        row_mass = clean.sum(axis=1).astype(np.float64)
+        if float(row_mass.sum()) > 0.0:
+            y0, y1 = _weighted_mass_bounds(row_mass, low=0.003, high=0.997)
+            band = (int(y0), int(y1))
+        else:
+            band = (0, int(mask.shape[0]))
+
+    proj_y0, proj_y1 = map(int, band)
+    inset = max(
+        1,
+        int(os.environ.get("ZERO_SHOT_HORIZONTAL_BORDER_CROP_INSET", "2")),
+    )
+
+    y0 = int(top[1]) + inset if top is not None else proj_y0
+    y1 = int(bottom[0]) - inset if bottom is not None else proj_y1
+
+    y0 = max(0, min(int(mask.shape[0]) - 1, y0))
+    y1 = max(y0 + 1, min(int(mask.shape[0]), y1))
+    meta = {
+        **meta,
+        **band_meta,
+        "horizontal_border_crop_inset": int(inset),
+        "vertical_crop_projection_top": int(proj_y0),
+        "vertical_crop_projection_bottom": int(proj_y1),
+        "vertical_crop_used_top_frame": bool(top is not None),
+        "vertical_crop_used_bottom_frame": bool(bottom is not None),
+    }
+    return (int(y0), int(y1)), clean, meta
+
+
 def _merge_close_runs(runs, max_gap: int):
     if not runs:
         return []
@@ -439,111 +591,182 @@ def _crop_with_partial_side_borders(
     mask: np.ndarray,
     detector_meta: dict,
 ):
-    """Crop leaked neighboring lines when a full side-border pair is absent.
+    """Crop an incomplete rectangular/L-shaped frame around one text line.
 
-    With one reliable vertical border, that border remains a hard horizontal
-    boundary and only the missing side is estimated from the selected text
-    band. With no reliable side border, both horizontal limits come from that
-    band. The source RGB pixels are never thresholded or altered.
+    Vertical and horizontal structural rules are treated independently. A
+    detected frame rule is a hard boundary; missing boundaries are estimated
+    from the handwriting support after those rules are removed from the
+    temporary mask.
     """
     left, right, border_meta = detect_vertical_side_borders(mask)
     if border_meta["side_border_pair_valid"]:
         return None, {**detector_meta, **border_meta}
 
+    inset_x = max(1, int(os.environ.get("ZERO_SHOT_BORDER_CROP_INSET", "2")))
+
+    # First build a broad interior using any reliable vertical side that exists.
+    broad_x0 = (
+        min(source.width - 1, int(left[1]) + inset_x)
+        if left is not None
+        else int(detector_meta["crop_raw_support_left"])
+    )
+    broad_x1 = (
+        max(broad_x0 + 1, int(right[0]) - inset_x)
+        if right is not None
+        else int(detector_meta["crop_raw_support_right"])
+    )
+    broad_x0 = max(0, min(source.width - 1, broad_x0))
+    broad_x1 = max(broad_x0 + 1, min(source.width, broad_x1))
+
+    broad_mask = np.asarray(mask[:, broad_x0:broad_x1], dtype=bool)
+    broad_vertical, broad_clean, horizontal_meta = _resolve_vertical_crop_from_frame(
+        broad_mask
+    )
+    broad_y0, broad_y1 = broad_vertical
+
+    # Convert the clean broad mask back to source-width coordinates and remove
+    # candidate side-border columns. This prevents an L/U-shaped frame from
+    # merging with the handwriting during the dominant-band estimate.
+    work_mask = np.asarray(mask, dtype=bool).copy()
+    work_mask[:, broad_x0:broad_x1] = broad_clean
     excluded_runs = [
         tuple(run) for run in border_meta.get("side_border_candidate_runs", [])
     ]
     band, work_mask, band_meta = _dominant_text_row_band(
-        mask,
+        work_mask,
         excluded_column_runs=excluded_runs,
     )
     if band is None:
-        return None, {**detector_meta, **border_meta, **band_meta}
-    y0, y1 = band
+        band = (broad_y0, broad_y1)
+    band_y0, band_y1 = map(int, band)
 
-    band_mask = np.asarray(work_mask[y0:y1], dtype=bool)
+    # Refine the missing left/right boundary from only the target text band, not
+    # from a top/bottom frame line.
+    band_mask = np.asarray(work_mask[band_y0:band_y1], dtype=bool)
     col_mass = band_mask.sum(axis=0).astype(np.float64)
     if float(col_mass.sum()) <= 0.0:
-        return None, {**detector_meta, **border_meta, **band_meta}
+        return None, {
+            **detector_meta,
+            **border_meta,
+            **horizontal_meta,
+            **band_meta,
+        }
 
     proj_x0, proj_x1 = _weighted_mass_bounds(col_mass, low=0.002, high=0.998)
     pad_x = max(2, int(round((proj_x1 - proj_x0) * 0.02)))
     proj_x0 = max(0, int(proj_x0) - pad_x)
     proj_x1 = min(source.width, int(proj_x1) + pad_x)
 
-    inset = max(1, int(os.environ.get("ZERO_SHOT_BORDER_CROP_INSET", "2")))
     one_sided = (left is None) ^ (right is None)
     if one_sided and left is not None:
-        x0 = min(source.width - 1, int(left[1]) + inset)
+        x0 = min(source.width - 1, int(left[1]) + inset_x)
         x1 = int(proj_x1)
-        crop_mode = "single_left_vertical_border"
+        crop_mode = "single_left_frame_border"
     elif one_sided and right is not None:
         x0 = int(proj_x0)
-        x1 = max(x0 + 1, int(right[0]) - inset)
-        crop_mode = "single_right_vertical_border"
+        x1 = max(x0 + 1, int(right[0]) - inset_x)
+        crop_mode = "single_right_frame_border"
     else:
-        # No side, or two incompatible candidates: trust the selected text band
-        # rather than treating a likely false border as a hard boundary.
         x0, x1 = int(proj_x0), int(proj_x1)
-        crop_mode = "dominant_text_band_projection"
+        crop_mode = "horizontal_or_text_frame_projection"
 
     x0 = max(0, min(source.width - 1, int(x0)))
     x1 = max(x0 + 1, min(source.width, int(x1)))
+
+    # Re-detect horizontal rules inside the final horizontal span. This catches
+    # a rule connected to only one side whose coverage was too small before the
+    # missing x-boundary was refined.
+    final_mask = np.asarray(mask[:, x0:x1], dtype=bool)
+    (y0, y1), _final_clean, final_horizontal_meta = (
+        _resolve_vertical_crop_from_frame(
+            final_mask,
+            fallback_band=(band_y0, band_y1),
+        )
+    )
+
     if x1 - x0 < 32 or y1 <= y0:
-        return None, {**detector_meta, **border_meta, **band_meta}
+        return None, {
+            **detector_meta,
+            **border_meta,
+            **horizontal_meta,
+            **final_horizontal_meta,
+            **band_meta,
+        }
+
+    used_horizontal = (
+        final_horizontal_meta.get("vertical_crop_used_top_frame", False)
+        or final_horizontal_meta.get("vertical_crop_used_bottom_frame", False)
+    )
+    if used_horizontal:
+        crop_mode = crop_mode + "_with_horizontal_frame"
 
     metadata = {
         **detector_meta,
         **border_meta,
+        **horizontal_meta,
+        **final_horizontal_meta,
         **band_meta,
         "crop_mode": crop_mode,
-        "crop_detector": "dominant-text-band-with-partial-side-borders",
+        "crop_detector": "independent-frame-borders-plus-text-projection",
         "crop_raw_support_left": int(x0),
         "crop_raw_support_top": int(y0),
         "crop_raw_support_right": int(x1),
         "crop_raw_support_bottom": int(y1),
-        "side_border_crop_inset": int(inset),
+        "side_border_crop_inset": int(inset_x),
         "projection_horizontal_margin": int(pad_x),
     }
     return (int(x0), int(y0), int(x1), int(y1)), metadata
 
 
-def _crop_between_vertical_borders(source: Image.Image, mask: np.ndarray, detector_meta: dict):
-    """Crop inside detected side borders, then trim vertical whitespace safely."""
+def _crop_between_vertical_borders(
+    source: Image.Image,
+    mask: np.ndarray,
+    detector_meta: dict,
+):
+    """Crop inside a complete/partial rectangular frame around the text."""
     left, right, border_meta = detect_vertical_side_borders(mask)
     if not border_meta["side_border_pair_valid"]:
         return None, {**detector_meta, **border_meta}
 
-    inset = max(1, int(os.environ.get("ZERO_SHOT_BORDER_CROP_INSET", "2")))
-    x0 = min(source.width - 1, int(left[1]) + inset)
-    x1 = max(x0 + 1, int(right[0]) - inset)
+    inset_x = max(1, int(os.environ.get("ZERO_SHOT_BORDER_CROP_INSET", "2")))
+    x0 = min(source.width - 1, int(left[1]) + inset_x)
+    x1 = max(x0 + 1, int(right[0]) - inset_x)
 
+    # Once the vertical frame is removed, inspect only the interior span for
+    # long horizontal top/bottom rules. This works for complete rectangles and
+    # for U/L shapes where a horizontal rule is connected to one side.
     interior_mask = np.asarray(mask[:, x0:x1], dtype=bool)
-    row_mass = interior_mask.sum(axis=1).astype(np.float64)
-    if float(row_mass.sum()) > 0:
-        y0, y1 = _weighted_mass_bounds(row_mass, low=0.003, high=0.997)
-    else:
-        y0, y1 = 0, source.height
-
-    vertical_margin = float(os.environ.get("ZERO_SHOT_BORDER_VERTICAL_MARGIN", "0.12"))
-    pad_y = max(2, int(round((y1 - y0) * vertical_margin)))
-    y0 = max(0, int(y0) - pad_y)
-    y1 = min(source.height, int(y1) + pad_y)
+    (y0, y1), _clean, horizontal_meta = _resolve_vertical_crop_from_frame(
+        interior_mask
+    )
 
     if x1 - x0 < 32 or y1 <= y0:
-        return None, {**detector_meta, **border_meta}
+        return None, {**detector_meta, **border_meta, **horizontal_meta}
+
+    used_top = bool(horizontal_meta.get("vertical_crop_used_top_frame", False))
+    used_bottom = bool(
+        horizontal_meta.get("vertical_crop_used_bottom_frame", False)
+    )
+    if used_top and used_bottom:
+        crop_mode = "full_frame_borders"
+    elif used_top:
+        crop_mode = "vertical_borders_with_top_frame"
+    elif used_bottom:
+        crop_mode = "vertical_borders_with_bottom_frame"
+    else:
+        crop_mode = "vertical_borders_text_projection"
 
     metadata = {
         **detector_meta,
         **border_meta,
-        "crop_mode": "vertical_borders",
-        "crop_detector": "full-height-side-borders-then-row-projection",
+        **horizontal_meta,
+        "crop_mode": crop_mode,
+        "crop_detector": "independent-vertical-horizontal-frame-borders",
         "crop_raw_support_left": int(x0),
         "crop_raw_support_top": int(y0),
         "crop_raw_support_right": int(x1),
         "crop_raw_support_bottom": int(y1),
-        "side_border_crop_inset": int(inset),
-        "side_border_vertical_margin": float(vertical_margin),
+        "side_border_crop_inset": int(inset_x),
     }
     return (int(x0), int(y0), int(x1), int(y1)), metadata
 
