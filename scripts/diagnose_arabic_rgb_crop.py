@@ -32,7 +32,7 @@ os.environ["ZERO_SHOT_PREPROCESS"] = "1"
 os.environ["ZERO_SHOT_FOREGROUND_CROP"] = "1"
 os.environ["ZERO_SHOT_PRESERVE_ASPECT"] = "1"
 os.environ["ZERO_SHOT_SOURCE_GEOMETRY"] = "0"
-os.environ["ZERO_SHOT_CROP_MODE"] = "robust_projection"
+os.environ["ZERO_SHOT_CROP_MODE"] = "vertical_borders"
 os.environ.setdefault("ZERO_SHOT_TARGET_INK_HEIGHT_RATIO", "0.72")
 
 from RealDataSet import ArabicManifestIndependentLineDataset
@@ -43,6 +43,7 @@ from zero_shot_preprocessing import (
     build_preprocessor,
     foreground_crop_with_metadata,
     foreground_detection_mask_with_metadata,
+    detect_vertical_side_borders,
 )
 
 
@@ -51,6 +52,37 @@ def _draw_bbox(image: Image.Image, box):
     draw = ImageDraw.Draw(out)
     draw.rectangle(tuple(map(int, box)), outline=(255, 0, 0), width=3)
     return out
+
+
+def _draw_side_border_overlay(image: Image.Image, mask: np.ndarray, crop_meta: dict):
+    out = image.convert("RGB").copy()
+    draw = ImageDraw.Draw(out)
+    left, right, border_meta = detect_vertical_side_borders(mask)
+
+    if left is not None:
+        draw.rectangle(
+            (int(left[0]), 0, max(int(left[0]), int(left[1]) - 1), out.height - 1),
+            outline=(0, 180, 255),
+            width=3,
+        )
+    if right is not None:
+        draw.rectangle(
+            (int(right[0]), 0, max(int(right[0]), int(right[1]) - 1), out.height - 1),
+            outline=(255, 180, 0),
+            width=3,
+        )
+
+    draw.rectangle(
+        (
+            int(crop_meta["crop_left"]),
+            int(crop_meta["crop_top"]),
+            max(int(crop_meta["crop_left"]), int(crop_meta["crop_right"]) - 1),
+            max(int(crop_meta["crop_top"]), int(crop_meta["crop_bottom"]) - 1),
+        ),
+        outline=(255, 0, 0),
+        width=3,
+    )
+    return out, border_meta
 
 
 def _save_mask(mask: np.ndarray, path: Path):
@@ -174,7 +206,10 @@ def main():
         stem = f"sample_{sample_index:03d}"
         original.save(output / f"{stem}_01_original_rgb.png")
         _save_mask(mask, output / f"{stem}_02_temporary_foreground_mask.png")
-        _draw_bbox(original, box).save(output / f"{stem}_03_crop_bbox_overlay.png")
+        side_overlay, side_border_meta = _draw_side_border_overlay(
+            original, mask, crop_meta
+        )
+        side_overlay.save(output / f"{stem}_03_side_borders_and_crop_overlay.png")
         cropped.save(output / f"{stem}_04_cropped_rgb.png")
         model_input.save(output / f"{stem}_05_model_input_1024x128_rgb.png")
 
@@ -249,6 +284,7 @@ def main():
                 ),
                 "model_sequence_window_indices": packed_indices,
                 "crop": crop_meta,
+                "side_borders": side_border_meta,
                 "detection": detection_meta,
                 "resize": resize_meta,
                 "normalized_tensor": _tensor_stats(model_input),
@@ -264,7 +300,7 @@ def main():
     print("  samples      =", len(report))
     print("  output       =", output)
     print("  binarization = OFF")
-    print("  crop mode    = robust_projection")
+    print("  crop mode    = vertical_borders")
     print("  model input  = original RGB crop -> 1024x128")
     for row in report[:5]:
         print(
