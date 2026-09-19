@@ -3,6 +3,7 @@ from PIL import Image
 
 from zero_shot_preprocessing import (
     _crop_between_vertical_borders,
+    _crop_with_partial_side_borders,
     detect_vertical_side_borders,
 )
 
@@ -81,3 +82,71 @@ def test_missing_second_border_is_not_accepted():
     left, right, meta = detect_vertical_side_borders(mask)
 
     assert meta["side_border_pair_valid"] is False
+
+
+def test_single_side_border_rejects_neighboring_line_from_above(monkeypatch):
+    monkeypatch.setenv("ZERO_SHOT_BORDER_CROP_INSET", "2")
+
+    height, width = 160, 640
+    mask = np.zeros((height, width), dtype=bool)
+
+    # One real structural side border.
+    mask[2:158, 36:40] = True
+    # Leaked preceding manuscript line touching the top edge.
+    mask[0:24, 70:570] = True
+    # Intended line, centered in the crop.
+    mask[70:108, 95:535] = True
+    # A few diacritic-like fragments around the intended line.
+    mask[62:67, 180:205] = True
+    mask[111:115, 360:382] = True
+
+    source = Image.new("RGB", (width, height), (238, 231, 214))
+    detector_meta = {
+        "crop_raw_support_left": 0,
+        "crop_raw_support_top": 0,
+        "crop_raw_support_right": width,
+        "crop_raw_support_bottom": height,
+    }
+    box, meta = _crop_with_partial_side_borders(source, mask, detector_meta)
+
+    assert box is not None
+    x0, y0, x1, y1 = box
+    assert meta["crop_mode"] == "single_left_vertical_border"
+    assert x0 >= 40
+    assert x1 > 535
+    # The leaked line above is removed while the intended line and safety
+    # margin remain.
+    assert y0 > 24
+    assert y0 < 70
+    assert y1 > 108
+    assert y1 <= height
+
+
+def test_no_side_borders_rejects_neighboring_line_from_above():
+    height, width = 150, 620
+    mask = np.zeros((height, width), dtype=bool)
+
+    # Leaked line from above, deliberately wide.
+    mask[0:20, 30:590] = True
+    # Intended target line near the vertical center.
+    mask[64:102, 110:510] = True
+    mask[57:61, 210:230] = True
+    mask[105:109, 390:410] = True
+
+    source = Image.new("RGB", (width, height), (240, 233, 218))
+    detector_meta = {
+        "crop_raw_support_left": 0,
+        "crop_raw_support_top": 0,
+        "crop_raw_support_right": width,
+        "crop_raw_support_bottom": height,
+    }
+    box, meta = _crop_with_partial_side_borders(source, mask, detector_meta)
+
+    assert box is not None
+    x0, y0, x1, y1 = box
+    assert meta["crop_mode"] == "dominant_text_band_projection"
+    assert y0 > 20
+    assert y0 < 64
+    assert y1 > 102
+    assert x0 < 110
+    assert x1 > 510
