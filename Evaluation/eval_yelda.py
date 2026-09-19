@@ -56,7 +56,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--image-preprocessing",
         choices=("original", "training", "tight", "cropped_1024"),
-        default="cropped_1024",
+        default="training",
         help=(
             "cropped_1024: exact foreground crop followed by direct 1024x128 RGB resize "
             "with no padding; tight: foreground crop with variable width; "
