@@ -1117,12 +1117,15 @@ def model_config(P):
         "real_binarize": bool(P.real_binarize),
         "real_synthetic_style": _env_flag("REAL_SYNTHETIC_STYLE", False),
         "real_independent_lines": _env_flag("REAL_INDEPENDENT_LINES", False),
+        "real_all_page_lines": _env_flag("REAL_ALL_PAGE_LINES", False),
         "real_manifest_name": os.environ.get(
             "REAL_MANIFEST_NAME", "dataset_manifest.jsonl"
         ),
-        "real_pair_labels_used_for_training": not _env_flag(
-            "REAL_INDEPENDENT_LINES", False
+        "real_pair_labels_used_for_training": not (
+            _env_flag("REAL_INDEPENDENT_LINES", False)
+            or _env_flag("REAL_ALL_PAGE_LINES", False)
         ),
+        "real_positive_partner_required": False,
         "pack_valid_windows": _env_flag("PACK_VALID_WINDOWS", False),
         "real_output_polarity": (
             "white_ink_on_black"
