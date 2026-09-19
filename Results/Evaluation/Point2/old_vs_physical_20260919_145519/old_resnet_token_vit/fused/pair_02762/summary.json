@@ -1,0 +1,205 @@
+{
+  "index": 2762,
+  "pair_id": "synthetic_2762",
+  "source_type": "synthetic",
+  "side1_type": "synthetic",
+  "side2_type": "synthetic",
+  "side1_preprocess": "synthetic",
+  "side2_preprocess": "synthetic",
+  "label_type": "",
+  "text_score": 0.0,
+  "split": "test",
+  "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_2762.png",
+  "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_2762.png",
+  "nw_score": 7.839817047119141,
+  "normalized_nw_score": 0.12444154043046254,
+  "primary_algorithm": "smith_waterman",
+  "primary_score": 9.753576278686523,
+  "normalized_primary_score": 0.16531485218112751,
+  "feature": "contextual",
+  "score_mode": "raw",
+  "score_clip": 4.0,
+  "threshold": 0.0,
+  "gap": -0.3,
+  "line1_windows": 63,
+  "line2_windows": 63,
+  "gap_steps": 16,
+  "mean_path_cosine": 0.3001228108602975,
+  "mean_full_path_cosine": 0.21799203433658718,
+  "matrix_mean_cosine": 0.04906146973371506,
+  "matrix_std_cosine": 0.2537945806980133,
+  "path_cosine_margin": 0.25106134112658246,
+  "path_cosine_z": 0.9892305045918884,
+  "sw_score": 9.753576278686523,
+  "normalized_sw_score": 0.16531485218112751,
+  "sw_mean_path_cosine": 0.3001228108602975,
+  "sw_path_steps": 42,
+  "sw_component_count": 1,
+  "sw_line1_intervals_px": [
+    [
+      136.0,
+      1024.0
+    ]
+  ],
+  "sw_line2_intervals_px": [
+    [
+      40.0,
+      952.0
+    ]
+  ],
+  "line1_intervals_px": [
+    [
+      136.0,
+      1024.0
+    ]
+  ],
+  "line2_intervals_px": [
+    [
+      40.0,
+      952.0
+    ]
+  ],
+  "nw_line1_intervals_px": [
+    [
+      936.0,
+      1024.0
+    ],
+    [
+      216.0,
+      936.0
+    ]
+  ],
+  "nw_line2_intervals_px": [
+    [
+      904.0,
+      984.0
+    ],
+    [
+      120.0,
+      840.0
+    ]
+  ],
+  "gt_mask1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask1_2762.png",
+  "gt_mask2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask2_2762.png",
+  "path_steps": 42,
+  "traceback_steps": 59,
+  "warp_steps": 6,
+  "component_count": 1,
+  "full_match_steps": 53,
+  "bridged_trace_steps": 17,
+  "component_bridge_limit": 2,
+  "component_support_floor": 0.0,
+  "line1_path_windows": 42,
+  "line2_path_windows": 42,
+  "line1_span_windows": 55,
+  "line2_span_windows": 57,
+  "line1_path_fraction": 0.6666666666666666,
+  "line2_path_fraction": 0.6666666666666666,
+  "line1_matched_fraction": 0.873015873015873,
+  "line2_matched_fraction": 0.9047619047619048,
+  "line1_path_start": 0,
+  "line1_path_end": 54,
+  "line2_path_start": 4,
+  "line2_path_end": 60,
+  "line1_component_ranges": "[[0,54]]",
+  "line2_component_ranges": "[[4,60]]",
+  "line1_mask_iou": 0.4125714285714286,
+  "line1_mask_dice": 0.5841423948220065,
+  "line1_mask_precision": 0.4125714285714286,
+  "line1_mask_recall": 1.0,
+  "line2_mask_iou": 0.34582441113490364,
+  "line2_mask_dice": 0.5139220365950676,
+  "line2_mask_precision": 0.36089385474860336,
+  "line2_mask_recall": 0.8922651933701657,
+  "matrix_csv_cosine": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_145519/old_resnet_token_vit/fused/pair_02762/matrices/nw_match_scores_values_cosine.csv",
+  "matrix_csv_match": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_145519/old_resnet_token_vit/fused/pair_02762/matrices/nw_match_scores_values_match_score.csv",
+  "evidence_json": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_145519/old_resnet_token_vit/fused/pair_02762/evidence/nw_match_scores_values_trace.json",
+  "mean_mask_iou": 0.3791979198531661,
+  "line1_source_intervals_px": [
+    [
+      144.0078125,
+      1019.0
+    ]
+  ],
+  "line2_source_intervals_px": [
+    [
+      49.21875,
+      943.40625
+    ]
+  ],
+  "representation": "primary",
+  "local_weight": null,
+  "geometry": [
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 10,
+      "crop_top": 0,
+      "crop_right": 1019,
+      "crop_bottom": 128,
+      "crop_width": 1009,
+      "crop_height": 128,
+      "crop_margin_x": 0.0,
+      "crop_margin_y": 0.0,
+      "scale_x": 1.0148662041625371,
+      "scale_y": 1.0,
+      "resize_scale": null,
+      "resized_width": 1024,
+      "resized_height": 128,
+      "offset_x": 0,
+      "offset_y": 0,
+      "canvas_width": 1024,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": false,
+      "artificial_padding": false,
+      "autocontrast": false,
+      "auto_invert": false,
+      "image_preprocessing": "cropped_1024",
+      "color_mode": "RGB",
+      "content_preview_path": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_145519/old_resnet_token_vit/fused/pair_02762/line1_content_crop.png",
+      "content_preview_crop_left": 0,
+      "content_preview_crop_top": 0,
+      "content_preview_crop_right": 1024,
+      "content_preview_crop_bottom": 128,
+      "content_preview_rescaled": false
+    },
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 10,
+      "crop_top": 40,
+      "crop_right": 1014,
+      "crop_bottom": 88,
+      "crop_width": 1004,
+      "crop_height": 48,
+      "crop_margin_x": 0.0,
+      "crop_margin_y": 0.0,
+      "scale_x": 1.0199203187250996,
+      "scale_y": 2.6666666666666665,
+      "resize_scale": null,
+      "resized_width": 1024,
+      "resized_height": 128,
+      "offset_x": 0,
+      "offset_y": 0,
+      "canvas_width": 1024,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": false,
+      "artificial_padding": false,
+      "autocontrast": false,
+      "auto_invert": false,
+      "image_preprocessing": "cropped_1024",
+      "color_mode": "RGB",
+      "content_preview_path": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_145519/old_resnet_token_vit/fused/pair_02762/line2_content_crop.png",
+      "content_preview_crop_left": 0,
+      "content_preview_crop_top": 0,
+      "content_preview_crop_right": 1024,
+      "content_preview_crop_bottom": 127,
+      "content_preview_rescaled": false
+    }
+  ],
+  "mask_coordinate_system": "source_image"
+}
