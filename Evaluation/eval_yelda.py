@@ -314,6 +314,10 @@ def main(argv=None):
     # pair-manifest split that can leak training pages into evaluation.
     if bool(models.config.get("real_all_page_lines", False)):
         os.environ["REAL_ALL_PAGE_LINES"] = "1"
+        # This real fine-tune used the frame-aware crop path. Older evaluation
+        # jobs silently fell back to legacy Otsu because ZERO_SHOT_CROP_MODE
+        # was not exported by the evaluation launcher.
+        os.environ.setdefault("ZERO_SHOT_CROP_MODE", "vertical_borders")
     recorded_manifest = str(models.config.get("real_manifest_name", "")).strip()
     if recorded_manifest:
         os.environ["REAL_MANIFEST_NAME"] = recorded_manifest
