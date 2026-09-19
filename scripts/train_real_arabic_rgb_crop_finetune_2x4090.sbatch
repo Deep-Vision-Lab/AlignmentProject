@@ -107,7 +107,7 @@ export TOKENIZERS_PARALLELISM=false
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export TORCH_COMPILE_VISUAL=0
 export GRADIENT_ACCUMULATION_STEPS=1
-export TRAIN_DROP_LAST=0
+export TRAIN_DROP_LAST=1
 
 "${PYTHON_BIN}" -m py_compile \
   train.py model_backend.py vlm_restoration_positive_dtw.py \
@@ -210,7 +210,7 @@ for group_id in group_ids:
 world_size = 2
 batch_size_per_rank = 32
 samples_per_rank = math.ceil(len(train) / world_size)
-expected_batches = math.ceil(samples_per_rank / batch_size_per_rank)
+expected_batches = samples_per_rank // batch_size_per_rank
 
 print("All-page-line dataset census:")
 print("  unique lines       =", len(dataset))
@@ -220,6 +220,7 @@ print("  train/valid/test   =", len(train), len(valid), len(test))
 print("  batch size / rank  =", batch_size_per_rank)
 print("  DDP world size     =", world_size)
 print("  expected train batches / rank =", expected_batches)
+print("  drop last partial batch =", True)
 print("  objective          = each line vs its own transcript; pair labels unused")
 PY
 
@@ -248,6 +249,7 @@ echo "duplicate copies     = deduplicated by source-page image fingerprint + lin
 echo "pair labels          = ignored; positive partner line NOT required"
 echo "TinyViT dropout      = ${TINY_VIT_DROPOUT}"
 echo "fusion dropout       = ${FUSION_DROPOUT}"
+echo "drop last batch      = ${TRAIN_DROP_LAST} (match synthetic gradient fix)"
 echo "============================================================"
 
 "${TORCHRUN_BIN}" \
