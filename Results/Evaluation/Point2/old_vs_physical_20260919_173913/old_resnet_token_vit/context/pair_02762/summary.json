@@ -1,0 +1,229 @@
+{
+  "index": 2762,
+  "pair_id": "synthetic_2762",
+  "source_type": "synthetic",
+  "side1_type": "synthetic",
+  "side2_type": "synthetic",
+  "side1_preprocess": "synthetic",
+  "side2_preprocess": "synthetic",
+  "label_type": "",
+  "text_score": 0.0,
+  "split": "test",
+  "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_2762.png",
+  "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_2762.png",
+  "nw_score": 4.318027973175049,
+  "normalized_nw_score": 0.06854012655833411,
+  "primary_algorithm": "smith_waterman",
+  "primary_score": 9.284942626953125,
+  "normalized_primary_score": 0.34388676396122686,
+  "feature": "contextual",
+  "score_mode": "raw",
+  "score_clip": 4.0,
+  "threshold": 0.1,
+  "cosine_match_rule": "match iff raw cosine > threshold",
+  "trace_candidate_rule": "SW/NW determines candidate route; threshold determines accepted matches",
+  "threshold_match_cells": 2373,
+  "threshold_total_cells": 3969,
+  "threshold_match_fraction": 0.5978835978835979,
+  "primary_route_candidate_matches": 25,
+  "primary_route_threshold_matches": 19,
+  "primary_route_threshold_mismatches": 6,
+  "gap": -0.3,
+  "line1_windows": 63,
+  "line2_windows": 63,
+  "gap_steps": 12,
+  "mean_path_cosine": 0.5294461822823474,
+  "mean_full_path_cosine": 0.49539771795272824,
+  "matrix_mean_cosine": 0.1634906679391861,
+  "matrix_std_cosine": 0.17403359711170197,
+  "path_cosine_margin": 0.3659555143431613,
+  "path_cosine_z": 2.1027865907309606,
+  "sw_score": 9.284942626953125,
+  "normalized_sw_score": 0.34388676396122686,
+  "sw_mean_path_cosine": 0.5294461822823474,
+  "sw_path_steps": 19,
+  "sw_component_count": 1,
+  "sw_line1_intervals_px": [
+    [
+      472.0,
+      776.0
+    ]
+  ],
+  "sw_line2_intervals_px": [
+    [
+      136.0,
+      440.0
+    ]
+  ],
+  "line1_intervals_px": [
+    [
+      472.0,
+      776.0
+    ]
+  ],
+  "line2_intervals_px": [
+    [
+      136.0,
+      440.0
+    ]
+  ],
+  "nw_line1_intervals_px": [
+    [
+      504.0,
+      760.0
+    ],
+    [
+      248.0,
+      424.0
+    ],
+    [
+      0.0,
+      168.0
+    ]
+  ],
+  "nw_line2_intervals_px": [
+    [
+      600.0,
+      856.0
+    ],
+    [
+      328.0,
+      504.0
+    ],
+    [
+      0.0,
+      168.0
+    ]
+  ],
+  "gt_mask1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask1_2762.png",
+  "gt_mask2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask2_2762.png",
+  "path_steps": 19,
+  "traceback_steps": 27,
+  "warp_steps": 2,
+  "component_count": 1,
+  "full_match_steps": 25,
+  "bridged_trace_steps": 0,
+  "component_bridge_limit": 0,
+  "component_support_floor": 0.0,
+  "line1_path_windows": 19,
+  "line2_path_windows": 19,
+  "line1_span_windows": 19,
+  "line2_span_windows": 19,
+  "line1_path_fraction": 0.30158730158730157,
+  "line2_path_fraction": 0.30158730158730157,
+  "line1_matched_fraction": 0.30158730158730157,
+  "line2_matched_fraction": 0.30158730158730157,
+  "line1_path_start": 15,
+  "line1_path_end": 33,
+  "line2_path_start": 36,
+  "line2_path_end": 54,
+  "line1_component_ranges": "[[15,33]]",
+  "line2_component_ranges": "[[36,54]]",
+  "line1_mask_iou": 0.8514150943396226,
+  "line1_mask_dice": 0.9197452229299363,
+  "line1_mask_precision": 0.8514150943396226,
+  "line1_mask_recall": 1.0,
+  "line2_mask_iou": 0.8786407766990292,
+  "line2_mask_dice": 0.9354005167958657,
+  "line2_mask_precision": 0.8786407766990292,
+  "line2_mask_recall": 1.0,
+  "matrix_csv_cosine": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_173913/old_resnet_token_vit/context/pair_02762/matrices/nw_match_scores_values_cosine.csv",
+  "matrix_csv_match": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_173913/old_resnet_token_vit/context/pair_02762/matrices/nw_match_scores_values_match_score.csv",
+  "evidence_json": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_173913/old_resnet_token_vit/context/pair_02762/evidence/nw_match_scores_values_trace.json",
+  "mean_mask_iou": 0.8650279355193259,
+  "line1_source_intervals_px": [
+    [
+      456.3478260869565,
+      879.304347826087
+    ]
+  ],
+  "line2_source_intervals_px": [
+    [
+      0.0,
+      411.82608695652175
+    ]
+  ],
+  "representation": "primary",
+  "local_weight": null,
+  "geometry": [
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 0,
+      "crop_top": 0,
+      "crop_right": 1024,
+      "crop_bottom": 128,
+      "crop_width": 1024,
+      "crop_height": 128,
+      "crop_margin_x": 0.025,
+      "crop_margin_y": 0.15,
+      "scale_x": 0.71875,
+      "scale_y": 0.71875,
+      "resize_scale": 0.71875,
+      "resized_width": 736,
+      "resized_height": 92,
+      "offset_x": 144,
+      "offset_y": 18,
+      "canvas_width": 1024,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": true,
+      "artificial_padding": true,
+      "image_preprocessing": "wide_side_padding",
+      "color_mode": "RGB",
+      "requested_min_side_padding_px": 144,
+      "actual_left_padding_px": 144,
+      "actual_right_padding_px": 144,
+      "target_ink_height_pixels": 92,
+      "autocontrast": false,
+      "auto_invert": false,
+      "content_preview_path": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_173913/old_resnet_token_vit/context/pair_02762/line1_content_crop.png",
+      "content_preview_crop_left": 144,
+      "content_preview_crop_top": 18,
+      "content_preview_crop_right": 880,
+      "content_preview_crop_bottom": 110,
+      "content_preview_rescaled": false
+    },
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 0,
+      "crop_top": 33,
+      "crop_right": 1024,
+      "crop_bottom": 95,
+      "crop_width": 1024,
+      "crop_height": 62,
+      "crop_margin_x": 0.025,
+      "crop_margin_y": 0.15,
+      "scale_x": 0.71875,
+      "scale_y": 0.7258064516129032,
+      "resize_scale": 0.71875,
+      "resized_width": 736,
+      "resized_height": 45,
+      "offset_x": 144,
+      "offset_y": 41,
+      "canvas_width": 1024,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": true,
+      "artificial_padding": true,
+      "image_preprocessing": "wide_side_padding",
+      "color_mode": "RGB",
+      "requested_min_side_padding_px": 144,
+      "actual_left_padding_px": 144,
+      "actual_right_padding_px": 144,
+      "target_ink_height_pixels": 92,
+      "autocontrast": false,
+      "auto_invert": false,
+      "content_preview_path": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_173913/old_resnet_token_vit/context/pair_02762/line2_content_crop.png",
+      "content_preview_crop_left": 144,
+      "content_preview_crop_top": 41,
+      "content_preview_crop_right": 880,
+      "content_preview_crop_bottom": 86,
+      "content_preview_rescaled": false
+    }
+  ],
+  "mask_coordinate_system": "source_image"
+}
