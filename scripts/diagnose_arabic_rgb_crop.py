@@ -33,9 +33,14 @@ os.environ["ZERO_SHOT_FOREGROUND_CROP"] = "1"
 os.environ["ZERO_SHOT_PRESERVE_ASPECT"] = "1"
 os.environ["ZERO_SHOT_SOURCE_GEOMETRY"] = "0"
 os.environ["ZERO_SHOT_CROP_MODE"] = "vertical_borders"
+# Point-2 synthetic training used the fixed 1024px / 63-window position grid.
+# Keep that exact position semantics for real fine-tuning: mask outer padding
+# from contextual attention/DTW, but never repack the surviving windows.
+os.environ["PACK_VALID_WINDOWS"] = "0"
 os.environ.setdefault("ZERO_SHOT_TARGET_INK_HEIGHT_RATIO", "0.72")
 
 from RealDataSet import ArabicManifestIndependentLineDataset
+from restoration_recommended_components import line_padding_masks
 from zero_shot_preprocessing import (
     IMAGENET_MEAN,
     IMAGENET_STD,
@@ -128,11 +133,15 @@ def _windows_contact_sheet(model_input: Image.Image, starts, window_width=32):
     return sheet
 
 
-def _tensor_stats(model_input: Image.Image):
+def _normalized_tensor(model_input: Image.Image):
     tensor = transforms.ToTensor()(model_input)
     mean = torch.tensor(IMAGENET_MEAN).view(3, 1, 1)
     std = torch.tensor(IMAGENET_STD).view(3, 1, 1)
-    normalized = (tensor - mean) / std
+    return (tensor - mean) / std
+
+
+def _tensor_stats(model_input: Image.Image):
+    normalized = _normalized_tensor(model_input)
     return {
         "shape": list(normalized.shape),
         "channel_min": [float(v) for v in normalized.amin(dim=(1, 2))],
@@ -223,14 +232,30 @@ def main():
         content_right = int(
             resize_meta["offset_x"] + resize_meta["resized_width"]
         )
-        packed_indices = [
-            index
-            for index, start in enumerate(starts)
-            if (start + 32) > content_left and start < content_right
-        ]
-        packed_starts = [starts[index] for index in packed_indices]
-        _windows_contact_sheet(model_input, packed_starts).save(
+
+        # Exact Point-2-compatible sequence semantics:
+        #   * ResNet sees the fixed 63 physical windows at their original x slots.
+        #   * outer canvas-only windows are marked invalid for TinyViT keys/DTW;
+        #   * valid windows are NOT repacked to positions 0..N-1.
+        normalized = _normalized_tensor(model_input).unsqueeze(0)
+        token_valid_physical, _ = line_padding_masks(
+            normalized,
+            window_size=32,
+            stride=16,
+            use_flip=False,
+        )
+        alignment_valid_indices = torch.where(token_valid_physical[0])[0].tolist()
+        alignment_valid_starts = [starts[index] for index in alignment_valid_indices]
+
+        # 08 is now the actual encoder sequence: all 63 fixed-position windows.
+        _windows_contact_sheet(model_input, starts).save(
             output / f"{stem}_08_model_sequence_windows_contact_sheet.png"
+        )
+        # 10 shows the subset that is valid for contextual attention/DTW. This
+        # makes it explicit that white side-padding windows exist physically but
+        # are excluded from the alignment objective.
+        _windows_contact_sheet(model_input, alignment_valid_starts).save(
+            output / f"{stem}_10_alignment_valid_windows_contact_sheet.png"
         )
 
         content_overlay = model_input.copy()
@@ -278,11 +303,16 @@ def main():
                 "window_width": 32,
                 "window_stride": 16,
                 "canvas_window_count": len(starts),
-                "model_sequence_window_count": len(packed_starts),
-                "removed_outer_padding_windows": int(
-                    len(starts) - len(packed_starts)
+                "model_sequence_window_count": len(starts),
+                "model_sequence_window_indices": list(range(len(starts))),
+                "pack_valid_windows": False,
+                "window_position_semantics": "fixed_63_synthetic_grid",
+                "alignment_valid_window_count": len(alignment_valid_indices),
+                "alignment_valid_physical_window_indices": alignment_valid_indices,
+                "masked_outer_padding_windows": int(
+                    len(starts) - len(alignment_valid_indices)
                 ),
-                "model_sequence_window_indices": packed_indices,
+                "removed_outer_padding_windows": 0,
                 "crop": crop_meta,
                 "side_borders": side_border_meta,
                 "detection": detection_meta,
@@ -306,8 +336,9 @@ def main():
         print(
             f"  sample={row['sample_index']:03d} source={row['source_size']} "
             f"crop={row['crop_box']} cropped={row['cropped_size']} "
-            f"windows={row['canvas_window_count']} -> "
-            f"{row['model_sequence_window_count']} packed"
+            f"windows={row['model_sequence_window_count']} fixed; "
+            f"{row['alignment_valid_window_count']} alignment-valid; "
+            f"{row['masked_outer_padding_windows']} outer-padding masked"
         )
 
 
