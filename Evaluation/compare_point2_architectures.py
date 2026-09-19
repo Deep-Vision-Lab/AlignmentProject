@@ -10,6 +10,7 @@ from pathlib import Path
 
 MODES = ("local", "context", "fused", "fused_wrong_context")
 METRICS = (
+    "normalized_primary_score",
     "normalized_nw_score",
     "mean_path_cosine",
     "mean_mask_iou",
@@ -139,7 +140,7 @@ def main():
     print("=" * 100)
     for mode in MODES:
         print(f"\n{mode}")
-        for metric in ("normalized_nw_score", "mean_path_cosine", "mean_mask_iou"):
+        for metric in ("normalized_primary_score", "normalized_nw_score", "mean_path_cosine", "mean_mask_iou"):
             item = report["representations"][mode][metric]
             print(
                 f"  {metric:<22} delta={_fmt(item['mean_delta'])} "
