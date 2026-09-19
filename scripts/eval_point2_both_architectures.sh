@@ -14,6 +14,7 @@ IMAGE_PREPROCESSING="${IMAGE_PREPROCESSING:-wide_side_padding}"
 SIDE_PADDING_PX="${SIDE_PADDING_PX:-144}"
 export EVAL_SIDE_PADDING_PX="${SIDE_PADDING_PX}"
 SCORE_MODE="${SCORE_MODE:-raw}"
+THRESHOLD="${THRESHOLD:-0.45}"
 MIN_ALIGNED_WINDOWS="${MIN_ALIGNED_WINDOWS:-5}"
 TAG="${TAG:-$(date +%Y%m%d_%H%M%S)}"
 ROOT_OUT="${ROOT_OUT:-${PROJECT_DIR}/Results/Evaluation/Point2/old_vs_physical_${TAG}}"
@@ -98,6 +99,7 @@ echo "start_index       = ${START_INDEX}"
 echo "preprocessing     = ${IMAGE_PREPROCESSING}"
 echo "side padding px   = ${SIDE_PADDING_PX} (minimum each side when wide_side_padding)"
 echo "min_windows       = ${MIN_ALIGNED_WINDOWS}"
+echo "cosine threshold  = ${THRESHOLD} (route cell is a match only if raw cosine > threshold)"
 echo "output            = ${ROOT_OUT}"
 echo "============================================================"
 
@@ -125,7 +127,7 @@ run_architecture () {
       --start-index "${START_INDEX}" \
       --device "${DEVICE}" \
       --score-mode "${SCORE_MODE}" \
-      --threshold "${THRESHOLD:-0.0}" \
+      --threshold "${THRESHOLD}" \
       --gap "${GAP:--0.30}" \
       --output-dir "${root}/${rep}"
   done
