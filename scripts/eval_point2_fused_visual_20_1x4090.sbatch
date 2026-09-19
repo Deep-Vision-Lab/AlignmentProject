@@ -39,19 +39,51 @@ echo "  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-<unset>}"
 echo "  SLURM_JOB_GPUS=${SLURM_JOB_GPUS-<unset>}"
 nvidia-smi -L || true
 
+set +e
 "${PYTHON_BIN}" - <<'PY'
+import os
+import sys
+import traceback
 import torch
+
 print("CUDA preflight:")
-print("  available =", torch.cuda.is_available())
-print("  count     =", torch.cuda.device_count())
-if not torch.cuda.is_available():
-    raise SystemExit("CUDA unavailable")
-torch.cuda.init()
-x = torch.empty(1, device="cuda:0")
-torch.cuda.synchronize()
-print("  device    =", torch.cuda.get_device_name(0))
-print("  probe     = OK")
+print("  host                   =", os.uname().nodename)
+print("  CUDA_VISIBLE_DEVICES   =", os.environ.get("CUDA_VISIBLE_DEVICES"))
+print("  NVIDIA_VISIBLE_DEVICES =", os.environ.get("NVIDIA_VISIBLE_DEVICES"))
+print("  torch version          =", torch.__version__)
+print("  torch CUDA version     =", torch.version.cuda)
+
+try:
+    count = torch.cuda.device_count()
+    print("  device_count           =", count)
+    print("  is_available           =", torch.cuda.is_available())
+    torch.cuda.init()
+    probe = torch.empty(1, device="cuda:0")
+    torch.cuda.synchronize()
+    print("  device 0               =", torch.cuda.get_device_name(0))
+    print("  allocation probe       = OK", tuple(probe.shape))
+except Exception as exc:
+    print("  CUDA exception type    =", type(exc).__name__, file=sys.stderr)
+    print("  CUDA exception         =", repr(exc), file=sys.stderr)
+    traceback.print_exc()
+    sys.exit(86)
 PY
+CUDA_RC=$?
+set -e
+
+if [[ "${CUDA_RC}" -ne 0 ]]; then
+  BAD_NODE="${SLURMD_NODENAME:-$(hostname -s)}"
+  echo >&2
+  echo "ERROR: CUDA runtime initialization failed on node ${BAD_NODE}." >&2
+  echo "The job preserved Slurm GPU visibility; failure occurred before model loading." >&2
+  echo >&2
+  echo "Device-file diagnostics:" >&2
+  ls -l /dev/nvidia* 2>&1 || true
+  echo >&2
+  echo "Recommended resubmission excluding this node:" >&2
+  echo "  sbatch --exclude=${BAD_NODE} --export=ALL,DATASET=${DATASET},WEIGHTS=${WEIGHTS},N_SAMPLES=${N_SAMPLES},START_INDEX=${START_INDEX},THRESHOLD=${THRESHOLD},CROP_MODE=${CROP_MODE},OUTPUT_DIR=${OUTPUT_DIR} scripts/eval_point2_fused_visual_20_1x4090.sbatch" >&2
+  exit "${CUDA_RC}"
+fi
 
 export EVAL_SIDE_PADDING_PX="${SIDE_PADDING_PX}"
 export ZERO_SHOT_CROP_MODE="${CROP_MODE}"
