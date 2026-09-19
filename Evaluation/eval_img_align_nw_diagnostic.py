@@ -1137,6 +1137,30 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
             stride=stride,
         )
 
+        primary_alignment = str(
+            os.environ.get("EVAL_PRIMARY_ALIGNMENT", "nw")
+        ).strip().lower()
+        if primary_alignment not in {"nw", "sw"}:
+            raise ValueError(
+                f"Unknown EVAL_PRIMARY_ALIGNMENT={primary_alignment!r}; use nw or sw"
+            )
+        if primary_alignment == "sw":
+            primary_component = sw_component
+            primary_full_path = list(sw_path)
+            primary_intervals1 = sw_intervals1
+            primary_intervals2 = sw_intervals2
+            primary_score = float(sw_score)
+            primary_normalized_score = float(sw_normalized)
+            primary_algorithm_name = "smith_waterman"
+        else:
+            primary_component = component_path
+            primary_full_path = full_path
+            primary_intervals1 = intervals1
+            primary_intervals2 = intervals2
+            primary_score = float(result.score)
+            primary_normalized_score = float(result.normalized_score)
+            primary_algorithm_name = "needleman_wunsch"
+
         _visualize(
             models, pair, arr1, arr2, features1, features2,
             full_path, component_path, traceback, cosine,
@@ -1182,8 +1206,8 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
         np.save(output_dir / "nw_match_scores.npy", match_scores)
         _save_path_values(output_dir / "nw_trace_path_values.csv", result, cosine, match_scores)
 
-        pred1 = _predicted_mask(arr1.shape, intervals1)
-        pred2 = _predicted_mask(arr2.shape, intervals2)
+        pred1 = _predicted_mask(arr1.shape, primary_intervals1)
+        pred2 = _predicted_mask(arr2.shape, primary_intervals2)
         Image.fromarray(pred1).save(output_dir / "line1_pred_mask.png")
         Image.fromarray(pred2).save(output_dir / "line2_pred_mask.png")
 
@@ -1194,9 +1218,9 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
         if gt2 is not None:
             Image.fromarray(gt2).save(output_dir / "line2_gt_mask.png")
 
-        metrics = component_metrics(component_path, cosine.shape)
-        supported_cosines = [float(cosine[i, j]) for i, j in component_path]
-        full_cosines = [float(cosine[i, j]) for i, j in full_path]
+        metrics = component_metrics(primary_component, cosine.shape)
+        supported_cosines = [float(cosine[i, j]) for i, j in primary_component]
+        full_cosines = [float(cosine[i, j]) for i, j in primary_full_path]
         gap_steps = sum(
             1 for step in result.steps if step.index1 is None or step.index2 is None
         )
@@ -1235,6 +1259,9 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
             "image2": str(pair.image2),
             "nw_score": float(result.score),
             "normalized_nw_score": float(result.normalized_score),
+            "primary_algorithm": primary_algorithm_name,
+            "primary_score": primary_score,
+            "normalized_primary_score": primary_normalized_score,
             "feature": args.feature,
             "score_mode": resolved_mode,
             "score_clip": float(args.score_clip),
@@ -1258,8 +1285,10 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
             "sw_component_count": int(sw_metrics.get("component_count", 0)),
             "sw_line1_intervals_px": sw_intervals1,
             "sw_line2_intervals_px": sw_intervals2,
-            "line1_intervals_px": intervals1,
-            "line2_intervals_px": intervals2,
+            "line1_intervals_px": primary_intervals1,
+            "line2_intervals_px": primary_intervals2,
+            "nw_line1_intervals_px": intervals1,
+            "nw_line2_intervals_px": intervals2,
             "gt_mask1": str(pair.gt_mask1) if pair.gt_mask1 else "",
             "gt_mask2": str(pair.gt_mask2) if pair.gt_mask2 else "",
             **metrics,
