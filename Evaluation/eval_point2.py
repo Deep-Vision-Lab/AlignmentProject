@@ -57,9 +57,12 @@ def main(argv=None):
     # Show heatmaps in the same logical sequence order used by Arabic training:
     # index 0 is the rightmost physical window and indices advance right-to-left.
     os.environ.setdefault("EVAL_HEATMAP_ORDER", "logical")
-    # For Point-2, show the local Smith-Waterman route on the primary cosine
-    # heatmap. Preserve the global NW route in a separate diagnostic figure.
+    # For Point-2, use local Smith-Waterman as the PRIMARY region/path
+    # interpreter. The fused cosine maps often contain a clean local alignment
+    # band while global NW is forced through unrelated endpoints. Preserve NW
+    # figures/metrics separately as diagnostics.
     os.environ.setdefault("EVAL_COSINE_TRACE", "sw")
+    os.environ.setdefault("EVAL_PRIMARY_ALIGNMENT", "sw")
 
     from Evaluation import eval_yelda
 
@@ -87,6 +90,13 @@ def main(argv=None):
                 ),
             }[mode]
             payload.setdefault("arguments", {})["point2_representation"] = mode
+            payload["point2_sequence_order"] = (
+                "Arabic logical RTL: model index 0 is the rightmost physical window; "
+                "indices advance right-to-left. Physical image overlays convert back "
+                "only for display."
+            )
+            payload["point2_primary_alignment"] = "smith_waterman_local"
+            payload["point2_nw_role"] = "saved diagnostic only; not primary region path"
             run_path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False),
                 encoding="utf-8",
