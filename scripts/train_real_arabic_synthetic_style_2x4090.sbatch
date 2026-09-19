@@ -23,7 +23,7 @@ mkdir -p out Results/Diagnostics/ArabicDatasetSyntheticStyle
 
 [[ -x "${TORCHRUN_BIN}" ]] || { echo "ERROR: torchrun not executable: ${TORCHRUN_BIN}" >&2; exit 2; }
 [[ -d "${DATASET}" ]] || { echo "ERROR: ArabicDataset not found: ${DATASET}" >&2; exit 2; }
-[[ -f "${DATASET}/dataset_manifest.jsonl" ]] || { echo "ERROR: missing ${DATASET}/dataset_manifest.jsonl" >&2; exit 2; }
+[[ -f "${DATASET}/dataset_manifest_full_pairs.jsonl" ]] || { echo "ERROR: missing ${DATASET}/dataset_manifest_full_pairs.jsonl" >&2; exit 2; }
 [[ -f "${PRETRAINED_WEIGHTS}" ]] || { echo "ERROR: synthetic checkpoint not found: ${PRETRAINED_WEIGHTS}" >&2; exit 2; }
 
 # Use the architecture that produced the stronger fused Point-2 results.
@@ -41,9 +41,13 @@ export REAL_TRAIN_SAMPLES_PER_EPOCH="${REAL_TRAIN_SAMPLES_PER_EPOCH:-0}"
 export DATASET_TYPE=real
 export REAL_SYNTHETIC_STYLE=1
 export REAL_AUGMENT=0
-export REAL_DATASET_LABELS="${REAL_DATASET_LABELS:-high_match,medium_match}"
+export REAL_MANIFEST_NAME="dataset_manifest_full_pairs.jsonl"
+export REAL_INDEPENDENT_LINES=1
+export REAL_DATASET_LABELS="all"
 export REAL_TEXT_KEY="${REAL_TEXT_KEY:-text_original_path}"
 export REAL_MIN_TEXT_SCORE="${REAL_MIN_TEXT_SCORE:-0.0}"
+# Group independent lines by their source page so lines from one page do not
+# leak across train/validation/test.
 export REAL_SPLIT_BY_PAIR_ID=1
 export REAL_VALIDATE_PATHS="${REAL_VALIDATE_PATHS:-0}"
 export REAL_FILTER_INFEASIBLE_SPAN_DTW=0
@@ -81,7 +85,7 @@ export FORCE_DDP_STATIC_GRAPH=0
 export SPAN_DTW_BACKEND=torch
 export USE_LOCAL_HARD_NEGATIVES=0
 export USE_IMAGE_PAIR_CONTRASTIVE=0
-export TINY_VIT_DROPOUT="${TINY_VIT_DROPOUT:-0.0}"
+export TINY_VIT_DROPOUT="${TINY_VIT_DROPOUT:-0.10}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 export TOKENIZERS_PARALLELISM=false
@@ -120,7 +124,27 @@ PY
 
 "${PYTHON_BIN}" -m pytest -q \
   tests/test_real_synthetic_style_preprocessing.py \
+  tests/test_real_independent_lines.py \
   tests/test_restoration_positive_dtw.py
+
+DATASET="${DATASET}" "${PYTHON_BIN}" - <<'PY'
+import os
+from pathlib import Path
+
+from RealDataSet import ArabicManifestIndependentLineDataset
+
+root = Path(os.environ["DATASET"])
+dataset = ArabicManifestIndependentLineDataset(
+    root / "dataset_manifest_full_pairs.jsonl",
+    transform=None,
+    text_key="text_original_path",
+    validate_paths=False,
+)
+print("Independent-line dataset census:")
+print("  unique lines =", len(dataset))
+print("  source pages =", len({sample["pair_id"] for sample in dataset.samples}))
+print("  objective    = each line vs its own transcript; pair labels unused")
+PY
 
 # Save a few transformed ArabicDataset examples before spending GPU time.
 REAL_SYNTHETIC_STYLE=1 "${PYTHON_BIN}" scripts/preview_arabic_synthetic_style.py \
@@ -131,7 +155,8 @@ REAL_SYNTHETIC_STYLE=1 "${PYTHON_BIN}" scripts/preview_arabic_synthetic_style.py
 echo "============================================================"
 echo "Real ArabicDataset fine-tune"
 echo "dataset              = ${DATASET}"
-echo "manifest             = ${DATASET}/dataset_manifest.jsonl"
+echo "manifest             = ${DATASET}/dataset_manifest_full_pairs.jsonl"
+echo "mode                 = FINE-TUNE (never train from zero)"
 echo "initial weights      = ${PRETRAINED_WEIGHTS}"
 echo "backend              = resnet_token (ResNet18 -> TinyViT -> fused)"
 echo "epochs               = ${RESTORATION_EPOCHS}"
@@ -139,7 +164,9 @@ echo "learning rate        = ${RESTORATION_LEARNING_RATE}"
 echo "preprocessing        = foreground crop + white ink on black"
 echo "output geometry      = 1024x128, aspect preserved"
 echo "online augmentation  = disabled"
-echo "labels               = ${REAL_DATASET_LABELS}"
+echo "training view        = ALL unique independent lines (A+B, deduplicated)"
+echo "pair labels          = ignored"
+echo "TinyViT dropout      = ${TINY_VIT_DROPOUT}"
 echo "============================================================"
 
 "${TORCHRUN_BIN}" \
