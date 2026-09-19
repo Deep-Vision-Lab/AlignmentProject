@@ -194,13 +194,33 @@ def configure_geometry(config, image_preprocessing="original"):
 
 def evaluate_pair(base, models, pair, args, destination):
     from PIL import Image
-    from Evaluation.yelda_geometry import prepare_line, source_intervals
+    from Evaluation.yelda_geometry import (
+        prepare_line,
+        source_intervals,
+        _tight_foreground_crop_with_metadata,
+    )
     destination.mkdir(parents=True)
     prepared, geometry = [], []
     for role, path in ((1, pair.image1), (2, pair.image2)):
         image, mapping = prepare_line(path, pair.preprocess_domain(role), args.image_preprocessing)
         output = destination / f"line{role}_model_input.png"
         image.save(output)
+
+        # Save a clean no-padding VIEW of exactly the pixels in the model input,
+        # but never feed this tighter crop back into the network.  This preserves
+        # the checkpoint's learned scale/position distribution while giving the
+        # evaluation figures a manuscript-only line for human inspection.
+        content_crop, content_meta = _tight_foreground_crop_with_metadata(image)
+        content_output = destination / f"line{role}_content_crop.png"
+        content_crop.save(content_output)
+        mapping = dict(mapping)
+        mapping["content_preview_path"] = str(content_output)
+        mapping["content_preview_crop_left"] = int(content_meta["crop_left"])
+        mapping["content_preview_crop_top"] = int(content_meta["crop_top"])
+        mapping["content_preview_crop_right"] = int(content_meta["crop_right"])
+        mapping["content_preview_crop_bottom"] = int(content_meta["crop_bottom"])
+        mapping["content_preview_rescaled"] = False
+
         prepared.append(output)
         geometry.append(mapping)
     transformed = replace(pair, image1=prepared[0], image2=prepared[1],
