@@ -102,6 +102,11 @@ def main(argv=None):
             )
             payload["point2_primary_alignment"] = "smith_waterman_local"
             payload["point2_nw_role"] = "saved diagnostic only; not primary region path"
+            payload["point2_match_rule"] = (
+                "trace proposes candidate pairs; accepted match iff raw cosine > threshold"
+            )
+            payload["point2_threshold"] = float(args.threshold)
+            payload["point2_threshold_bridging"] = "disabled; mismatch breaks accepted component"
             run_path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False),
                 encoding="utf-8",
