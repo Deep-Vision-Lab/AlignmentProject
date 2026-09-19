@@ -12,6 +12,10 @@
 
 set -euo pipefail
 
+echo "ERROR: this launcher is deprecated because it binarizes ArabicDataset inputs." >&2
+echo "Use scripts/train_real_arabic_rgb_crop_finetune_2x4090.sbatch after inspecting the RGB crop diagnostic." >&2
+exit 2
+
 PROJECT_DIR="${PROJECT_DIR:-/home/ahmedmas/BGU-Lab/AlignmentProject}"
 DATASET="${DATASET:-${PROJECT_DIR}/DataSet/ArabicDataset}"
 PRETRAINED_WEIGHTS="${PRETRAINED_WEIGHTS:-${PROJECT_DIR}/Weights/res18_tinyvit_point2/model_latest.pth}"
