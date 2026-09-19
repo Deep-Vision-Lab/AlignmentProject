@@ -57,6 +57,7 @@ export REAL_FILTER_INFEASIBLE_SPAN_DTW=0
 export ZERO_SHOT_PREPROCESS=1
 export ZERO_SHOT_FOREGROUND_CROP=1
 export ZERO_SHOT_CROP_MODE=robust_projection
+export PACK_VALID_WINDOWS=1
 export ZERO_SHOT_PRESERVE_ASPECT=1
 export ZERO_SHOT_TARGET_INK_HEIGHT_RATIO="${ZERO_SHOT_TARGET_INK_HEIGHT_RATIO:-0.72}"
 
@@ -199,7 +200,8 @@ echo "epochs               = ${RESTORATION_EPOCHS}"
 echo "learning rate        = ${RESTORATION_LEARNING_RATE}"
 echo "preprocessing        = robust foreground crop + ORIGINAL RGB (no binarization)"
 echo "output geometry      = 1024x128, aspect preserved"
-echo "crop detector        = robust_projection (temporary mask only)"
+echo "crop detector        = adaptive local-background projection (temporary mask only)"
+echo "window sequence      = packed content windows only; outer canvas windows removed"
 echo "online augmentation  = disabled"
 echo "training view        = ALL unique independent lines (A+B, deduplicated)"
 echo "pair labels          = ignored"
