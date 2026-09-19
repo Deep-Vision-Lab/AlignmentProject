@@ -55,12 +55,12 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--image-preprocessing",
-        choices=("original", "training", "tight"),
-        default="tight",
+        choices=("original", "training", "tight", "cropped_1024"),
+        default="cropped_1024",
         help=(
-            "tight: exact foreground crop, RGB, resize to height 128 with variable width "
-            "and no artificial white canvas; training: checkpoint fixed-canvas geometry; "
-            "original: full-image 1024x128 resize"
+            "cropped_1024: exact foreground crop followed by direct 1024x128 RGB resize "
+            "with no padding; tight: foreground crop with variable width; "
+            "training: checkpoint geometry; original: full-image 1024x128 resize"
         ),
     )
     parser.add_argument("--representation", choices=("joint", "primary", "local", "independent"), default="joint")
@@ -140,6 +140,19 @@ def configure_geometry(config, image_preprocessing="original"):
     # contract explicit so a tightly cropped variable-width line is not resized
     # back to the historical fixed 1024-pixel canvas later.
     os.environ["EVAL_TIGHT_NO_PADDING"] = "1" if image_preprocessing == "tight" else "0"
+    if image_preprocessing == "cropped_1024":
+        return {
+            "line_height": 128,
+            "line_width": 1024,
+            "line_geometry_mode": "foreground-crop-direct-resize-1024x128",
+            "color_mode": "RGB",
+            "binarize": False,
+            "crop_foreground": True,
+            "padding": False,
+            "preserve_aspect": False,
+            "autocontrast": False,
+            "auto_invert": False,
+        }
     if image_preprocessing == "tight":
         return {
             "line_height": 128,
@@ -161,7 +174,10 @@ def configure_geometry(config, image_preprocessing="original"):
                 "binarize": False, "crop_foreground": False, "padding": False,
                 "preserve_aspect": False, "autocontrast": False, "auto_invert": False}
     if image_preprocessing != "training":
-        raise ValueError(f"Unknown image preprocessing: {image_preprocessing}")
+        raise ValueError(
+            f"Unknown image preprocessing: {image_preprocessing}; "
+            "use original, training, tight, or cropped_1024"
+        )
     # Current runs record geometry; older preprocessing flags fall back to the
     # branch's Parameters.py. The resolved values are included in the report.
     mapping = {
