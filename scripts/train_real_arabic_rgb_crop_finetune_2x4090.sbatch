@@ -23,7 +23,7 @@ mkdir -p out Results/Diagnostics/ArabicDatasetRGBCrop
 
 [[ -x "${TORCHRUN_BIN}" ]] || { echo "ERROR: torchrun not executable: ${TORCHRUN_BIN}" >&2; exit 2; }
 [[ -d "${DATASET}" ]] || { echo "ERROR: ArabicDataset not found: ${DATASET}" >&2; exit 2; }
-[[ -f "${PRETRAINED_WEIGHTS}" ]] || { echo "ERROR: synthetic checkpoint not found: ${PRETRAINED_WEIGHTS}" >&2; exit 2; }
+[[ -f "${PRETRAINED_WEIGHTS}" ]] || { echo "ERROR: initial checkpoint not found: ${PRETRAINED_WEIGHTS}" >&2; exit 2; }
 
 # Use the architecture that produced the stronger fused Point-2 results.
 export MODEL_BACKEND_VARIANT="resnet_token"
@@ -108,8 +108,8 @@ export FORCE_DDP_STATIC_GRAPH=0
 export SPAN_DTW_BACKEND=torch
 export USE_LOCAL_HARD_NEGATIVES=0
 export USE_IMAGE_PAIR_CONTRASTIVE=0
-# Keep the pretrained Point-2 network behavior unchanged for the controlled
-# synthetic -> real transfer. Add regularization only in a later ablation.
+# Keep neural dropout unchanged so SIGReg is the only new representation
+# regularizer in this continuation run.
 export TINY_VIT_DROPOUT="${TINY_VIT_DROPOUT:-0.0}"
 export FUSION_DROPOUT="${FUSION_DROPOUT:-0.0}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
@@ -143,7 +143,7 @@ print("  local      =", config.get("local_encoder_type"))
 print("  context    =", config.get("context_input", "ResNet-token TinyViT (legacy config)"))
 if physical:
     raise SystemExit(
-        "Expected the ResNet-token TinyViT synthetic checkpoint, but this checkpoint "
+        "Expected a ResNet-token TinyViT checkpoint, but this checkpoint "
         "is the physical-window ablation."
     )
 
@@ -159,18 +159,18 @@ for key, expected in expected_geometry.items():
     print(f"  {key:24s} = {actual}")
     if actual is not None and int(actual) != int(expected):
         raise SystemExit(
-            f"Synthetic checkpoint geometry mismatch for {key}: "
+            f"Initial checkpoint geometry mismatch for {key}: "
             f"expected {expected}, got {actual}"
         )
 
 if bool(config.get("synthetic_binarize", False)):
     raise SystemExit(
-        "This fine-tune launcher expects the Point-2 RGB synthetic checkpoint "
+        "This continuation launcher requires an RGB-compatible checkpoint "
         "(synthetic_binarize=False)."
     )
 if bool(config.get("pack_valid_windows", False)):
     raise SystemExit(
-        "Synthetic checkpoint reports packed/rebased windows, but this launcher "
+        "Initial checkpoint reports packed/rebased windows, but this launcher "
         "is configured for the fixed 63-position Point-2 grid."
     )
 
@@ -180,7 +180,7 @@ print("  checkpoint vit_dropout   =", checkpoint_vit_dropout)
 print("  requested vit_dropout    =", requested_vit_dropout)
 if abs(checkpoint_vit_dropout - requested_vit_dropout) > 1e-9:
     raise SystemExit(
-        "TinyViT dropout mismatch between synthetic checkpoint and real fine-tune: "
+        "TinyViT dropout mismatch between initial checkpoint and continuation run: "
         f"checkpoint={checkpoint_vit_dropout} real={requested_vit_dropout}"
     )
 
