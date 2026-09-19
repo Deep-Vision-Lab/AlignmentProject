@@ -86,6 +86,7 @@ export SPAN_DTW_BACKEND=torch
 export USE_LOCAL_HARD_NEGATIVES=0
 export USE_IMAGE_PAIR_CONTRASTIVE=0
 export TINY_VIT_DROPOUT="${TINY_VIT_DROPOUT:-0.10}"
+export FUSION_DROPOUT="${FUSION_DROPOUT:-0.10}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 export TOKENIZERS_PARALLELISM=false
@@ -167,6 +168,7 @@ echo "online augmentation  = disabled"
 echo "training view        = ALL unique independent lines (A+B, deduplicated)"
 echo "pair labels          = ignored"
 echo "TinyViT dropout      = ${TINY_VIT_DROPOUT}"
+echo "fusion dropout       = ${FUSION_DROPOUT}"
 echo "============================================================"
 
 "${TORCHRUN_BIN}" \
