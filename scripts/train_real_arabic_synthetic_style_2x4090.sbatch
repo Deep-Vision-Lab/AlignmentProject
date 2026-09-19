@@ -94,6 +94,30 @@ export TRAIN_DROP_LAST=0
   train.py model_backend.py vlm_restoration_positive_dtw.py \
   zero_shot_preprocessing.py RealDataSet.py AugmentedRealDataLoader.py
 
+PRETRAINED_WEIGHTS="${PRETRAINED_WEIGHTS}" "${PYTHON_BIN}" - <<'PY'
+import os
+import torch
+
+path = os.environ["PRETRAINED_WEIGHTS"]
+checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+config = checkpoint.get("model_config", {}) if isinstance(checkpoint, dict) else {}
+backend = str(config.get("model_backend", ""))
+physical = "physical_window" in backend or str(
+    config.get("model_backend_variant", "")
+).lower() == "physical_window"
+print("Checkpoint preflight:")
+print("  path       =", path)
+print("  backend    =", backend or "<legacy/unset>")
+print("  family     =", config.get("architecture_family"))
+print("  local      =", config.get("local_encoder_type"))
+print("  context    =", config.get("context_input", "ResNet-token TinyViT (legacy config)"))
+if physical:
+    raise SystemExit(
+        "Expected the ResNet-token TinyViT synthetic checkpoint, but this checkpoint "
+        "is the physical-window ablation."
+    )
+PY
+
 "${PYTHON_BIN}" -m pytest -q \
   tests/test_real_synthetic_style_preprocessing.py \
   tests/test_restoration_positive_dtw.py
