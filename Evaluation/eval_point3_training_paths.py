@@ -327,7 +327,7 @@ def main():
     ap.add_argument("--start-index", type=int, default=1)
     ap.add_argument("--n-samples", type=int, default=10)
     ap.add_argument("--device", default="cuda")
-    ap.add_argument("--image-preprocessing", choices=("original", "training"), default="training")
+    ap.add_argument("--image-preprocessing", choices=("original", "training", "cropped_1024"), default="cropped_1024")
     args = ap.parse_args()
 
     output = Path(args.output_dir).expanduser().resolve()
