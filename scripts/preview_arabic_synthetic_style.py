@@ -24,7 +24,7 @@ os.environ.setdefault("REAL_BINARIZE", "1")
 os.environ.setdefault("REAL_BINARIZE_AUTO_INVERT", "1")
 os.environ.setdefault("REAL_BINARIZE_AUTOCONTRAST", "1")
 
-from RealDataSet import ArabicManifestLinePairDataset
+from RealDataSet import ArabicManifestIndependentLineDataset
 from zero_shot_preprocessing import build_preprocessor
 
 
@@ -54,55 +54,54 @@ def main():
     args = ap.parse_args()
 
     root = Path(args.dataset).expanduser().resolve()
-    manifest = root / "dataset_manifest.jsonl"
+    manifest = root / "dataset_manifest_full_pairs.jsonl"
     output = Path(args.output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
 
-    dataset = ArabicManifestLinePairDataset(
+    dataset = ArabicManifestIndependentLineDataset(
         manifest,
         transform=None,
-        allowed_labels=("high_match", "medium_match"),
-        max_samples=max(1, args.samples),
-        paired=True,
-        validate_paths=True,
+        text_key="text_original_path",
+        max_samples=None,
+        validate_paths=False,
     )
     preprocessor = build_preprocessor("real", training=False)
 
     report = []
     for sample_index, sample in enumerate(dataset.samples[: args.samples]):
-        for side_name in ("A", "B"):
-            side = sample[side_name]
-            image_path = dataset._resolve(side["line_image_path"])
-            with Image.open(image_path) as opened:
-                raw = opened.convert("RGB")
-            processed, metadata = preprocessor.preprocess_with_metadata(raw)
+        image_path = dataset._resolve(sample["line_image_path"])
+        with Image.open(image_path) as opened:
+            raw = opened.convert("RGB")
+        processed, metadata = preprocessor.preprocess_with_metadata(raw)
 
-            stem = f"sample_{sample_index:03d}_{side_name}"
-            processed.save(output / f"{stem}_processed.png")
-            _save_contact(raw, processed, output / f"{stem}_raw_vs_processed.png")
+        stem = f"sample_{sample_index:03d}"
+        processed.save(output / f"{stem}_processed.png")
+        _save_contact(raw, processed, output / f"{stem}_raw_vs_processed.png")
 
-            pixels = np.asarray(processed.convert("L"), dtype=np.uint8)
-            border = np.concatenate(
-                [
-                    pixels[:4, :].reshape(-1),
-                    pixels[-4:, :].reshape(-1),
-                    pixels[:, :4].reshape(-1),
-                    pixels[:, -4:].reshape(-1),
-                ]
-            )
-            report.append(
-                {
-                    "sample_index": sample_index,
-                    "pair_id": str(sample.get("pair_id", sample_index)),
-                    "side": side_name,
-                    "source": str(image_path),
-                    "processed_size": list(processed.size),
-                    "border_mean": float(border.mean()),
-                    "foreground_max": int(pixels.max()),
-                    "foreground_mean": float(pixels.mean()),
-                    "metadata": metadata,
-                }
-            )
+        pixels = np.asarray(processed.convert("L"), dtype=np.uint8)
+        border = np.concatenate(
+            [
+                pixels[:4, :].reshape(-1),
+                pixels[-4:, :].reshape(-1),
+                pixels[:, :4].reshape(-1),
+                pixels[:, -4:].reshape(-1),
+            ]
+        )
+        report.append(
+            {
+                "sample_index": sample_index,
+                "source_pair_id": sample.get("source_pair_id"),
+                "source_page": sample.get("pair_id"),
+                "side": sample.get("side"),
+                "line_idx": sample.get("line_idx"),
+                "source": str(image_path),
+                "processed_size": list(processed.size),
+                "border_mean": float(border.mean()),
+                "foreground_max": int(pixels.max()),
+                "foreground_mean": float(pixels.mean()),
+                "metadata": metadata,
+            }
+        )
 
     (output / "preview_report.json").write_text(
         json.dumps(report, indent=2, ensure_ascii=False),
@@ -111,7 +110,8 @@ def main():
     print(f"Saved {len(report)} transformed sides to {output}")
     for row in report[:4]:
         print(
-            f"{row['pair_id']} side={row['side']} size={row['processed_size']} "
+            f"{row['source_pair_id']} side={row['side']} line={row['line_idx']} "
+            f"size={row['processed_size']} "
             f"border_mean={row['border_mean']:.2f} max={row['foreground_max']}"
         )
 
