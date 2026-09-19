@@ -1,0 +1,193 @@
+{
+  "index": 4230,
+  "pair_id": "synthetic_4230",
+  "source_type": "synthetic",
+  "side1_type": "synthetic",
+  "side2_type": "synthetic",
+  "side1_preprocess": "synthetic",
+  "side2_preprocess": "synthetic",
+  "label_type": "",
+  "text_score": 0.0,
+  "split": "test",
+  "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_4230.png",
+  "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_4230.png",
+  "nw_score": 11.153573036193848,
+  "normalized_nw_score": 0.1770408418443468,
+  "primary_algorithm": "smith_waterman",
+  "primary_score": 11.417808532714844,
+  "normalized_primary_score": 0.19029680887858072,
+  "feature": "contextual",
+  "score_mode": "raw",
+  "score_clip": 4.0,
+  "threshold": 0.0,
+  "gap": -0.3,
+  "line1_windows": 63,
+  "line2_windows": 63,
+  "gap_steps": 6,
+  "mean_path_cosine": 0.27127965034118723,
+  "mean_full_path_cosine": 0.22531802882440388,
+  "matrix_mean_cosine": 0.09827810525894165,
+  "matrix_std_cosine": 0.15464557707309723,
+  "path_cosine_margin": 0.17300154508224558,
+  "path_cosine_z": 1.1186970125920377,
+  "sw_score": 11.417808532714844,
+  "normalized_sw_score": 0.19029680887858072,
+  "sw_mean_path_cosine": 0.27127965034118723,
+  "sw_path_steps": 49,
+  "sw_component_count": 1,
+  "sw_line1_intervals_px": [
+    [
+      0.0,
+      936.0
+    ]
+  ],
+  "sw_line2_intervals_px": [
+    [
+      24.0,
+      952.0
+    ]
+  ],
+  "line1_intervals_px": [
+    [
+      0.0,
+      936.0
+    ]
+  ],
+  "line2_intervals_px": [
+    [
+      24.0,
+      952.0
+    ]
+  ],
+  "nw_line1_intervals_px": [
+    [
+      0.0,
+      1024.0
+    ]
+  ],
+  "nw_line2_intervals_px": [
+    [
+      0.0,
+      1024.0
+    ]
+  ],
+  "gt_mask1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask1_4230.png",
+  "gt_mask2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/masks/mask2_4230.png",
+  "path_steps": 49,
+  "traceback_steps": 60,
+  "warp_steps": 4,
+  "component_count": 1,
+  "full_match_steps": 56,
+  "bridged_trace_steps": 11,
+  "component_bridge_limit": 2,
+  "component_support_floor": 0.0,
+  "line1_path_windows": 49,
+  "line2_path_windows": 49,
+  "line1_span_windows": 58,
+  "line2_span_windows": 58,
+  "line1_path_fraction": 0.7777777777777778,
+  "line2_path_fraction": 0.7777777777777778,
+  "line1_matched_fraction": 0.9206349206349206,
+  "line2_matched_fraction": 0.9206349206349206,
+  "line1_path_start": 5,
+  "line1_path_end": 62,
+  "line2_path_start": 4,
+  "line2_path_end": 61,
+  "line1_component_ranges": "[[5,62]]",
+  "line2_component_ranges": "[[4,61]]",
+  "line1_mask_iou": 0.5438034188034188,
+  "line1_mask_dice": 0.7044982698961938,
+  "line1_mask_precision": 0.5438034188034188,
+  "line1_mask_recall": 1.0,
+  "line2_mask_iou": 0.4482758620689655,
+  "line2_mask_dice": 0.6190476190476191,
+  "line2_mask_precision": 0.4482758620689655,
+  "line2_mask_recall": 1.0,
+  "matrix_csv_cosine": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_162522/old_resnet_token_vit/context/pair_04230/matrices/nw_match_scores_values_cosine.csv",
+  "matrix_csv_match": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_162522/old_resnet_token_vit/context/pair_04230/matrices/nw_match_scores_values_match_score.csv",
+  "evidence_json": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_162522/old_resnet_token_vit/context/pair_04230/evidence/nw_match_scores_values_trace.json",
+  "mean_mask_iou": 0.49603964043619214,
+  "line1_source_intervals_px": [
+    [
+      0.0,
+      936.0
+    ]
+  ],
+  "line2_source_intervals_px": [
+    [
+      24.0,
+      952.0
+    ]
+  ],
+  "representation": "primary",
+  "local_weight": null,
+  "geometry": [
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 0,
+      "crop_top": 38,
+      "crop_width": 1024,
+      "crop_height": 53,
+      "crop_right": 1024,
+      "crop_bottom": 91,
+      "crop_margin_x": 0.025,
+      "crop_margin_y": 0.15,
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "resize_scale": 1.0,
+      "resized_width": 1024,
+      "resized_height": 53,
+      "offset_x": 0,
+      "offset_y": 37,
+      "canvas_width": 1024,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": true,
+      "image_preprocessing": "training",
+      "autocontrast": true,
+      "auto_invert": true,
+      "content_preview_path": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_162522/old_resnet_token_vit/context/pair_04230/line1_content_crop.png",
+      "content_preview_crop_left": 0,
+      "content_preview_crop_top": 37,
+      "content_preview_crop_right": 1024,
+      "content_preview_crop_bottom": 90,
+      "content_preview_rescaled": false
+    },
+    {
+      "source_width": 1024,
+      "source_height": 128,
+      "crop_left": 0,
+      "crop_top": 25,
+      "crop_width": 1024,
+      "crop_height": 79,
+      "crop_right": 1024,
+      "crop_bottom": 104,
+      "crop_margin_x": 0.025,
+      "crop_margin_y": 0.15,
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "resize_scale": 1.0,
+      "resized_width": 1024,
+      "resized_height": 79,
+      "offset_x": 0,
+      "offset_y": 24,
+      "canvas_width": 1024,
+      "canvas_height": 128,
+      "binarize": false,
+      "crop_foreground": true,
+      "preserve_aspect": true,
+      "image_preprocessing": "training",
+      "autocontrast": true,
+      "auto_invert": true,
+      "content_preview_path": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_162522/old_resnet_token_vit/context/pair_04230/line2_content_crop.png",
+      "content_preview_crop_left": 0,
+      "content_preview_crop_top": 24,
+      "content_preview_crop_right": 1024,
+      "content_preview_crop_bottom": 103,
+      "content_preview_rescaled": false
+    }
+  ],
+  "mask_coordinate_system": "source_image"
+}

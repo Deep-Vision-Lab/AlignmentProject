@@ -1,0 +1,23 @@
+[
+  {
+    "pair_id": "synthetic_4230",
+    "index": 4230,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_4230.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_4230.png"
+  },
+  {
+    "pair_id": "synthetic_1172",
+    "index": 1172,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_1172.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_1172.png"
+  },
+  {
+    "pair_id": "synthetic_2762",
+    "index": 2762,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img1_2762.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/Synthetic63/images/img2_2762.png"
+  }
+]

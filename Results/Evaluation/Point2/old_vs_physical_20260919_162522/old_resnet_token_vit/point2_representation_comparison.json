@@ -1,0 +1,356 @@
+{
+  "label": "old_resnet_token_vit",
+  "root": "/home/ahmedmas/BGU-Lab/AlignmentProject/Results/Evaluation/Point2/old_vs_physical_20260919_162522/old_resnet_token_vit",
+  "representations": {
+    "local": {
+      "successful_pairs": 3,
+      "metrics": {
+        "normalized_primary_score": {
+          "count": 3,
+          "mean": 0.37990313035006334,
+          "median": 0.39692482352256775
+        },
+        "normalized_nw_score": {
+          "count": 3,
+          "mean": 0.30555613583357877,
+          "median": 0.3371194203694661
+        },
+        "mean_path_cosine": {
+          "count": 3,
+          "mean": 0.49766171860221303,
+          "median": 0.4559861714557066
+        },
+        "mean_mask_iou": {
+          "count": 3,
+          "mean": 0.5016369587390929,
+          "median": 0.4666382113821138
+        },
+        "path_cosine_margin": {
+          "count": 3,
+          "mean": 0.1716848401975957,
+          "median": 0.10965707847627543
+        },
+        "path_cosine_z": {
+          "count": 3,
+          "mean": 1.2484947708626022,
+          "median": 0.7196811329713063
+        },
+        "component_count": {
+          "count": 3,
+          "mean": 1.3333333333333333,
+          "median": 1.0
+        },
+        "gap_steps": {
+          "count": 3,
+          "mean": 18.666666666666668,
+          "median": 20.0
+        }
+      }
+    },
+    "context": {
+      "successful_pairs": 3,
+      "metrics": {
+        "normalized_primary_score": {
+          "count": 3,
+          "mean": 0.2928545449034581,
+          "median": 0.3339369032118056
+        },
+        "normalized_nw_score": {
+          "count": 3,
+          "mean": 0.1689081898442021,
+          "median": 0.1770408418443468
+        },
+        "mean_path_cosine": {
+          "count": 3,
+          "mean": 0.47582943239606285,
+          "median": 0.5497450518639798
+        },
+        "mean_mask_iou": {
+          "count": 3,
+          "mean": 0.6153181785262926,
+          "median": 0.6584846313107182
+        },
+        "path_cosine_margin": {
+          "count": 3,
+          "mean": 0.3597605849186268,
+          "median": 0.4334685269029851
+        },
+        "path_cosine_z": {
+          "count": 3,
+          "mean": 2.0128124765357853,
+          "median": 2.432099235979065
+        },
+        "component_count": {
+          "count": 3,
+          "mean": 1.3333333333333333,
+          "median": 1.0
+        },
+        "gap_steps": {
+          "count": 3,
+          "mean": 19.333333333333332,
+          "median": 20.0
+        }
+      }
+    },
+    "fused": {
+      "successful_pairs": 3,
+      "metrics": {
+        "normalized_primary_score": {
+          "count": 3,
+          "mean": 0.3167256105639376,
+          "median": 0.3599423302544488
+        },
+        "normalized_nw_score": {
+          "count": 3,
+          "mean": 0.1685377201706013,
+          "median": 0.1857706100221664
+        },
+        "mean_path_cosine": {
+          "count": 3,
+          "mean": 0.5864692906900851,
+          "median": 0.6966303988144948
+        },
+        "mean_mask_iou": {
+          "count": 3,
+          "mean": 0.6466693528569195,
+          "median": 0.6584846313107182
+        },
+        "path_cosine_margin": {
+          "count": 3,
+          "mean": 0.5476202659671117,
+          "median": 0.646521656571523
+        },
+        "path_cosine_z": {
+          "count": 3,
+          "mean": 2.341998853274387,
+          "median": 2.3886944728695045
+        },
+        "component_count": {
+          "count": 3,
+          "mean": 1.6666666666666667,
+          "median": 2.0
+        },
+        "gap_steps": {
+          "count": 3,
+          "mean": 24.0,
+          "median": 30.0
+        }
+      }
+    },
+    "fused_wrong_context": {
+      "successful_pairs": 3,
+      "metrics": {
+        "normalized_primary_score": {
+          "count": 3,
+          "mean": 0.19033458103022025,
+          "median": 0.19191250146604052
+        },
+        "normalized_nw_score": {
+          "count": 3,
+          "mean": 0.06205526861564192,
+          "median": 0.048312769995795354
+        },
+        "mean_path_cosine": {
+          "count": 3,
+          "mean": 0.354841600243413,
+          "median": 0.363187437877059
+        },
+        "mean_mask_iou": {
+          "count": 3,
+          "mean": 0.45392514674042594,
+          "median": 0.5829431960049938
+        },
+        "path_cosine_margin": {
+          "count": 3,
+          "mean": 0.30716323518173255,
+          "median": 0.3376611899584532
+        },
+        "path_cosine_z": {
+          "count": 3,
+          "mean": 1.4370502994071435,
+          "median": 1.5647234552841514
+        },
+        "component_count": {
+          "count": 3,
+          "mean": 1.0,
+          "median": 1.0
+        },
+        "gap_steps": {
+          "count": 3,
+          "mean": 21.333333333333332,
+          "median": 22.0
+        }
+      }
+    }
+  },
+  "paired_comparisons": {
+    "fused_minus_local": {
+      "normalized_nw_score": {
+        "count": 3,
+        "mean_delta": -0.13701841566297743,
+        "wins": 0,
+        "ties": 0,
+        "losses": 3,
+        "win_rate": 0.0
+      },
+      "mean_path_cosine": {
+        "count": 3,
+        "mean_delta": 0.08880757208787214,
+        "wins": 2,
+        "ties": 0,
+        "losses": 1,
+        "win_rate": 0.6666666666666666
+      },
+      "mean_mask_iou": {
+        "count": 3,
+        "mean_delta": 0.14503239411782665,
+        "wins": 3,
+        "ties": 0,
+        "losses": 0,
+        "win_rate": 1.0
+      },
+      "path_cosine_margin": {
+        "count": 3,
+        "mean_delta": 0.37593542576951594,
+        "wins": 3,
+        "ties": 0,
+        "losses": 0,
+        "win_rate": 1.0
+      },
+      "path_cosine_z": {
+        "count": 3,
+        "mean_delta": 1.0935040824117848,
+        "wins": 3,
+        "ties": 0,
+        "losses": 0,
+        "win_rate": 1.0
+      }
+    },
+    "fused_minus_context": {
+      "normalized_nw_score": {
+        "count": 3,
+        "mean_delta": -0.00037046967360077526,
+        "wins": 2,
+        "ties": 0,
+        "losses": 1,
+        "win_rate": 0.6666666666666666
+      },
+      "mean_path_cosine": {
+        "count": 3,
+        "mean_delta": 0.11063985829402234,
+        "wins": 3,
+        "ties": 0,
+        "losses": 0,
+        "win_rate": 1.0
+      },
+      "mean_mask_iou": {
+        "count": 3,
+        "mean_delta": 0.03135117433062701,
+        "wins": 2,
+        "ties": 1,
+        "losses": 0,
+        "win_rate": 0.6666666666666666
+      },
+      "path_cosine_margin": {
+        "count": 3,
+        "mean_delta": 0.1878596810484849,
+        "wins": 3,
+        "ties": 0,
+        "losses": 0,
+        "win_rate": 1.0
+      },
+      "path_cosine_z": {
+        "count": 3,
+        "mean_delta": 0.32918637673860157,
+        "wins": 2,
+        "ties": 0,
+        "losses": 1,
+        "win_rate": 0.6666666666666666
+      }
+    },
+    "fused_minus_fused_wrong_context": {
+      "normalized_nw_score": {
+        "count": 3,
+        "mean_delta": 0.1064824515549594,
+        "wins": 2,
+        "ties": 0,
+        "losses": 1,
+        "win_rate": 0.6666666666666666
+      },
+      "mean_path_cosine": {
+        "count": 3,
+        "mean_delta": 0.23162769044667217,
+        "wins": 3,
+        "ties": 0,
+        "losses": 0,
+        "win_rate": 1.0
+      },
+      "mean_mask_iou": {
+        "count": 3,
+        "mean_delta": 0.19274420611649357,
+        "wins": 2,
+        "ties": 0,
+        "losses": 1,
+        "win_rate": 0.6666666666666666
+      },
+      "path_cosine_margin": {
+        "count": 3,
+        "mean_delta": 0.24045703078537914,
+        "wins": 3,
+        "ties": 0,
+        "losses": 0,
+        "win_rate": 1.0
+      },
+      "path_cosine_z": {
+        "count": 3,
+        "mean_delta": 0.9049485538672437,
+        "wins": 3,
+        "ties": 0,
+        "losses": 0,
+        "win_rate": 1.0
+      }
+    },
+    "context_minus_local": {
+      "normalized_nw_score": {
+        "count": 3,
+        "mean_delta": -0.13664794598937666,
+        "wins": 0,
+        "ties": 0,
+        "losses": 3,
+        "win_rate": 0.0
+      },
+      "mean_path_cosine": {
+        "count": 3,
+        "mean_delta": -0.021832286206150204,
+        "wins": 1,
+        "ties": 0,
+        "losses": 2,
+        "win_rate": 0.3333333333333333
+      },
+      "mean_mask_iou": {
+        "count": 3,
+        "mean_delta": 0.11368121978719964,
+        "wins": 2,
+        "ties": 0,
+        "losses": 1,
+        "win_rate": 0.6666666666666666
+      },
+      "path_cosine_margin": {
+        "count": 3,
+        "mean_delta": 0.18807574472103106,
+        "wins": 3,
+        "ties": 0,
+        "losses": 0,
+        "win_rate": 1.0
+      },
+      "path_cosine_z": {
+        "count": 3,
+        "mean_delta": 0.7643177056731831,
+        "wins": 2,
+        "ties": 0,
+        "losses": 1,
+        "win_rate": 0.6666666666666666
+      }
+    }
+  }
+}
