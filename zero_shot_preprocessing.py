@@ -385,6 +385,20 @@ def detect_horizontal_frame_borders(mask: np.ndarray):
     candidates = coverage >= min_coverage
     runs = _contiguous_true_runs(candidates)
 
+    # A frame rule is long but thin. Without this constraint a dense Arabic
+    # handwriting band could look "wide" in the row projection and be mistaken
+    # for a structural rule.
+    max_thickness = max(
+        5,
+        int(round(height * float(
+            os.environ.get("ZERO_SHOT_HORIZONTAL_BORDER_MAX_THICKNESS_FRACTION", "0.08")
+        ))),
+    )
+    runs = [
+        run for run in runs
+        if int(run[1]) - int(run[0]) <= int(max_thickness)
+    ]
+
     top_limit = int(round(height * edge_fraction))
     bottom_limit = int(round(height * (1.0 - edge_fraction)))
     top_runs = [run for run in runs if (run[0] + run[1]) // 2 <= top_limit]
@@ -422,6 +436,7 @@ def detect_horizontal_frame_borders(mask: np.ndarray):
         "horizontal_border_detector": "near-full-width-mask-connectivity",
         "horizontal_border_min_coverage": float(min_coverage),
         "horizontal_border_neighborhood_radius": int(radius),
+        "horizontal_border_max_thickness": int(max_thickness),
         "horizontal_border_top_run": list(top) if top is not None else None,
         "horizontal_border_bottom_run": list(bottom) if bottom is not None else None,
         "horizontal_border_pair_valid": bool(valid_pair),
