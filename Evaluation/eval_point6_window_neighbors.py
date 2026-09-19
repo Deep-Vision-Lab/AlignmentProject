@@ -255,7 +255,7 @@ def main():
     ap.add_argument("--min-ink", type=float, default=0.02)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--device", default="cuda")
-    ap.add_argument("--image-preprocessing", choices=("original", "training"), default="original")
+    ap.add_argument("--image-preprocessing", choices=("original", "training", "tight"), default="tight")
     args = ap.parse_args()
 
     os.environ["EVAL_TIGHT_NO_PADDING"] = (
