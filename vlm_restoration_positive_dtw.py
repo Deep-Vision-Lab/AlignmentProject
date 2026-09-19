@@ -189,6 +189,17 @@ def apply_branch_config(P):
         "POSITIVE_LETTER_DTW_WEIGHT", 1.0
     )
 
+    # Strong SIGReg (LeJEPA-style ECF matching) regularizes the fused visual
+    # representation before its final L2 normalization. Keep it opt-in at the
+    # branch level; the real-data launcher enables it for the controlled
+    # continuation run.
+    P.sigreg_weight = _env_float("SIGREG_LAMBDA", 0.0)
+    P.sigreg_sketch_dim = max(1, _env_int("SIGREG_SKETCH_DIM", 64))
+    P.sigreg_num_knots = max(3, _env_int("SIGREG_NUM_KNOTS", 17))
+    P.sigreg_t_min = _env_float("SIGREG_T_MIN", -5.0)
+    P.sigreg_t_max = _env_float("SIGREG_T_MAX", 5.0)
+    P.sigreg_min_samples = max(2, _env_int("SIGREG_MIN_SAMPLES", 32))
+
     # Legacy compatibility attribute: reconstruction is intentionally disabled.
     P.restoration_weight = 0.0
     # Diagnostic mode: one backward/optimizer update per batch; no accumulation.
@@ -573,8 +584,9 @@ def attach_restoration_dtw_stages(model, P):
             )
         )
 
+        fused_pre_l2 = self.vision_norm(fused).float()
         fused_out = F.normalize(
-            self.vision_norm(fused).float(), p=2, dim=-1
+            fused_pre_l2, p=2, dim=-1
         ).to(dtype=fused.dtype)
         local_out = self.vision_norm(local)
 
@@ -603,6 +615,7 @@ def attach_restoration_dtw_stages(model, P):
             local.retain_grad()
             contextual.retain_grad()
             fused.retain_grad()
+            fused_pre_l2.retain_grad()
             fused_out.retain_grad()
             if not hasattr(self, "_gradient_probe_records"):
                 self._gradient_probe_records = []
@@ -611,6 +624,7 @@ def attach_restoration_dtw_stages(model, P):
                     "after_resnet18": local,
                     "after_vit_tiny": contextual,
                     "after_fusion": fused,
+                    "pre_l2_fused": fused_pre_l2,
                     "final_fused": fused_out,
                     "token_valid": token_valid,
                 }
@@ -619,6 +633,7 @@ def attach_restoration_dtw_stages(model, P):
         return {
             "semantic": fused_out,
             "fused": fused_out,
+            "fused_pre_l2": fused_pre_l2,
             "primitive": local_out,
             "primitive_raw": local,
             "contextual": contextual_out,
@@ -818,6 +833,94 @@ def negative_letter_dtw_margin_loss(
     }
 
 
+def strong_sigreg_loss(
+    embeddings: torch.Tensor,
+    token_valid: torch.Tensor | None = None,
+    *,
+    sketch_dim: int = 64,
+    num_knots: int = 17,
+    t_min: float = -5.0,
+    t_max: float = 5.0,
+    min_samples: int = 32,
+):
+    """Strong SIGReg on valid pre-L2 fused tokens.
+
+    This follows the LeJEPA-style sketched Epps-Pulley characteristic-function
+    objective: fresh random unit directions are sampled every call, each
+    projected marginal is compared with N(0,1), and the weighted discrepancy
+    is integrated over frequency knots. All trigonometric/statistical work is
+    forced to float32 for numerical stability under AMP.
+    """
+    if embeddings.ndim != 3:
+        raise ValueError("SIGReg expects fused embeddings [B,T,D]")
+
+    values = embeddings.float()
+    if token_valid is not None:
+        valid = token_valid.to(device=values.device, dtype=torch.bool)
+        if valid.shape != values.shape[:2]:
+            raise ValueError(
+                "SIGReg token_valid must match the [B,T] embedding prefix"
+            )
+        values = values[valid]
+    else:
+        values = values.reshape(-1, values.shape[-1])
+
+    n = int(values.shape[0])
+    d = int(values.shape[-1])
+    if n < int(min_samples):
+        zero = embeddings.float().sum() * 0.0
+        return zero, {
+            "sigreg_samples": float(n),
+            "sigreg_dim_std_mean": 0.0,
+            "sigreg_dim_std_min": 0.0,
+            "sigreg_embedding_mean_norm": 0.0,
+        }
+
+    # Fresh random observers each step. The directions themselves are not
+    # learned and carry no gradient.
+    directions = torch.randn(
+        d,
+        int(sketch_dim),
+        device=values.device,
+        dtype=torch.float32,
+    )
+    directions = directions / directions.norm(
+        p=2, dim=0, keepdim=True
+    ).clamp_min(1e-6)
+
+    t = torch.linspace(
+        float(t_min),
+        float(t_max),
+        int(num_knots),
+        device=values.device,
+        dtype=torch.float32,
+    )
+    gaussian_cf = torch.exp(-0.5 * t.square())
+
+    projected = values @ directions
+    args = projected.unsqueeze(-1) * t.view(1, 1, -1)
+    empirical_real = torch.cos(args).mean(dim=0)
+    empirical_imag = torch.sin(args).mean(dim=0)
+
+    diff_sq = (
+        (empirical_real - gaussian_cf.unsqueeze(0)).square()
+        + empirical_imag.square()
+    )
+    weighted_error = diff_sq * gaussian_cf.unsqueeze(0)
+    per_slice = torch.trapz(weighted_error, t, dim=-1) * float(n)
+    loss = per_slice.mean()
+
+    with torch.no_grad():
+        dim_std = values.std(dim=0, unbiased=False)
+        mean_norm = values.mean(dim=0).norm(p=2)
+    return loss, {
+        "sigreg_samples": float(n),
+        "sigreg_dim_std_mean": float(dim_std.mean().item()),
+        "sigreg_dim_std_min": float(dim_std.min().item()),
+        "sigreg_embedding_mean_norm": float(mean_norm.item()),
+    }
+
+
 def freeze_text_encoder(text_encoder):
     for parameter in text_encoder.parameters():
         parameter.requires_grad_(False)
@@ -907,9 +1010,30 @@ def install_training_objective(train_module):
                 "contrastive_margin_loss": 0.0,
             }
 
+        sigreg_weight = float(train_module.P.sigreg_weight)
+        if sigreg_weight > 0.0:
+            sigreg, sigreg_stats = strong_sigreg_loss(
+                bundle["fused_pre_l2"],
+                bundle["token_valid"],
+                sketch_dim=int(train_module.P.sigreg_sketch_dim),
+                num_knots=int(train_module.P.sigreg_num_knots),
+                t_min=float(train_module.P.sigreg_t_min),
+                t_max=float(train_module.P.sigreg_t_max),
+                min_samples=int(train_module.P.sigreg_min_samples),
+            )
+        else:
+            sigreg = dtw.new_zeros(())
+            sigreg_stats = {
+                "sigreg_samples": 0.0,
+                "sigreg_dim_std_mean": 0.0,
+                "sigreg_dim_std_min": 0.0,
+                "sigreg_embedding_mean_norm": 0.0,
+            }
+
         total = (
             float(train_module.P.positive_letter_dtw_weight) * dtw
             + contrastive_weight * contrastive
+            + sigreg_weight * sigreg
         )
         stats = {
             **dtw_stats,
@@ -926,6 +1050,10 @@ def install_training_objective(train_module):
             "order_loss": 0.0,
             "pair_terms": 0.0,
             "img_var_loss": 0.0,
+            "sigreg_loss": float(sigreg.detach().item()),
+            "sigreg_weight": sigreg_weight,
+            "sigreg_weighted": float((sigreg_weight * sigreg).detach().item()),
+            **sigreg_stats,
             "total": float(total.detach().item()),
         }
         return total, stats
@@ -964,11 +1092,13 @@ def install_training_objective(train_module):
 
             bundle1 = {
                 "semantic": combined["semantic"][:pair_batch],
+                "fused_pre_l2": combined["fused_pre_l2"][:pair_batch],
                 "ink": combined["ink"][:pair_batch],
                 "token_valid": combined["token_valid"][:pair_batch],
             }
             bundle2 = {
                 "semantic": combined["semantic"][pair_batch:],
+                "fused_pre_l2": combined["fused_pre_l2"][pair_batch:],
                 "ink": combined["ink"][pair_batch:],
                 "token_valid": combined["token_valid"][pair_batch:],
             }
@@ -1039,6 +1169,18 @@ def install_training_objective(train_module):
                                 train_module.P.positive_letter_dtw_gamma,
                             )
                         ),
+                        "minimal/sigreg_loss": float(
+                            train_stats.get("sigreg_loss", 0.0)
+                        ),
+                        "minimal/sigreg_weighted": float(
+                            train_stats.get("sigreg_weighted", 0.0)
+                        ),
+                        "minimal/sigreg_dim_std_mean": float(
+                            train_stats.get("sigreg_dim_std_mean", 0.0)
+                        ),
+                        "minimal/sigreg_dim_std_min": float(
+                            train_stats.get("sigreg_dim_std_min", 0.0)
+                        ),
                     },
                     step=int(epoch),
                     commit=False,
@@ -1092,6 +1234,15 @@ def model_config(P):
         "letter_codebook_vocab_size": int(P.letter_codebook_vocab_size),
         "letter_inventory": str(P.letter_inventory),
         "positive_letter_dtw_weight": float(P.positive_letter_dtw_weight),
+        "sigreg_active": bool(float(P.sigreg_weight) > 0.0),
+        "sigreg_weight": float(P.sigreg_weight),
+        "sigreg_target": "pre-l2 fused valid-window representation",
+        "sigreg_variant": "strong-ecf-epps-pulley",
+        "sigreg_sketch_dim": int(P.sigreg_sketch_dim),
+        "sigreg_num_knots": int(P.sigreg_num_knots),
+        "sigreg_t_min": float(P.sigreg_t_min),
+        "sigreg_t_max": float(P.sigreg_t_max),
+        "sigreg_min_samples": int(P.sigreg_min_samples),
         "positive_letter_dtw_gamma": float(P.positive_letter_dtw_gamma),
         "positive_letter_dtw_gamma_start": float(P.positive_letter_dtw_gamma_start),
         "positive_letter_dtw_gamma_end": float(P.positive_letter_dtw_gamma_end),
