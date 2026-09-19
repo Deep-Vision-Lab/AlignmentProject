@@ -307,6 +307,18 @@ def main(argv=None):
     from Evaluation.trace_components import component_settings
     checkpoint = read_checkpoint(weights)
     models = load_visual_models(checkpoint, args.device, args.branch)
+
+    # Reuse the dataset contract recorded by the training checkpoint. Real
+    # all-page-lines fine-tuning split by source-page fingerprint, so the pair
+    # evaluator must reconstruct that same split instead of inventing a
+    # pair-manifest split that can leak training pages into evaluation.
+    if bool(models.config.get("real_all_page_lines", False)):
+        os.environ["REAL_ALL_PAGE_LINES"] = "1"
+    recorded_manifest = str(models.config.get("real_manifest_name", "")).strip()
+    if recorded_manifest:
+        os.environ["REAL_MANIFEST_NAME"] = recorded_manifest
+        base._REAL_MANIFEST = recorded_manifest
+
     geometry = configure_geometry(models.config, args.image_preprocessing)
     input_settings = configure_image_preprocessing(models, args.image_preprocessing)
     base.P.dataset_split_seed = args.split_seed
