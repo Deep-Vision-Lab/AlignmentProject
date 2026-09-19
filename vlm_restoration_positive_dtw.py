@@ -1093,6 +1093,13 @@ def model_config(P):
         "positive_letter_dtw_min_ink": float(P.positive_letter_dtw_min_ink),
         "real_binarize": bool(P.real_binarize),
         "real_synthetic_style": _env_flag("REAL_SYNTHETIC_STYLE", False),
+        "real_independent_lines": _env_flag("REAL_INDEPENDENT_LINES", False),
+        "real_manifest_name": os.environ.get(
+            "REAL_MANIFEST_NAME", "dataset_manifest.jsonl"
+        ),
+        "real_pair_labels_used_for_training": not _env_flag(
+            "REAL_INDEPENDENT_LINES", False
+        ),
         "real_output_polarity": (
             "white_ink_on_black"
             if _env_flag("REAL_SYNTHETIC_STYLE", False)
