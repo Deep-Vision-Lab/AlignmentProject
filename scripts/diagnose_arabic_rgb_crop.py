@@ -39,7 +39,7 @@ os.environ["ZERO_SHOT_CROP_MODE"] = "vertical_borders"
 os.environ["PACK_VALID_WINDOWS"] = "0"
 os.environ.setdefault("ZERO_SHOT_TARGET_INK_HEIGHT_RATIO", "0.72")
 
-from RealDataSet import ArabicManifestIndependentLineDataset
+from RealDataSet import ArabicAllPageLinesDataset
 from restoration_recommended_components import line_padding_masks
 from zero_shot_preprocessing import (
     IMAGENET_MEAN,
@@ -209,8 +209,11 @@ def main():
     output = Path(args.output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
 
-    dataset = ArabicManifestIndependentLineDataset(
-        manifest,
+    # Match the fine-tuning sample view exactly: every real page line is
+    # eligible even when it has no aligned/positive partner in the pair
+    # manifest. Pair/page duplicates are removed by source-page fingerprint.
+    dataset = ArabicAllPageLinesDataset(
+        root,
         transform=None,
         text_key="text_original_path",
         validate_paths=False,
@@ -379,6 +382,8 @@ def main():
 
     print("RGB crop diagnostic complete")
     print("  samples      =", len(report))
+    print("  dataset view =", "all page lines (aligned + unaligned)")
+    print("  dataset scan =", dataset.scan_stats)
     print("  output       =", output)
     print("  binarization = OFF")
     print("  crop mode    = vertical_borders")
