@@ -388,7 +388,8 @@ def main(argv=None):
                     if layout == "real" and bool(models.config.get("real_all_page_lines", False))
                     else ("balanced_page_pair_groups" if layout == "real" else "manifest_or_all")
                 ),
-                "mask_metrics_are_character_alignment_accuracy": False}
+                "mask_metrics_are_character_alignment_accuracy": False,
+                "resolved_crop_mode": os.environ.get("ZERO_SHOT_CROP_MODE", "legacy_otsu")}
     write_json(destination / "run.json", metadata)
     print(
         f"Yelda evaluation: branch={branch} stage={stage} unit={args.alignment_unit} "
@@ -398,6 +399,11 @@ def main(argv=None):
     )
     print(f"Image input: {args.image_preprocessing}; geometry={geometry['line_geometry_mode']}; "
           f"model_binarize={input_settings['effective_vit_binarize_input']}", flush=True)
+    print(
+        "Crop mode: "
+        + os.environ.get("ZERO_SHOT_CROP_MODE", "legacy_otsu"),
+        flush=True,
+    )
     if args.representation == "joint":
         print(f"Joint scores: local={args.local_weight:.3f}, contextual={1-args.local_weight:.3f}; one NW alignment", flush=True)
     rows = []
