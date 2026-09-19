@@ -29,7 +29,7 @@ def test_robust_crop_ignores_isolated_border_noise_and_preserves_rgb(monkeypatch
     mask, detector = foreground_detection_mask_with_metadata(image)
     cropped, meta = foreground_crop_with_metadata(image)
 
-    assert detector["crop_detector"] == "paper-contrast-projection-mass"
+    assert detector["crop_detector"] == "adaptive-local-background-projection"
     assert int(mask.sum()) > 0
     assert meta["crop_mode"] == "robust_projection"
     assert meta["crop_left"] > 0
