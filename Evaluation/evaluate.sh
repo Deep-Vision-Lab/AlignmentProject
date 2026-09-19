@@ -131,8 +131,8 @@ print_config() {
     "  real data           = ${REAL_DATA_DIR}" \
     "  split / labels      = ${REAL_SPLIT} / ${LABELS}" \
     "  feature             = ${FEATURE} (restoration contextual = trained fused output)" \
-    "  model input         = checkpoint training geometry (1024x128 RGB); no binarization" \
-    "  geometry            = training crop/scale preserved; content-only previews are saved separately" \
+    "  model input         = foreground crop resized directly to 1024x128 RGB; no padding" \
+    "  geometry            = crop outer whitespace first, then exact 1024x128 resize; no white canvas padding" \
     "  checkpoint windows  = physical 128x32, stride 16" \
     "  checklist           = P3:${RUN_POINT3} P4-5:${RUN_POINT45} P6:${RUN_POINT6}" \
     "  results             = ${RESULTS_ROOT}"
@@ -322,7 +322,7 @@ if [[ "${EVAL_MODE}" == "quantitative" || "${EVAL_MODE}" == "all" ]]; then
       --split-seed "${SPLIT_SEED}" \
       --n-samples "${POINT3_SAMPLES}" \
       --device cuda \
-      --image-preprocessing training
+      --image-preprocessing cropped_1024
   fi
 
   if [[ "${RUN_POINT45}" == "1" ]]; then
@@ -337,7 +337,7 @@ if [[ "${EVAL_MODE}" == "quantitative" || "${EVAL_MODE}" == "all" ]]; then
       --alignment-unit window \
       --word-support-floor 0.0 \
       --min-aligned-windows "${POINT45_MIN_WINDOWS}" \
-      --image-preprocessing training \
+      --image-preprocessing cropped_1024 \
       --split test \
       --training-samples 6000 \
       --split-seed "${SPLIT_SEED}" \
@@ -372,7 +372,7 @@ if [[ "${EVAL_MODE}" == "quantitative" || "${EVAL_MODE}" == "all" ]]; then
       --min-ink "${MIN_INK}" \
       --seed "${EVAL_SEED}" \
       --device cuda \
-      --image-preprocessing training
+      --image-preprocessing cropped_1024
   fi
 fi
 
