@@ -105,7 +105,14 @@ def main(argv=None):
             payload["point2_match_rule"] = (
                 "trace proposes candidate pairs; accepted match iff raw cosine > threshold"
             )
-            payload["point2_threshold"] = float(args.threshold)
+            saved_threshold = payload.get("arguments", {}).get("threshold")
+            if saved_threshold is None:
+                saved_threshold = _arg_value(remaining, "--threshold")
+            if saved_threshold is None:
+                raise RuntimeError(
+                    "Point-2 run metadata is missing the evaluation threshold"
+                )
+            payload["point2_threshold"] = float(saved_threshold)
             payload["point2_threshold_bridging"] = "disabled; mismatch breaks accepted component"
             run_path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False),
