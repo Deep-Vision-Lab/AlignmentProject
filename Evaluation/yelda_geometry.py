@@ -71,12 +71,63 @@ def _tight_resize_to_height(image: Image.Image, metadata: dict, target_height: i
     return resized, geometry
 
 
+def _crop_resize_fixed_1024(
+    image: Image.Image,
+    metadata: dict,
+    *,
+    target_width: int = 1024,
+    target_height: int = 128,
+):
+    """Resize the exact foreground crop directly to 1024x128 with no padding.
+
+    This intentionally does NOT preserve aspect ratio. The evaluation contract
+    is: crop outer whitespace first, then use the exact resolution seen by the
+    trained model. No white side/top/bottom canvas is added after the crop.
+    """
+    source = image.convert("RGB")
+    resized = source.resize(
+        (int(target_width), int(target_height)),
+        Image.Resampling.BILINEAR,
+    )
+    geometry = dict(metadata)
+    geometry.update(
+        {
+            "scale_x": float(target_width / max(1, source.width)),
+            "scale_y": float(target_height / max(1, source.height)),
+            "resize_scale": None,
+            "resized_width": int(target_width),
+            "resized_height": int(target_height),
+            "offset_x": 0,
+            "offset_y": 0,
+            "canvas_width": int(target_width),
+            "canvas_height": int(target_height),
+            "binarize": False,
+            "crop_foreground": True,
+            "preserve_aspect": False,
+            "artificial_padding": False,
+            "autocontrast": False,
+            "auto_invert": False,
+            "image_preprocessing": "cropped_1024",
+            "color_mode": "RGB",
+        }
+    )
+    return resized, geometry
+
+
 def prepare_line(path, domain, image_preprocessing="original"):
     with Image.open(path) as opened:
         original = opened.convert("RGB")
     if image_preprocessing == "tight":
         cropped, metadata = _tight_foreground_crop_with_metadata(original)
         return _tight_resize_to_height(cropped, metadata, target_height=128)
+    if image_preprocessing == "cropped_1024":
+        cropped, metadata = _tight_foreground_crop_with_metadata(original)
+        return _crop_resize_fixed_1024(
+            cropped,
+            metadata,
+            target_width=1024,
+            target_height=128,
+        )
     if image_preprocessing == "original":
         # Keep every source pixel in the field of view. Do not use the training
         # preprocessor: even binarize=False still grayscales/crops/scales ink.
@@ -95,7 +146,7 @@ def prepare_line(path, domain, image_preprocessing="original"):
     if image_preprocessing != "training":
         raise ValueError(
             f"Unknown image preprocessing: {image_preprocessing}; "
-            "use original, training, or tight"
+            "use original, training, tight, or cropped_1024"
         )
     processor = preprocessing.build_preprocessor(domain, training=False)
     if hasattr(processor, "preprocess_with_metadata"):
