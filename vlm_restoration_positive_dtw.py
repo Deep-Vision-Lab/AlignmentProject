@@ -500,43 +500,42 @@ def attach_restoration_dtw_stages(model, P):
             raise ValueError("Input width is smaller than the window width")
 
         model_input = image
-        tokens = self.patch_embedding(model_input)
-        if tokens.shape[2] != 1:
-            raise RuntimeError("Window encoder must produce one token row")
-        local = tokens.squeeze(2).transpose(1, 2).contiguous()
-        if use_flip:
-            local = torch.flip(local, dims=[1])
-        local = self.local_norm(local)
 
-        token_valid, _pixel_valid = line_padding_masks(
-            model_input,
-            window_size=self.window_size,
-            stride=self.stride,
-            use_flip=use_flip,
-        )
-
-        # Remove OUTER artificial-padding windows from the semantic sequence.
-        # Internal blank gaps remain because token_valid marks the complete
-        # rectangle from first to last foreground extent.
         if _env_flag("PACK_VALID_WINDOWS", False):
-            lengths = token_valid.sum(dim=1).to(dtype=torch.long)
-            max_length = max(1, int(lengths.max().item()))
-            packed_local = local.new_zeros(
-                (local.shape[0], max_length, local.shape[2])
+            physical_valid, _pixel_valid = line_padding_masks(
+                model_input,
+                window_size=self.window_size,
+                stride=self.stride,
+                use_flip=False,
             )
-            packed_valid = torch.zeros(
-                (local.shape[0], max_length),
-                dtype=torch.bool,
-                device=local.device,
+            if not hasattr(self.patch_embedding, "forward_packed"):
+                raise TypeError(
+                    "PACK_VALID_WINDOWS requires a window encoder with "
+                    "forward_packed()"
+                )
+            tokens, token_valid = self.patch_embedding.forward_packed(
+                model_input,
+                physical_valid,
+                use_flip=use_flip,
             )
-            for batch_index in range(local.shape[0]):
-                selected = local[batch_index][token_valid[batch_index]]
-                length = int(selected.shape[0])
-                if length > 0:
-                    packed_local[batch_index, :length] = selected
-                    packed_valid[batch_index, :length] = True
-            local = packed_local
-            token_valid = packed_valid
+            if tokens.shape[2] != 1:
+                raise RuntimeError("Window encoder must produce one token row")
+            local = tokens.squeeze(2).transpose(1, 2).contiguous()
+        else:
+            tokens = self.patch_embedding(model_input)
+            if tokens.shape[2] != 1:
+                raise RuntimeError("Window encoder must produce one token row")
+            local = tokens.squeeze(2).transpose(1, 2).contiguous()
+            if use_flip:
+                local = torch.flip(local, dims=[1])
+            token_valid, _pixel_valid = line_padding_masks(
+                model_input,
+                window_size=self.window_size,
+                stride=self.stride,
+                use_flip=use_flip,
+            )
+
+        local = self.local_norm(local)
 
         positional = local + self._position_tokens(local.shape[1]).to(
             dtype=local.dtype, device=local.device
