@@ -225,6 +225,163 @@ def foreground_detection_mask_with_metadata(image: Image.Image):
     return filtered, metadata
 
 
+
+def _contiguous_true_runs(values: np.ndarray):
+    values = np.asarray(values, dtype=bool).reshape(-1)
+    runs = []
+    start = None
+    for index, value in enumerate(values):
+        if value and start is None:
+            start = index
+        elif not value and start is not None:
+            runs.append((start, index))
+            start = None
+    if start is not None:
+        runs.append((start, int(values.size)))
+    return runs
+
+
+def detect_vertical_side_borders(mask: np.ndarray):
+    """Detect near-full-height structural border lines on the two image sides.
+
+    The line crops in ArabicDataset often contain one vertical page/box boundary
+    near each side.  In the temporary foreground mask these appear as white
+    strokes connecting the upper and lower portions of the line image.  Detect
+    those structures before attempting any text bbox estimation.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    if mask.ndim != 2:
+        raise ValueError("vertical border detector expects a 2-D mask")
+    height, width = mask.shape
+    radius = max(1, int(os.environ.get("ZERO_SHOT_BORDER_NEIGHBORHOOD", "3")))
+    min_coverage = float(os.environ.get("ZERO_SHOT_BORDER_MIN_COVERAGE", "0.72"))
+    band_fraction = float(os.environ.get("ZERO_SHOT_BORDER_BAND_FRACTION", "0.10"))
+    min_band_coverage = float(
+        os.environ.get("ZERO_SHOT_BORDER_MIN_BAND_COVERAGE", "0.45")
+    )
+    side_fraction = float(os.environ.get("ZERO_SHOT_BORDER_SIDE_FRACTION", "0.42"))
+
+    top_h = max(2, int(round(height * band_fraction)))
+    bottom_y = max(0, height - top_h)
+
+    coverage = np.zeros(width, dtype=np.float32)
+    top_coverage = np.zeros(width, dtype=np.float32)
+    bottom_coverage = np.zeros(width, dtype=np.float32)
+    for x in range(width):
+        x0 = max(0, x - radius)
+        x1 = min(width, x + radius + 1)
+        rows = mask[:, x0:x1].any(axis=1)
+        coverage[x] = float(rows.mean())
+        top_coverage[x] = float(rows[:top_h].mean())
+        bottom_coverage[x] = float(rows[bottom_y:].mean())
+
+    candidates = (
+        (coverage >= min_coverage)
+        & (top_coverage >= min_band_coverage)
+        & (bottom_coverage >= min_band_coverage)
+    )
+    runs = _contiguous_true_runs(candidates)
+
+    left_limit = int(round(width * side_fraction))
+    right_limit = int(round(width * (1.0 - side_fraction)))
+    left_runs = [run for run in runs if (run[0] + run[1]) // 2 <= left_limit]
+    right_runs = [run for run in runs if (run[0] + run[1]) // 2 >= right_limit]
+
+    def _run_score(run):
+        start, end = run
+        center = max(start, min(width - 1, (start + end - 1) // 2))
+        return float(
+            coverage[start:end].max()
+            + 0.20 * top_coverage[center]
+            + 0.20 * bottom_coverage[center]
+        )
+
+    # If several nearly full-height strokes exist on one side, prefer the
+    # innermost one among similarly strong candidates; it is the structural
+    # boundary separating the line content from the outer margin.
+    def _choose_left(items):
+        if not items:
+            return None
+        best_score = max(_run_score(run) for run in items)
+        strong = [run for run in items if _run_score(run) >= best_score - 0.05]
+        return max(strong, key=lambda run: run[1])
+
+    def _choose_right(items):
+        if not items:
+            return None
+        best_score = max(_run_score(run) for run in items)
+        strong = [run for run in items if _run_score(run) >= best_score - 0.05]
+        return min(strong, key=lambda run: run[0])
+
+    left = _choose_left(left_runs)
+    right = _choose_right(right_runs)
+
+    valid_pair = (
+        left is not None
+        and right is not None
+        and int(right[0]) - int(left[1]) >= max(32, int(round(width * 0.25)))
+    )
+
+    metadata = {
+        "side_border_detector": "near-full-height-mask-connectivity",
+        "side_border_min_vertical_coverage": float(min_coverage),
+        "side_border_min_top_bottom_coverage": float(min_band_coverage),
+        "side_border_neighborhood_radius": int(radius),
+        "side_border_left_run": list(left) if left is not None else None,
+        "side_border_right_run": list(right) if right is not None else None,
+        "side_border_pair_valid": bool(valid_pair),
+        "side_border_candidate_runs": [list(run) for run in runs],
+        "side_border_left_coverage": (
+            float(coverage[left[0]:left[1]].max()) if left is not None else None
+        ),
+        "side_border_right_coverage": (
+            float(coverage[right[0]:right[1]].max()) if right is not None else None
+        ),
+    }
+    return left, right, metadata
+
+
+def _crop_between_vertical_borders(source: Image.Image, mask: np.ndarray, detector_meta: dict):
+    """Crop inside detected side borders, then trim vertical whitespace safely."""
+    left, right, border_meta = detect_vertical_side_borders(mask)
+    if not border_meta["side_border_pair_valid"]:
+        return None, {**detector_meta, **border_meta}
+
+    inset = max(1, int(os.environ.get("ZERO_SHOT_BORDER_CROP_INSET", "2")))
+    x0 = min(source.width - 1, int(left[1]) + inset)
+    x1 = max(x0 + 1, int(right[0]) - inset)
+
+    interior_mask = np.asarray(mask[:, x0:x1], dtype=bool)
+    row_mass = interior_mask.sum(axis=1).astype(np.float64)
+    if float(row_mass.sum()) > 0:
+        y0, y1 = _weighted_mass_bounds(row_mass, low=0.003, high=0.997)
+    else:
+        y0, y1 = 0, source.height
+
+    # Only add a vertical safety margin here.  Horizontally, the detected side
+    # borders themselves define the crop boundary.
+    vertical_margin = float(os.environ.get("ZERO_SHOT_BORDER_VERTICAL_MARGIN", "0.12"))
+    pad_y = max(2, int(round((y1 - y0) * vertical_margin)))
+    y0 = max(0, int(y0) - pad_y)
+    y1 = min(source.height, int(y1) + pad_y)
+
+    if x1 - x0 < 32 or y1 <= y0:
+        return None, {**detector_meta, **border_meta}
+
+    metadata = {
+        **detector_meta,
+        **border_meta,
+        "crop_mode": "vertical_borders",
+        "crop_detector": "full-height-side-borders-then-row-projection",
+        "crop_raw_support_left": int(x0),
+        "crop_raw_support_top": int(y0),
+        "crop_raw_support_right": int(x1),
+        "crop_raw_support_bottom": int(y1),
+        "side_border_crop_inset": int(inset),
+        "side_border_vertical_margin": float(vertical_margin),
+    }
+    return (int(x0), int(y0), int(x1), int(y1)), metadata
+
 def foreground_crop_with_metadata(
     image: Image.Image,
     margin_x=0.025,
@@ -234,7 +391,26 @@ def foreground_crop_with_metadata(
     source = image.convert("RGB")
     mode = os.environ.get("ZERO_SHOT_CROP_MODE", "legacy_otsu").strip().lower()
 
-    if mode in {"robust", "robust_projection", "paper_contrast"}:
+    if mode in {"vertical_borders", "side_borders", "full_height_borders"}:
+        mask, detector_meta = foreground_detection_mask_with_metadata(source)
+        border_box, detector_meta = _crop_between_vertical_borders(
+            source, mask, detector_meta
+        )
+        if border_box is not None:
+            x0, y0, x1, y1 = border_box
+            # The side borders already define horizontal limits; do not add the
+            # generic x margin outside them.
+            margin_x = 0.0
+            margin_y = 0.0
+        else:
+            # Safe fallback if a line does not contain two reliable structural
+            # borders. Keep the robust projection behavior and record fallback.
+            x0 = int(detector_meta["crop_raw_support_left"])
+            y0 = int(detector_meta["crop_raw_support_top"])
+            x1 = int(detector_meta["crop_raw_support_right"])
+            y1 = int(detector_meta["crop_raw_support_bottom"])
+            detector_meta["crop_mode"] = "vertical_borders_fallback_projection"
+    elif mode in {"robust", "robust_projection", "paper_contrast"}:
         mask, detector_meta = foreground_detection_mask_with_metadata(source)
         x0 = int(detector_meta["crop_raw_support_left"])
         y0 = int(detector_meta["crop_raw_support_top"])
