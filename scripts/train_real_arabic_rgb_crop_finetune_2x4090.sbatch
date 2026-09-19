@@ -57,7 +57,11 @@ export REAL_FILTER_INFEASIBLE_SPAN_DTW=0
 export ZERO_SHOT_PREPROCESS=1
 export ZERO_SHOT_FOREGROUND_CROP=1
 export ZERO_SHOT_CROP_MODE=vertical_borders
-export PACK_VALID_WINDOWS=1
+# Match the Point-2 synthetic checkpoint exactly: keep the fixed 1024px canvas
+# token grid (63 windows for width=32/stride=16). Outer artificial side-padding
+# windows stay at their original absolute positions but are masked out of
+# TinyViT attention and positive DTW; do NOT repack/rebase them to token 0.
+export PACK_VALID_WINDOWS=0
 export ZERO_SHOT_PRESERVE_ASPECT=1
 export ZERO_SHOT_TARGET_INK_HEIGHT_RATIO="${ZERO_SHOT_TARGET_INK_HEIGHT_RATIO:-0.72}"
 
@@ -200,10 +204,10 @@ echo "initial weights      = ${PRETRAINED_WEIGHTS}"
 echo "backend              = resnet_token (ResNet18 -> TinyViT -> fused)"
 echo "epochs               = ${RESTORATION_EPOCHS}"
 echo "learning rate        = ${RESTORATION_LEARNING_RATE}"
-echo "preprocessing        = robust foreground crop + ORIGINAL RGB (no binarization)"
+echo "preprocessing        = structural/dominant-band crop + ORIGINAL RGB (no binarization)"
 echo "output geometry      = 1024x128, aspect preserved"
-echo "crop detector        = full-height left/right side borders (temporary mask only)"
-echo "window sequence      = packed content windows only; outer canvas windows removed"
+echo "crop detector        = 2-side borders, or dominant target band + partial/no side border"
+echo "window sequence      = fixed 63-window synthetic grid; outer padding MASKED, not repacked"
 echo "online augmentation  = disabled"
 echo "training view        = ALL unique independent lines (A+B, deduplicated)"
 echo "pair labels          = ignored"
