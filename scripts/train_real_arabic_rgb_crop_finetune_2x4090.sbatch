@@ -128,7 +128,7 @@ if physical:
 PY
 
 "${PYTHON_BIN}" -m pytest -q \
-  tests/test_real_synthetic_style_preprocessing.py \
+  tests/test_real_rgb_crop_preprocessing.py \
   tests/test_real_independent_lines.py \
   tests/test_restoration_positive_dtw.py
 
