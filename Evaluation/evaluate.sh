@@ -276,6 +276,7 @@ if [[ "${EVAL_MODE}" == "quantitative" || "${EVAL_MODE}" == "all" ]]; then
     --weights "${WEIGHTS}"
     --output-dir "${QUANTITATIVE_DIR}"
     --device cuda
+    --image-preprocessing cropped_1024
     --real-data-dir "${REAL_DATA_DIR}"
     --arabic-manifest "${ARABIC_MANIFEST}"
     --real-split "${REAL_SPLIT}"
