@@ -72,21 +72,26 @@ def apply_branch_config(P):
         )
     P.restoration_training_stage = "align"
 
-    # Keep the current line geometry and original RGB input.
+    # Keep the current line geometry. Synthetic training stays on the original
+    # RGB appearance. Real-data fine-tuning can opt into a synthetic-style
+    # binary appearance (white handwriting on black background) while keeping
+    # the same foreground crop + aspect-preserving 1024x128 geometry.
+    synthetic_style_real = _env_flag("REAL_SYNTHETIC_STYLE", False)
     P.window_size = 32
     P.stride_ratio = _env_float("RESTORATION_DTW_STRIDE_RATIO", 0.50)
     P.vit_input_height = 128
     P.vit_binarize_input = False
-    P.real_binarize = False
-    P.real_binarize_autocontrast = False
+    P.real_binarize = bool(synthetic_style_real)
+    P.real_binarize_autocontrast = bool(synthetic_style_real)
     P.real_augment = False
     P.zero_shot_preprocess = True
     P.zero_shot_preserve_aspect = True
     P.zero_shot_foreground_crop = True
     P.zero_shot_source_geometry = False
     os.environ["SYNTHETIC_BINARIZE"] = "0"
-    os.environ["REAL_BINARIZE"] = "0"
-    os.environ["REAL_BINARIZE_AUTOCONTRAST"] = "0"
+    os.environ["REAL_BINARIZE"] = "1" if synthetic_style_real else "0"
+    os.environ["REAL_BINARIZE_AUTO_INVERT"] = "1"
+    os.environ["REAL_BINARIZE_AUTOCONTRAST"] = "1" if synthetic_style_real else "0"
     os.environ["ZERO_SHOT_FOREGROUND_CROP"] = "1"
     os.environ["ZERO_SHOT_PRESERVE_ASPECT"] = "1"
     os.environ["ZERO_SHOT_SOURCE_GEOMETRY"] = "0"
@@ -1083,6 +1088,12 @@ def model_config(P):
         "positive_letter_dtw_cost_mode": str(P.positive_letter_dtw_cost_mode),
         "positive_letter_dtw_min_ink": float(P.positive_letter_dtw_min_ink),
         "real_binarize": bool(P.real_binarize),
+        "real_synthetic_style": _env_flag("REAL_SYNTHETIC_STYLE", False),
+        "real_output_polarity": (
+            "white_ink_on_black"
+            if _env_flag("REAL_SYNTHETIC_STYLE", False)
+            else "source_rgb"
+        ),
         "synthetic_binarize": False,
         "zero_shot_preprocess": True,
         "zero_shot_preserve_aspect": True,
