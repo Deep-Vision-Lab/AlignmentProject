@@ -7,7 +7,9 @@ provides ``alignment_mask_path``; ordinary real datasets remain unchanged.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
@@ -339,3 +341,219 @@ class ArabicManifestIndependentLineDataset(Dataset):
         image = self._read_image(sample["line_image_path"])
         text = self._read_text(sample["text_path"])
         return text, image
+
+
+
+class ArabicAllPageLinesDataset(Dataset):
+    """Use every available real line image with its own transcript.
+
+    This view does NOT depend on line-pair alignment labels. It scans
+    ``DatasetPairs/page_pairs/pair_*/A|B`` directly, so a line is eligible even
+    when it has no positive/aligned partner in any line-pair manifest.
+
+    The same source page may be copied into several candidate page-pair
+    directories. We identify a page by the SHA1 of its copied
+    ``original_image.png`` and deduplicate line numbers within that page. This
+    prevents page-pair construction from artificially multiplying the training
+    set while still retaining every distinct manuscript line.
+    """
+
+    _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
+
+    def __init__(
+        self,
+        dataset_root,
+        transform=None,
+        text_key: str = "text_original_path",
+        max_samples: Optional[int] = None,
+        validate_paths: bool = False,
+    ):
+        self.root = Path(dataset_root).expanduser().resolve()
+        if not self.root.is_dir():
+            raise FileNotFoundError(f"ArabicDataset root not found: {self.root}")
+        self.transform = transform
+        self.text_key = str(text_key)
+
+        if self.text_key == "text_original_path":
+            text_rel = Path("text/final/original")
+        elif self.text_key == "text_tashkeel_path":
+            text_rel = Path("text/final/tashkeel")
+        else:
+            raise ValueError(
+                "ArabicAllPageLinesDataset currently supports "
+                "text_original_path or text_tashkeel_path, got "
+                f"{self.text_key!r}"
+            )
+
+        page_pairs_root = self.root / "DatasetPairs" / "page_pairs"
+        if not page_pairs_root.is_dir():
+            raise FileNotFoundError(
+                "Expected real page-pair directory at "
+                f"{page_pairs_root}"
+            )
+
+        page_fingerprint_cache = {}
+        seen_page_lines = set()
+        samples = []
+        scanned_side_copies = 0
+        duplicate_page_line_copies = 0
+        missing_transcripts = 0
+
+        for pair_dir in sorted(page_pairs_root.glob("pair_*")):
+            if not pair_dir.is_dir():
+                continue
+            for side_name in ("A", "B"):
+                side_dir = pair_dir / side_name
+                lines_dir = side_dir / "linesImages"
+                text_dir = side_dir / text_rel
+                if not lines_dir.is_dir() or not text_dir.is_dir():
+                    continue
+                scanned_side_copies += 1
+
+                page_key, original_image = self._page_fingerprint(
+                    side_dir, lines_dir, page_fingerprint_cache
+                )
+
+                image_paths = sorted(
+                    path
+                    for path in lines_dir.iterdir()
+                    if path.is_file()
+                    and path.suffix.lower() in self._IMAGE_SUFFIXES
+                )
+                for image_path in image_paths:
+                    transcript_path = text_dir / f"{image_path.stem}.txt"
+                    if not transcript_path.is_file():
+                        missing_transcripts += 1
+                        continue
+
+                    line_identity = (page_key, image_path.stem)
+                    if line_identity in seen_page_lines:
+                        duplicate_page_line_copies += 1
+                        continue
+                    seen_page_lines.add(line_identity)
+
+                    match = re.search(r"(\d+)$", image_path.stem)
+                    line_idx = int(match.group(1)) if match else -1
+                    samples.append(
+                        {
+                            "line_image_path": self._relative(image_path),
+                            "text_path": self._relative(transcript_path),
+                            "text_key": self.text_key,
+                            "pair_id": page_key,
+                            "source_pair_id": str(pair_dir.name),
+                            "side": side_name,
+                            "line_idx": line_idx,
+                            "page_dir": self._relative(side_dir),
+                            "original_image": (
+                                self._relative(original_image)
+                                if original_image is not None
+                                else ""
+                            ),
+                            "line_source": "all_page_lines_scan",
+                        }
+                    )
+
+        if max_samples is not None and int(max_samples) > 0:
+            samples = samples[: min(len(samples), int(max_samples))]
+        if not samples:
+            raise ValueError(
+                "No line image/transcript examples found by scanning "
+                f"{page_pairs_root}"
+            )
+
+        self.samples = samples
+        self.scan_stats = {
+            "unique_lines": len(samples),
+            "unique_pages": len({sample["pair_id"] for sample in samples}),
+            "scanned_side_copies": int(scanned_side_copies),
+            "duplicate_page_line_copies_removed": int(
+                duplicate_page_line_copies
+            ),
+            "missing_transcripts": int(missing_transcripts),
+        }
+
+        if validate_paths:
+            self._validate_all_paths()
+
+    def __len__(self):
+        return len(self.samples)
+
+    def _relative(self, path: Path) -> str:
+        path = Path(path).resolve()
+        try:
+            return str(path.relative_to(self.root))
+        except ValueError:
+            return str(path)
+
+    @staticmethod
+    def _sha1_file(path: Path) -> str:
+        digest = hashlib.sha1()
+        with Path(path).open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _page_fingerprint(self, side_dir, lines_dir, cache):
+        original_candidates = sorted(
+            path
+            for path in side_dir.glob("original_image.*")
+            if path.is_file()
+        )
+        original = original_candidates[0] if original_candidates else None
+        cache_key = str(original or lines_dir)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached, original
+
+        if original is not None:
+            fingerprint = "page_sha1:" + self._sha1_file(original)
+        else:
+            digest = hashlib.sha1()
+            image_paths = sorted(
+                path
+                for path in lines_dir.iterdir()
+                if path.is_file()
+                and path.suffix.lower() in self._IMAGE_SUFFIXES
+            )
+            for image_path in image_paths:
+                digest.update(self._sha1_file(image_path).encode("ascii"))
+            fingerprint = "page_lines_sha1:" + digest.hexdigest()
+
+        cache[cache_key] = fingerprint
+        return fingerprint, original
+
+    def _resolve(self, path_value) -> Path:
+        path = Path(path_value).expanduser()
+        if path.is_absolute():
+            return path.resolve()
+        return (self.root / path).resolve()
+
+    def _read_text(self, path_value) -> str:
+        path = self._resolve(path_value)
+        with path.open("r", encoding="utf-8") as handle:
+            return " " + handle.read().strip() + " "
+
+    def _read_image(self, path_value):
+        path = self._resolve(path_value)
+        with Image.open(path) as image:
+            image = image.convert("RGB")
+            if self.transform is not None:
+                return self.transform(image)
+            return image.copy()
+
+    def _validate_all_paths(self) -> None:
+        for sample_idx, sample in enumerate(self.samples):
+            image = self._resolve(sample["line_image_path"])
+            text = self._resolve(sample["text_path"])
+            if not image.is_file() or not text.is_file():
+                raise FileNotFoundError(
+                    "Invalid all-page-line sample "
+                    f"index={sample_idx} image={image} text={text}"
+                )
+
+    def __getitem__(self, idx):
+        sample = self.samples[int(idx)]
+        return (
+            self._read_text(sample["text_path"]),
+            self._read_image(sample["line_image_path"]),
+        )
