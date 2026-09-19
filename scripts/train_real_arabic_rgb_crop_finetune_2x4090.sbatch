@@ -14,7 +14,7 @@ set -euo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-/home/ahmedmas/BGU-Lab/AlignmentProject}"
 DATASET="${DATASET:-${PROJECT_DIR}/DataSet/ArabicDataset}"
-PRETRAINED_WEIGHTS="${PRETRAINED_WEIGHTS:-${PROJECT_DIR}/Weights/res18_tinyvit_point2/model_latest.pth}"
+PRETRAINED_WEIGHTS="${PRETRAINED_WEIGHTS:-${PROJECT_DIR}/Weights/res18_tinyvit_real_arabic_rgb_crop/model_latest.pth}"
 TORCHRUN_BIN="${TORCHRUN_BIN:-${HOME}/.conda/envs/manucripts_align/bin/torchrun}"
 PYTHON_BIN="${PYTHON_BIN:-$(dirname "${TORCHRUN_BIN}")/python}"
 
@@ -27,7 +27,7 @@ mkdir -p out Results/Diagnostics/ArabicDatasetRGBCrop
 
 # Use the architecture that produced the stronger fused Point-2 results.
 export MODEL_BACKEND_VARIANT="resnet_token"
-export JOB_NAME="${JOB_NAME:-res18_tinyvit_real_arabic_rgb_crop}"
+export JOB_NAME="${JOB_NAME:-res18_tinyvit_real_arabic_rgb_crop_sigreg_l020}"
 export RESTORATION_EPOCHS="${RESTORATION_EPOCHS:-30}"
 export RESTORATION_LEARNING_RATE="${RESTORATION_LEARNING_RATE:-2e-5}"
 # 0 means use all manifest rows that pass the real-data label filters.
@@ -74,9 +74,11 @@ export RESTORATION_NUM_NEGATIVES="${RESTORATION_NUM_NEGATIVES:-0}"
 export RESTORATION_CONTRASTIVE_WEIGHT="${RESTORATION_CONTRASTIVE_WEIGHT:-0.0}"
 export RESTORATION_DTW_STRIDE_RATIO="${RESTORATION_DTW_STRIDE_RATIO:-0.50}"
 export POSITIVE_LETTER_DTW_WEIGHT="${POSITIVE_LETTER_DTW_WEIGHT:-1.0}"
-export POSITIVE_LETTER_DTW_GAMMA_START="${POSITIVE_LETTER_DTW_GAMMA_START:-0.50}"
+# Continue from the already fine-tuned real checkpoint without reopening the
+# soft-DTW schedule. This isolates SIGReg as the new training change.
+export POSITIVE_LETTER_DTW_GAMMA_START="${POSITIVE_LETTER_DTW_GAMMA_START:-0.05}"
 export POSITIVE_LETTER_DTW_GAMMA_END="${POSITIVE_LETTER_DTW_GAMMA_END:-0.05}"
-export POSITIVE_LETTER_DTW_ANNEAL_EPOCHS="${POSITIVE_LETTER_DTW_ANNEAL_EPOCHS:-10}"
+export POSITIVE_LETTER_DTW_ANNEAL_EPOCHS="${POSITIVE_LETTER_DTW_ANNEAL_EPOCHS:-1}"
 export POSITIVE_LETTER_DTW_VERTICAL_PENALTY="${POSITIVE_LETTER_DTW_VERTICAL_PENALTY:-0.05}"
 export POSITIVE_LETTER_DTW_HORIZONTAL_PENALTY="${POSITIVE_LETTER_DTW_HORIZONTAL_PENALTY:-0.30}"
 export POSITIVE_LETTER_DTW_POSITION_PRIOR="${POSITIVE_LETTER_DTW_POSITION_PRIOR:-0.15}"
@@ -84,6 +86,15 @@ export POSITIVE_LETTER_DTW_DISABLE_HORIZONTAL_WHEN_FEASIBLE=1
 export POSITIVE_LETTER_DTW_COMPETITION_TEMPERATURE="${POSITIVE_LETTER_DTW_COMPETITION_TEMPERATURE:-0.10}"
 export POSITIVE_LETTER_DTW_COST_MODE="${POSITIVE_LETTER_DTW_COST_MODE:-full_alphabet_nll}"
 export LETTER_CODEBOOK_SEED="${LETTER_CODEBOOK_SEED:-1234}"
+
+# Strong SIGReg on post-vision-norm, pre-L2 fused valid-window embeddings.
+# DTW still operates on the normalized fused vectors exactly as before.
+export SIGREG_LAMBDA="${SIGREG_LAMBDA:-0.20}"
+export SIGREG_SKETCH_DIM="${SIGREG_SKETCH_DIM:-64}"
+export SIGREG_NUM_KNOTS="${SIGREG_NUM_KNOTS:-17}"
+export SIGREG_T_MIN="${SIGREG_T_MIN:--5.0}"
+export SIGREG_T_MAX="${SIGREG_T_MAX:-5.0}"
+export SIGREG_MIN_SAMPLES="${SIGREG_MIN_SAMPLES:-32}"
 
 export PRETRAINED_CACHE_DIR="${PRETRAINED_CACHE_DIR:-${PROJECT_DIR}/Pretrained}"
 export TORCH_HOME="${TORCH_HOME:-${PRETRAINED_CACHE_DIR}/torch}"
@@ -252,6 +263,9 @@ echo "Real ArabicDataset fine-tune"
 echo "dataset              = ${DATASET}"
 echo "mode                 = FINE-TUNE (never train from zero)"
 echo "initial weights      = ${PRETRAINED_WEIGHTS}"
+echo "continuation change  = Strong SIGReg on pre-L2 fused valid windows"
+echo "SIGReg lambda        = ${SIGREG_LAMBDA}"
+echo "SIGReg sketch/knots  = ${SIGREG_SKETCH_DIM}/${SIGREG_NUM_KNOTS}"
 echo "backend              = resnet_token (ResNet18 -> TinyViT -> fused)"
 echo "epochs               = ${RESTORATION_EPOCHS}"
 echo "learning rate        = ${RESTORATION_LEARNING_RATE}"
@@ -266,6 +280,7 @@ echo "duplicate copies     = deduplicated by source-page image fingerprint + lin
 echo "pair labels          = ignored; positive partner line NOT required"
 echo "TinyViT dropout      = ${TINY_VIT_DROPOUT}"
 echo "fusion dropout       = ${FUSION_DROPOUT}"
+echo "DTW gamma            = ${POSITIVE_LETTER_DTW_GAMMA_START} -> ${POSITIVE_LETTER_DTW_GAMMA_END}"
 echo "drop last batch      = ${TRAIN_DROP_LAST} (match synthetic gradient fix)"
 echo "============================================================"
 
