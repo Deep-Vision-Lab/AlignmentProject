@@ -1111,7 +1111,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--image-preprocessing",
         choices=("original", "training", "tight", "cropped_1024"),
-        default="cropped_1024",
+        default="training",
         help=(
             "cropped_1024 crops outer whitespace and resizes the remaining RGB line "
             "directly to exactly 1024x128 with no padding"
