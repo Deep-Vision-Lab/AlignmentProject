@@ -8,6 +8,7 @@ from zero_shot_preprocessing import (
     aspect_preserving_pad_with_metadata,
     foreground_crop_with_metadata,
     foreground_detection_mask_with_metadata,
+    build_preprocessor,
 )
 
 
@@ -67,3 +68,38 @@ def test_rgb_crop_to_model_canvas_keeps_continuous_intensity(monkeypatch):
     assert len(unique) > 2
     assert meta["canvas_width"] == 1024
     assert meta["canvas_height"] == 128
+
+
+def test_real_training_preprocessor_keeps_original_rgb_crop(monkeypatch):
+    monkeypatch.setenv("REAL_SYNTHETIC_STYLE", "0")
+    monkeypatch.setenv("REAL_BINARIZE", "0")
+    monkeypatch.setenv("REAL_BINARIZE_AUTOCONTRAST", "0")
+    monkeypatch.setenv("ZERO_SHOT_PREPROCESS", "1")
+    monkeypatch.setenv("ZERO_SHOT_FOREGROUND_CROP", "1")
+    monkeypatch.setenv("ZERO_SHOT_PRESERVE_ASPECT", "1")
+    monkeypatch.setenv("ZERO_SHOT_CROP_MODE", "robust_projection")
+
+    image = Image.new("RGB", (520, 132), (238, 228, 207))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((95, 44, 430, 88), fill=(63, 48, 37))
+    # Preserve multiple real RGB tones so a binary/black-background conversion
+    # would be immediately visible to the test.
+    draw.rectangle((205, 53, 280, 76), fill=(108, 82, 60))
+
+    preprocessor = build_preprocessor("real", training=False)
+    model_input, meta = preprocessor.preprocess_with_metadata(image)
+
+    assert preprocessor.binarize is False
+    assert preprocessor.crop_foreground is True
+    assert preprocessor.preserve_aspect is True
+    assert meta["binarize"] is False
+    assert model_input.mode == "RGB"
+    assert model_input.size == (1024, 128)
+
+    values = np.asarray(model_input)
+    colors = np.unique(values.reshape(-1, 3), axis=0)
+    assert len(colors) > 3
+    # Fixed-canvas padding is white; the manuscript crop itself retains its
+    # original parchment/ink colors rather than becoming a black mask.
+    assert np.any(np.all(values == np.array([255, 255, 255]), axis=-1))
+    assert np.any(np.all(values == np.array([238, 228, 207]), axis=-1))
