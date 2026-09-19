@@ -220,6 +220,65 @@ def group_split_pairs(pairs: list[ImagePair], seed: int):
     return train, valid, test
 
 
+def _all_page_line_split_map(
+    dataset_root: str | Path,
+    *,
+    text_key: str,
+    seed: int,
+) -> tuple[dict[str, str], object]:
+    """Reconstruct the exact source-page split used by REAL_ALL_PAGE_LINES training."""
+    from RealDataSet import ArabicAllPageLinesDataset
+
+    dataset = ArabicAllPageLinesDataset(
+        dataset_root,
+        transform=None,
+        text_key=text_key,
+        validate_paths=False,
+    )
+    groups: dict[str, list[int]] = {}
+    for index, sample in enumerate(dataset.samples):
+        groups.setdefault(str(sample["pair_id"]), []).append(index)
+
+    if len(groups) < 3:
+        raise ValueError(
+            "REAL_ALL_PAGE_LINES evaluation needs at least three source pages "
+            "to reproduce the training split."
+        )
+
+    group_ids = list(groups)
+    random.Random(int(seed)).shuffle(group_ids)
+    train_target = int(0.6 * len(dataset))
+    valid_target = int(0.2 * len(dataset))
+    split_map: dict[str, str] = {}
+    train_count = 0
+    valid_count = 0
+    for group_id in group_ids:
+        members = groups[group_id]
+        if train_count < train_target:
+            split_name = "train"
+            train_count += len(members)
+        elif valid_count < valid_target:
+            split_name = "valid"
+            valid_count += len(members)
+        else:
+            split_name = "test"
+        split_map[str(group_id)] = split_name
+    return split_map, dataset
+
+
+def _page_key_for_real_line(image_path: str | Path, dataset) -> str:
+    """Return the same source-page fingerprint used by ArabicAllPageLinesDataset."""
+    image_path = Path(image_path).expanduser().resolve()
+    lines_dir = image_path.parent
+    side_dir = lines_dir.parent
+    page_key, _original = dataset._page_fingerprint(
+        side_dir,
+        lines_dir,
+        {},
+    )
+    return str(page_key)
+
+
 def load_arabic_dataset_pairs(args) -> list[ImagePair]:
     from RealDataSet import ArabicManifestLinePairDataset
 
@@ -250,12 +309,36 @@ def load_arabic_dataset_pairs(args) -> list[ImagePair]:
             )
         )
 
-    train, valid, test = group_split_pairs(pairs, args.split_seed)
-    selected = {"all": pairs, "train": train, "valid": valid, "test": test}[
-        args.real_split
-    ]
+    if env_flag("REAL_ALL_PAGE_LINES", False):
+        split_map, all_lines_dataset = _all_page_line_split_map(
+            manifest.parent,
+            text_key=args.real_text_key,
+            seed=args.split_seed,
+        )
+        selected = []
+        for pair in pairs:
+            split1 = split_map.get(
+                _page_key_for_real_line(pair.image1, all_lines_dataset)
+            )
+            split2 = split_map.get(
+                _page_key_for_real_line(pair.image2, all_lines_dataset)
+            )
+            pair_split = split1 if split1 == split2 else "mixed"
+            if args.real_split == "all" or pair_split == args.real_split:
+                selected.append(replace(pair, split=pair_split))
+        if args.real_split != "all" and not selected:
+            raise ValueError(
+                "No real evaluation pairs have both source pages in the "
+                f"{args.real_split!r} split reconstructed from REAL_ALL_PAGE_LINES."
+            )
+    else:
+        train, valid, test = group_split_pairs(pairs, args.split_seed)
+        selected = {"all": pairs, "train": train, "valid": valid, "test": test}[
+            args.real_split
+        ]
+
     return [
-        replace(pair, index=position, split=args.real_split)
+        replace(pair, index=position)
         for position, pair in enumerate(selected, start=1)
     ]
 
