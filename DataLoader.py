@@ -10,7 +10,10 @@ from torch.utils.data import DataLoader, Subset, random_split
 from torchvision import transforms
 
 from DataSet import TextLineModern
-from RealDataSet import ArabicManifestLinePairDataset
+from RealDataSet import (
+    ArabicManifestIndependentLineDataset,
+    ArabicManifestLinePairDataset,
+)
 import Parameters as P
 from Parameters import *
 
@@ -286,16 +289,29 @@ def _build_synthetic_dataset(data_dir):
 
 
 def _build_real_dataset(data_dir):
-    labels = _parse_real_labels()
     text_key = os.environ.get("REAL_TEXT_KEY", "text_original_path")
-    min_text_score = float(os.environ.get("REAL_MIN_TEXT_SCORE", 0.0))
     validate_paths = os.environ.get("REAL_VALIDATE_PATHS", "0").lower() in {
         "1", "true", "yes", "on"
     }
     max_samples = int(num_samples) if int(num_samples) > 0 else None
+    manifest_path = _real_manifest_path(data_dir)
 
+    independent_lines = os.environ.get(
+        "REAL_INDEPENDENT_LINES", "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if independent_lines:
+        return ArabicManifestIndependentLineDataset(
+            manifest_path=manifest_path,
+            transform=real_transform,
+            text_key=text_key,
+            max_samples=max_samples,
+            validate_paths=validate_paths,
+        )
+
+    labels = _parse_real_labels()
+    min_text_score = float(os.environ.get("REAL_MIN_TEXT_SCORE", 0.0))
     return ArabicManifestLinePairDataset(
-        manifest_path=_real_manifest_path(data_dir),
+        manifest_path=manifest_path,
         transform=real_transform,
         text_key=text_key,
         allowed_labels=labels,
@@ -568,10 +584,13 @@ def custom_collate_fn(batch):
     texts1, images1 = zip(*batch)
     images = torch.stack(images1, dim=0)
     pos_texts = list(texts1)
-    neg_texts = [
-        _build_negatives_for_sample(pos_texts[i], pos_texts, i, _neg_mode)
-        for i in range(len(pos_texts))
-    ]
+    if int(num_negatives) <= 0:
+        neg_texts = [[] for _ in pos_texts]
+    else:
+        neg_texts = [
+            _build_negatives_for_sample(pos_texts[i], pos_texts, i, _neg_mode)
+            for i in range(len(pos_texts))
+        ]
     return images, pos_texts, neg_texts
 
 
