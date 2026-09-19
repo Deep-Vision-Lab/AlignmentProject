@@ -231,7 +231,13 @@ def _ranking_score(alignment: dict, mode: str) -> float:
     raise ValueError("ranking_score must be normalized_sw, mean_cosine, or hybrid")
 
 
-def _feature_cache(runtime, models, dataset_type: str, temp_root: Path | None = None):
+def _feature_cache(
+    runtime,
+    models,
+    dataset_type: str,
+    temp_root: Path | None = None,
+    image_preprocessing: str = "cropped_1024",
+):
     cache: dict[tuple[str, str], object] = {}
     prepared: dict[str, Path] = {}
 
@@ -250,7 +256,7 @@ def _feature_cache(runtime, models, dataset_type: str, temp_root: Path | None = 
                     # synthetic tensor transform so geometry is not applied twice.
                     from Evaluation.yelda_geometry import prepare_line
                     prepared_image, _geometry = prepare_line(
-                        feature_path, "real", "training"
+                        feature_path, "real", image_preprocessing
                     )
                     prepared_path = temp_root / f"real_{len(prepared):06d}.png"
                     prepared_image.save(prepared_path)
@@ -293,11 +299,13 @@ def calibrate_sw_on_validation(runtime, models, pairs, args, output: Path) -> di
     examples = []
     with tempfile.TemporaryDirectory(prefix="sw_calibration_") as temp_dir:
         temp_root = Path(temp_dir)
-        get_features = _feature_cache(runtime, models, "real", temp_root)
+        get_features = _feature_cache(
+            runtime, models, "real", temp_root, args.image_preprocessing
+        )
         for example_id, line_path in enumerate(line_paths, start=1):
             from Evaluation.yelda_geometry import prepare_line
 
-            prepared_image, _geometry = prepare_line(line_path, "real", "training")
+            prepared_image, _geometry = prepare_line(line_path, "real", args.image_preprocessing)
             array = np.asarray(prepared_image.convert("RGB"))
             _height, width = array.shape[:2]
             ink = _ink_mask(array)
@@ -409,12 +417,14 @@ def run_crop_localization(runtime, models, pairs, args, output: Path) -> tuple[l
     rows: list[dict] = []
     with tempfile.TemporaryDirectory(prefix="real_crop_quant_") as temp_dir:
         temp_root = Path(temp_dir)
-        real_features = _feature_cache(runtime, models, "real", temp_root)
+        real_features = _feature_cache(
+            runtime, models, "real", temp_root, args.image_preprocessing
+        )
         example_id = 0
         crop_id = 0
         for line_index, line_path in enumerate(line_paths, start=1):
             from Evaluation.yelda_geometry import prepare_line
-            prepared_image, _geometry = prepare_line(line_path, "real", "training")
+            prepared_image, _geometry = prepare_line(line_path, "real", args.image_preprocessing)
             array = np.asarray(prepared_image.convert("RGB"))
             _height, width = array.shape[:2]
             ink = _ink_mask(array)
@@ -630,7 +640,9 @@ def _score_candidate_pools(
     retrieval_rows: list[dict] = []
     score_rows: list[dict] = []
     with tempfile.TemporaryDirectory(prefix=f"real_{label}_quant_") as temp_dir:
-        get_features = _feature_cache(runtime, models, "real", Path(temp_dir))
+        get_features = _feature_cache(
+            runtime, models, "real", Path(temp_dir), args.image_preprocessing
+        )
         for query_order, pair in enumerate(selected, start=1):
             negatives = [
                 item
@@ -825,7 +837,9 @@ def run_sparse_intervals(runtime, models, args, output: Path) -> tuple[list[dict
     rows = []
     stride = int(models.config.get("stride", 16))
     with tempfile.TemporaryDirectory(prefix="real_sparse_quant_") as temp_dir:
-        get_features = _feature_cache(runtime, models, "real", Path(temp_dir))
+        get_features = _feature_cache(
+            runtime, models, "real", Path(temp_dir), args.image_preprocessing
+        )
         for index, record in enumerate(records, start=1):
             image1 = _resolve_annotation_path(
                 str(record["image1"]), manifest, Path(args.real_data_dir)
@@ -861,8 +875,8 @@ def run_sparse_intervals(runtime, models, args, output: Path) -> tuple[list[dict
             if coordinate_space in {"source", "source_image", "original"}:
                 from Evaluation.yelda_geometry import prepare_line, source_intervals
 
-                _prepared1, geometry1 = prepare_line(image1, "real", "training")
-                _prepared2, geometry2 = prepare_line(image2, "real", "training")
+                _prepared1, geometry1 = prepare_line(image1, "real", args.image_preprocessing)
+                _prepared2, geometry2 = prepare_line(image2, "real", args.image_preprocessing)
                 mapped1 = source_intervals([pred1_canvas], geometry1)
                 mapped2 = source_intervals([pred2_canvas], geometry2)
                 pred1 = tuple(mapped1[0]) if mapped1 else (0.0, 0.0)
@@ -1094,6 +1108,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weights", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--image-preprocessing",
+        choices=("original", "training", "tight", "cropped_1024"),
+        default="cropped_1024",
+        help=(
+            "cropped_1024 crops outer whitespace and resizes the remaining RGB line "
+            "directly to exactly 1024x128 with no padding"
+        ),
+    )
     parser.add_argument("--real-data-dir", default="DataSet/ArabicDataset")
     parser.add_argument("--arabic-manifest", default="DataSet/ArabicDataset/dataset_manifest.jsonl")
     parser.add_argument("--real-split", choices=("train", "valid", "test", "all"), default="test")
@@ -1217,6 +1240,7 @@ def main() -> None:
         "calibration_split": calibration_split,
         "calibration_pairs": len(calibration_pairs),
         "feature": args.feature,
+        "image_preprocessing": args.image_preprocessing,
         "score_mode": args.score_mode,
         "threshold": args.threshold,
         "gap": args.gap,
