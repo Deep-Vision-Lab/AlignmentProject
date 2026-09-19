@@ -1012,6 +1012,17 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
             features2.ink.detach().cpu().numpy(),
         )
 
+        # Route and match acceptance are deliberately separate decisions.
+        # SW/NW chooses a monotonic candidate route using match_scores. A routed
+        # diagonal is accepted as a real match ONLY when its RAW cosine exceeds
+        # the requested threshold. This keeps threshold semantics independent
+        # of score_mode (raw/centered/mutual-z).
+        cosine_threshold = float(args.threshold)
+        cosine_match_mask = np.asarray(cosine > cosine_threshold, dtype=np.uint8)
+        trace_support_scores = np.where(
+            cosine_match_mask.astype(bool), 1.0, -1.0
+        ).astype(np.float32)
+
         # Local Smith-Waterman diagnostic on the SAME cosine/match-score matrix.
         # This is not used to replace the historical NW metrics yet. It answers
         # whether a visually good fused band is being missed only because global
@@ -1023,7 +1034,9 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
             return_traceback=True,
             match_scores=match_scores,
         )
-        sw_component = sw_component_path(sw_path, sw_traceback, match_scores)
+        sw_component = sw_component_path(
+            sw_path, sw_traceback, trace_support_scores
+        )
         sw_trace_steps = max(1, len(sw_traceback) - 1)
         sw_normalized = float(sw_score) / float(sw_trace_steps)
         sw_intervals1 = component_intervals_px(
@@ -1069,7 +1082,9 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
             component_path=sw_component,
             traceback=sw_traceback,
             heatmap_matrix=cosine,
-            heatmap_label="raw cosine similarity + local SW traceback",
+            heatmap_label=(
+                f"raw cosine + local SW route | accepted match iff cosine > {cosine_threshold:.2f}"
+            ),
             score=float(sw_score),
             normalized_score=float(sw_normalized),
             output=sw_cosine_output,
@@ -1114,7 +1129,7 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
         )
         full_path = list(result.pairs)
         traceback = nw_traceback_boundaries(result)
-        component_path = nw_component_path(result, match_scores)
+        component_path = nw_component_path(result, trace_support_scores)
 
         window_size = getattr(models.image_model, "window_size", None)
         stride = getattr(models.image_model, "stride", None)
@@ -1204,6 +1219,13 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
         np.save(output_dir / "nw_dp_scores.npy", dp_scores)
         np.save(output_dir / "cosine_similarity.npy", cosine)
         np.save(output_dir / "nw_match_scores.npy", match_scores)
+        np.save(output_dir / "cosine_match_mask.npy", cosine_match_mask)
+        np.savetxt(
+            output_dir / "cosine_match_mask.csv",
+            cosine_match_mask,
+            delimiter=",",
+            fmt="%d",
+        )
         _save_path_values(output_dir / "nw_trace_path_values.csv", result, cosine, match_scores)
 
         pred1 = _predicted_mask(arr1.shape, primary_intervals1)
@@ -1266,6 +1288,20 @@ def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
             "score_mode": resolved_mode,
             "score_clip": float(args.score_clip),
             "threshold": float(args.threshold),
+            "cosine_match_rule": "match iff raw cosine > threshold",
+            "trace_candidate_rule": (
+                "SW/NW determines candidate route; threshold determines accepted matches"
+            ),
+            "threshold_match_cells": int(cosine_match_mask.sum()),
+            "threshold_total_cells": int(cosine_match_mask.size),
+            "threshold_match_fraction": float(
+                cosine_match_mask.mean() if cosine_match_mask.size else 0.0
+            ),
+            "primary_route_candidate_matches": int(len(primary_full_path)),
+            "primary_route_threshold_matches": int(len(primary_component)),
+            "primary_route_threshold_mismatches": int(
+                max(0, len(primary_full_path) - len(primary_component))
+            ),
             "gap": float(args.gap),
             "line1_windows": int(cosine.shape[0]),
             "line2_windows": int(cosine.shape[1]),
