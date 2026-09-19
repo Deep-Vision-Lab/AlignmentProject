@@ -40,6 +40,7 @@ from zero_shot_preprocessing import (
     IMAGENET_MEAN,
     IMAGENET_STD,
     aspect_preserving_pad_with_metadata,
+    build_preprocessor,
     foreground_crop_with_metadata,
     foreground_detection_mask_with_metadata,
 )
@@ -128,6 +129,7 @@ def main():
         validate_paths=False,
     )
 
+    exact_preprocessor = build_preprocessor("real", training=False)
     report = []
     for sample_index, sample in enumerate(dataset.samples[: args.samples]):
         image_path = dataset._resolve(sample["line_image_path"])
@@ -147,6 +149,20 @@ def main():
             ),
             horizontal_jitter=0.0,
         )
+
+        # This is the exact factory used by the training DataLoader.  The
+        # diagnostic is invalid if the visualized stages ever diverge from it.
+        exact_model_input, exact_meta = exact_preprocessor.preprocess_with_metadata(
+            original
+        )
+        exact_match = np.array_equal(
+            np.asarray(model_input), np.asarray(exact_model_input)
+        )
+        if not exact_match:
+            raise RuntimeError(
+                "Diagnostic crop/resize does not match the real training "
+                "preprocessor byte-for-byte."
+            )
 
         box = (
             crop_meta["crop_left"],
@@ -192,6 +208,8 @@ def main():
                 "model_input_size": [model_input.width, model_input.height],
                 "binarization": False,
                 "appearance": "original_rgb_preserved",
+                "exact_training_preprocessor_match": bool(exact_match),
+                "exact_training_preprocessor_metadata": exact_meta,
                 "window_width": 32,
                 "window_stride": 16,
                 "window_count": len(starts),
