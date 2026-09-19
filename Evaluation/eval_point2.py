@@ -63,6 +63,11 @@ def main(argv=None):
     # figures/metrics separately as diagnostics.
     os.environ.setdefault("EVAL_COSINE_TRACE", "sw")
     os.environ.setdefault("EVAL_PRIMARY_ALIGNMENT", "sw")
+    # Threshold-gated Point-2 components are strict: a below-threshold routed
+    # cell is a mismatch and must break the accepted run rather than being
+    # silently bridged into the predicted region.
+    os.environ.setdefault("TRACE_COMPONENT_MAX_BRIDGE_STEPS", "0")
+    os.environ.setdefault("TRACE_COMPONENT_MAX_WINDOW_GAP", "0")
 
     from Evaluation import eval_yelda
 
