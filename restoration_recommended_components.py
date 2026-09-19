@@ -10,6 +10,7 @@ context from reconstructing a window on behalf of a collapsed local bottleneck.
 """
 from __future__ import annotations
 
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -24,6 +25,9 @@ class LocalContextFusion(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
         dim = int(dim)
+        self.dropout = nn.Dropout(
+            max(0.0, min(0.9, float(os.environ.get("FUSION_DROPOUT", "0.0"))))
+        )
         self.projection = nn.Sequential(
             nn.Linear(dim * 2, dim * 2),
             nn.GELU(),
@@ -36,7 +40,8 @@ class LocalContextFusion(nn.Module):
             raise ValueError(
                 f"local/context shape mismatch: {tuple(local.shape)} != {tuple(contextual.shape)}"
             )
-        fused = self.projection(torch.cat([local, contextual], dim=-1))
+        fused_input = self.dropout(torch.cat([local, contextual], dim=-1))
+        fused = self.projection(fused_input)
         return F.normalize(fused.float(), p=2, dim=-1).to(dtype=local.dtype)
 
 
