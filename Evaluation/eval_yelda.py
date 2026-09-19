@@ -55,12 +55,14 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--image-preprocessing",
-        choices=("original", "training", "tight", "cropped_1024"),
+        choices=("original", "training", "tight", "cropped_1024", "wide_side_padding"),
         default="training",
         help=(
             "cropped_1024: exact foreground crop followed by direct 1024x128 RGB resize "
             "with no padding; tight: foreground crop with variable width; "
-            "training: checkpoint geometry; original: full-image 1024x128 resize"
+            "training: checkpoint geometry; wide_side_padding: training-like aspect-preserving "
+            "geometry with guaranteed wide white left/right margins; "
+            "original: full-image 1024x128 resize"
         ),
     )
     parser.add_argument("--representation", choices=("joint", "primary", "local", "independent"), default="joint")
@@ -153,6 +155,22 @@ def configure_geometry(config, image_preprocessing="original"):
             "autocontrast": False,
             "auto_invert": False,
         }
+    if image_preprocessing == "wide_side_padding":
+        side_padding = int(os.environ.get("EVAL_SIDE_PADDING_PX", "144"))
+        return {
+            "line_height": 128,
+            "line_width": 1024,
+            "line_geometry_mode": "foreground-crop-wide-side-padding-rgb",
+            "color_mode": "RGB",
+            "binarize": False,
+            "crop_foreground": True,
+            "padding": True,
+            "preserve_aspect": True,
+            "min_side_padding_px": side_padding,
+            "target_ink_height_pixels": 92,
+            "autocontrast": False,
+            "auto_invert": False,
+        }
     if image_preprocessing == "tight":
         return {
             "line_height": 128,
@@ -176,7 +194,7 @@ def configure_geometry(config, image_preprocessing="original"):
     if image_preprocessing != "training":
         raise ValueError(
             f"Unknown image preprocessing: {image_preprocessing}; "
-            "use original, training, tight, or cropped_1024"
+            "use original, training, tight, cropped_1024, or wide_side_padding"
         )
     # Current runs record geometry; older preprocessing flags fall back to the
     # branch's Parameters.py. The resolved values are included in the report.
