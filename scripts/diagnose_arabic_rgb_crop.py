@@ -181,7 +181,37 @@ def main():
         overlay, starts = _window_overlay(model_input)
         overlay.save(output / f"{stem}_06_model_input_window_overlay.png")
         _windows_contact_sheet(model_input, starts).save(
-            output / f"{stem}_07_windows_contact_sheet.png"
+            output / f"{stem}_07_all_canvas_windows_contact_sheet.png"
+        )
+
+        content_left = int(resize_meta["offset_x"])
+        content_right = int(
+            resize_meta["offset_x"] + resize_meta["resized_width"]
+        )
+        packed_indices = [
+            index
+            for index, start in enumerate(starts)
+            if (start + 32) > content_left and start < content_right
+        ]
+        packed_starts = [starts[index] for index in packed_indices]
+        _windows_contact_sheet(model_input, packed_starts).save(
+            output / f"{stem}_08_model_sequence_windows_contact_sheet.png"
+        )
+
+        content_overlay = model_input.copy()
+        content_draw = ImageDraw.Draw(content_overlay)
+        content_draw.rectangle(
+            (
+                content_left,
+                int(resize_meta["offset_y"]),
+                max(content_left, content_right - 1),
+                int(resize_meta["offset_y"] + resize_meta["resized_height"] - 1),
+            ),
+            outline=(0, 180, 0),
+            width=2,
+        )
+        content_overlay.save(
+            output / f"{stem}_09_model_content_rectangle.png"
         )
 
         with text_path.open("r", encoding="utf-8") as handle:
@@ -212,7 +242,12 @@ def main():
                 "exact_training_preprocessor_metadata": exact_meta,
                 "window_width": 32,
                 "window_stride": 16,
-                "window_count": len(starts),
+                "canvas_window_count": len(starts),
+                "model_sequence_window_count": len(packed_starts),
+                "removed_outer_padding_windows": int(
+                    len(starts) - len(packed_starts)
+                ),
+                "model_sequence_window_indices": packed_indices,
                 "crop": crop_meta,
                 "detection": detection_meta,
                 "resize": resize_meta,
@@ -235,7 +270,8 @@ def main():
         print(
             f"  sample={row['sample_index']:03d} source={row['source_size']} "
             f"crop={row['crop_box']} cropped={row['cropped_size']} "
-            f"windows={row['window_count']}"
+            f"windows={row['canvas_window_count']} -> "
+            f"{row['model_sequence_window_count']} packed"
         )
 
 
