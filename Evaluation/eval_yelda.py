@@ -136,6 +136,10 @@ def balanced_pairs(pairs):
 
 
 def configure_geometry(config, image_preprocessing="original"):
+    # build_transform() is shared by several evaluators. Make the no-padding
+    # contract explicit so a tightly cropped variable-width line is not resized
+    # back to the historical fixed 1024-pixel canvas later.
+    os.environ["EVAL_TIGHT_NO_PADDING"] = "1" if image_preprocessing == "tight" else "0"
     if image_preprocessing == "tight":
         return {
             "line_height": 128,
