@@ -11,6 +11,7 @@ from statistics import median
 
 MODES = ("local", "context", "fused", "fused_wrong_context")
 METRICS = (
+    "normalized_primary_score",
     "normalized_nw_score",
     "mean_path_cosine",
     "mean_mask_iou",
@@ -166,13 +167,14 @@ def main():
     print(f"\nPoint-2 representation comparison: {args.label}")
     print("=" * 94)
     print(
-        f"{'representation':<22} {'NW':>10} {'path cos':>10} {'margin':>10} "
+        f"{'representation':<22} {'primary':>10} {'NW':>10} {'path cos':>10} {'margin':>10} "
         f"{'path z':>10} {'mask IoU':>10} {'components':>12} {'pairs':>8}"
     )
     for mode in MODES:
         metrics = report["representations"][mode]["metrics"]
         print(
             f"{mode:<22} "
+            f"{_fmt(metrics['normalized_primary_score']['mean']):>10} "
             f"{_fmt(metrics['normalized_nw_score']['mean']):>10} "
             f"{_fmt(metrics['mean_path_cosine']['mean']):>10} "
             f"{_fmt(metrics['path_cosine_margin']['mean']):>10} "
@@ -190,7 +192,7 @@ def main():
         "fused_minus_fused_wrong_context",
     ):
         print(name)
-        for metric in ("normalized_nw_score", "mean_path_cosine", "mean_mask_iou"):
+        for metric in ("normalized_primary_score", "normalized_nw_score", "mean_path_cosine", "mean_mask_iou"):
             item = report["paired_comparisons"][name][metric]
             print(
                 f"  {metric:<22} delta={_fmt(item['mean_delta'])} "
