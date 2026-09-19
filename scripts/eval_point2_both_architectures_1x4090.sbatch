@@ -112,5 +112,6 @@ export SIDE_PADDING_PX="${SIDE_PADDING_PX:-144}"
 export EVAL_SIDE_PADDING_PX="${SIDE_PADDING_PX}"
 export MIN_ALIGNED_WINDOWS="${MIN_ALIGNED_WINDOWS:-5}"
 export SCORE_MODE="${SCORE_MODE:-raw}"
+export THRESHOLD="${THRESHOLD:-0.45}"
 
 bash scripts/eval_point2_both_architectures.sh
