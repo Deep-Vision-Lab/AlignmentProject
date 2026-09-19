@@ -23,7 +23,6 @@ mkdir -p out Results/Diagnostics/ArabicDatasetRGBCrop
 
 [[ -x "${TORCHRUN_BIN}" ]] || { echo "ERROR: torchrun not executable: ${TORCHRUN_BIN}" >&2; exit 2; }
 [[ -d "${DATASET}" ]] || { echo "ERROR: ArabicDataset not found: ${DATASET}" >&2; exit 2; }
-[[ -f "${DATASET}/dataset_manifest_full_pairs.jsonl" ]] || { echo "ERROR: missing ${DATASET}/dataset_manifest_full_pairs.jsonl" >&2; exit 2; }
 [[ -f "${PRETRAINED_WEIGHTS}" ]] || { echo "ERROR: synthetic checkpoint not found: ${PRETRAINED_WEIGHTS}" >&2; exit 2; }
 
 # Use the architecture that produced the stronger fused Point-2 results.
@@ -233,7 +232,6 @@ REAL_SYNTHETIC_STYLE=0 REAL_BINARIZE=0 "${PYTHON_BIN}" scripts/diagnose_arabic_r
 echo "============================================================"
 echo "Real ArabicDataset fine-tune"
 echo "dataset              = ${DATASET}"
-echo "manifest             = ${DATASET}/dataset_manifest_full_pairs.jsonl"
 echo "mode                 = FINE-TUNE (never train from zero)"
 echo "initial weights      = ${PRETRAINED_WEIGHTS}"
 echo "backend              = resnet_token (ResNet18 -> TinyViT -> fused)"
