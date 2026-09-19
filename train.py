@@ -146,7 +146,12 @@ def _model_config(stride, args):
             "initialization": "pretrained-resnet18+pretrained-deit-tiny",
             "dataset_type": args.dataset_type,
             "dataset_path": args.data_dir,
-            "paired_visual_forward": "single-ddp-forward-then-split",
+            "training_sample_view": (
+                "independent-line-transcript"
+                if os.environ.get("REAL_INDEPENDENT_LINES", "0").strip().lower()
+                in {"1", "true", "yes", "on"}
+                else "paired-lines-single-ddp-forward"
+            ),
         }
     )
     install_training_stability(base, config, args.job_id)
