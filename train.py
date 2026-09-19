@@ -147,10 +147,15 @@ def _model_config(stride, args):
             "dataset_type": args.dataset_type,
             "dataset_path": args.data_dir,
             "training_sample_view": (
-                "independent-line-transcript"
-                if os.environ.get("REAL_INDEPENDENT_LINES", "0").strip().lower()
+                "all-page-lines-own-transcript"
+                if os.environ.get("REAL_ALL_PAGE_LINES", "0").strip().lower()
                 in {"1", "true", "yes", "on"}
-                else "paired-lines-single-ddp-forward"
+                else (
+                    "independent-line-transcript"
+                    if os.environ.get("REAL_INDEPENDENT_LINES", "0").strip().lower()
+                    in {"1", "true", "yes", "on"}
+                    else "paired-lines-single-ddp-forward"
+                )
             ),
         }
     )
