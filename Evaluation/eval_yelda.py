@@ -380,7 +380,10 @@ def main(argv=None):
                 "trace_components": component_settings(),
                 "split_population_source": "explicit_evaluation_argument_not_checkpoint",
                 "split_policy": "torch_60_20_20" if layout == "synthetic" and args.split != "all" else (
-                    "balanced_page_pair_groups" if layout == "real" else "manifest_or_all"),
+                    "all_page_lines_source_page_split"
+                    if layout == "real" and bool(models.config.get("real_all_page_lines", False))
+                    else ("balanced_page_pair_groups" if layout == "real" else "manifest_or_all")
+                ),
                 "mask_metrics_are_character_alignment_accuracy": False}
     write_json(destination / "run.json", metadata)
     print(
