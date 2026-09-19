@@ -1196,10 +1196,19 @@ def model_config(P):
         "architecture_revision": "pretrained-resnet18-deit-tiny-no-restoration",
         "training_stage": "align",
         "training_supervision": (
-            "positive+negative letter-dtw"
-            if float(P.restoration_contrastive_weight) > 0.0
-            and int(P.num_negatives) > 0
-            else "positive letter-dtw only"
+            (
+                "positive+negative letter-dtw + strong sigreg"
+                if float(P.restoration_contrastive_weight) > 0.0
+                and int(P.num_negatives) > 0
+                else "positive letter-dtw + strong sigreg"
+            )
+            if float(P.sigreg_weight) > 0.0
+            else (
+                "positive+negative letter-dtw"
+                if float(P.restoration_contrastive_weight) > 0.0
+                and int(P.num_negatives) > 0
+                else "positive letter-dtw only"
+            )
         ),
         "local_encoder_type": "resnet18",
         "restoration_local_encoder": "resnet18",
