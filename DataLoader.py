@@ -11,6 +11,7 @@ from torchvision import transforms
 
 from DataSet import TextLineModern
 from RealDataSet import (
+    ArabicAllPageLinesDataset,
     ArabicManifestIndependentLineDataset,
     ArabicManifestLinePairDataset,
 )
@@ -295,6 +296,18 @@ def _build_real_dataset(data_dir):
     }
     max_samples = int(num_samples) if int(num_samples) > 0 else None
     manifest_path = _real_manifest_path(data_dir)
+
+    all_page_lines = os.environ.get(
+        "REAL_ALL_PAGE_LINES", "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if all_page_lines:
+        return ArabicAllPageLinesDataset(
+            dataset_root=data_dir,
+            transform=real_transform,
+            text_key=text_key,
+            max_samples=max_samples,
+            validate_paths=validate_paths,
+        )
 
     independent_lines = os.environ.get(
         "REAL_INDEPENDENT_LINES", "0"
