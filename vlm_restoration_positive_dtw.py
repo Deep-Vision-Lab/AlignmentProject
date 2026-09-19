@@ -84,6 +84,10 @@ def apply_branch_config(P):
     P.real_binarize = bool(synthetic_style_real)
     P.real_binarize_autocontrast = bool(synthetic_style_real)
     P.real_augment = False
+    P.real_train_samples_per_epoch = _env_int(
+        "REAL_TRAIN_SAMPLES_PER_EPOCH",
+        int(getattr(P, "real_train_samples_per_epoch", 0)),
+    )
     P.zero_shot_preprocess = True
     P.zero_shot_preserve_aspect = True
     P.zero_shot_foreground_crop = True
