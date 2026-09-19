@@ -514,6 +514,30 @@ def attach_restoration_dtw_stages(model, P):
             stride=self.stride,
             use_flip=use_flip,
         )
+
+        # Remove OUTER artificial-padding windows from the semantic sequence.
+        # Internal blank gaps remain because token_valid marks the complete
+        # rectangle from first to last foreground extent.
+        if _env_flag("PACK_VALID_WINDOWS", False):
+            lengths = token_valid.sum(dim=1).to(dtype=torch.long)
+            max_length = max(1, int(lengths.max().item()))
+            packed_local = local.new_zeros(
+                (local.shape[0], max_length, local.shape[2])
+            )
+            packed_valid = torch.zeros(
+                (local.shape[0], max_length),
+                dtype=torch.bool,
+                device=local.device,
+            )
+            for batch_index in range(local.shape[0]):
+                selected = local[batch_index][token_valid[batch_index]]
+                length = int(selected.shape[0])
+                if length > 0:
+                    packed_local[batch_index, :length] = selected
+                    packed_valid[batch_index, :length] = True
+            local = packed_local
+            token_valid = packed_valid
+
         positional = local + self._position_tokens(local.shape[1]).to(
             dtype=local.dtype, device=local.device
         )
@@ -1100,6 +1124,7 @@ def model_config(P):
         "real_pair_labels_used_for_training": not _env_flag(
             "REAL_INDEPENDENT_LINES", False
         ),
+        "pack_valid_windows": _env_flag("PACK_VALID_WINDOWS", False),
         "real_output_polarity": (
             "white_ink_on_black"
             if _env_flag("REAL_SYNTHETIC_STYLE", False)
