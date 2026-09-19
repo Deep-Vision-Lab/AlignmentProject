@@ -94,8 +94,10 @@ export FORCE_DDP_STATIC_GRAPH=0
 export SPAN_DTW_BACKEND=torch
 export USE_LOCAL_HARD_NEGATIVES=0
 export USE_IMAGE_PAIR_CONTRASTIVE=0
-export TINY_VIT_DROPOUT="${TINY_VIT_DROPOUT:-0.10}"
-export FUSION_DROPOUT="${FUSION_DROPOUT:-0.10}"
+# Keep the pretrained Point-2 network behavior unchanged for the controlled
+# synthetic -> real transfer. Add regularization only in a later ablation.
+export TINY_VIT_DROPOUT="${TINY_VIT_DROPOUT:-0.0}"
+export FUSION_DROPOUT="${FUSION_DROPOUT:-0.0}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 export TOKENIZERS_PARALLELISM=false
@@ -130,6 +132,34 @@ if physical:
         "Expected the ResNet-token TinyViT synthetic checkpoint, but this checkpoint "
         "is the physical-window ablation."
     )
+
+expected_geometry = {
+    "line_width": 1024,
+    "line_height": 128,
+    "window_size": 32,
+    "stride": 16,
+    "vit_position_base_tokens": 63,
+}
+for key, expected in expected_geometry.items():
+    actual = config.get(key)
+    print(f"  {key:24s} = {actual}")
+    if actual is not None and int(actual) != int(expected):
+        raise SystemExit(
+            f"Synthetic checkpoint geometry mismatch for {key}: "
+            f"expected {expected}, got {actual}"
+        )
+
+if bool(config.get("synthetic_binarize", False)):
+    raise SystemExit(
+        "This fine-tune launcher expects the Point-2 RGB synthetic checkpoint "
+        "(synthetic_binarize=False)."
+    )
+if bool(config.get("pack_valid_windows", False)):
+    raise SystemExit(
+        "Synthetic checkpoint reports packed/rebased windows, but this launcher "
+        "is configured for the fixed 63-position Point-2 grid."
+    )
+print("  window semantics         = fixed 63-position grid; outer padding masked")
 PY
 
 "${PYTHON_BIN}" -m pytest -q \
