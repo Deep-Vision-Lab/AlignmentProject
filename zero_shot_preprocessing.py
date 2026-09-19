@@ -255,6 +255,7 @@ class ManuscriptLinePreprocessor:
         autocontrast=True,
         augment_probability=0.85,
         clean_probability=0.20,
+        white_ink_on_black=False,
     ):
         self.size = tuple(map(int, size))
         self.training = bool(training)
@@ -270,6 +271,7 @@ class ManuscriptLinePreprocessor:
         self.autocontrast = bool(autocontrast)
         self.augment_probability = float(augment_probability)
         self.clean_probability = float(clean_probability)
+        self.white_ink_on_black = bool(white_ink_on_black)
         if self.method not in {"otsu", "fixed", "random"}:
             raise ValueError("binarization method must be otsu, fixed, or random")
 
@@ -372,6 +374,16 @@ class ManuscriptLinePreprocessor:
         binary = np.where(gray > threshold, 255, 0).astype(np.uint8)
         if self.auto_invert and _border_mean(binary) < 127.5:
             binary = 255 - binary
+        # Synthetic-style real-data mode: normalize polarity only AFTER the
+        # foreground crop/geometry step. The ordinary canonical polarity above
+        # is black ink on white; invert once more so the network receives white
+        # handwriting on a black background, matching the requested synthetic
+        # appearance.
+        if self.white_ink_on_black:
+            binary = 255 - binary
+        metadata["white_ink_on_black"] = bool(self.white_ink_on_black)
+        metadata["background_value"] = 0 if self.white_ink_on_black else 255
+        metadata["ink_value"] = 255 if self.white_ink_on_black else 0
         return Image.fromarray(binary, mode="L").convert("RGB"), metadata
 
     def __call__(self, image: Image.Image) -> Image.Image:
@@ -380,6 +392,9 @@ class ManuscriptLinePreprocessor:
 
 def build_preprocessor(dataset_type: str, training: bool) -> ManuscriptLinePreprocessor:
     synthetic = str(dataset_type).lower() == "synthetic"
+    real_synthetic_style = (
+        not synthetic and env_flag("REAL_SYNTHETIC_STYLE", False)
+    )
     enabled = env_flag("ZERO_SHOT_PREPROCESS", True)
     if not enabled:
         return ManuscriptLinePreprocessor(
@@ -395,7 +410,11 @@ def build_preprocessor(dataset_type: str, training: bool) -> ManuscriptLinePrepr
         binarize=(
             env_flag("SYNTHETIC_BINARIZE", True)
             if synthetic
-            else env_flag("REAL_BINARIZE", True)
+            else (
+                True
+                if real_synthetic_style
+                else env_flag("REAL_BINARIZE", True)
+            )
         ),
         method=(
             os.environ.get("SYNTHETIC_BINARIZE_METHOD", "random")
@@ -410,10 +429,19 @@ def build_preprocessor(dataset_type: str, training: bool) -> ManuscriptLinePrepr
         preserve_aspect=env_flag("ZERO_SHOT_PRESERVE_ASPECT", True),
         crop_foreground=env_flag("ZERO_SHOT_FOREGROUND_CROP", True),
         target_ink_height_ratio=env_float("ZERO_SHOT_TARGET_INK_HEIGHT_RATIO", 0.72),
-        auto_invert=env_flag("REAL_BINARIZE_AUTO_INVERT", True),
-        autocontrast=env_flag("REAL_BINARIZE_AUTOCONTRAST", True),
+        auto_invert=(
+            True
+            if real_synthetic_style
+            else env_flag("REAL_BINARIZE_AUTO_INVERT", True)
+        ),
+        autocontrast=(
+            True
+            if real_synthetic_style
+            else env_flag("REAL_BINARIZE_AUTOCONTRAST", True)
+        ),
         augment_probability=env_float("SYNTHETIC_AUGMENT_PROBABILITY", 0.85),
         clean_probability=env_float("SYNTHETIC_CLEAN_PROBABILITY", 0.20),
+        white_ink_on_black=real_synthetic_style,
     )
 
 
