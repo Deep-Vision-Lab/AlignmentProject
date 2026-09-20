@@ -192,7 +192,7 @@ for key, expected in expected_geometry.items():
 
 if bool(config.get("synthetic_binarize", False)):
     raise SystemExit(
-        "This continuation launcher requires an RGB-compatible checkpoint "
+        "This continuation launcher accepts the previous RGB checkpoint and migrates "
         "(synthetic_binarize=False)."
     )
 if bool(config.get("pack_valid_windows", False)):
@@ -299,6 +299,14 @@ echo "Real ArabicDataset fine-tune"
 echo "dataset              = ${DATASET}"
 echo "mode                 = FINE-TUNE (never train from zero)"
 echo "initial weights      = ${PRETRAINED_WEIGHTS}"
+echo "approved pipeline     = XML 4-side crop -> grayscale -> scan augmentation -> 1ch ResNet18"
+echo "bbox crop             = ${REAL_BBOX_CROP} margin_ratio=${REAL_BBOX_MARGIN_RATIO} min_margin=${REAL_BBOX_MIN_MARGIN_PX}px"
+echo "visual channels       = ${VISUAL_INPUT_CHANNELS} (true grayscale=${VISUAL_GRAYSCALE})"
+echo "scan augmentation     = ${REAL_SCAN_AUGMENT} prob=${REAL_SCAN_AUGMENT_PROB}"
+echo "blur prob/radius      = ${REAL_SCAN_BLUR_PROB} / ${REAL_SCAN_BLUR_RADIUS_MIN}..${REAL_SCAN_BLUR_RADIUS_MAX}"
+echo "gaussian noise        = prob=${REAL_SCAN_GAUSSIAN_NOISE_PROB} std=${REAL_SCAN_GAUSSIAN_NOISE_STD_MIN}..${REAL_SCAN_GAUSSIAN_NOISE_STD_MAX}"
+echo "speckle               = prob=${REAL_SCAN_SPECKLE_PROB} fraction=${REAL_SCAN_SPECKLE_FRACTION}"
+echo "last partial batch    = DROP (${TRAIN_DROP_LAST})"
 echo "continuation change  = Strong SIGReg on pre-L2 fused valid windows"
 echo "SIGReg lambda        = ${SIGREG_LAMBDA}"
 echo "SIGReg sketch/knots  = ${SIGREG_SKETCH_DIM}/${SIGREG_NUM_KNOTS}"
