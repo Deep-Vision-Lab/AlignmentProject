@@ -22,6 +22,10 @@ from torchvision import transforms
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
+# Scalar approximation used when the branch is configured for true 1-channel
+# grayscale input.  It keeps the normalized range close to ImageNet.
+IMAGENET_GRAY_MEAN = (0.449,)
+IMAGENET_GRAY_STD = (0.226,)
 
 try:
     _BILINEAR = Image.Resampling.BILINEAR
@@ -890,7 +894,8 @@ def aspect_preserving_pad_with_metadata(
 ):
     """Resize once with one scale, then pad; never stretch windows independently."""
     target_h, target_w = map(int, size)
-    source = image.convert("RGB")
+    source_mode = "L" if image.mode == "L" else "RGB"
+    source = image.convert(source_mode)
     desired_h = max(8, int(round(target_h * float(target_ink_height_ratio))))
     scale = min(
         desired_h / max(1, source.height),
@@ -899,7 +904,11 @@ def aspect_preserving_pad_with_metadata(
     new_w = max(1, min(target_w, int(round(source.width * scale))))
     new_h = max(1, min(target_h, int(round(source.height * scale))))
     resized = source.resize((new_w, new_h), _BILINEAR)
-    canvas = Image.new("RGB", (target_w, target_h), color=(255, 255, 255))
+    canvas = Image.new(
+        source_mode,
+        (target_w, target_h),
+        color=255 if source_mode == "L" else (255, 255, 255),
+    )
     max_x = max(0, target_w - new_w)
     centered_x = max_x // 2
     jitter = int(round(max_x * max(0.0, float(horizontal_jitter))))
@@ -987,6 +996,7 @@ class ManuscriptLinePreprocessor:
         augment_probability=0.85,
         clean_probability=0.20,
         white_ink_on_black=False,
+        grayscale=False,
     ):
         self.size = tuple(map(int, size))
         self.training = bool(training)
@@ -1003,6 +1013,7 @@ class ManuscriptLinePreprocessor:
         self.augment_probability = float(augment_probability)
         self.clean_probability = float(clean_probability)
         self.white_ink_on_black = bool(white_ink_on_black)
+        self.grayscale = bool(grayscale)
         if self.method not in {"otsu", "fixed", "random"}:
             raise ValueError("binarization method must be otsu, fixed, or random")
 
@@ -1041,7 +1052,7 @@ class ManuscriptLinePreprocessor:
 
     def preprocess_with_metadata(self, image: Image.Image):
         """Return processed RGB plus crop/resize offsets for inverse mapping."""
-        work = image.convert("RGB")
+        work = image.convert("L" if self.grayscale else "RGB")
         metadata = {
             "source_width": int(work.width),
             "source_height": int(work.height),
@@ -1093,9 +1104,8 @@ class ManuscriptLinePreprocessor:
         )
 
         if not self.binarize:
-            # IMPORTANT: no autocontrast or grayscale conversion touches the
-            # actual model image. The mask used for cropping was temporary only.
-            return work.convert("RGB"), metadata
+            metadata["grayscale"] = bool(self.grayscale)
+            return work.convert("L" if self.grayscale else "RGB"), metadata
 
         gray_image = work.convert("L")
         if self.autocontrast:
@@ -1115,7 +1125,11 @@ class ManuscriptLinePreprocessor:
         metadata["white_ink_on_black"] = bool(self.white_ink_on_black)
         metadata["background_value"] = 0 if self.white_ink_on_black else 255
         metadata["ink_value"] = 255 if self.white_ink_on_black else 0
-        return Image.fromarray(binary, mode="L").convert("RGB"), metadata
+        metadata["grayscale"] = bool(self.grayscale)
+        result = Image.fromarray(binary, mode="L")
+        return (
+            result if self.grayscale else result.convert("RGB")
+        ), metadata
 
     def __call__(self, image: Image.Image) -> Image.Image:
         return self.preprocess_with_metadata(image)[0]
@@ -1134,6 +1148,7 @@ def build_preprocessor(dataset_type: str, training: bool) -> ManuscriptLinePrepr
             binarize=False,
             preserve_aspect=False,
             crop_foreground=False,
+            grayscale=env_flag("VISUAL_GRAYSCALE", False),
         )
     return ManuscriptLinePreprocessor(
         training=bool(training),
@@ -1173,15 +1188,19 @@ def build_preprocessor(dataset_type: str, training: bool) -> ManuscriptLinePrepr
         augment_probability=env_float("SYNTHETIC_AUGMENT_PROBABILITY", 0.85),
         clean_probability=env_float("SYNTHETIC_CLEAN_PROBABILITY", 0.20),
         white_ink_on_black=real_synthetic_style,
+        grayscale=env_flag("VISUAL_GRAYSCALE", False),
     )
 
 
 def build_tensor_transform(dataset_type: str, training: bool):
+    grayscale = env_flag("VISUAL_GRAYSCALE", False)
+    mean = IMAGENET_GRAY_MEAN if grayscale else IMAGENET_MEAN
+    std = IMAGENET_GRAY_STD if grayscale else IMAGENET_STD
     return transforms.Compose(
         [
             build_preprocessor(dataset_type, training),
             transforms.ToTensor(),
-            transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+            transforms.Normalize(mean, std),
         ]
     )
 
