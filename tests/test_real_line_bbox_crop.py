@@ -2,7 +2,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from real_line_bbox_crop import bbox_crop_line, line_horizontal_bounds
+from real_line_bbox_crop import bbox_crop_line, line_text_bounds
 
 
 XML = """<?xml version="1.0"?>
@@ -23,32 +23,42 @@ def _side(tmp_path: Path):
     return side
 
 
-def test_xml_line_bounds_map_directly_to_full_width_line_image(tmp_path):
+def test_xml_text_bounds_reconstruct_builder_vertical_padding(tmp_path):
     side = _side(tmp_path)
-    bounds, metadata = line_horizontal_bounds(
+
+    # First XML line has raw y=100..141 (height=41). Dataset builder adds
+    # int(0.25*41)=10px, so saved line is source y=90..151 => height 61.
+    bounds, metadata = line_text_bounds(
         side,
         line_index=1,
-        line_image_width=400,
-        margin_px=0,
-        line_image_height=80,
+        line_image_size=(400, 61),
+        margin_ratio=0.0,
+        minimum_margin_px=0,
     )
-    assert bounds == (100, 280)
-    assert metadata["xml_line_count"] == 2
-    assert metadata["scale_x"] == 1.0
+
+    assert bounds == (100, 10, 280, 51)
+    assert metadata["builder_saved_y1"] == 90
+    assert metadata["builder_saved_y2"] == 151
+    assert metadata["builder_vertical_pad"] == 10
+    assert metadata["all_four_sides_cropped"] if "all_four_sides_cropped" in metadata else True
 
 
-def test_bbox_crop_preserves_full_line_height_and_adds_safe_margin(tmp_path):
+def test_bbox_crop_removes_padding_on_all_four_sides_with_small_margin(tmp_path):
     side = _side(tmp_path)
-    line = Image.new("RGB", (400, 80), "white")
+    line = Image.new("RGB", (400, 61), "white")
     cropped, metadata = bbox_crop_line(
         line,
         side,
         line_index=1,
-        margin_ratio_of_line_height=0.20,
-        minimum_margin_px=8,
+        margin_ratio=0.05,
+        minimum_margin_px=2,
     )
-    # 20% of 80px = 16px: [100-16, 280+16].
-    assert cropped.size == (212, 80)
-    assert metadata["crop_left"] == 84
-    assert metadata["crop_right"] == 296
-    assert metadata["preserved_full_line_height"] is True
+
+    # Raw local box is x=100..280, y=10..51. 5% of 41px rounds to 2px.
+    assert metadata["crop_left"] == 98
+    assert metadata["crop_right"] == 282
+    assert metadata["crop_top"] == 8
+    assert metadata["crop_bottom"] == 53
+    assert cropped.size == (184, 45)
+    assert metadata["preserved_full_line_height"] is False
+    assert metadata["all_four_sides_cropped"] is True
