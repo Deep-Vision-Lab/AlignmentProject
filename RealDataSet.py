@@ -601,6 +601,63 @@ class ArabicAllPageLinesDataset(Dataset):
                 return self.transform(image)
             return image.copy()
 
+    @staticmethod
+    def _env_flag(name: str, default: bool = False) -> bool:
+        value = os.environ.get(name)
+        if value is None:
+            return bool(default)
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _prepare_line_image(self, sample, image: Image.Image) -> Image.Image:
+        """Prepare one real line without changing transcript/window order.
+
+        Deterministic order:
+          1) use source XML boxes to crop LEFT/RIGHT/TOP/BOTTOM padding;
+          2) convert to true one-channel grayscale when enabled.
+
+        Scan augmentation is deliberately excluded here so validation/test stay
+        clean. The training-only wrapper applies it after this step.
+        """
+        work = image.convert("RGB")
+        if self._env_flag("REAL_BBOX_CROP", False):
+            from real_line_bbox_crop import bbox_crop_line
+
+            line_idx = int(sample.get("line_idx", -1))
+            if line_idx <= 0:
+                raise ValueError(
+                    "REAL_BBOX_CROP requires a positive line_idx, got "
+                    f"{line_idx} for {sample.get('line_image_path')}"
+                )
+            side_dir = self._resolve(sample.get("page_dir", ""))
+            try:
+                work, _bbox_meta = bbox_crop_line(
+                    work,
+                    side_dir,
+                    line_idx,
+                    margin_ratio=float(
+                        os.environ.get("REAL_BBOX_MARGIN_RATIO", "0.05")
+                    ),
+                    minimum_margin_px=int(
+                        os.environ.get("REAL_BBOX_MIN_MARGIN_PX", "2")
+                    ),
+                )
+            except Exception:
+                if self._env_flag("REAL_BBOX_CROP_STRICT", True):
+                    raise
+
+        if self._env_flag("VISUAL_GRAYSCALE", False) or self._env_flag(
+            "REAL_GRAYSCALE", False
+        ):
+            work = work.convert("L")
+        return work
+
+    def read_prepared_pil(self, idx):
+        sample = self.samples[int(idx)]
+        path = self._resolve(sample["line_image_path"])
+        with Image.open(path) as image:
+            prepared = self._prepare_line_image(sample, image)
+        return self._read_text(sample["text_path"]), prepared.copy()
+
     def _validate_all_paths(self) -> None:
         for sample_idx, sample in enumerate(self.samples):
             image = self._resolve(sample["line_image_path"])
