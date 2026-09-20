@@ -146,6 +146,11 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export TORCH_COMPILE_VISUAL=0
 export GRADIENT_ACCUMULATION_STEPS=1
 export TRAIN_DROP_LAST=1
+# BF16 keeps mixed-precision throughput/memory while avoiding FP16 overflow
+# from the strong SIGReg backward signal. GradScaler is disabled automatically
+# when AMP_DTYPE=bf16.
+export USE_AMP=1
+export AMP_DTYPE="${AMP_DTYPE:-bf16}"
 
 "${PYTHON_BIN}" -m py_compile \
   train.py model_backend.py vlm_restoration_positive_dtw.py \
@@ -308,6 +313,7 @@ echo "blur prob/radius      = ${REAL_SCAN_BLUR_PROB} / ${REAL_SCAN_BLUR_RADIUS_M
 echo "gaussian noise        = prob=${REAL_SCAN_GAUSSIAN_NOISE_PROB} std=${REAL_SCAN_GAUSSIAN_NOISE_STD_MIN}..${REAL_SCAN_GAUSSIAN_NOISE_STD_MAX}"
 echo "speckle               = prob=${REAL_SCAN_SPECKLE_PROB} fraction=${REAL_SCAN_SPECKLE_FRACTION}"
 echo "last partial batch    = DROP (${TRAIN_DROP_LAST})"
+echo "AMP dtype             = ${AMP_DTYPE} (GradScaler off for bf16)"
 echo "continuation change  = Strong SIGReg on pre-L2 fused valid windows"
 echo "SIGReg lambda        = ${SIGREG_LAMBDA}"
 echo "SIGReg sketch/knots  = ${SIGREG_SKETCH_DIM}/${SIGREG_NUM_KNOTS}"
