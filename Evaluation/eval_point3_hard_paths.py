@@ -445,34 +445,42 @@ def _extract_window_images(
     return windows
 
 
-def _plot_window_image_axis(ax, window_images):
-    """Use actual window thumbnails as the x-axis, one per heatmap column."""
+def _plot_window_image_axis(
+    ax,
+    window_images,
+    *,
+    thumb_width_in_columns: float = 0.62,
+    thumb_height: int = 72,
+):
+    """Show one small, separated window image centered under each DTW column."""
     n_windows = len(window_images)
     if n_windows == 0:
         ax.axis("off")
         return
 
+    half_width = float(thumb_width_in_columns) / 2.0
     for column, crop in enumerate(window_images):
-        pixels = np.asarray(crop.convert("L"))
+        pixels = np.asarray(crop.convert("L").resize((24, int(thumb_height))))
         ax.imshow(
             pixels,
             cmap="gray",
             vmin=0,
             vmax=255,
             aspect="auto",
-            extent=(column - 0.5, column + 0.5, 0.0, 1.0),
             interpolation="nearest",
+            extent=(column - half_width, column + half_width, 1.0, 0.0),
         )
 
-    # Draw only separators; no text labels.
+    # Faint cell boundaries preserve exact one-to-one alignment while the
+    # narrower thumbnails leave visible white space between windows.
     for boundary in np.arange(-0.5, n_windows + 0.5, 1.0):
-        ax.axvline(boundary, linewidth=0.35, alpha=0.50)
+        ax.axvline(boundary, linewidth=0.30, alpha=0.25)
 
     ax.set_xticks([])
     ax.set_yticks([])
     ax.set_ylabel("window\nimage", rotation=0, labelpad=28, va="center")
     ax.set_xlim(n_windows - 0.5, -0.5)
-    ax.set_ylim(0.0, 1.0)
+    ax.set_ylim(1.0, 0.0)
 
 def save_letter_dtw_overview(
     line1,
@@ -482,33 +490,30 @@ def save_letter_dtw_overview(
     output: Path,
     title: str,
 ) -> None:
-    """Full line, DTW heatmap, then its exactly aligned window-image x-axis."""
-    max_windows = max(int(result1["windows"]), int(result2["windows"]))
-    figure_width = max(28.0, 0.50 * float(max_windows))
-    fig = plt.figure(figsize=(figure_width, 20))
+    """Save one compact Line-1 DTW diagnostic with separated window thumbnails."""
+    del line2, result2
 
-    # Dedicated second column for colorbars.  This is important: previously
-    # fig.colorbar(..., ax=ax_heat) shrank only the heatmap axis, while the
-    # window-image strip kept the full figure width, so window thumbnails no
-    # longer lined up with their DTW columns.
+    max_windows = int(result1["windows"])
+    figure_width = max(24.0, 0.38 * float(max_windows))
+    fig = plt.figure(figsize=(figure_width, 10))
+
     grid = fig.add_gridspec(
-        6,
+        3,
         2,
-        width_ratios=[1.0, 0.025],
-        height_ratios=[0.9, 5.0, 1.9, 0.9, 5.0, 1.9],
-        hspace=0.08,
+        width_ratios=[1.0, 0.03],
+        height_ratios=[0.9, 5.0, 1.6],
+        hspace=0.10,
         wspace=0.04,
     )
 
-    # ---------------- line 1 ----------------
-    ax_line1 = fig.add_subplot(grid[0, 0])
-    ax_line1.imshow(np.asarray(line1.convert("L")), cmap="gray", vmin=0, vmax=255)
-    ax_line1.set_title("Line 1 — exact grayscale evaluation input")
-    ax_line1.axis("off")
+    ax_line = fig.add_subplot(grid[0, 0])
+    ax_line.imshow(np.asarray(line1.convert("L")), cmap="gray", vmin=0, vmax=255)
+    ax_line.set_title("Line 1 — exact grayscale evaluation input")
+    ax_line.axis("off")
 
-    ax_heat1 = fig.add_subplot(grid[1, 0])
-    heat1 = _plot_letter_panel(
-        ax_heat1,
+    ax_heat = fig.add_subplot(grid[1, 0])
+    heat = _plot_letter_panel(
+        ax_heat,
         result1,
         (
             "Line 1: visual-window images × transcript letters | "
@@ -516,48 +521,25 @@ def save_letter_dtw_overview(
         ),
     )
 
-    cax1 = fig.add_subplot(grid[1, 1])
+    cax = fig.add_subplot(grid[1, 1])
     fig.colorbar(
-        heat1,
-        cax=cax1,
+        heat,
+        cax=cax,
         label="training DTW cell cost + position prior (lower is better)",
     )
 
-    # Same grid column and shared x-axis => thumbnail i is exactly under
-    # heatmap column i.
-    ax_windows1 = fig.add_subplot(grid[2, 0], sharex=ax_heat1)
-    _plot_window_image_axis(ax_windows1, result1["window_images"])
-
-    # ---------------- line 2 ----------------
-    ax_line2 = fig.add_subplot(grid[3, 0])
-    ax_line2.imshow(np.asarray(line2.convert("L")), cmap="gray", vmin=0, vmax=255)
-    ax_line2.set_title("Line 2 — exact grayscale evaluation input")
-    ax_line2.axis("off")
-
-    ax_heat2 = fig.add_subplot(grid[4, 0])
-    heat2 = _plot_letter_panel(
-        ax_heat2,
-        result2,
-        (
-            "Line 2: visual-window images × transcript letters | "
-            f"mean hard-path cost={result2['mean_path_cost']:.3f}"
-        ),
+    ax_windows = fig.add_subplot(grid[2, 0], sharex=ax_heat)
+    _plot_window_image_axis(
+        ax_windows,
+        result1["window_images"],
+        thumb_width_in_columns=0.62,
+        thumb_height=72,
     )
 
-    cax2 = fig.add_subplot(grid[4, 1])
-    fig.colorbar(
-        heat2,
-        cax=cax2,
-        label="training DTW cell cost + position prior (lower is better)",
-    )
-
-    ax_windows2 = fig.add_subplot(grid[5, 0], sharex=ax_heat2)
-    _plot_window_image_axis(ax_windows2, result2["window_images"])
-
-    # Keep unused colorbar-column cells empty so nothing shifts the main axes.
-    for row in (0, 2, 3, 5):
-        empty = fig.add_subplot(grid[row, 1])
-        empty.axis("off")
+    empty_top = fig.add_subplot(grid[0, 1])
+    empty_top.axis("off")
+    empty_bottom = fig.add_subplot(grid[2, 1])
+    empty_bottom.axis("off")
 
     fig.suptitle(title, fontsize=14)
     fig.savefig(output, dpi=180, bbox_inches="tight")
