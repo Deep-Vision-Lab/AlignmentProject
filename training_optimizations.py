@@ -738,7 +738,15 @@ def optimized_train(train_module):
             T_max=args.epochs,
             eta_min=args.learning_rate * 0.01,
         )
-        scaler = GradScaler(enabled=train_module.USE_AMP)
+        scaler = GradScaler(
+            enabled=bool(
+                getattr(
+                    train_module,
+                    "USE_GRAD_SCALER",
+                    train_module.USE_AMP,
+                )
+            )
+        )
         start_epoch = 0
         if resume_payload is not None:
             optimizer.load_state_dict(resume_payload["optimizer_state_dict"])
