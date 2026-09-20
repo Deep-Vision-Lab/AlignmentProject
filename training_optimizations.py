@@ -839,7 +839,7 @@ def optimized_train(train_module):
                 # Keep immutable epoch snapshots for longitudinal evaluation.
                 # Unlike model_latest.pth these are never overwritten, so the
                 # same held-out sample can be compared at epochs 5,10,... .
-                if (epoch + 1) % weights_every == 0 or final_epoch:
+                if (epoch + 1) == 1 or (epoch + 1) % weights_every == 0 or final_epoch:
                     epoch_payload = dict(base_payload)
                     epoch_payload["epoch"] = int(epoch)
                     atomic_torch_save(
