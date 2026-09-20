@@ -1423,12 +1423,32 @@ def model_config(P):
         "real_output_polarity": (
             "white_ink_on_black"
             if _env_flag("REAL_SYNTHETIC_STYLE", False)
-            else "source_rgb"
+            else (
+                "source_grayscale"
+                if bool(P.visual_grayscale)
+                else "source_rgb"
+            )
         ),
         "synthetic_binarize": False,
         "zero_shot_preprocess": True,
-        "zero_shot_preserve_aspect": True,
-        "zero_shot_foreground_crop": True,
+        "zero_shot_preserve_aspect": _env_flag(
+            "ZERO_SHOT_PRESERVE_ASPECT", True
+        ),
+        "zero_shot_foreground_crop": _env_flag(
+            "ZERO_SHOT_FOREGROUND_CROP", True
+        ),
+        "target_ink_height_ratio": _env_float(
+            "ZERO_SHOT_TARGET_INK_HEIGHT_RATIO", 0.72
+        ),
+        "line_geometry_mode": os.environ.get(
+            "LINE_GEOMETRY_MODE",
+            (
+                "xml-bbox-gray-aspect-preserving"
+                if bool(P.visual_grayscale)
+                and _env_flag("REAL_BBOX_CROP", False)
+                else "crop-aspect-preserving-rgb"
+            ),
+        ),
         "keep_paired_lines_for_independent_training": bool(
             P.keep_paired_lines_for_independent_training
         ),
