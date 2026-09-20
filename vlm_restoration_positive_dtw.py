@@ -1351,7 +1351,10 @@ def install_training_objective(train_module):
             "--output-dir", str(nw_output),
             *common,
         ]
-        subprocess.run(nw_cmd, check=True, env=env)
+        nw_env = dict(env)
+        nw_env["EVAL_COSINE_TRACE"] = "nw"
+        nw_env["EVAL_PRIMARY_ALIGNMENT"] = "nw"
+        subprocess.run(nw_cmd, check=True, env=nw_env)
 
         dtw_cmd = [
             sys.executable,
