@@ -176,6 +176,21 @@ export AMP_DTYPE="${AMP_DTYPE:-bf16}"
 bash -n scripts/eval_point2_fused_visual_20_1x4090.sbatch
 
 "${PYTHON_BIN}" - <<'PY'
+from Evaluation import eval_point3_hard_paths as point3
+
+required = (
+    "_transcript_path_for_line",
+    "_hard_letter_dtw_path",
+    "_letter_dtw_side",
+    "save_letter_dtw_overview",
+)
+missing = [name for name in required if not callable(getattr(point3, name, None))]
+if missing:
+    raise SystemExit(f"Point-3 DTW evaluator preflight missing callables: {missing}")
+print("Point-3 letter-DTW evaluator preflight: OK")
+PY
+
+"${PYTHON_BIN}" - <<'PY'
 import torch
 print("BF16 preflight:")
 print("  cuda_available =", torch.cuda.is_available())
@@ -262,7 +277,8 @@ PY
   tests/test_real_all_page_gray_pipeline.py \
   tests/test_real_independent_lines.py \
   tests/test_resnet18_packed_windows.py \
-  tests/test_restoration_positive_dtw.py
+  tests/test_restoration_positive_dtw.py \
+  tests/test_point3_letter_dtw.py
 
 DATASET="${DATASET}" "${PYTHON_BIN}" - <<'PY'
 import math
