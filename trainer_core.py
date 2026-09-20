@@ -79,7 +79,20 @@ except ImportError:
 
 
 USE_AMP = torch.cuda.is_available() and os.environ.get("USE_AMP", "1") == "1"
-AMP_DTYPE = torch.float16
+_AMP_DTYPE_NAME = os.environ.get("AMP_DTYPE", "fp16").strip().lower()
+if _AMP_DTYPE_NAME in {"bf16", "bfloat16"}:
+    AMP_DTYPE = torch.bfloat16
+elif _AMP_DTYPE_NAME in {"fp16", "float16", "half"}:
+    AMP_DTYPE = torch.float16
+else:
+    raise ValueError(
+        "AMP_DTYPE must be one of fp16/float16 or bf16/bfloat16, got "
+        f"{_AMP_DTYPE_NAME!r}"
+    )
+# FP16 benefits from dynamic loss scaling. BF16 already has FP32-like exponent
+# range, so scaling is unnecessary and can itself amplify otherwise finite
+# gradients into overflow.
+USE_GRAD_SCALER = bool(USE_AMP and AMP_DTYPE == torch.float16)
 _PROCESS = psutil.Process(os.getpid()) if psutil is not None else None
 _BATCH_COUNTER = 0
 
@@ -1453,7 +1466,7 @@ def train(
         T_max=args.epochs,
         eta_min=args.learning_rate * 0.01,
     )
-    scaler = GradScaler(enabled=USE_AMP)
+    scaler = GradScaler(enabled=USE_GRAD_SCALER)
     start_epoch = 0
     if resume_payload is not None:
         optimizer.load_state_dict(resume_payload["optimizer_state_dict"])
