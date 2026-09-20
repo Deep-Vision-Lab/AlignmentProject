@@ -14,13 +14,13 @@ set -euo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-/home/ahmedmas/BGU-Lab/AlignmentProject}"
 PYTHON_BIN="${PYTHON_BIN:-${HOME}/.conda/envs/manucripts_align/bin/python}"
-DATASET="${DATASET:-${PROJECT_DIR}/DataSet/Synthetic63}"
+DATASET="${DATASET:-${PROJECT_DIR}/DataSet/ArabicDataset}"
 WEIGHTS="${WEIGHTS:-${PROJECT_DIR}/Weights/res18_tinyvit_point2/model_latest.pth}"
 N_SAMPLES="${N_SAMPLES:-20}"
 START_INDEX="${START_INDEX:-1}"
 THRESHOLD="${THRESHOLD:-0.10}"
 CROP_MODE="${CROP_MODE:-vertical_borders}"
-IMAGE_PREPROCESSING="${IMAGE_PREPROCESSING:-wide_side_padding}"
+IMAGE_PREPROCESSING="${IMAGE_PREPROCESSING:-training}"
 SIDE_PADDING_PX="${SIDE_PADDING_PX:-144}"
 TAG="${TAG:-$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_DIR}/Results/Evaluation/Point2/fused_visual_20_${TAG}}"
@@ -94,12 +94,35 @@ if [[ "${CUDA_RC}" -ne 0 ]]; then
   exit "${CUDA_RC}"
 fi
 
+# Evaluation must match the deterministic part of the real training pipeline:
+# XML PartOfWord bbox crop on all four sides -> grayscale -> aspect-preserving
+# 1024x128 canvas -> 1-channel ResNet18.  Stochastic scan augmentation is
+# deliberately disabled so the same held-out sample is identical at every epoch.
 export EVAL_SIDE_PADDING_PX="${SIDE_PADDING_PX}"
 export ZERO_SHOT_CROP_MODE="${CROP_MODE}"
+export DATASET_TYPE=real
+export LINE_HEIGHT=128
+export LINE_WIDTH=1024
+export PACK_VALID_WINDOWS=0
 export REAL_SYNTHETIC_STYLE=0
 export REAL_BINARIZE=0
 export REAL_BINARIZE_AUTO_INVERT=0
 export REAL_BINARIZE_AUTOCONTRAST=0
+export REAL_AUGMENT=0
+export REAL_SCAN_AUGMENT=0
+export VISUAL_INPUT_CHANNELS=1
+export VISUAL_GRAYSCALE=1
+export REAL_GRAYSCALE=1
+export REAL_BBOX_CROP=1
+export REAL_BBOX_CROP_STRICT=1
+export REAL_BBOX_MARGIN_RATIO="${REAL_BBOX_MARGIN_RATIO:-0.05}"
+export REAL_BBOX_MIN_MARGIN_PX="${REAL_BBOX_MIN_MARGIN_PX:-2}"
+export ZERO_SHOT_PREPROCESS=1
+export ZERO_SHOT_FOREGROUND_CROP=0
+export ZERO_SHOT_PRESERVE_ASPECT=1
+export ZERO_SHOT_SOURCE_GEOMETRY=0
+export ZERO_SHOT_TARGET_INK_HEIGHT_RATIO="${ZERO_SHOT_TARGET_INK_HEIGHT_RATIO:-0.72}"
+export LINE_GEOMETRY_MODE=xml-bbox-gray-aspect-preserving
 
 echo "============================================================"
 echo "Point-2 fused-only visual inspection"
@@ -108,6 +131,11 @@ echo "samples           = ${N_SAMPLES}"
 echo "start_index       = ${START_INDEX}"
 echo "representation    = fused"
 echo "preprocessing     = ${IMAGE_PREPROCESSING}"
+echo "input pipeline    = XML 4-side bbox -> grayscale -> 1024x128 aspect-preserved"
+echo "visual channels   = ${VISUAL_INPUT_CHANNELS}"
+echo "bbox crop         = ${REAL_BBOX_CROP} margin_ratio=${REAL_BBOX_MARGIN_RATIO} min=${REAL_BBOX_MIN_MARGIN_PX}px"
+echo "scan augmentation = ${REAL_SCAN_AUGMENT} (must stay 0 for deterministic eval)"
+echo "geometry mode     = ${LINE_GEOMETRY_MODE}"
 echo "side padding px   = ${SIDE_PADDING_PX}"
 echo "crop mode         = ${ZERO_SHOT_CROP_MODE}"
 echo "cosine threshold  = ${THRESHOLD}"
