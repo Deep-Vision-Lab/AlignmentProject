@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare current detector crop with source-XML line-bbox crop."""
+"""Preview source-XML four-sided crop and grayscale model input."""
 from __future__ import annotations
 
 import argparse
@@ -12,10 +12,7 @@ from PIL import Image, ImageDraw
 
 from RealDataSet import ArabicAllPageLinesDataset
 from real_line_bbox_crop import bbox_crop_line
-from zero_shot_preprocessing import (
-    foreground_crop_with_metadata,
-    aspect_preserving_pad_with_metadata,
-)
+from zero_shot_preprocessing import aspect_preserving_pad_with_metadata
 
 
 def _stack(images, labels, width=1024):
@@ -25,7 +22,10 @@ def _stack(images, labels, width=1024):
         scale = min(1.0, width / max(1, im.width))
         if scale != 1.0:
             im = im.resize(
-                (max(1, int(round(im.width * scale))), max(1, int(round(im.height * scale)))),
+                (
+                    max(1, int(round(im.width * scale))),
+                    max(1, int(round(im.height * scale))),
+                ),
                 Image.Resampling.BILINEAR,
             )
         row = Image.new("RGB", (width, im.height + 28), "white")
@@ -46,11 +46,12 @@ def main():
     parser.add_argument("--output-dir", default="Results/Diagnostics/RealBBoxCrop")
     parser.add_argument("--samples", type=int, default=12)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--margin-ratio", type=float, default=0.20)
+    parser.add_argument("--margin-ratio", type=float, default=0.05)
     args = parser.parse_args()
 
-    os.environ.setdefault("ZERO_SHOT_CROP_MODE", "vertical_borders")
-    dataset = ArabicAllPageLinesDataset(args.dataset, transform=None, validate_paths=False)
+    dataset = ArabicAllPageLinesDataset(
+        args.dataset, transform=None, validate_paths=False
+    )
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
 
@@ -78,8 +79,8 @@ def main():
                 original,
                 side_dir,
                 int(sample["line_idx"]),
-                margin_ratio_of_line_height=args.margin_ratio,
-                minimum_margin_px=8,
+                margin_ratio=args.margin_ratio,
+                minimum_margin_px=2,
             )
         except Exception as exc:
             summary.append(
@@ -92,16 +93,9 @@ def main():
             )
             continue
 
-        current_crop, current_meta = foreground_crop_with_metadata(original)
-
-        bbox_input, bbox_resize = aspect_preserving_pad_with_metadata(
-            bbox_crop,
-            size=(128, 1024),
-            target_ink_height_ratio=0.72,
-            horizontal_jitter=0.0,
-        )
-        current_input, current_resize = aspect_preserving_pad_with_metadata(
-            current_crop,
+        grayscale = bbox_crop.convert("L")
+        model_input, resize_meta = aspect_preserving_pad_with_metadata(
+            grayscale,
             size=(128, 1024),
             target_ink_height_ratio=0.72,
             horizontal_jitter=0.0,
@@ -110,26 +104,30 @@ def main():
         overlay = original.copy()
         draw = ImageDraw.Draw(overlay)
         left = int(bbox_meta["crop_left"])
+        top = int(bbox_meta["crop_top"])
         right = int(bbox_meta["crop_right"]) - 1
-        draw.rectangle((left, 0, right, original.height - 1), outline=(255, 0, 0), width=4)
+        bottom = int(bbox_meta["crop_bottom"]) - 1
+        draw.rectangle((left, top, right, bottom), outline=(255, 0, 0), width=4)
 
         selected += 1
-        sample_dir = output / f"sample_{selected:02d}_{sample['source_pair_id']}_{sample['side']}_line_{sample['line_idx']:02d}"
+        sample_dir = output / (
+            f"sample_{selected:02d}_{sample['source_pair_id']}_"
+            f"{sample['side']}_line_{sample['line_idx']:02d}"
+        )
         sample_dir.mkdir(parents=True, exist_ok=True)
-        original.save(sample_dir / "original_line.png")
-        overlay.save(sample_dir / "bbox_overlay.png")
-        bbox_crop.save(sample_dir / "bbox_crop.png")
-        current_crop.save(sample_dir / "current_detector_crop.png")
-        bbox_input.save(sample_dir / "bbox_model_input.png")
-        current_input.save(sample_dir / "current_model_input.png")
+        original.save(sample_dir / "01_original_line.png")
+        overlay.save(sample_dir / "02_four_side_bbox_overlay.png")
+        bbox_crop.save(sample_dir / "03_four_side_bbox_crop_rgb_reference.png")
+        grayscale.save(sample_dir / "04_grayscale_crop.png")
+        model_input.save(sample_dir / "05_grayscale_model_input.png")
         _stack(
-            [overlay, current_crop, bbox_crop, current_input, bbox_input],
+            [original, overlay, bbox_crop, grayscale, model_input],
             [
-                "XML bbox overlay on original line",
-                "current detector crop",
-                "XML bbox crop",
-                "current detector -> model input",
-                "XML bbox -> model input",
+                "1 original saved line (contains dataset padding)",
+                "2 XML text envelope: all four sides",
+                "3 four-side crop",
+                "4 true grayscale crop",
+                "5 grayscale 1024x128 model canvas",
             ],
         ).save(sample_dir / "comparison.png")
 
@@ -140,16 +138,12 @@ def main():
             "line_idx": int(sample["line_idx"]),
             "image": str(image_path),
             "status": "ok",
-            "original_width": int(original.width),
-            "current_crop_width": int(current_crop.width),
-            "bbox_crop_width": int(bbox_crop.width),
-            "current_width_fraction": float(current_crop.width / original.width),
-            "bbox_width_fraction": float(bbox_crop.width / original.width),
-            "current_crop_mode": current_meta.get("crop_mode"),
-            "current_crop_detector": current_meta.get("crop_detector"),
+            "original_size": list(original.size),
+            "bbox_crop_size": list(bbox_crop.size),
+            "grayscale_mode": grayscale.mode,
+            "model_input_mode": model_input.mode,
             "bbox": bbox_meta,
-            "bbox_resize": bbox_resize,
-            "current_resize": current_resize,
+            "resize": resize_meta,
         }
         (sample_dir / "metadata.json").write_text(
             json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -159,7 +153,7 @@ def main():
     (output / "summary.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    print(f"Wrote {selected} bbox-crop comparisons to {output}")
+    print(f"Wrote {selected} four-sided grayscale crop previews to {output}")
 
 
 if __name__ == "__main__":
