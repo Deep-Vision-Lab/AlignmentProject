@@ -482,24 +482,31 @@ def save_letter_dtw_overview(
     output: Path,
     title: str,
 ) -> None:
-    """Full line, then DTW heatmap, then its actual window-image x-axis."""
+    """Full line, DTW heatmap, then its exactly aligned window-image x-axis."""
     max_windows = max(int(result1["windows"]), int(result2["windows"]))
     figure_width = max(28.0, 0.50 * float(max_windows))
     fig = plt.figure(figsize=(figure_width, 20))
 
+    # Dedicated second column for colorbars.  This is important: previously
+    # fig.colorbar(..., ax=ax_heat) shrank only the heatmap axis, while the
+    # window-image strip kept the full figure width, so window thumbnails no
+    # longer lined up with their DTW columns.
     grid = fig.add_gridspec(
         6,
-        1,
+        2,
+        width_ratios=[1.0, 0.025],
         height_ratios=[0.9, 5.0, 1.9, 0.9, 5.0, 1.9],
         hspace=0.08,
+        wspace=0.04,
     )
 
-    ax_line1 = fig.add_subplot(grid[0])
+    # ---------------- line 1 ----------------
+    ax_line1 = fig.add_subplot(grid[0, 0])
     ax_line1.imshow(np.asarray(line1.convert("L")), cmap="gray", vmin=0, vmax=255)
     ax_line1.set_title("Line 1 — exact grayscale evaluation input")
     ax_line1.axis("off")
 
-    ax_heat1 = fig.add_subplot(grid[1])
+    ax_heat1 = fig.add_subplot(grid[1, 0])
     heat1 = _plot_letter_panel(
         ax_heat1,
         result1,
@@ -508,22 +515,26 @@ def save_letter_dtw_overview(
             f"mean hard-path cost={result1['mean_path_cost']:.3f}"
         ),
     )
+
+    cax1 = fig.add_subplot(grid[1, 1])
     fig.colorbar(
         heat1,
-        ax=ax_heat1,
+        cax=cax1,
         label="training DTW cell cost + position prior (lower is better)",
     )
 
-    # This is the x-axis for the heatmap above: one image per heatmap column.
-    ax_windows1 = fig.add_subplot(grid[2], sharex=ax_heat1)
+    # Same grid column and shared x-axis => thumbnail i is exactly under
+    # heatmap column i.
+    ax_windows1 = fig.add_subplot(grid[2, 0], sharex=ax_heat1)
     _plot_window_image_axis(ax_windows1, result1["window_images"])
 
-    ax_line2 = fig.add_subplot(grid[3])
+    # ---------------- line 2 ----------------
+    ax_line2 = fig.add_subplot(grid[3, 0])
     ax_line2.imshow(np.asarray(line2.convert("L")), cmap="gray", vmin=0, vmax=255)
     ax_line2.set_title("Line 2 — exact grayscale evaluation input")
     ax_line2.axis("off")
 
-    ax_heat2 = fig.add_subplot(grid[4])
+    ax_heat2 = fig.add_subplot(grid[4, 0])
     heat2 = _plot_letter_panel(
         ax_heat2,
         result2,
@@ -532,14 +543,21 @@ def save_letter_dtw_overview(
             f"mean hard-path cost={result2['mean_path_cost']:.3f}"
         ),
     )
+
+    cax2 = fig.add_subplot(grid[4, 1])
     fig.colorbar(
         heat2,
-        ax=ax_heat2,
+        cax=cax2,
         label="training DTW cell cost + position prior (lower is better)",
     )
 
-    ax_windows2 = fig.add_subplot(grid[5], sharex=ax_heat2)
+    ax_windows2 = fig.add_subplot(grid[5, 0], sharex=ax_heat2)
     _plot_window_image_axis(ax_windows2, result2["window_images"])
+
+    # Keep unused colorbar-column cells empty so nothing shifts the main axes.
+    for row in (0, 2, 3, 5):
+        empty = fig.add_subplot(grid[row, 1])
+        empty.axis("off")
 
     fig.suptitle(title, fontsize=14)
     fig.savefig(output, dpi=180, bbox_inches="tight")
