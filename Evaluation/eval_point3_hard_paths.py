@@ -34,7 +34,7 @@ import torch
 
 from Evaluation._eval_utils import compute_similarity
 from Evaluation import eval_img_align_nw_diagnostic as pair_loader
-from Evaluation.eval_yelda import synthetic_split
+from Evaluation.eval_yelda import synthetic_split, balanced_pairs, configure_geometry
 from Evaluation.point2_runtime import load_point2_visual_models, point2_pair_features
 from Evaluation.yelda_geometry import prepare_line
 from Evaluation.yelda_runtime import read_checkpoint
@@ -210,6 +210,10 @@ def select_pairs(dataset: Path, split: str, training_samples: int, split_seed: i
     layout, pairs = pair_loader.load_pairs(dataset, split)
     if layout == "synthetic":
         pairs = synthetic_split(pairs, split, training_samples, split_seed)
+    else:
+        # Match Evaluation.eval_yelda ordering so START_INDEX selects the same
+        # held-out real pair in NW and hard-DTW diagnostics.
+        pairs = balanced_pairs(pairs)
     start = start_index - 1
     selected = pairs[start:] if n_samples == 0 else pairs[start:start + n_samples]
     if not selected:
@@ -227,6 +231,7 @@ def evaluate_architecture(
 ) -> list[dict]:
     checkpoint = read_checkpoint(weights)
     models = load_point2_visual_models(checkpoint, device, "restoration")
+    configure_geometry(models.config, preprocessing)
     rows: list[dict] = []
 
     arch_root = output_root / label
@@ -344,8 +349,10 @@ def aggregate(rows: list[dict], label: str) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", required=True)
-    parser.add_argument("--old-weights", required=True)
-    parser.add_argument("--new-weights", required=True)
+    parser.add_argument("--weights", default=None,
+                        help="Evaluate one checkpoint. Preferred for epoch diagnostics.")
+    parser.add_argument("--old-weights", default=None)
+    parser.add_argument("--new-weights", default=None)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--split", choices=("train", "valid", "test", "all"), default="test")
     parser.add_argument("--training-samples", type=int, default=6000)
@@ -359,18 +366,32 @@ def main() -> None:
     args = parser.parse_args()
 
     dataset = Path(args.dataset).expanduser().resolve()
-    old_weights = Path(args.old_weights).expanduser().resolve()
-    new_weights = Path(args.new_weights).expanduser().resolve()
+    single_weights = (
+        Path(args.weights).expanduser().resolve() if args.weights else None
+    )
+    old_weights = (
+        Path(args.old_weights).expanduser().resolve() if args.old_weights else None
+    )
+    new_weights = (
+        Path(args.new_weights).expanduser().resolve() if args.new_weights else None
+    )
     output = Path(args.output_dir).expanduser().resolve()
 
-    for path, name in (
-        (dataset, "dataset"),
-        (old_weights, "old checkpoint"),
-        (new_weights, "new checkpoint"),
-    ):
-        exists = path.exists() if name == "dataset" else path.is_file()
-        if not exists:
-            raise SystemExit(f"Missing {name}: {path}")
+    if single_weights is None and (old_weights is None or new_weights is None):
+        raise SystemExit(
+            "Use --weights for one checkpoint, or provide both --old-weights and --new-weights"
+        )
+
+    if not dataset.exists():
+        raise SystemExit(f"Missing dataset: {dataset}")
+    checkpoints = (
+        [(single_weights, "checkpoint")]
+        if single_weights is not None
+        else [(old_weights, "old checkpoint"), (new_weights, "new checkpoint")]
+    )
+    for checkpoint_path, name in checkpoints:
+        if checkpoint_path is None or not checkpoint_path.is_file():
+            raise SystemExit(f"Missing {name}: {checkpoint_path}")
     if output.exists() and any(output.iterdir()):
         raise SystemExit(f"Output directory is not empty: {output}")
     output.mkdir(parents=True, exist_ok=True)
@@ -404,51 +425,41 @@ def main() -> None:
         flush=True,
     )
 
-    old_rows = evaluate_architecture(
-        "old_resnet_token_vit",
-        old_weights,
-        selected,
-        output,
-        args.device,
-        args.image_preprocessing,
-    )
-    new_rows = evaluate_architecture(
-        "physical_window_vit",
-        new_weights,
-        selected,
-        output,
-        args.device,
-        args.image_preprocessing,
-    )
-
-    all_rows = old_rows + new_rows
-    write_rows(output / "point3_samples.csv", all_rows)
-    aggregates = [
-        aggregate(old_rows, "old_resnet_token_vit"),
-        aggregate(new_rows, "physical_window_vit"),
-    ]
-    write_rows(output / "point3_architecture_summary.csv", aggregates)
-
-    paired = []
-    by_old = {int(row["index"]): row for row in old_rows}
-    by_new = {int(row["index"]): row for row in new_rows}
-    for index in sorted(set(by_old) & set(by_new)):
-        old = by_old[index]
-        new = by_new[index]
-        paired.append(
-            {
-                "index": index,
-                "physical_minus_old_path_cosine":
-                    float(new["mean_path_cosine"] - old["mean_path_cosine"]),
-                "physical_minus_old_path_margin":
-                    float(new["path_cosine_margin"] - old["path_cosine_margin"]),
-                "physical_minus_old_warp_ratio":
-                    float(new["warp_ratio"] - old["warp_ratio"]),
-                "physical_minus_old_diagonal_mae":
-                    float(new["normalized_diagonal_mae"] - old["normalized_diagonal_mae"]),
-            }
+    if single_weights is not None:
+        rows = evaluate_architecture(
+            "checkpoint",
+            single_weights,
+            selected,
+            output,
+            args.device,
+            args.image_preprocessing,
         )
-    write_rows(output / "point3_paired_deltas.csv", paired)
+        write_rows(output / "point3_samples.csv", rows)
+        aggregates = [aggregate(rows, "checkpoint")]
+    else:
+        old_rows = evaluate_architecture(
+            "old_resnet_token_vit",
+            old_weights,
+            selected,
+            output,
+            args.device,
+            args.image_preprocessing,
+        )
+        new_rows = evaluate_architecture(
+            "physical_window_vit",
+            new_weights,
+            selected,
+            output,
+            args.device,
+            args.image_preprocessing,
+        )
+        all_rows = old_rows + new_rows
+        write_rows(output / "point3_samples.csv", all_rows)
+        aggregates = [
+            aggregate(old_rows, "old_resnet_token_vit"),
+            aggregate(new_rows, "physical_window_vit"),
+        ]
+        write_rows(output / "point3_architecture_summary.csv", aggregates)
 
     summary = {
         "point": 3,
