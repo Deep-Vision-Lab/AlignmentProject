@@ -1342,6 +1342,7 @@ def install_training_objective(train_module):
                     "ZERO_SHOT_TARGET_INK_HEIGHT_RATIO", "0.72"
                 ),
                 "LINE_GEOMETRY_MODE": "xml-bbox-gray-aspect-preserving",
+                "EVAL_COMPACT_OUTPUT": "1",
             }
         )
         env["PYTHONPATH"] = (
