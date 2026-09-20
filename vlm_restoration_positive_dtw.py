@@ -98,10 +98,17 @@ def apply_branch_config(P):
     os.environ["REAL_BINARIZE"] = "1" if synthetic_style_real else "0"
     os.environ["REAL_BINARIZE_AUTO_INVERT"] = "1"
     os.environ["REAL_BINARIZE_AUTOCONTRAST"] = "1" if synthetic_style_real else "0"
-    os.environ["ZERO_SHOT_FOREGROUND_CROP"] = "1"
-    os.environ["ZERO_SHOT_PRESERVE_ASPECT"] = "1"
-    os.environ["ZERO_SHOT_SOURCE_GEOMETRY"] = "0"
-    os.environ["LINE_GEOMETRY_MODE"] = "crop-aspect-preserving-rgb"
+    # Respect explicit launcher choices.  In particular, the XML bbox pipeline
+    # already performs deterministic four-sided text cropping and therefore
+    # disables the old heuristic foreground crop.
+    os.environ.setdefault("ZERO_SHOT_FOREGROUND_CROP", "1")
+    os.environ.setdefault("ZERO_SHOT_PRESERVE_ASPECT", "1")
+    os.environ.setdefault("ZERO_SHOT_SOURCE_GEOMETRY", "0")
+    os.environ["LINE_GEOMETRY_MODE"] = (
+        "xml-bbox-gray-aspect-preserving"
+        if _env_flag("VISUAL_GRAYSCALE", False)
+        else "crop-aspect-preserving-rgb"
+    )
 
     # Canonical ViT-Tiny dimensions. ResNet-18 creates one token per physical
     # window; the transformer contextualizes that window-token sequence.
@@ -1306,6 +1313,31 @@ def model_config(P):
             )
         ),
         "local_encoder_type": "resnet18",
+        "visual_input_channels": int(P.visual_input_channels),
+        "visual_grayscale": bool(P.visual_grayscale),
+        "real_bbox_crop": _env_flag("REAL_BBOX_CROP", False),
+        "real_bbox_margin_ratio": _env_float("REAL_BBOX_MARGIN_RATIO", 0.05),
+        "real_bbox_min_margin_px": _env_int("REAL_BBOX_MIN_MARGIN_PX", 2),
+        "real_scan_augment": _env_flag("REAL_SCAN_AUGMENT", False),
+        "real_scan_augment_probability": _env_float(
+            "REAL_SCAN_AUGMENT_PROB", 0.95
+        ),
+        "real_scan_blur_probability": _env_float("REAL_SCAN_BLUR_PROB", 0.55),
+        "real_scan_blur_radius_min": _env_float(
+            "REAL_SCAN_BLUR_RADIUS_MIN", 0.35
+        ),
+        "real_scan_blur_radius_max": _env_float(
+            "REAL_SCAN_BLUR_RADIUS_MAX", 1.40
+        ),
+        "real_scan_gaussian_noise_probability": _env_float(
+            "REAL_SCAN_GAUSSIAN_NOISE_PROB", 0.75
+        ),
+        "real_scan_gaussian_noise_std_min": _env_float(
+            "REAL_SCAN_GAUSSIAN_NOISE_STD_MIN", 5.0
+        ),
+        "real_scan_gaussian_noise_std_max": _env_float(
+            "REAL_SCAN_GAUSSIAN_NOISE_STD_MAX", 16.0
+        ),
         "restoration_local_encoder": "resnet18",
         "resnet18_pretrained": bool(P.resnet18_pretrained),
         "resnet18_pretrained_source": "torchvision/ResNet18_Weights.DEFAULT",
