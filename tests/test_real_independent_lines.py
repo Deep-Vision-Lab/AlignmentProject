@@ -126,7 +126,13 @@ def _write_page_side(root: Path, pair_name: str, side: str, page_pixels, lines):
         (text_dir / f"line_{line_no:02d}.txt").write_text(text, encoding="utf-8")
 
 
-def test_all_page_lines_includes_lines_without_pair_manifest_entries(tmp_path: Path):
+def test_all_page_lines_includes_lines_without_pair_manifest_entries(
+    tmp_path: Path, monkeypatch
+):
+    # This test verifies population/inclusion only. Keep it independent of
+    # launcher preprocessing env; XML crop is covered by the dedicated
+    # real-all-page grayscale pipeline integration test.
+    monkeypatch.setenv("REAL_BBOX_CROP", "0")
     # Page A has two lines, but pretend only line 1 would have appeared in a
     # line-pair manifest. The direct page scan must still retain line 2.
     _write_page_side(
@@ -154,7 +160,11 @@ def test_all_page_lines_includes_lines_without_pair_manifest_entries(tmp_path: P
     assert dataset.scan_stats["unique_pages"] == 2
 
 
-def test_all_page_lines_deduplicates_same_page_copied_into_multiple_pairs(tmp_path: Path):
+def test_all_page_lines_deduplicates_same_page_copied_into_multiple_pairs(
+    tmp_path: Path, monkeypatch
+):
+    # This test verifies source-page deduplication only, not preprocessing.
+    monkeypatch.setenv("REAL_BBOX_CROP", "0")
     # Exact copies of one source page appear in two different candidate pairs.
     page_lines = [(1, "واحد", 190), (2, "اثنان", 175)]
     _write_page_side(
