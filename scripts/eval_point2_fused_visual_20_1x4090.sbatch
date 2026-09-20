@@ -123,6 +123,7 @@ export ZERO_SHOT_PRESERVE_ASPECT=1
 export ZERO_SHOT_SOURCE_GEOMETRY=0
 export ZERO_SHOT_TARGET_INK_HEIGHT_RATIO="${ZERO_SHOT_TARGET_INK_HEIGHT_RATIO:-0.72}"
 export LINE_GEOMETRY_MODE=xml-bbox-gray-aspect-preserving
+export EVAL_COMPACT_OUTPUT=1
 
 echo "============================================================"
 echo "Point-2 fused-only visual inspection"
