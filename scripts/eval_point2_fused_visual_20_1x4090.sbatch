@@ -24,12 +24,20 @@ IMAGE_PREPROCESSING="${IMAGE_PREPROCESSING:-wide_side_padding}"
 SIDE_PADDING_PX="${SIDE_PADDING_PX:-144}"
 TAG="${TAG:-$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_DIR}/Results/Evaluation/Point2/fused_visual_20_${TAG}}"
+EPOCH_SERIES="${EPOCH_SERIES:-0}"
+EPOCH_LIST="${EPOCH_LIST:-5,10,15,20,25,30}"
+WEIGHTS_DIR="${WEIGHTS_DIR:-$(dirname "${WEIGHTS}")}"
+SERIES_OUTPUT_DIR="${SERIES_OUTPUT_DIR:-${PROJECT_DIR}/Results/Evaluation/Point2/epoch_series_${TAG}}"
 
 cd "${PROJECT_DIR}"
 mkdir -p out
 
 [[ -x "${PYTHON_BIN}" ]] || { echo "ERROR: Python not executable: ${PYTHON_BIN}" >&2; exit 2; }
-[[ -f "${WEIGHTS}" ]] || { echo "ERROR: checkpoint not found: ${WEIGHTS}" >&2; exit 2; }
+if [[ "${EPOCH_SERIES}" == "1" ]]; then
+  [[ -d "${WEIGHTS_DIR}" ]] || { echo "ERROR: weights directory not found: ${WEIGHTS_DIR}" >&2; exit 2; }
+else
+  [[ -f "${WEIGHTS}" ]] || { echo "ERROR: checkpoint not found: ${WEIGHTS}" >&2; exit 2; }
+fi
 [[ -d "${DATASET}" || -f "${DATASET}" ]] || { echo "ERROR: dataset not found: ${DATASET}" >&2; exit 2; }
 
 # Preserve Slurm's CUDA_VISIBLE_DEVICES exactly. The cluster exposes the
@@ -95,7 +103,6 @@ export REAL_BINARIZE_AUTOCONTRAST=0
 
 echo "============================================================"
 echo "Point-2 fused-only visual inspection"
-echo "weights           = ${WEIGHTS}"
 echo "dataset           = ${DATASET}"
 echo "samples           = ${N_SAMPLES}"
 echo "start_index       = ${START_INDEX}"
@@ -104,31 +111,76 @@ echo "preprocessing     = ${IMAGE_PREPROCESSING}"
 echo "side padding px   = ${SIDE_PADDING_PX}"
 echo "crop mode         = ${ZERO_SHOT_CROP_MODE}"
 echo "cosine threshold  = ${THRESHOLD}"
-echo "output            = ${OUTPUT_DIR}"
+echo "epoch series      = ${EPOCH_SERIES}"
+if [[ "${EPOCH_SERIES}" == "1" ]]; then
+  echo "weights dir       = ${WEIGHTS_DIR}"
+  echo "epochs            = ${EPOCH_LIST}"
+  echo "series output     = ${SERIES_OUTPUT_DIR}"
+else
+  echo "weights           = ${WEIGHTS}"
+  echo "output            = ${OUTPUT_DIR}"
+fi
 echo "============================================================"
 
-"${PYTHON_BIN}" -u -m Evaluation.eval_point2 \
-  --point2-representation fused \
-  --dataset "${DATASET}" \
-  --weights "${WEIGHTS}" \
-  --branch restoration \
-  --alignment-unit window \
-  --word-support-floor 0.0 \
-  --min-aligned-windows 5 \
-  --image-preprocessing "${IMAGE_PREPROCESSING}" \
-  --split test \
-  --training-samples 6000 \
-  --split-seed 42 \
-  --n-samples "${N_SAMPLES}" \
-  --start-index "${START_INDEX}" \
-  --device cuda \
-  --score-mode raw \
-  --threshold "${THRESHOLD}" \
-  --gap -0.30 \
-  --output-dir "${OUTPUT_DIR}"
+run_one_eval() {
+  local weights_path="$1"
+  local output_path="$2"
+  local epoch_label="$3"
 
-echo
-echo "Finished fused-only visual set:"
-echo "  ${OUTPUT_DIR}"
-echo "Inspect each pair_XXXXX/cosine_similarity_values.png"
-echo "and pair_XXXXX/line1_pred_mask.png + line2_pred_mask.png"
+  [[ -f "${weights_path}" ]] || {
+    echo "ERROR: checkpoint missing for ${epoch_label}: ${weights_path}" >&2
+    return 2
+  }
+  if [[ -d "${output_path}" ]] && [[ -n "$(find "${output_path}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
+    echo "ERROR: output is not empty for ${epoch_label}: ${output_path}" >&2
+    return 2
+  fi
+
+  echo
+  echo ">>> Point-2 evaluation ${epoch_label}"
+  echo "    weights = ${weights_path}"
+  echo "    output  = ${output_path}"
+
+  "${PYTHON_BIN}" -u -m Evaluation.eval_point2 \
+    --point2-representation fused \
+    --dataset "${DATASET}" \
+    --weights "${weights_path}" \
+    --branch restoration \
+    --alignment-unit window \
+    --word-support-floor 0.0 \
+    --min-aligned-windows 5 \
+    --image-preprocessing "${IMAGE_PREPROCESSING}" \
+    --split test \
+    --training-samples 6000 \
+    --split-seed 42 \
+    --n-samples "${N_SAMPLES}" \
+    --start-index "${START_INDEX}" \
+    --device cuda \
+    --score-mode raw \
+    --threshold "${THRESHOLD}" \
+    --gap -0.30 \
+    --output-dir "${output_path}"
+}
+
+if [[ "${EPOCH_SERIES}" == "1" ]]; then
+  mkdir -p "${SERIES_OUTPUT_DIR}"
+  IFS=',' read -ra EPOCH_VALUES <<< "${EPOCH_LIST}"
+  for raw_epoch in "${EPOCH_VALUES[@]}"; do
+    epoch="$((10#${raw_epoch}))"
+    epoch_pad="$(printf '%03d' "${epoch}")"
+    weights_path="${WEIGHTS_DIR}/model_epoch_${epoch_pad}.pth"
+    output_path="${SERIES_OUTPUT_DIR}/epoch_${epoch_pad}"
+    run_one_eval "${weights_path}" "${output_path}" "epoch=${epoch}"
+  done
+  echo
+  echo "Finished longitudinal Point-2 evaluation:"
+  echo "  ${SERIES_OUTPUT_DIR}"
+  echo "Compare epoch_005, epoch_010, ... / pair_XXXXX/cosine_similarity_values.png"
+else
+  run_one_eval "${WEIGHTS}" "${OUTPUT_DIR}" "single checkpoint"
+  echo
+  echo "Finished fused-only visual set:"
+  echo "  ${OUTPUT_DIR}"
+  echo "Inspect each pair_XXXXX/cosine_similarity_values.png"
+  echo "and pair_XXXXX/line1_pred_mask.png + line2_pred_mask.png"
+fi
