@@ -8,12 +8,15 @@ For the same fixed test pairs, compare the trained fused representation from:
 Point 3 is deliberately qualitative/path-structural.  It does NOT score GT
 masks or word-level success; those belong to Points 4 and 5.
 
-For each pair/architecture this script saves:
-  * the two exact model-input line images,
-  * raw fused cosine similarity matrix (.npy/.csv),
-  * hard classic-DTW path (.csv),
-  * a heatmap with the DTW path and normalized diagonal reference,
-  * path-shape statistics (warp ratio, diagonal deviation, path margin/z).
+For each pair/architecture this script saves a compact diagnostic:
+  * one overview containing the two grayscale model inputs and their
+    fused-window × transcript-letter cost maps;
+  * the hard monotonic letter-DTW path as CSV;
+  * a JSON summary with transcript paths, sizes and path costs.
+
+The heatmap window axis is displayed in physical Arabic RTL order. The path
+uses the same letter cost mode and transition/position penalties as training;
+it is the hard-path diagnostic counterpart of the soft training DTW.
 
 Both architectures use the exact same selected pair list.
 """
@@ -225,6 +228,290 @@ def select_pairs(dataset: Path, split: str, training_samples: int, split_seed: i
     return layout, selected
 
 
+
+def _transcript_path_for_line(image_path: Path) -> Path:
+    """Resolve the transcript paired with one native ArabicDataset line image."""
+    image_path = Path(image_path)
+    side_dir = image_path.parent.parent
+    candidates = [
+        side_dir / "text" / "final" / "original" / f"{image_path.stem}.txt",
+        side_dir / "text" / "final" / f"{image_path.stem}.txt",
+        side_dir / "text" / f"{image_path.stem}.txt",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(
+        f"Transcript not found for {image_path}; tried: "
+        + ", ".join(str(candidate) for candidate in candidates)
+    )
+
+
+def _hard_letter_dtw_path(
+    costs: np.ndarray,
+    *,
+    vertical_penalty: float,
+    horizontal_penalty: float,
+    position_prior_weight: float,
+    disable_horizontal_when_feasible: bool,
+) -> tuple[list[tuple[int, int]], np.ndarray]:
+    """Hard-path counterpart of the training letter-DTW over [window, letter]."""
+    matrix = np.asarray(costs, dtype=np.float64).copy()
+    if matrix.ndim != 2 or matrix.shape[0] < 1 or matrix.shape[1] < 1:
+        raise ValueError(
+            f"Expected non-empty [windows, letters] cost matrix, got {matrix.shape}"
+        )
+
+    n_windows, n_letters = matrix.shape
+    if position_prior_weight > 0.0 and n_windows > 1 and n_letters > 1:
+        window_position = np.linspace(0.0, 1.0, n_windows)[:, None]
+        letter_position = np.linspace(0.0, 1.0, n_letters)[None, :]
+        matrix += float(position_prior_weight) * np.abs(
+            window_position - letter_position
+        )
+
+    horizontal = float(horizontal_penalty)
+    if disable_horizontal_when_feasible and n_windows >= n_letters:
+        horizontal = 1e4
+
+    dp = np.full((n_windows, n_letters), np.inf, dtype=np.float64)
+    back = np.full((n_windows, n_letters), -1, dtype=np.int8)
+    dp[0, 0] = matrix[0, 0]
+
+    for i in range(n_windows):
+        for j in range(n_letters):
+            if i == 0 and j == 0:
+                continue
+            candidates: list[tuple[float, int]] = []
+            if i > 0 and j > 0:
+                candidates.append((dp[i - 1, j - 1], 0))
+            if i > 0:
+                candidates.append(
+                    (dp[i - 1, j] + float(vertical_penalty), 1)
+                )
+            if j > 0:
+                candidates.append((dp[i, j - 1] + horizontal, 2))
+            previous, direction = min(
+                candidates, key=lambda item: (item[0], item[1])
+            )
+            dp[i, j] = matrix[i, j] + previous
+            back[i, j] = direction
+
+    i, j = n_windows - 1, n_letters - 1
+    path = [(i, j)]
+    while i > 0 or j > 0:
+        direction = int(back[i, j])
+        if direction == 0:
+            i -= 1
+            j -= 1
+        elif direction == 1:
+            i -= 1
+        elif direction == 2:
+            j -= 1
+        else:
+            raise RuntimeError(
+                f"Invalid letter-DTW traceback at window={i}, letter={j}"
+            )
+        path.append((i, j))
+    path.reverse()
+    return path, matrix.astype(np.float32)
+
+
+def _letter_dtw_side(features, image_path: Path, text_encoder, pconfig) -> dict:
+    """Evaluate exactly one line against its own normalized Arabic transcript."""
+    transcript_path = _transcript_path_for_line(image_path)
+    text = transcript_path.read_text(encoding="utf-8").strip()
+    letters = _clean_letters(text)
+    if not letters:
+        raise ValueError(
+            f"No Arabic letters remain after NFKC/filtering: {transcript_path}"
+        )
+
+    visual = features.contextual
+    physical_window_indices = torch.arange(
+        visual.shape[0], device=visual.device, dtype=torch.long
+    )
+    valid = getattr(features, "ink", None)
+    if valid is not None:
+        valid = valid.to(visual.device).bool()
+        if bool(valid.any()):
+            physical_window_indices = physical_window_indices[valid]
+            visual = visual[valid]
+    if visual.shape[0] == 0:
+        raise ValueError(f"No valid visual windows for {image_path}")
+
+    with torch.inference_mode():
+        costs = (
+            letter_dtw_cost_matrix(pconfig, text_encoder, visual, letters)
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32)
+        )
+
+    path, display_costs = _hard_letter_dtw_path(
+        costs,
+        vertical_penalty=float(pconfig.positive_letter_dtw_vertical_penalty),
+        horizontal_penalty=float(pconfig.positive_letter_dtw_horizontal_penalty),
+        position_prior_weight=float(pconfig.positive_letter_dtw_position_prior),
+        disable_horizontal_when_feasible=bool(
+            pconfig.positive_letter_dtw_disable_horizontal_when_feasible
+        ),
+    )
+
+    path_values = np.asarray(
+        [display_costs[i, j] for i, j in path], dtype=np.float64
+    )
+    return {
+        "transcript_path": str(transcript_path),
+        "text": text,
+        "letters": letters,
+        "costs": display_costs,
+        "path": path,
+        "physical_window_indices": (
+            physical_window_indices.detach().cpu().numpy().astype(np.int64)
+        ),
+        "windows": int(display_costs.shape[0]),
+        "letter_count": int(display_costs.shape[1]),
+        "mean_path_cost": float(path_values.mean()),
+        "normalized_hard_path_cost": float(
+            path_values.sum()
+            / max(1, display_costs.shape[0] + display_costs.shape[1])
+        ),
+    }
+
+
+def _plot_letter_panel(ax, result: dict, title: str):
+    """Plot letter-DTW with Arabic physical windows increasing right-to-left."""
+    costs = result["costs"]
+    letters = result["letters"]
+    physical = result["physical_window_indices"]
+
+    heat = ax.imshow(costs.T, aspect="auto", origin="upper")
+    xs = [window for window, _letter in result["path"]]
+    ys = [letter for _window, letter in result["path"]]
+    ax.plot(xs, ys, linewidth=2.0, label="hard DTW path")
+    ax.set_xlabel("Visual windows — RTL; rightmost valid window is on the right")
+    ax.set_ylabel("Transcript letters in logical Arabic reading order")
+    ax.set_title(title)
+
+    # x=0 is the first model-sequence element for Arabic. Put it at the
+    # right side so the heatmap follows the manuscript's physical RTL order.
+    ax.invert_xaxis()
+
+    if len(letters) <= 80:
+        letter_ticks = np.arange(len(letters))
+    else:
+        step = max(1, len(letters) // 60)
+        letter_ticks = np.arange(0, len(letters), step)
+    ax.set_yticks(letter_ticks)
+    ax.set_yticklabels([letters[i] for i in letter_ticks], fontsize=8)
+
+    n_windows = len(physical)
+    step = max(1, n_windows // 20)
+    window_ticks = np.arange(0, n_windows, step)
+    ax.set_xticks(window_ticks)
+    ax.set_xticklabels(
+        [f"W{int(physical[i])}" for i in window_ticks],
+        rotation=90,
+        fontsize=8,
+    )
+    ax.legend(loc="upper left")
+    return heat
+
+
+def save_letter_dtw_overview(
+    line1,
+    result1: dict,
+    line2,
+    result2: dict,
+    output: Path,
+    title: str,
+) -> None:
+    """Save one compact figure containing both lines and both letter-DTW maps."""
+    fig = plt.figure(figsize=(16, 15))
+    grid = fig.add_gridspec(
+        4, 1, height_ratios=[1.0, 5.0, 1.0, 5.0], hspace=0.36
+    )
+
+    ax_line1 = fig.add_subplot(grid[0])
+    ax_line1.imshow(np.asarray(line1.convert("L")), cmap="gray", vmin=0, vmax=255)
+    ax_line1.set_title("Line 1 — exact grayscale evaluation input")
+    ax_line1.axis("off")
+
+    ax_heat1 = fig.add_subplot(grid[1])
+    heat1 = _plot_letter_panel(
+        ax_heat1,
+        result1,
+        (
+            "Line 1: visual windows × transcript letters | "
+            f"mean hard-path cost={result1['mean_path_cost']:.3f}"
+        ),
+    )
+    fig.colorbar(
+        heat1,
+        ax=ax_heat1,
+        label="training DTW cell cost + position prior (lower is better)",
+    )
+
+    ax_line2 = fig.add_subplot(grid[2])
+    ax_line2.imshow(np.asarray(line2.convert("L")), cmap="gray", vmin=0, vmax=255)
+    ax_line2.set_title("Line 2 — exact grayscale evaluation input")
+    ax_line2.axis("off")
+
+    ax_heat2 = fig.add_subplot(grid[3])
+    heat2 = _plot_letter_panel(
+        ax_heat2,
+        result2,
+        (
+            "Line 2: visual windows × transcript letters | "
+            f"mean hard-path cost={result2['mean_path_cost']:.3f}"
+        ),
+    )
+    fig.colorbar(
+        heat2,
+        ax=ax_heat2,
+        label="training DTW cell cost + position prior (lower is better)",
+    )
+
+    fig.suptitle(title, fontsize=14)
+    fig.savefig(output, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _write_letter_paths(
+    path_file: Path, side_results: list[tuple[int, dict]]
+) -> None:
+    with path_file.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "side",
+                "step",
+                "valid_window_index",
+                "physical_window_index",
+                "letter_index",
+                "letter",
+                "cost",
+            ],
+        )
+        writer.writeheader()
+        for side, result in side_results:
+            physical = result["physical_window_indices"]
+            for step, (window, letter_index) in enumerate(result["path"]):
+                writer.writerow(
+                    {
+                        "side": int(side),
+                        "step": int(step),
+                        "valid_window_index": int(window),
+                        "physical_window_index": int(physical[window]),
+                        "letter_index": int(letter_index),
+                        "letter": result["letters"][letter_index],
+                        "cost": float(result["costs"][window, letter_index]),
+                    }
+                )
+
+
 def evaluate_architecture(
     label: str,
     weights: Path,
@@ -330,8 +617,8 @@ def evaluate_architecture(
             "line2_letters": side2["letter_count"],
             "line1_mean_path_cost": side1["mean_path_cost"],
             "line2_mean_path_cost": side2["mean_path_cost"],
-            "line1_final_dtw_cost": side1["final_dtw_cost"],
-            "line2_final_dtw_cost": side2["final_dtw_cost"],
+            "line1_normalized_hard_path_cost": side1["normalized_hard_path_cost"],
+            "line2_normalized_hard_path_cost": side2["normalized_hard_path_cost"],
             "window_display_order": "RTL; W0 shown at right",
             "dtw_axis_definition": "x=visual windows, y=normalized Arabic transcript letters",
             "dtw_cost_mode": pconfig.positive_letter_dtw_cost_mode,
@@ -342,8 +629,8 @@ def evaluate_architecture(
         rows.append(row)
         print(
             f"[{label} {ordinal}/{len(selected)} pair={pair.index}] "
-            f"letter-DTW side1={side1['final_dtw_cost']:.4f} "
-            f"side2={side2['final_dtw_cost']:.4f} "
+            f"letter-DTW side1={side1['normalized_hard_path_cost']:.4f} "
+            f"side2={side2['normalized_hard_path_cost']:.4f} "
             f"windows={side1['windows']}/{side2['windows']} "
             f"letters={side1['letter_count']}/{side2['letter_count']}",
             flush=True,
@@ -367,12 +654,10 @@ def write_rows(path: Path, rows: list[dict]) -> None:
 
 def aggregate(rows: list[dict], label: str) -> dict:
     metrics = [
-        "mean_path_cosine",
-        "path_cosine_margin",
-        "path_cosine_z",
-        "warp_ratio",
-        "normalized_diagonal_mae",
-        "normalized_diagonal_max_error",
+        "line1_mean_path_cost",
+        "line2_mean_path_cost",
+        "line1_normalized_hard_path_cost",
+        "line2_normalized_hard_path_cost",
     ]
     return {
         "architecture": label,
