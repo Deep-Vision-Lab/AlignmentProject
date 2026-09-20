@@ -1388,7 +1388,17 @@ def install_training_objective(train_module):
         nw_env = dict(env)
         nw_env["EVAL_COSINE_TRACE"] = "nw"
         nw_env["EVAL_PRIMARY_ALIGNMENT"] = "nw"
-        subprocess.run(nw_cmd, check=True, env=nw_env)
+        diagnostic_failures = []
+
+        try:
+            subprocess.run(nw_cmd, check=True, env=nw_env)
+        except subprocess.CalledProcessError as exc:
+            diagnostic_failures.append(f"NW exit={exc.returncode}")
+            print(
+                f"EPOCH_SAMPLE_EVAL_WARNING epoch={epoch} method=NW "
+                f"exit={exc.returncode}; training will continue",
+                flush=True,
+            )
 
         dtw_cmd = [
             sys.executable,
@@ -1399,11 +1409,20 @@ def install_training_objective(train_module):
             "--output-dir", str(dtw_output),
             *common,
         ]
-        subprocess.run(dtw_cmd, check=True, env=env)
+        try:
+            subprocess.run(dtw_cmd, check=True, env=env)
+        except subprocess.CalledProcessError as exc:
+            diagnostic_failures.append(f"DTW exit={exc.returncode}")
+            print(
+                f"EPOCH_SAMPLE_EVAL_WARNING epoch={epoch} method=DTW "
+                f"exit={exc.returncode}; training will continue",
+                flush=True,
+            )
 
         print(
             f"EPOCH_SAMPLE_EVAL_DONE epoch={epoch} "
-            f"nw={nw_output} dtw={dtw_output}",
+            f"nw={nw_output} dtw={dtw_output} "
+            f"status={'ok' if not diagnostic_failures else '; '.join(diagnostic_failures)}",
             flush=True,
         )
 
