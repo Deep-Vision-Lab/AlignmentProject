@@ -150,6 +150,14 @@ export TORCH_COMPILE_VISUAL=0
 export GRADIENT_ACCUMULATION_STEPS=1
 export TRAIN_DROP_LAST=1
 export MODEL_WEIGHTS_EVERY_N_EPOCHS="${MODEL_WEIGHTS_EVERY_N_EPOCHS:-5}"
+# Longitudinal one-sample evaluation during training.  Rank 0 evaluates the
+# same held-out sample at epoch 1 and then every 5 epochs using both the
+# existing NW/Point-2 evaluator and the hard-DTW/Point-3 evaluator.
+export TRAIN_SAMPLE_EVAL="${TRAIN_SAMPLE_EVAL:-1}"
+export TRAIN_SAMPLE_EVAL_EPOCHS="${TRAIN_SAMPLE_EVAL_EPOCHS:-1,5,10,15,20,25,30}"
+export TRAIN_SAMPLE_EVAL_START_INDEX="${TRAIN_SAMPLE_EVAL_START_INDEX:-1}"
+export TRAIN_SAMPLE_EVAL_DEVICE="${TRAIN_SAMPLE_EVAL_DEVICE:-cpu}"
+export TRAIN_SAMPLE_EVAL_THRESHOLD="${TRAIN_SAMPLE_EVAL_THRESHOLD:-0.10}"
 # BF16 keeps mixed-precision throughput/memory while avoiding FP16 overflow
 # from the strong SIGReg backward signal. GradScaler is disabled automatically
 # when AMP_DTYPE=bf16.
@@ -162,7 +170,8 @@ export AMP_DTYPE="${AMP_DTYPE:-bf16}"
   zero_shot_preprocessing.py RealDataSet.py AugmentedRealDataLoader.py \
   real_line_bbox_crop.py real_scan_augmentation.py \
   Evaluation/eval_point2.py Evaluation/point2_runtime.py \
-  Evaluation/eval_yelda.py Evaluation/yelda_geometry.py
+  Evaluation/eval_yelda.py Evaluation/yelda_geometry.py \
+  Evaluation/eval_point3_hard_paths.py
 
 bash -n scripts/eval_point2_fused_visual_20_1x4090.sbatch
 
@@ -375,6 +384,10 @@ echo "fusion dropout       = ${FUSION_DROPOUT}"
 echo "DTW gamma            = ${POSITIVE_LETTER_DTW_GAMMA_START} -> ${POSITIVE_LETTER_DTW_GAMMA_END}"
 echo "drop last batch      = ${TRAIN_DROP_LAST} (match synthetic gradient fix)"
 echo "epoch snapshots       = every ${MODEL_WEIGHTS_EVERY_N_EPOCHS} epochs"
+echo "sample eval epochs    = ${TRAIN_SAMPLE_EVAL_EPOCHS}"
+echo "sample eval index     = ${TRAIN_SAMPLE_EVAL_START_INDEX}"
+echo "sample eval methods   = NW(Point-2 fused) + hard-DTW(Point-3 fused)"
+echo "sample eval device    = ${TRAIN_SAMPLE_EVAL_DEVICE}"
 echo "============================================================"
 
 "${TORCHRUN_BIN}" \
