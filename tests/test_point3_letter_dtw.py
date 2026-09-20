@@ -31,3 +31,24 @@ def test_hard_letter_dtw_monotonic_and_complete():
     assert path[-1] == (3, 2)
     for (i0, j0), (i1, j1) in zip(path, path[1:]):
         assert (i1 - i0, j1 - j0) in {(1, 0), (1, 1), (0, 1)}
+
+
+def test_letter_panel_labels_every_window():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    result = {
+        "costs": np.ones((6, 3), dtype=np.float32),
+        "letters": ["ا", "ب", "ت"],
+        "physical_window_indices": np.asarray([4, 5, 6, 7, 8, 9]),
+        "path": [(0, 0), (1, 0), (2, 1), (3, 1), (4, 2), (5, 2)],
+    }
+    fig, ax = plt.subplots()
+    point3._plot_letter_panel(ax, result, "test")
+    labels = [tick.get_text() for tick in ax.get_xticklabels()]
+    assert labels == ["W04", "W05", "W06", "W07", "W08", "W09"]
+    assert len(ax.get_xticks()) == 6
+    left, right = ax.get_xlim()
+    assert left > right  # RTL: window 0 is displayed on the right.
+    plt.close(fig)
