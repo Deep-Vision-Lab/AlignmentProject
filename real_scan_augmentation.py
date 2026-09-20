@@ -1,8 +1,14 @@
 """Geometry-preserving scan augmentation for real manuscript lines.
 
-This module deliberately contains NO rotation, translation, scaling, cropping,
-warping, or stitching.  It changes only image appearance so spatial alignment
-labels and window coordinates remain valid.
+The augmentation is intentionally NON-GEOMETRIC:
+  * no rotation
+  * no translation
+  * no scaling
+  * no cropping
+  * no warping
+
+Only scan/appearance corruption is applied.  The input PIL mode is preserved,
+so grayscale manuscript training remains truly one-channel.
 """
 from __future__ import annotations
 
@@ -28,34 +34,58 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _mode(image: Image.Image) -> str:
+    return "L" if image.mode == "L" else "RGB"
+
+
 def gaussian_blur(image: Image.Image, radius: float) -> Image.Image:
-    return image.convert("RGB").filter(
+    mode = _mode(image)
+    return image.convert(mode).filter(
         ImageFilter.GaussianBlur(radius=max(0.0, float(radius)))
     )
 
 
 def gaussian_luminance_noise(image: Image.Image, std: float) -> Image.Image:
-    """Add the same Gaussian perturbation to R/G/B, preserving paper colour."""
-    rgb = np.asarray(image.convert("RGB"), dtype=np.float32)
+    """Add Gaussian scan noise while preserving grayscale/RGB channel count."""
+    mode = _mode(image)
     sigma = max(0.0, float(std))
     if sigma <= 0.0:
-        return image.convert("RGB")
+        return image.convert(mode)
+
+    if mode == "L":
+        pixels = np.asarray(image.convert("L"), dtype=np.float32)
+        noise = np.random.normal(0.0, sigma, size=pixels.shape).astype(np.float32)
+        pixels = np.clip(pixels + noise, 0.0, 255.0).astype(np.uint8)
+        return Image.fromarray(pixels, mode="L")
+
+    rgb = np.asarray(image.convert("RGB"), dtype=np.float32)
+    # Same perturbation on all three channels: scan intensity noise, not random
+    # colour noise.
     noise = np.random.normal(0.0, sigma, size=rgb.shape[:2]).astype(np.float32)
     rgb = np.clip(rgb + noise[..., None], 0.0, 255.0).astype(np.uint8)
     return Image.fromarray(rgb, mode="RGB")
 
 
 def speckle_noise(image: Image.Image, fraction: float) -> Image.Image:
-    """Sparse dark/light scan defects without moving any pixel coordinates."""
+    """Sparse black/white dust/scan defects with unchanged geometry."""
+    mode = _mode(image)
+    frac = min(0.03, max(0.0, float(fraction)))
+    if mode == "L":
+        pixels = np.array(image.convert("L"), dtype=np.uint8, copy=True)
+        count = int(round(pixels.size * frac))
+        if count > 0:
+            ys = np.random.randint(0, pixels.shape[0], size=count)
+            xs = np.random.randint(0, pixels.shape[1], size=count)
+            pixels[ys, xs] = np.random.choice([0, 255], size=count).astype(np.uint8)
+        return Image.fromarray(pixels, mode="L")
+
     rgb = np.array(image.convert("RGB"), dtype=np.uint8, copy=True)
-    frac = min(0.02, max(0.0, float(fraction)))
     count = int(round(rgb.shape[0] * rgb.shape[1] * frac))
-    if count <= 0:
-        return Image.fromarray(rgb, mode="RGB")
-    ys = np.random.randint(0, rgb.shape[0], size=count)
-    xs = np.random.randint(0, rgb.shape[1], size=count)
-    values = np.random.choice([0, 255], size=count).astype(np.uint8)
-    rgb[ys, xs, :] = values[:, None]
+    if count > 0:
+        ys = np.random.randint(0, rgb.shape[0], size=count)
+        xs = np.random.randint(0, rgb.shape[1], size=count)
+        values = np.random.choice([0, 255], size=count).astype(np.uint8)
+        rgb[ys, xs, :] = values[:, None]
     return Image.fromarray(rgb, mode="RGB")
 
 
@@ -65,7 +95,8 @@ def adjust_brightness_contrast(
     brightness_factor: float = 1.0,
     contrast_factor: float = 1.0,
 ) -> Image.Image:
-    out = ImageEnhance.Brightness(image.convert("RGB")).enhance(
+    mode = _mode(image)
+    out = ImageEnhance.Brightness(image.convert(mode)).enhance(
         max(0.1, float(brightness_factor))
     )
     return ImageEnhance.Contrast(out).enhance(max(0.1, float(contrast_factor)))
@@ -74,49 +105,52 @@ def adjust_brightness_contrast(
 @dataclass
 class ScanOnlyAugmentor:
     enabled: bool = False
-    probability: float = 0.90
-    brightness_delta: float = 0.06
-    contrast_delta: float = 0.10
-    blur_probability: float = 0.35
-    blur_radius_min: float = 0.15
-    blur_radius_max: float = 0.90
-    gaussian_noise_probability: float = 0.50
-    gaussian_noise_std_min: float = 2.0
-    gaussian_noise_std_max: float = 7.0
-    speckle_probability: float = 0.20
-    speckle_fraction: float = 0.0005
+    probability: float = 0.95
+    brightness_delta: float = 0.12
+    contrast_delta: float = 0.22
+    blur_probability: float = 0.55
+    blur_radius_min: float = 0.35
+    blur_radius_max: float = 1.40
+    gaussian_noise_probability: float = 0.75
+    gaussian_noise_std_min: float = 5.0
+    gaussian_noise_std_max: float = 16.0
+    speckle_probability: float = 0.30
+    speckle_fraction: float = 0.0010
 
     @classmethod
     def from_env(cls) -> "ScanOnlyAugmentor":
         return cls(
             enabled=_env_flag("REAL_SCAN_AUGMENT", False),
-            probability=_env_float("REAL_SCAN_AUGMENT_PROB", 0.90),
-            brightness_delta=_env_float("REAL_SCAN_BRIGHTNESS_DELTA", 0.06),
-            contrast_delta=_env_float("REAL_SCAN_CONTRAST_DELTA", 0.10),
-            blur_probability=_env_float("REAL_SCAN_BLUR_PROB", 0.35),
-            blur_radius_min=_env_float("REAL_SCAN_BLUR_RADIUS_MIN", 0.15),
-            blur_radius_max=_env_float("REAL_SCAN_BLUR_RADIUS_MAX", 0.90),
+            probability=_env_float("REAL_SCAN_AUGMENT_PROB", 0.95),
+            brightness_delta=_env_float("REAL_SCAN_BRIGHTNESS_DELTA", 0.12),
+            contrast_delta=_env_float("REAL_SCAN_CONTRAST_DELTA", 0.22),
+            blur_probability=_env_float("REAL_SCAN_BLUR_PROB", 0.55),
+            blur_radius_min=_env_float("REAL_SCAN_BLUR_RADIUS_MIN", 0.35),
+            blur_radius_max=_env_float("REAL_SCAN_BLUR_RADIUS_MAX", 1.40),
             gaussian_noise_probability=_env_float(
-                "REAL_SCAN_GAUSSIAN_NOISE_PROB", 0.50
+                "REAL_SCAN_GAUSSIAN_NOISE_PROB", 0.75
             ),
             gaussian_noise_std_min=_env_float(
-                "REAL_SCAN_GAUSSIAN_NOISE_STD_MIN", 2.0
+                "REAL_SCAN_GAUSSIAN_NOISE_STD_MIN", 5.0
             ),
             gaussian_noise_std_max=_env_float(
-                "REAL_SCAN_GAUSSIAN_NOISE_STD_MAX", 7.0
+                "REAL_SCAN_GAUSSIAN_NOISE_STD_MAX", 16.0
             ),
-            speckle_probability=_env_float("REAL_SCAN_SPECKLE_PROB", 0.20),
-            speckle_fraction=_env_float("REAL_SCAN_SPECKLE_FRACTION", 0.0005),
+            speckle_probability=_env_float("REAL_SCAN_SPECKLE_PROB", 0.30),
+            speckle_fraction=_env_float("REAL_SCAN_SPECKLE_FRACTION", 0.0010),
         )
 
     def __call__(self, image: Image.Image) -> Image.Image:
         return self.augment_with_metadata(image)[0]
 
     def augment_with_metadata(self, image: Image.Image):
-        source = image.convert("RGB")
+        source_mode = _mode(image)
+        source = image.convert(source_mode)
         out = source.copy()
         metadata = {
             "enabled": bool(self.enabled),
+            "source_mode": source_mode,
+            "output_mode": source_mode,
             "source_size": list(source.size),
             "output_size": list(source.size),
             "geometry_changed": False,
@@ -133,16 +167,14 @@ class ScanOnlyAugmentor:
         if not self.enabled or random.random() >= max(0.0, min(1.0, self.probability)):
             return out, metadata
 
-        brightness = 1.0
-        contrast = 1.0
-        if self.brightness_delta > 0:
-            brightness = random.uniform(
-                1.0 - self.brightness_delta, 1.0 + self.brightness_delta
-            )
-        if self.contrast_delta > 0:
-            contrast = random.uniform(
-                1.0 - self.contrast_delta, 1.0 + self.contrast_delta
-            )
+        brightness = random.uniform(
+            1.0 - max(0.0, self.brightness_delta),
+            1.0 + max(0.0, self.brightness_delta),
+        )
+        contrast = random.uniform(
+            1.0 - max(0.0, self.contrast_delta),
+            1.0 + max(0.0, self.contrast_delta),
+        )
         out = adjust_brightness_contrast(
             out,
             brightness_factor=brightness,
@@ -182,9 +214,9 @@ class ScanOnlyAugmentor:
             out = speckle_noise(out, self.speckle_fraction)
             metadata["speckle_fraction"] = float(self.speckle_fraction)
 
-        if out.size != source.size:
+        if out.size != source.size or _mode(out) != source_mode:
             raise RuntimeError(
-                "ScanOnlyAugmentor changed geometry, which is forbidden: "
-                f"{source.size} -> {out.size}"
+                "ScanOnlyAugmentor changed image geometry/channel contract: "
+                f"mode {source_mode}->{out.mode}, size {source.size}->{out.size}"
             )
         return out, metadata
