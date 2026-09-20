@@ -106,6 +106,10 @@ def apply_branch_config(P):
     # Canonical ViT-Tiny dimensions. ResNet-18 creates one token per physical
     # window; the transformer contextualizes that window-token sequence.
     P.vector_size = 192
+    P.visual_input_channels = _env_int("VISUAL_INPUT_CHANNELS", 1)
+    if P.visual_input_channels not in {1, 3}:
+        raise ValueError("VISUAL_INPUT_CHANNELS must be 1 or 3")
+    P.visual_grayscale = bool(P.visual_input_channels == 1)
     P.vit_layers = 12
     P.vit_heads = 3
     P.vit_mlp_dim = 768
@@ -463,6 +467,7 @@ def attach_restoration_dtw_stages(model, P):
         embed_dim=dim,
         pretrained=bool(getattr(P, "resnet18_pretrained", True)),
         local_files_only=bool(getattr(P, "pretrained_local_only", True)),
+        input_channels=int(getattr(P, "visual_input_channels", 1)),
     ).to(device=device, dtype=dtype)
     vit.restoration_local_encoder = "resnet18"
     vit.local_encoder_type = "resnet18"
@@ -506,8 +511,11 @@ def attach_restoration_dtw_stages(model, P):
     vit.fusion_head = LocalContextFusion(dim).to(device=device, dtype=dtype)
 
     def encode_restoration_sequence(self, image, *, use_flip):
-        if image.ndim != 4 or image.shape[1] != 3:
-            raise ValueError("Expected image [B,3,H,W]")
+        expected_channels = int(getattr(P, "visual_input_channels", 1))
+        if image.ndim != 4 or int(image.shape[1]) != expected_channels:
+            raise ValueError(
+                f"Expected image [B,{expected_channels},H,W], got {tuple(image.shape)}"
+            )
         if int(image.shape[2]) != self.input_height:
             raise ValueError("Unexpected input height")
         if int(image.shape[3]) < self.window_size:
@@ -1032,6 +1040,25 @@ def install_training_objective(train_module):
                 )
 
             state = train_module.extract_model_state(loaded)
+            state = dict(state)
+            target_state = model.state_dict()
+            conv1_key = "vit_encoder.patch_embedding.backbone.conv1.weight"
+            if conv1_key in state and conv1_key in target_state:
+                source_conv = state[conv1_key]
+                target_conv = target_state[conv1_key]
+                if (
+                    source_conv.ndim == 4
+                    and target_conv.ndim == 4
+                    and int(source_conv.shape[1]) == 3
+                    and int(target_conv.shape[1]) == 1
+                ):
+                    state[conv1_key] = source_conv.mean(dim=1, keepdim=True)
+                    if getattr(train_module, "CTX", None) is None or train_module.CTX.is_main:
+                        print(
+                            "Checkpoint migration: ResNet18 conv1 RGB -> grayscale "
+                            f"{tuple(source_conv.shape)} -> {tuple(state[conv1_key].shape)}",
+                            flush=True,
+                        )
             incompatible = model.load_state_dict(state, strict=False)
             if loaded_family == "restoration-positive-dtw-window-encoder":
                 if incompatible.missing_keys or incompatible.unexpected_keys:
@@ -1283,6 +1310,9 @@ def model_config(P):
         "resnet18_pretrained": bool(P.resnet18_pretrained),
         "resnet18_pretrained_source": "torchvision/ResNet18_Weights.DEFAULT",
         "resnet18_feature_dim": 512,
+        "visual_input_channels": int(P.visual_input_channels),
+        "visual_grayscale": bool(P.visual_grayscale),
+        "resnet18_conv1_input_channels": int(P.visual_input_channels),
         "tiny_vit_pretrained": bool(P.tiny_vit_pretrained),
         "tiny_vit_pretrained_model": str(P.tiny_vit_pretrained_model),
         "pretrained_local_only": bool(P.pretrained_local_only),
