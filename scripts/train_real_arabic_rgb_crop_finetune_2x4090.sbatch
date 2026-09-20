@@ -160,7 +160,11 @@ export AMP_DTYPE="${AMP_DTYPE:-bf16}"
   train.py trainer_core.py training_optimizations.py training_stability.py \
   model_backend.py vlm_restoration_positive_dtw.py \
   zero_shot_preprocessing.py RealDataSet.py AugmentedRealDataLoader.py \
-  real_line_bbox_crop.py real_scan_augmentation.py
+  real_line_bbox_crop.py real_scan_augmentation.py \
+  Evaluation/eval_point2.py Evaluation/point2_runtime.py \
+  Evaluation/eval_yelda.py Evaluation/yelda_geometry.py
+
+bash -n scripts/eval_point2_fused_visual_20_1x4090.sbatch
 
 "${PYTHON_BIN}" - <<'PY'
 import torch
