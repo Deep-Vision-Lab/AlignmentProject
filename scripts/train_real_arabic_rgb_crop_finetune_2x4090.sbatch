@@ -219,6 +219,7 @@ PY
   tests/test_real_rgb_crop_preprocessing.py \
   tests/test_real_line_bbox_crop.py \
   tests/test_real_scan_augmentation.py \
+  tests/test_real_all_page_gray_pipeline.py \
   tests/test_real_independent_lines.py \
   tests/test_resnet18_packed_windows.py \
   tests/test_restoration_positive_dtw.py
@@ -320,6 +321,9 @@ echo "dataset source       = direct page-side scan; pair manifest is NOT the sam
 echo "duplicate copies     = deduplicated by source-page image fingerprint + line number"
 echo "pair labels          = ignored; positive partner line NOT required"
 echo "TinyViT dropout      = ${TINY_VIT_DROPOUT}"
+echo "visual channels      = ${VISUAL_INPUT_CHANNELS} (grayscale=${VISUAL_GRAYSCALE})"
+echo "bbox margin          = ratio ${REAL_BBOX_MARGIN_RATIO}, min ${REAL_BBOX_MIN_MARGIN_PX}px"
+echo "scan augmentation    = enabled=${REAL_SCAN_AUGMENT}, prob=${REAL_SCAN_AUGMENT_PROB}"
 echo "fusion dropout       = ${FUSION_DROPOUT}"
 echo "DTW gamma            = ${POSITIVE_LETTER_DTW_GAMMA_START} -> ${POSITIVE_LETTER_DTW_GAMMA_END}"
 echo "drop last batch      = ${TRAIN_DROP_LAST} (match synthetic gradient fix)"
