@@ -149,6 +149,7 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export TORCH_COMPILE_VISUAL=0
 export GRADIENT_ACCUMULATION_STEPS=1
 export TRAIN_DROP_LAST=1
+export MODEL_WEIGHTS_EVERY_N_EPOCHS="${MODEL_WEIGHTS_EVERY_N_EPOCHS:-5}"
 # BF16 keeps mixed-precision throughput/memory while avoiding FP16 overflow
 # from the strong SIGReg backward signal. GradScaler is disabled automatically
 # when AMP_DTYPE=bf16.
@@ -369,6 +370,7 @@ echo "scan augmentation    = enabled=${REAL_SCAN_AUGMENT}, prob=${REAL_SCAN_AUGM
 echo "fusion dropout       = ${FUSION_DROPOUT}"
 echo "DTW gamma            = ${POSITIVE_LETTER_DTW_GAMMA_START} -> ${POSITIVE_LETTER_DTW_GAMMA_END}"
 echo "drop last batch      = ${TRAIN_DROP_LAST} (match synthetic gradient fix)"
+echo "epoch snapshots       = every ${MODEL_WEIGHTS_EVERY_N_EPOCHS} epochs"
 echo "============================================================"
 
 "${TORCHRUN_BIN}" \
