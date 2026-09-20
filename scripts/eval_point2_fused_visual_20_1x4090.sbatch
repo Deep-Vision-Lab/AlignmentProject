@@ -25,7 +25,7 @@ SIDE_PADDING_PX="${SIDE_PADDING_PX:-144}"
 TAG="${TAG:-$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_DIR}/Results/Evaluation/Point2/fused_visual_20_${TAG}}"
 EPOCH_SERIES="${EPOCH_SERIES:-0}"
-EPOCH_LIST="${EPOCH_LIST:-5,10,15,20,25,30}"
+EPOCH_LIST="${EPOCH_LIST:-1,5,10,15,20,25,30}"
 WEIGHTS_DIR="${WEIGHTS_DIR:-$(dirname "${WEIGHTS}")}"
 SERIES_OUTPUT_DIR="${SERIES_OUTPUT_DIR:-${PROJECT_DIR}/Results/Evaluation/Point2/epoch_series_${TAG}}"
 
@@ -175,7 +175,7 @@ if [[ "${EPOCH_SERIES}" == "1" ]]; then
   echo
   echo "Finished longitudinal Point-2 evaluation:"
   echo "  ${SERIES_OUTPUT_DIR}"
-  echo "Compare epoch_005, epoch_010, ... / pair_XXXXX/cosine_similarity_values.png"
+  echo "Compare epoch_001, epoch_005, epoch_010, ... / pair_XXXXX/cosine_similarity_values.png"
 else
   run_one_eval "${WEIGHTS}" "${OUTPUT_DIR}" "single checkpoint"
   echo
