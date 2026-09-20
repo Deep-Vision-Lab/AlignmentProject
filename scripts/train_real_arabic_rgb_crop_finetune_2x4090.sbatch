@@ -19,6 +19,7 @@ TORCHRUN_BIN="${TORCHRUN_BIN:-${HOME}/.conda/envs/manucripts_align/bin/torchrun}
 PYTHON_BIN="${PYTHON_BIN:-$(dirname "${TORCHRUN_BIN}")/python}"
 
 cd "${PROJECT_DIR}"
+export PYTHONPATH="${PROJECT_DIR}:${PYTHONPATH:-}"
 mkdir -p out Results/Diagnostics/RealBBoxCrop Results/Diagnostics/RealScanAugmentation
 
 [[ -x "${TORCHRUN_BIN}" ]] || { echo "ERROR: torchrun not executable: ${TORCHRUN_BIN}" >&2; exit 2; }
