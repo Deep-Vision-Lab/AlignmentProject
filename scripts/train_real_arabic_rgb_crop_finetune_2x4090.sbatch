@@ -153,9 +153,26 @@ export USE_AMP=1
 export AMP_DTYPE="${AMP_DTYPE:-bf16}"
 
 "${PYTHON_BIN}" -m py_compile \
-  train.py model_backend.py vlm_restoration_positive_dtw.py \
+  train.py trainer_core.py training_optimizations.py training_stability.py \
+  model_backend.py vlm_restoration_positive_dtw.py \
   zero_shot_preprocessing.py RealDataSet.py AugmentedRealDataLoader.py \
   real_line_bbox_crop.py real_scan_augmentation.py
+
+"${PYTHON_BIN}" - <<'PY'
+import torch
+print("BF16 preflight:")
+print("  cuda_available =", torch.cuda.is_available())
+print("  device_count   =", torch.cuda.device_count())
+if not torch.cuda.is_available():
+    raise SystemExit("CUDA unavailable")
+for index in range(torch.cuda.device_count()):
+    name = torch.cuda.get_device_name(index)
+    supported = bool(torch.cuda.is_bf16_supported())
+    print(f"  device {index}: {name}, bf16_supported={supported}")
+    if not supported:
+        raise SystemExit(f"BF16 unsupported on CUDA device {index}: {name}")
+print("  result         = OK")
+PY
 
 PRETRAINED_WEIGHTS="${PRETRAINED_WEIGHTS}" "${PYTHON_BIN}" - <<'PY'
 import os
