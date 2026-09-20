@@ -16,8 +16,10 @@ import os
 import unicodedata
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributed.nn.functional import all_reduce as differentiable_all_reduce
 
 from restoration_recommended_components import (
     LocalContextFusion,
@@ -194,11 +196,12 @@ def apply_branch_config(P):
     # branch level; the real-data launcher enables it for the controlled
     # continuation run.
     P.sigreg_weight = _env_float("SIGREG_LAMBDA", 0.0)
-    P.sigreg_sketch_dim = max(1, _env_int("SIGREG_SKETCH_DIM", 64))
+    P.sigreg_sketch_dim = max(1, _env_int("SIGREG_SKETCH_DIM", 1024))
     P.sigreg_num_knots = max(3, _env_int("SIGREG_NUM_KNOTS", 17))
-    P.sigreg_t_min = _env_float("SIGREG_T_MIN", -5.0)
-    P.sigreg_t_max = _env_float("SIGREG_T_MAX", 5.0)
+    P.sigreg_t_min = _env_float("SIGREG_T_MIN", 0.0)
+    P.sigreg_t_max = _env_float("SIGREG_T_MAX", 3.0)
     P.sigreg_min_samples = max(2, _env_int("SIGREG_MIN_SAMPLES", 32))
+    P.sigreg_slice_chunk = max(1, _env_int("SIGREG_SLICE_CHUNK", 128))
 
     # Legacy compatibility attribute: reconstruction is intentionally disabled.
     P.restoration_weight = 0.0
@@ -837,19 +840,24 @@ def strong_sigreg_loss(
     embeddings: torch.Tensor,
     token_valid: torch.Tensor | None = None,
     *,
-    sketch_dim: int = 64,
+    sketch_dim: int = 1024,
     num_knots: int = 17,
-    t_min: float = -5.0,
-    t_max: float = 5.0,
+    t_min: float = 0.0,
+    t_max: float = 3.0,
     min_samples: int = 32,
+    slice_chunk: int = 128,
 ):
-    """Strong SIGReg on valid pre-L2 fused tokens.
+    """DDP-correct sliced Epps-Pulley SIGReg on valid pre-L2 fused tokens.
 
-    This follows the LeJEPA-style sketched Epps-Pulley characteristic-function
-    objective: fresh random unit directions are sampled every call, each
-    projected marginal is compared with N(0,1), and the weighted discrepancy
-    is integrated over frequency knots. All trigonometric/statistical work is
-    forced to float32 for numerical stability under AMP.
+    The implementation follows the LeJEPA reference structure:
+      * random unit directions shared by every DDP rank;
+      * Epps-Pulley characteristic-function discrepancy on t in [0, 3];
+      * trapezoid weights doubled to represent the symmetric integral;
+      * the empirical characteristic function is computed over the GLOBAL
+        valid-token population across all DDP ranks, not independently per GPU.
+
+    Slices are processed in chunks to keep the temporary [N,S,K] trigonometric
+    tensor small. SIGReg itself is float32 under AMP.
     """
     if embeddings.ndim != 3:
         raise ValueError("SIGReg expects fused embeddings [B,T,D]")
@@ -865,61 +873,120 @@ def strong_sigreg_loss(
     else:
         values = values.reshape(-1, values.shape[-1])
 
-    n = int(values.shape[0])
+    local_n = int(values.shape[0])
     d = int(values.shape[-1])
-    if n < int(min_samples):
+    distributed = dist.is_available() and dist.is_initialized()
+
+    count = torch.tensor(float(local_n), device=values.device, dtype=torch.float32)
+    if distributed:
+        dist.all_reduce(count, op=dist.ReduceOp.SUM)
+    global_n = int(round(float(count.item())))
+
+    if global_n < int(min_samples):
         zero = embeddings.float().sum() * 0.0
         return zero, {
-            "sigreg_samples": float(n),
+            "sigreg_samples": float(global_n),
             "sigreg_dim_std_mean": 0.0,
             "sigreg_dim_std_min": 0.0,
             "sigreg_embedding_mean_norm": 0.0,
         }
 
-    # Fresh random observers each step. The directions themselves are not
-    # learned and carry no gradient.
-    directions = torch.randn(
-        d,
-        int(sketch_dim),
-        device=values.device,
-        dtype=torch.float32,
-    )
-    directions = directions / directions.norm(
-        p=2, dim=0, keepdim=True
-    ).clamp_min(1e-6)
-
+    # Reference Epps-Pulley quadrature: use t >= 0 and double the trapezoid
+    # weights so this represents the symmetric integral over negative t too.
+    num_knots = int(num_knots)
+    t_min = max(0.0, float(t_min))
+    t_max = max(t_min + 1e-6, float(t_max))
     t = torch.linspace(
-        float(t_min),
-        float(t_max),
-        int(num_knots),
+        t_min,
+        t_max,
+        num_knots,
         device=values.device,
         dtype=torch.float32,
     )
-    gaussian_cf = torch.exp(-0.5 * t.square())
-
-    projected = values @ directions
-    args = projected.unsqueeze(-1) * t.view(1, 1, -1)
-    empirical_real = torch.cos(args).mean(dim=0)
-    empirical_imag = torch.sin(args).mean(dim=0)
-
-    diff_sq = (
-        (empirical_real - gaussian_cf.unsqueeze(0)).square()
-        + empirical_imag.square()
+    if num_knots > 1:
+        dt = (t_max - t_min) / float(num_knots - 1)
+    else:
+        dt = 1.0
+    weights = torch.full(
+        (num_knots,),
+        2.0 * dt,
+        device=values.device,
+        dtype=torch.float32,
     )
-    weighted_error = diff_sq * gaussian_cf.unsqueeze(0)
-    per_slice = torch.trapz(weighted_error, t, dim=-1) * float(n)
-    loss = per_slice.mean()
+    weights[0] = dt
+    weights[-1] = dt
+    gaussian_cf = torch.exp(-0.5 * t.square())
+    weights = weights * gaussian_cf
 
+    total_stat = values.new_zeros(())
+    total_slices = max(1, int(sketch_dim))
+    chunk_size = max(1, int(slice_chunk))
+
+    for slice_start in range(0, total_slices, chunk_size):
+        current = min(chunk_size, total_slices - slice_start)
+
+        # Every rank must test the same slices. Generate on rank 0 and broadcast.
+        directions = torch.empty(
+            d,
+            current,
+            device=values.device,
+            dtype=torch.float32,
+        )
+        if (not distributed) or dist.get_rank() == 0:
+            directions.normal_()
+            directions.div_(
+                directions.norm(p=2, dim=0, keepdim=True).clamp_min(1e-6)
+            )
+        if distributed:
+            dist.broadcast(directions, src=0)
+
+        projected = values @ directions
+        args = projected.unsqueeze(-1) * t.view(1, 1, -1)
+        local_moments = torch.stack(
+            [
+                torch.cos(args).sum(dim=0),
+                torch.sin(args).sum(dim=0),
+            ],
+            dim=0,
+        )
+
+        if distributed:
+            global_moments = differentiable_all_reduce(
+                local_moments,
+                op=dist.ReduceOp.SUM,
+            )
+        else:
+            global_moments = local_moments
+
+        empirical_real = global_moments[0] / float(global_n)
+        empirical_imag = global_moments[1] / float(global_n)
+        error = (
+            (empirical_real - gaussian_cf.unsqueeze(0)).square()
+            + empirical_imag.square()
+        )
+        per_slice = (error * weights.unsqueeze(0)).sum(dim=-1) * float(global_n)
+        total_stat = total_stat + per_slice.sum()
+
+    loss = total_stat / float(total_slices)
+
+    # Global diagnostics only; they do not participate in the loss graph.
     with torch.no_grad():
-        dim_std = values.std(dim=0, unbiased=False)
-        mean_norm = values.mean(dim=0).norm(p=2)
+        local_sum = values.sum(dim=0)
+        local_sq = values.square().sum(dim=0)
+        if distributed:
+            dist.all_reduce(local_sum, op=dist.ReduceOp.SUM)
+            dist.all_reduce(local_sq, op=dist.ReduceOp.SUM)
+        mean = local_sum / float(global_n)
+        var = (local_sq / float(global_n) - mean.square()).clamp_min(0.0)
+        dim_std = var.sqrt()
+        mean_norm = mean.norm(p=2)
+
     return loss, {
-        "sigreg_samples": float(n),
+        "sigreg_samples": float(global_n),
         "sigreg_dim_std_mean": float(dim_std.mean().item()),
         "sigreg_dim_std_min": float(dim_std.min().item()),
         "sigreg_embedding_mean_norm": float(mean_norm.item()),
     }
-
 
 def freeze_text_encoder(text_encoder):
     for parameter in text_encoder.parameters():
@@ -1020,6 +1087,7 @@ def install_training_objective(train_module):
                 t_min=float(train_module.P.sigreg_t_min),
                 t_max=float(train_module.P.sigreg_t_max),
                 min_samples=int(train_module.P.sigreg_min_samples),
+                slice_chunk=int(train_module.P.sigreg_slice_chunk),
             )
         else:
             sigreg = dtw.new_zeros(())
@@ -1252,6 +1320,9 @@ def model_config(P):
         "sigreg_t_min": float(P.sigreg_t_min),
         "sigreg_t_max": float(P.sigreg_t_max),
         "sigreg_min_samples": int(P.sigreg_min_samples),
+        "sigreg_slice_chunk": int(P.sigreg_slice_chunk),
+        "sigreg_ddp_distribution": "global-valid-token-population",
+        "sigreg_shared_slices_across_ranks": True,
         "positive_letter_dtw_gamma": float(P.positive_letter_dtw_gamma),
         "positive_letter_dtw_gamma_start": float(P.positive_letter_dtw_gamma_start),
         "positive_letter_dtw_gamma_end": float(P.positive_letter_dtw_gamma_end),
