@@ -19,7 +19,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributed.nn.functional import all_reduce as differentiable_all_reduce
+from torch.distributed.nn import all_reduce as differentiable_all_reduce
 
 from restoration_recommended_components import (
     LocalContextFusion,
