@@ -1307,10 +1307,43 @@ def install_training_objective(train_module):
         dtw_output = output_root / "dtw"
 
         env = os.environ.copy()
-        # Evaluation must be deterministic/clean.  Keep the training geometry,
-        # but never apply stochastic training corruption to the held-out pair.
-        env["REAL_SCAN_AUGMENT"] = "0"
-        env["REAL_AUGMENT"] = "0"
+        # Evaluation must be deterministic/clean and must match the exact
+        # deterministic preprocessing used by this real training run:
+        # XML four-sided bbox crop -> grayscale -> aspect-preserving 1024x128.
+        # Only stochastic scan corruption is disabled.
+        env.update(
+            {
+                "DATASET_TYPE": "real",
+                "LINE_HEIGHT": "128",
+                "LINE_WIDTH": "1024",
+                "PACK_VALID_WINDOWS": "0",
+                "REAL_SYNTHETIC_STYLE": "0",
+                "REAL_BINARIZE": "0",
+                "REAL_BINARIZE_AUTO_INVERT": "0",
+                "REAL_BINARIZE_AUTOCONTRAST": "0",
+                "REAL_AUGMENT": "0",
+                "REAL_SCAN_AUGMENT": "0",
+                "VISUAL_INPUT_CHANNELS": "1",
+                "VISUAL_GRAYSCALE": "1",
+                "REAL_GRAYSCALE": "1",
+                "REAL_BBOX_CROP": "1",
+                "REAL_BBOX_CROP_STRICT": "1",
+                "REAL_BBOX_MARGIN_RATIO": os.environ.get(
+                    "REAL_BBOX_MARGIN_RATIO", "0.05"
+                ),
+                "REAL_BBOX_MIN_MARGIN_PX": os.environ.get(
+                    "REAL_BBOX_MIN_MARGIN_PX", "2"
+                ),
+                "ZERO_SHOT_PREPROCESS": "1",
+                "ZERO_SHOT_FOREGROUND_CROP": "0",
+                "ZERO_SHOT_PRESERVE_ASPECT": "1",
+                "ZERO_SHOT_SOURCE_GEOMETRY": "0",
+                "ZERO_SHOT_TARGET_INK_HEIGHT_RATIO": os.environ.get(
+                    "ZERO_SHOT_TARGET_INK_HEIGHT_RATIO", "0.72"
+                ),
+                "LINE_GEOMETRY_MODE": "xml-bbox-gray-aspect-preserving",
+            }
+        )
         env["PYTHONPATH"] = (
             str(Path(__file__).resolve().parent)
             + os.pathsep
