@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Point-3 diagnostic: inspect hard monotonic image-to-image paths.
+"""Point-3 diagnostic: inspect hard monotonic image-to-transcript letter paths.
 
 For the same fixed test pairs, compare the trained fused representation from:
   1) the original ResNet-token -> TinyViT architecture, and
@@ -24,6 +24,8 @@ import csv
 import json
 import math
 import shutil
+import tempfile
+from types import SimpleNamespace
 from pathlib import Path
 
 import matplotlib
@@ -38,6 +40,8 @@ from Evaluation.eval_yelda import synthetic_split, balanced_pairs, configure_geo
 from Evaluation.point2_runtime import load_point2_visual_models, point2_pair_features
 from Evaluation.yelda_geometry import prepare_line
 from Evaluation.yelda_runtime import read_checkpoint
+from textEmbedding import OrthogonalCharEmbedding
+from vlm_restoration_positive_dtw import _clean_letters, letter_dtw_cost_matrix
 
 
 def hard_dtw_path(similarity: np.ndarray) -> list[tuple[int, int]]:
@@ -232,8 +236,37 @@ def evaluate_architecture(
     checkpoint = read_checkpoint(weights)
     models = load_point2_visual_models(checkpoint, device, "restoration")
     configure_geometry(models.config, preprocessing)
-    rows: list[dict] = []
+    config = dict(models.config)
+    pconfig = SimpleNamespace(
+        positive_letter_dtw_cost_mode=str(
+            config.get("positive_letter_dtw_cost_mode", "full_alphabet_nll")
+        ),
+        positive_letter_dtw_competition_temperature=float(
+            config.get("positive_letter_dtw_competition_temperature", 0.10)
+        ),
+        positive_letter_dtw_vertical_penalty=float(
+            config.get("positive_letter_dtw_vertical_penalty", 0.05)
+        ),
+        positive_letter_dtw_horizontal_penalty=float(
+            config.get("positive_letter_dtw_horizontal_penalty", 0.30)
+        ),
+        positive_letter_dtw_position_prior=float(
+            config.get("positive_letter_dtw_position_prior", 0.15)
+        ),
+        positive_letter_dtw_disable_horizontal_when_feasible=bool(
+            config.get("positive_letter_dtw_disable_horizontal_when_feasible", True)
+        ),
+    )
+    text_encoder = OrthogonalCharEmbedding(
+        embedding_dim=int(config.get("vit_embed_dim", 192)),
+        vocab_size=int(config.get("letter_codebook_vocab_size", 4096)),
+        seed=int(config.get("letter_codebook_seed", 1234)),
+    ).to(models.device)
+    text_encoder.eval()
+    for parameter in text_encoder.parameters():
+        parameter.requires_grad_(False)
 
+    rows: list[dict] = []
     arch_root = output_root / label
     arch_root.mkdir(parents=True, exist_ok=True)
 
@@ -247,42 +280,34 @@ def evaluate_architecture(
         line2, geometry2 = prepare_line(
             pair.image2, pair.preprocess_domain(2), preprocessing
         )
-        line1_file = pair_dir / "line1_model_input.png"
-        line2_file = pair_dir / "line2_model_input.png"
-        line1.save(line1_file)
-        line2.save(line2_file)
 
-        first, second = point2_pair_features(models, line1_file, line2_file, "fused")
-        similarity = (
-            compute_similarity(first.contextual, second.contextual)
-            .detach()
-            .cpu()
-            .numpy()
-            .astype(np.float32)
-        )
-        path = hard_dtw_path(similarity)
-        metrics = path_metrics(similarity, path)
+        with tempfile.TemporaryDirectory(prefix="letter_dtw_") as tmp:
+            tmp = Path(tmp)
+            line1_file = tmp / "line1.png"
+            line2_file = tmp / "line2.png"
+            line1.save(line1_file)
+            line2.save(line2_file)
+            first, second = point2_pair_features(
+                models, line1_file, line2_file, "fused"
+            )
 
-        np.save(pair_dir / "fused_cosine_similarity.npy", similarity)
-        np.savetxt(
-            pair_dir / "fused_cosine_similarity.csv",
-            similarity,
-            delimiter=",",
-            fmt="%.8f",
-        )
-        write_path_csv(pair_dir / "hard_dtw_path.csv", path, similarity)
-        save_heatmap(
-            similarity,
-            path,
-            line1_file,
-            line2_file,
-            pair_dir / "hard_dtw_heatmap.png",
+        side1 = _letter_dtw_side(first, pair.image1, text_encoder, pconfig)
+        side2 = _letter_dtw_side(second, pair.image2, text_encoder, pconfig)
+
+        save_letter_dtw_overview(
+            line1,
+            side1,
+            line2,
+            side2,
+            pair_dir / "letter_dtw_overview.png",
             (
-                f"{label} | pair={pair.index} | fused cosine + hard DTW\n"
-                f"warp={metrics['warp_ratio']:.3f}, "
-                f"diag_MAE={metrics['normalized_diagonal_mae']:.3f}, "
-                f"path_margin={metrics['path_cosine_margin']:.3f}"
+                f"{label} | pair={pair.index} | fused visual windows ↔ transcript letters | "
+                "window axis displayed RTL"
             ),
+        )
+        _write_letter_paths(
+            pair_dir / "letter_dtw_path.csv",
+            [(1, side1), (2, side2)],
         )
 
         row = {
@@ -297,7 +322,19 @@ def evaluate_architecture(
             "image_preprocessing": preprocessing,
             "geometry1": geometry1,
             "geometry2": geometry2,
-            **metrics,
+            "line1_transcript": side1["transcript_path"],
+            "line2_transcript": side2["transcript_path"],
+            "line1_windows": side1["windows"],
+            "line2_windows": side2["windows"],
+            "line1_letters": side1["letter_count"],
+            "line2_letters": side2["letter_count"],
+            "line1_mean_path_cost": side1["mean_path_cost"],
+            "line2_mean_path_cost": side2["mean_path_cost"],
+            "line1_final_dtw_cost": side1["final_dtw_cost"],
+            "line2_final_dtw_cost": side2["final_dtw_cost"],
+            "window_display_order": "RTL; W0 shown at right",
+            "dtw_axis_definition": "x=visual windows, y=normalized Arabic transcript letters",
+            "dtw_cost_mode": pconfig.positive_letter_dtw_cost_mode,
         }
         (pair_dir / "summary.json").write_text(
             json.dumps(row, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -305,14 +342,13 @@ def evaluate_architecture(
         rows.append(row)
         print(
             f"[{label} {ordinal}/{len(selected)} pair={pair.index}] "
-            f"path_cos={metrics['mean_path_cosine']:.4f} "
-            f"margin={metrics['path_cosine_margin']:.4f} "
-            f"warp={metrics['warp_ratio']:.4f} "
-            f"diag_mae={metrics['normalized_diagonal_mae']:.4f}",
+            f"letter-DTW side1={side1['final_dtw_cost']:.4f} "
+            f"side2={side2['final_dtw_cost']:.4f} "
+            f"windows={side1['windows']}/{side2['windows']} "
+            f"letters={side1['letter_count']}/{side2['letter_count']}",
             flush=True,
         )
     return rows
-
 
 def write_rows(path: Path, rows: list[dict]) -> None:
     serializable = []
