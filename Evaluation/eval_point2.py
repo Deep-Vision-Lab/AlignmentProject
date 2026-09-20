@@ -100,8 +100,19 @@ def main(argv=None):
                 "indices advance right-to-left. Physical image overlays convert back "
                 "only for display."
             )
-            payload["point2_primary_alignment"] = "smith_waterman_local"
-            payload["point2_nw_role"] = "saved diagnostic only; not primary region path"
+            primary_alignment = os.environ.get(
+                "EVAL_PRIMARY_ALIGNMENT", "sw"
+            ).strip().lower()
+            payload["point2_primary_alignment"] = (
+                "needleman_wunsch_global"
+                if primary_alignment == "nw"
+                else "smith_waterman_local"
+            )
+            payload["point2_nw_role"] = (
+                "primary region/path interpreter"
+                if primary_alignment == "nw"
+                else "saved diagnostic only; not primary region path"
+            )
             payload["point2_match_rule"] = (
                 "trace proposes candidate pairs; accepted match iff raw cosine > threshold"
             )
