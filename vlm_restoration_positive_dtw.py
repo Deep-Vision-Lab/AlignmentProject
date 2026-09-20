@@ -13,6 +13,9 @@ from __future__ import annotations
 
 from types import MethodType
 import os
+from pathlib import Path
+import subprocess
+import sys
 import unicodedata
 
 import torch
@@ -1244,7 +1247,130 @@ def install_training_objective(train_module):
         train_module.P.positive_letter_dtw_gamma = float(gamma)
 
     train_module.epoch_start_hook = epoch_start_hook
-    train_module.epoch_diagnostic_hook = None
+
+    def epoch_diagnostic_hook(
+        *,
+        model,
+        text_encoder,
+        valid_loader,
+        epoch,
+        job_id,
+        config,
+        device,
+    ):
+        del model, text_encoder, valid_loader, device
+        if not _env_flag("TRAIN_SAMPLE_EVAL", False):
+            return
+
+        requested = {
+            int(value.strip())
+            for value in os.environ.get(
+                "TRAIN_SAMPLE_EVAL_EPOCHS", "1,5,10,15,20,25,30"
+            ).split(",")
+            if value.strip()
+        }
+        epoch = int(epoch)
+        if epoch not in requested:
+            return
+
+        weights = (
+            Path(train_module.weights_dir(job_id))
+            / f"model_epoch_{epoch:03d}.pth"
+        )
+        if not weights.is_file():
+            raise FileNotFoundError(
+                f"Epoch diagnostic checkpoint not found: {weights}"
+            )
+
+        dataset = Path(str(config.get("data_dir", ""))).expanduser().resolve()
+        if not dataset.exists():
+            raise FileNotFoundError(
+                f"Epoch diagnostic dataset not found: {dataset}"
+            )
+
+        start_index = max(
+            1, _env_int("TRAIN_SAMPLE_EVAL_START_INDEX", 1)
+        )
+        eval_device = os.environ.get(
+            "TRAIN_SAMPLE_EVAL_DEVICE", "cpu"
+        ).strip() or "cpu"
+        threshold = _env_float("TRAIN_SAMPLE_EVAL_THRESHOLD", 0.10)
+        output_root = (
+            Path("Results")
+            / "Evaluation"
+            / "Point2"
+            / "train_epoch_sample"
+            / str(job_id)
+            / f"epoch_{epoch:03d}"
+        )
+        nw_output = output_root / "nw"
+        dtw_output = output_root / "dtw"
+
+        env = os.environ.copy()
+        # Evaluation must be deterministic/clean.  Keep the training geometry,
+        # but never apply stochastic training corruption to the held-out pair.
+        env["REAL_SCAN_AUGMENT"] = "0"
+        env["REAL_AUGMENT"] = "0"
+        env["PYTHONPATH"] = (
+            str(Path(__file__).resolve().parent)
+            + os.pathsep
+            + env.get("PYTHONPATH", "")
+        )
+
+        common = [
+            "--dataset", str(dataset),
+            "--split", "test",
+            "--training-samples", "6000",
+            "--split-seed", "42",
+            "--n-samples", "1",
+            "--start-index", str(start_index),
+            "--device", eval_device,
+            "--image-preprocessing", "training",
+        ]
+
+        print(
+            f"EPOCH_SAMPLE_EVAL epoch={epoch} sample={start_index} "
+            f"checkpoint={weights} device={eval_device}",
+            flush=True,
+        )
+
+        nw_cmd = [
+            sys.executable,
+            "-u",
+            "-m",
+            "Evaluation.eval_point2",
+            "--point2-representation", "fused",
+            "--weights", str(weights),
+            "--branch", "restoration",
+            "--alignment-unit", "window",
+            "--word-support-floor", "0.0",
+            "--min-aligned-windows", "5",
+            "--score-mode", "raw",
+            "--threshold", str(threshold),
+            "--gap", "-0.30",
+            "--output-dir", str(nw_output),
+            *common,
+        ]
+        subprocess.run(nw_cmd, check=True, env=env)
+
+        dtw_cmd = [
+            sys.executable,
+            "-u",
+            "-m",
+            "Evaluation.eval_point3_hard_paths",
+            "--weights", str(weights),
+            "--output-dir", str(dtw_output),
+            *common,
+        ]
+        subprocess.run(dtw_cmd, check=True, env=env)
+
+        print(
+            f"EPOCH_SAMPLE_EVAL_DONE epoch={epoch} "
+            f"nw={nw_output} dtw={dtw_output}",
+            flush=True,
+        )
+
+    train_module.epoch_diagnostic_hook = epoch_diagnostic_hook
     train_module.save_d3tw_visualization = lambda *args, **kwargs: None
 
     if hasattr(train_module, "wandb_log_epoch_metrics"):
