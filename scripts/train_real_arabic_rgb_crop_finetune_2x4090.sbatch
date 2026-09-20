@@ -402,7 +402,7 @@ echo "drop last batch      = ${TRAIN_DROP_LAST} (match synthetic gradient fix)"
 echo "epoch snapshots       = every ${MODEL_WEIGHTS_EVERY_N_EPOCHS} epochs"
 echo "sample eval epochs    = ${TRAIN_SAMPLE_EVAL_EPOCHS}"
 echo "sample eval index     = ${TRAIN_SAMPLE_EVAL_START_INDEX}"
-echo "sample eval methods   = NW(Point-2 fused) + hard-DTW(Point-3 fused)"
+echo "sample eval methods   = NW fused image-image + hard letter-DTW fused image-text (RTL windows)"
 echo "sample eval device    = ${TRAIN_SAMPLE_EVAL_DEVICE}"
 echo "============================================================"
 
