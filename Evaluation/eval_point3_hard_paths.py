@@ -395,9 +395,7 @@ def _plot_letter_panel(ax, result: dict, title: str):
     ax.set_ylabel("Transcript letters in logical Arabic reading order")
     ax.set_title(title)
 
-    # x=0 is the first model-sequence element for Arabic. Put it at the
-    # right side so the heatmap follows the manuscript's physical RTL order.
-    ax.invert_xaxis()
+    # RTL window orientation is fixed explicitly below after all ticks are set.
 
     if len(letters) <= 80:
         letter_ticks = np.arange(len(letters))
@@ -408,14 +406,43 @@ def _plot_letter_panel(ax, result: dict, title: str):
     ax.set_yticklabels([letters[i] for i in letter_ticks], fontsize=8)
 
     n_windows = len(physical)
-    step = max(1, n_windows // 20)
-    window_ticks = np.arange(0, n_windows, step)
+
+    # Every heatmap column is one VALID visual window.  Show every one of
+    # them, not a sampled subset, and label it with the physical fixed-grid
+    # window id used by the 63-position model sequence.
+    window_ticks = np.arange(n_windows)
     ax.set_xticks(window_ticks)
     ax.set_xticklabels(
-        [f"W{int(physical[i])}" for i in window_ticks],
+        [f"W{int(physical[i]):02d}" for i in window_ticks],
         rotation=90,
-        fontsize=8,
+        fontsize=7,
+        ha="center",
+        va="top",
     )
+    ax.tick_params(
+        axis="x",
+        which="major",
+        bottom=True,
+        labelbottom=True,
+        length=4,
+        pad=2,
+    )
+
+    # Draw the boundary of every window column so it is visually impossible
+    # to confuse neighbouring heatmap cells.
+    ax.set_xticks(np.arange(-0.5, n_windows, 1.0), minor=True)
+    ax.grid(
+        which="minor",
+        axis="x",
+        linewidth=0.35,
+        alpha=0.45,
+    )
+    ax.tick_params(axis="x", which="minor", bottom=False)
+
+    # Explicit RTL limits are more robust than invert_xaxis() after adding
+    # major/minor ticks: physical/model window 0 stays on the RIGHT.
+    ax.set_xlim(n_windows - 0.5, -0.5)
+
     ax.legend(loc="upper left")
     return heat
 
@@ -429,7 +456,12 @@ def save_letter_dtw_overview(
     title: str,
 ) -> None:
     """Save one compact figure containing both lines and both letter-DTW maps."""
-    fig = plt.figure(figsize=(16, 15))
+    max_windows = max(
+        int(result1["windows"]),
+        int(result2["windows"]),
+    )
+    figure_width = max(22.0, 0.42 * float(max_windows))
+    fig = plt.figure(figsize=(figure_width, 15))
     grid = fig.add_gridspec(
         4, 1, height_ratios=[1.0, 5.0, 1.0, 5.0], hspace=0.36
     )
