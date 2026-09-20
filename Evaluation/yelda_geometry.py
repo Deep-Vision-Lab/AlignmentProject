@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import numpy as np
 from PIL import Image, ImageOps
 
@@ -221,13 +222,56 @@ def prepare_line(path, domain, image_preprocessing="original"):
             f"Unknown image preprocessing: {image_preprocessing}; "
             "use original, training, tight, cropped_1024, or wide_side_padding"
         )
+    source_original = original
+    bbox_metadata = None
+    real_domain = str(domain).strip().lower() == "real"
+    bbox_enabled = os.environ.get("REAL_BBOX_CROP", "0").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    if real_domain and bbox_enabled:
+        from real_line_bbox_crop import bbox_crop_line
+
+        image_path = Path(path)
+        match = re.search(r"(\d+)$", image_path.stem)
+        if match is None:
+            raise ValueError(
+                f"Cannot recover line index for XML bbox evaluation: {image_path}"
+            )
+        side_dir = image_path.parent.parent
+        original, bbox_metadata = bbox_crop_line(
+            original,
+            side_dir,
+            int(match.group(1)),
+            margin_ratio=float(os.environ.get("REAL_BBOX_MARGIN_RATIO", "0.05")),
+            minimum_margin_px=int(os.environ.get("REAL_BBOX_MIN_MARGIN_PX", "2")),
+        )
+        if os.environ.get("VISUAL_GRAYSCALE", "0").strip().lower() in {
+            "1", "true", "yes", "on"
+        }:
+            original = original.convert("L")
+
     processor = preprocessing.build_preprocessor(domain, training=False)
     if hasattr(processor, "preprocess_with_metadata"):
         processed, geometry = processor.preprocess_with_metadata(original)
         geometry = dict(geometry)
+        if bbox_metadata is not None:
+            # Map model-window intervals back to the original saved line image,
+            # not merely to the XML crop.
+            geometry["source_width"] = int(source_original.width)
+            geometry["source_height"] = int(source_original.height)
+            geometry["crop_left"] = int(bbox_metadata["crop_left"])
+            geometry["crop_top"] = int(bbox_metadata["crop_top"])
+            geometry["crop_right"] = int(bbox_metadata["crop_right"])
+            geometry["crop_bottom"] = int(bbox_metadata["crop_bottom"])
+            geometry["crop_width"] = int(bbox_metadata["crop_width"])
+            geometry["crop_height"] = int(bbox_metadata["crop_height"])
+            geometry["xml_bbox_crop"] = True
+            geometry["xml_path"] = str(bbox_metadata["xml_path"])
+            geometry["line_index"] = int(bbox_metadata["line_index"])
         geometry["image_preprocessing"] = "training"
         geometry.setdefault("autocontrast", bool(processor.autocontrast))
         geometry.setdefault("auto_invert", bool(processor.auto_invert))
+        geometry["color_mode"] = str(processed.mode)
         return processed, geometry
 
     # Legacy fallback for old preprocessors.
