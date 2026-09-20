@@ -308,12 +308,25 @@ def build_dataloaders(data_dir=None):
 
     base_train_samples = len(train_dataset)
     target_train_samples = int(os.environ.get("REAL_TRAIN_SAMPLES_PER_EPOCH", "0"))
+    augment_copies = max(1, int(os.environ.get("REAL_TRAIN_AUGMENT_COPIES", "1")))
+    # Online augmentation normally preserves dataset length.  For the real
+    # all-page-lines scan-augmentation run, optionally expose multiple fresh
+    # stochastic views of every source line each epoch.  An explicit
+    # REAL_TRAIN_SAMPLES_PER_EPOCH still takes precedence.
+    if (
+        target_train_samples <= 0
+        and scan_augmentor is not None
+        and scan_augmentor.enabled
+        and augment_copies > 1
+    ):
+        target_train_samples = base_train_samples * augment_copies
     if target_train_samples > base_train_samples:
         train_dataset = RepeatToLengthDataset(train_dataset, target_train_samples)
 
     _diagnostic_quiet_print(
         "Loaded augmented real Arabic dataset: "
         f"samples={len(full_dataset)} base_train={base_train_samples} "
+        f"augment_copies={augment_copies} "
         f"train_per_epoch={len(train_dataset)} "
         f"valid={len(valid_subset)} test={len(test_subset)} "
         f"augment={bool((scan_augmentor and scan_augmentor.enabled) or (augmentor and augmentor.enabled))} "
