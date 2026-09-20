@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
@@ -317,10 +318,69 @@ class ArabicManifestIndependentLineDataset(Dataset):
         with path.open("r", encoding="utf-8") as handle:
             return " " + handle.read().strip() + " "
 
+    @staticmethod
+    def _env_flag(name: str, default: bool = False) -> bool:
+        value = os.environ.get(name)
+        if value is None:
+            return bool(default)
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _prepare_line_image(self, sample, image: Image.Image) -> Image.Image:
+        """Deterministic real-line preparation before split-specific transforms.
+
+        Order is intentional:
+          1) crop to the source-XML text envelope on all four sides;
+          2) convert to true one-channel grayscale when requested.
+        Online scan augmentation is NOT applied here because validation/test must
+        remain clean.  The training subset wrapper applies it afterwards.
+        """
+        work = image.convert("RGB")
+
+        if self._env_flag("REAL_BBOX_CROP", False):
+            from real_line_bbox_crop import bbox_crop_line
+
+            line_idx = int(sample.get("line_idx", -1))
+            side_dir = self._resolve(sample.get("page_dir", ""))
+            if line_idx <= 0:
+                raise ValueError(
+                    "REAL_BBOX_CROP requires a positive line_idx, got "
+                    f"{line_idx} for {sample.get('line_image_path')}"
+                )
+            try:
+                work, _bbox_meta = bbox_crop_line(
+                    work,
+                    side_dir,
+                    line_idx,
+                    margin_ratio=float(
+                        os.environ.get("REAL_BBOX_MARGIN_RATIO", "0.05")
+                    ),
+                    minimum_margin_px=int(
+                        os.environ.get("REAL_BBOX_MIN_MARGIN_PX", "2")
+                    ),
+                )
+            except Exception:
+                if self._env_flag("REAL_BBOX_CROP_STRICT", True):
+                    raise
+
+        if self._env_flag("VISUAL_GRAYSCALE", False) or self._env_flag(
+            "REAL_GRAYSCALE", False
+        ):
+            work = work.convert("L")
+
+        return work
+
+    def read_prepared_pil(self, idx):
+        sample = self.samples[int(idx)]
+        path = self._resolve(sample["line_image_path"])
+        with Image.open(path) as image:
+            prepared = self._prepare_line_image(sample, image)
+        return self._read_text(sample["text_path"]), prepared.copy()
+
     def _read_image(self, path_value):
+        # Backward-compatible raw reader for callers that only have a path.
         path = self._resolve(path_value)
         with Image.open(path) as image:
-            image = image.convert("RGB")
+            image = image.convert("L" if self._env_flag("VISUAL_GRAYSCALE", False) else "RGB")
             if self.transform is not None:
                 return self.transform(image)
             return image.copy()
@@ -552,8 +612,7 @@ class ArabicAllPageLinesDataset(Dataset):
                 )
 
     def __getitem__(self, idx):
-        sample = self.samples[int(idx)]
-        return (
-            self._read_text(sample["text_path"]),
-            self._read_image(sample["line_image_path"]),
-        )
+        text, image = self.read_prepared_pil(idx)
+        if self.transform is not None:
+            image = self.transform(image)
+        return text, image
