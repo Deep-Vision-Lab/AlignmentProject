@@ -237,6 +237,44 @@ def configure_geometry(config, image_preprocessing="original"):
     return install_evaluation_geometry()
 
 
+def _compact_eval_cleanup(destination: Path) -> None:
+    """Remove redundant per-pair debug artifacts after the composite figure exists."""
+    if os.environ.get("EVAL_COMPACT_OUTPUT", "0").strip().lower() not in {
+        "1", "true", "yes", "on"
+    }:
+        return
+    keep = {
+        "cosine_similarity_values.png",
+        "cosine_similarity_nw_trace_values.png",
+        "nw_trace_path_values.csv",
+        "summary.json",
+    }
+    redundant_names = {
+        "line1_model_input.png", "line2_model_input.png",
+        "line1_content_crop.png", "line2_content_crop.png",
+        "line1_pred_mask.png", "line2_pred_mask.png",
+        "line1_gt_mask.png", "line2_gt_mask.png",
+        "line1_source_pred_mask.png", "line2_source_pred_mask.png",
+        "line1_source_gt_mask.png", "line2_source_gt_mask.png",
+        "nw_match_scores_values.png", "nw_dp_trace_values.png",
+        "cosine_similarity_sw_trace_values.png",
+    }
+    for child in destination.iterdir():
+        if not child.is_file():
+            continue
+        if child.name in keep:
+            continue
+        if (
+            child.name in redundant_names
+            or child.suffix.lower() == ".npy"
+            or (
+                child.suffix.lower() == ".csv"
+                and child.name != "nw_trace_path_values.csv"
+            )
+        ):
+            child.unlink(missing_ok=True)
+
+
 def evaluate_pair(base, models, pair, args, destination):
     from PIL import Image
     from Evaluation.yelda_geometry import (
@@ -294,6 +332,7 @@ def evaluate_pair(base, models, pair, args, destination):
                gt_mask1=str(pair.gt_mask1 or ""), gt_mask2=str(pair.gt_mask2 or ""),
                feature="joint" if args.representation == "joint" else args.feature, representation=args.representation, local_weight=args.local_weight if args.representation == "joint" else None, geometry=geometry, mask_coordinate_system="source_image")
     write_json(destination / "summary.json", row)
+    _compact_eval_cleanup(destination)
     return row
 
 
