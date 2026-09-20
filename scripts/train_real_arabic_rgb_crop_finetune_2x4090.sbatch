@@ -33,8 +33,11 @@ export RESTORATION_EPOCHS="${RESTORATION_EPOCHS:-30}"
 export RESTORATION_LEARNING_RATE="${RESTORATION_LEARNING_RATE:-2e-5}"
 # 0 means use all manifest rows that pass the real-data label filters.
 export RESTORATION_NUM_SAMPLES="${RESTORATION_NUM_SAMPLES:-0}"
-# 0 means do not repeat the same real rows to an artificial epoch length.
+# Keep the explicit target at 0 and derive it from the training split.
+# Three copies means each source line is loaded three times per epoch, with a
+# fresh random scan augmentation on every access.
 export REAL_TRAIN_SAMPLES_PER_EPOCH="${REAL_TRAIN_SAMPLES_PER_EPOCH:-0}"
+export REAL_TRAIN_AUGMENT_COPIES="${REAL_TRAIN_AUGMENT_COPIES:-3}"
 
 # ArabicDataset preprocessing for the new run:
 # source XML text envelope -> crop ALL FOUR SIDES -> true grayscale ->
@@ -284,12 +287,16 @@ for group_id in group_ids:
 
 world_size = 2
 batch_size_per_rank = 32
-samples_per_rank = (
-    math.ceil((len(train) - world_size) / world_size)
-    if len(train) % world_size != 0
-    else len(train) // world_size
+augment_copies = max(1, int(os.environ.get("REAL_TRAIN_AUGMENT_COPIES", "1")))
+explicit_target = int(os.environ.get("REAL_TRAIN_SAMPLES_PER_EPOCH", "0"))
+train_views = (
+    explicit_target
+    if explicit_target > len(train)
+    else len(train) * augment_copies
 )
-samples_per_rank = max(0, samples_per_rank)
+# DistributedSampler(drop_last=True) gives floor(N/world_size) samples/rank;
+# DataLoader(drop_last=True) then gives only complete per-rank batches.
+samples_per_rank = train_views // world_size
 expected_batches = samples_per_rank // batch_size_per_rank
 
 print("All-page-line dataset census:")
@@ -297,6 +304,8 @@ print("  unique lines       =", len(dataset))
 print("  source pages       =", len(groups))
 print("  scan stats         =", dataset.scan_stats)
 print("  train/valid/test   =", len(train), len(valid), len(test))
+print("  augmentation copies=", augment_copies)
+print("  train views/epoch  =", train_views)
 print("  batch size / rank  =", batch_size_per_rank)
 print("  DDP world size     =", world_size)
 print("  expected train batches / rank =", expected_batches)
@@ -326,6 +335,7 @@ echo "approved pipeline     = XML 4-side crop -> grayscale -> scan augmentation 
 echo "bbox crop             = ${REAL_BBOX_CROP} margin_ratio=${REAL_BBOX_MARGIN_RATIO} min_margin=${REAL_BBOX_MIN_MARGIN_PX}px"
 echo "visual channels       = ${VISUAL_INPUT_CHANNELS} (true grayscale=${VISUAL_GRAYSCALE})"
 echo "scan augmentation     = ${REAL_SCAN_AUGMENT} prob=${REAL_SCAN_AUGMENT_PROB}"
+echo "augmentation copies   = ${REAL_TRAIN_AUGMENT_COPIES} views/source-line/epoch"
 echo "blur prob/radius      = ${REAL_SCAN_BLUR_PROB} / ${REAL_SCAN_BLUR_RADIUS_MIN}..${REAL_SCAN_BLUR_RADIUS_MAX}"
 echo "gaussian noise        = prob=${REAL_SCAN_GAUSSIAN_NOISE_PROB} std=${REAL_SCAN_GAUSSIAN_NOISE_STD_MIN}..${REAL_SCAN_GAUSSIAN_NOISE_STD_MAX}"
 echo "speckle               = prob=${REAL_SCAN_SPECKLE_PROB} fraction=${REAL_SCAN_SPECKLE_FRACTION}"
