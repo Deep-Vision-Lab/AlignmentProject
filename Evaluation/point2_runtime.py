@@ -29,6 +29,7 @@ from Evaluation._eval_utils import (
     IMAGENET_MEAN,
     IMAGENET_STD,
 )
+from zero_shot_preprocessing import IMAGENET_GRAY_MEAN, IMAGENET_GRAY_STD
 
 POINT2_MODES = ("local", "context", "fused", "fused_wrong_context")
 
@@ -117,6 +118,8 @@ def load_point2_visual_models(checkpoint, device="auto", expected_branch="auto")
             config.get("tiny_vit_pretrained_model", "facebook/deit-tiny-patch16-224")
         ),
         pretrained_local_only=True,
+        visual_input_channels=int(config.get("visual_input_channels", 3)),
+        visual_grayscale=_flag(config.get("visual_grayscale", False)),
     )
 
     if _is_physical_window_checkpoint(config):
@@ -177,15 +180,21 @@ def _encode_line(models, image_path, mode: str, *, side: int) -> ImageFeatures:
     if mode not in POINT2_MODES:
         raise ValueError(f"Unknown Point-2 representation {mode!r}")
 
+    input_channels = int(models.config.get("visual_input_channels", 3))
+    grayscale = bool(models.config.get("visual_grayscale", input_channels == 1))
+    if input_channels not in {1, 3}:
+        raise ValueError(f"Unsupported Point-2 visual_input_channels={input_channels}")
     with Image.open(image_path) as opened:
-        image = opened.convert("RGB")
+        image = opened.convert("L" if grayscale else "RGB")
         original_size = image.size
         # The image has already been prepared by yelda_geometry. Do not resize
-        # it again here: tight evaluation intentionally keeps variable width.
+        # it again here. Normalize with the same statistics as training.
+        mean = IMAGENET_GRAY_MEAN if grayscale else IMAGENET_MEAN
+        std = IMAGENET_GRAY_STD if grayscale else IMAGENET_STD
         tensor = transforms.Compose(
             [
                 transforms.ToTensor(),
-                transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+                transforms.Normalize(mean, std),
             ]
         )(image).unsqueeze(0).to(models.device)
 
