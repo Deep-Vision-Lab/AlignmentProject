@@ -382,20 +382,17 @@ def _letter_dtw_side(features, image_path: Path, text_encoder, pconfig) -> dict:
 
 
 def _plot_letter_panel(ax, result: dict, title: str):
-    """Plot letter-DTW with Arabic physical windows increasing right-to-left."""
+    """Plot letter-DTW; the x-axis is the actual window-image strip below."""
     costs = result["costs"]
     letters = result["letters"]
-    physical = result["physical_window_indices"]
+    n_windows = int(costs.shape[0])
 
     heat = ax.imshow(costs.T, aspect="auto", origin="upper")
     xs = [window for window, _letter in result["path"]]
     ys = [letter for _window, letter in result["path"]]
     ax.plot(xs, ys, linewidth=2.0, label="hard DTW path")
-    ax.set_xlabel("Visual windows — RTL; rightmost valid window is on the right")
     ax.set_ylabel("Transcript letters in logical Arabic reading order")
     ax.set_title(title)
-
-    # RTL window orientation is fixed explicitly below after all ticks are set.
 
     if len(letters) <= 80:
         letter_ticks = np.arange(len(letters))
@@ -405,47 +402,77 @@ def _plot_letter_panel(ax, result: dict, title: str):
     ax.set_yticks(letter_ticks)
     ax.set_yticklabels([letters[i] for i in letter_ticks], fontsize=8)
 
-    n_windows = len(physical)
+    # No W00/W01/... labels. The thumbnail strip below is the x-axis.
+    ax.set_xticks([])
+    ax.tick_params(axis="x", bottom=False, labelbottom=False)
 
-    # Every heatmap column is one VALID visual window.  Show every one of
-    # them, not a sampled subset, and label it with the physical fixed-grid
-    # window id used by the 63-position model sequence.
-    window_ticks = np.arange(n_windows)
-    ax.set_xticks(window_ticks)
-    ax.set_xticklabels(
-        [f"W{int(physical[i]):02d}" for i in window_ticks],
-        rotation=90,
-        fontsize=7,
-        ha="center",
-        va="top",
-    )
-    ax.tick_params(
-        axis="x",
-        which="major",
-        bottom=True,
-        labelbottom=True,
-        length=4,
-        pad=2,
-    )
-
-    # Draw the boundary of every window column so it is visually impossible
-    # to confuse neighbouring heatmap cells.
+    # Column boundaries visually connect each heatmap cell to its thumbnail.
     ax.set_xticks(np.arange(-0.5, n_windows, 1.0), minor=True)
-    ax.grid(
-        which="minor",
-        axis="x",
-        linewidth=0.35,
-        alpha=0.45,
-    )
+    ax.grid(which="minor", axis="x", linewidth=0.35, alpha=0.40)
     ax.tick_params(axis="x", which="minor", bottom=False)
 
-    # Explicit RTL limits are more robust than invert_xaxis() after adding
-    # major/minor ticks: physical/model window 0 stays on the RIGHT.
+    # Arabic RTL: sequence column 0 is displayed on the right.
     ax.set_xlim(n_windows - 0.5, -0.5)
-
     ax.legend(loc="upper left")
     return heat
 
+
+def _extract_window_images(
+    line_image,
+    sequence_window_indices,
+    *,
+    window_size: int,
+    stride: int,
+    use_flip: bool,
+):
+    """Extract the exact grayscale image crop represented by each model token."""
+    image = line_image.convert("L")
+    width, height = image.size
+    total_windows = 1 + max(0, (width - int(window_size)) // int(stride))
+    windows = []
+
+    for sequence_index in sequence_window_indices:
+        sequence_index = int(sequence_index)
+        grid_index = (
+            total_windows - 1 - sequence_index
+            if use_flip
+            else sequence_index
+        )
+        left = int(grid_index * stride)
+        right = int(left + window_size)
+        windows.append(image.crop((left, 0, right, height)))
+
+    return windows
+
+
+def _plot_window_image_axis(ax, window_images):
+    """Use actual window thumbnails as the x-axis, one per heatmap column."""
+    n_windows = len(window_images)
+    if n_windows == 0:
+        ax.axis("off")
+        return
+
+    for column, crop in enumerate(window_images):
+        pixels = np.asarray(crop.convert("L"))
+        ax.imshow(
+            pixels,
+            cmap="gray",
+            vmin=0,
+            vmax=255,
+            aspect="auto",
+            extent=(column - 0.5, column + 0.5, 0.0, 1.0),
+            interpolation="nearest",
+        )
+
+    # Draw only separators; no text labels.
+    for boundary in np.arange(-0.5, n_windows + 0.5, 1.0):
+        ax.axvline(boundary, linewidth=0.35, alpha=0.50)
+
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_ylabel("window\nimage", rotation=0, labelpad=28, va="center")
+    ax.set_xlim(n_windows - 0.5, -0.5)
+    ax.set_ylim(0.0, 1.0)
 
 def save_letter_dtw_overview(
     line1,
@@ -455,15 +482,16 @@ def save_letter_dtw_overview(
     output: Path,
     title: str,
 ) -> None:
-    """Save one compact figure containing both lines and both letter-DTW maps."""
-    max_windows = max(
-        int(result1["windows"]),
-        int(result2["windows"]),
-    )
-    figure_width = max(22.0, 0.42 * float(max_windows))
-    fig = plt.figure(figsize=(figure_width, 15))
+    """Full line, then DTW heatmap, then its actual window-image x-axis."""
+    max_windows = max(int(result1["windows"]), int(result2["windows"]))
+    figure_width = max(28.0, 0.50 * float(max_windows))
+    fig = plt.figure(figsize=(figure_width, 20))
+
     grid = fig.add_gridspec(
-        4, 1, height_ratios=[1.0, 5.0, 1.0, 5.0], hspace=0.36
+        6,
+        1,
+        height_ratios=[0.9, 5.0, 1.9, 0.9, 5.0, 1.9],
+        hspace=0.08,
     )
 
     ax_line1 = fig.add_subplot(grid[0])
@@ -476,7 +504,7 @@ def save_letter_dtw_overview(
         ax_heat1,
         result1,
         (
-            "Line 1: visual windows × transcript letters | "
+            "Line 1: visual-window images × transcript letters | "
             f"mean hard-path cost={result1['mean_path_cost']:.3f}"
         ),
     )
@@ -486,17 +514,21 @@ def save_letter_dtw_overview(
         label="training DTW cell cost + position prior (lower is better)",
     )
 
-    ax_line2 = fig.add_subplot(grid[2])
+    # This is the x-axis for the heatmap above: one image per heatmap column.
+    ax_windows1 = fig.add_subplot(grid[2], sharex=ax_heat1)
+    _plot_window_image_axis(ax_windows1, result1["window_images"])
+
+    ax_line2 = fig.add_subplot(grid[3])
     ax_line2.imshow(np.asarray(line2.convert("L")), cmap="gray", vmin=0, vmax=255)
     ax_line2.set_title("Line 2 — exact grayscale evaluation input")
     ax_line2.axis("off")
 
-    ax_heat2 = fig.add_subplot(grid[3])
+    ax_heat2 = fig.add_subplot(grid[4])
     heat2 = _plot_letter_panel(
         ax_heat2,
         result2,
         (
-            "Line 2: visual windows × transcript letters | "
+            "Line 2: visual-window images × transcript letters | "
             f"mean hard-path cost={result2['mean_path_cost']:.3f}"
         ),
     )
@@ -506,10 +538,12 @@ def save_letter_dtw_overview(
         label="training DTW cell cost + position prior (lower is better)",
     )
 
+    ax_windows2 = fig.add_subplot(grid[5], sharex=ax_heat2)
+    _plot_window_image_axis(ax_windows2, result2["window_images"])
+
     fig.suptitle(title, fontsize=14)
     fig.savefig(output, dpi=180, bbox_inches="tight")
     plt.close(fig)
-
 
 def _write_letter_paths(
     path_file: Path, side_results: list[tuple[int, dict]]
@@ -612,6 +646,24 @@ def evaluate_architecture(
 
         side1 = _letter_dtw_side(first, pair.image1, text_encoder, pconfig)
         side2 = _letter_dtw_side(second, pair.image2, text_encoder, pconfig)
+
+        window_size = int(config.get("window_size", 32))
+        stride = int(config.get("stride", 16))
+        use_flip = bool(models.image_model.use_flip)
+        side1["window_images"] = _extract_window_images(
+            line1,
+            side1["physical_window_indices"],
+            window_size=window_size,
+            stride=stride,
+            use_flip=use_flip,
+        )
+        side2["window_images"] = _extract_window_images(
+            line2,
+            side2["physical_window_indices"],
+            window_size=window_size,
+            stride=stride,
+            use_flip=use_flip,
+        )
 
         save_letter_dtw_overview(
             line1,
