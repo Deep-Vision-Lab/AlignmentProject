@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preview non-geometric real-data augmentations before enabling training."""
+"""Preview strong non-geometric augmentation on four-side-cropped grayscale lines."""
 from __future__ import annotations
 
 import argparse
@@ -13,16 +13,12 @@ from PIL import Image, ImageDraw
 
 from RealDataSet import ArabicAllPageLinesDataset
 from real_scan_augmentation import (
-    ScanOnlyAugmentor,
     gaussian_blur,
     gaussian_luminance_noise,
     speckle_noise,
     adjust_brightness_contrast,
 )
-from zero_shot_preprocessing import (
-    foreground_crop_with_metadata,
-    aspect_preserving_pad_with_metadata,
-)
+from zero_shot_preprocessing import aspect_preserving_pad_with_metadata
 
 
 def _sheet(images, labels, width=1024):
@@ -32,15 +28,17 @@ def _sheet(images, labels, width=1024):
         scale = min(1.0, width / max(1, im.width))
         if scale != 1.0:
             im = im.resize(
-                (max(1, int(round(im.width * scale))), max(1, int(round(im.height * scale)))),
+                (
+                    max(1, int(round(im.width * scale))),
+                    max(1, int(round(im.height * scale))),
+                ),
                 Image.Resampling.BILINEAR,
             )
         canvas = Image.new("RGB", (width, im.height + 28), "white")
         canvas.paste(im, ((width - im.width) // 2, 28))
         ImageDraw.Draw(canvas).text((8, 6), label, fill="black")
         rows.append(canvas)
-    height = sum(row.height for row in rows)
-    out = Image.new("RGB", (width, height), "white")
+    out = Image.new("RGB", (width, sum(row.height for row in rows)), "white")
     y = 0
     for row in rows:
         out.paste(row, (0, y))
@@ -51,13 +49,22 @@ def _sheet(images, labels, width=1024):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", required=True)
-    parser.add_argument("--output-dir", default="Results/Diagnostics/RealScanAugmentation")
+    parser.add_argument(
+        "--output-dir", default="Results/Diagnostics/RealScanAugmentation"
+    )
     parser.add_argument("--samples", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    os.environ.setdefault("ZERO_SHOT_CROP_MODE", "vertical_borders")
-    dataset = ArabicAllPageLinesDataset(args.dataset, transform=None, validate_paths=False)
+    os.environ["REAL_BBOX_CROP"] = "1"
+    os.environ.setdefault("REAL_BBOX_MARGIN_RATIO", "0.05")
+    os.environ.setdefault("REAL_BBOX_MIN_MARGIN_PX", "2")
+    os.environ["VISUAL_GRAYSCALE"] = "1"
+    os.environ["REAL_GRAYSCALE"] = "1"
+
+    dataset = ArabicAllPageLinesDataset(
+        args.dataset, transform=None, validate_paths=False
+    )
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
 
@@ -69,37 +76,34 @@ def main():
     summary = []
     for ordinal, index in enumerate(indices, start=1):
         sample = dataset.samples[index]
-        image_path = dataset._resolve(sample["line_image_path"])
-        with Image.open(image_path) as handle:
-            original = handle.convert("RGB").copy()
-
-        # Crop first on the clean image; augmentation must not alter crop geometry.
-        cropped, crop_meta = foreground_crop_with_metadata(original)
+        _text, clean = dataset.read_prepared_pil(index)
+        clean = clean.convert("L")
 
         np.random.seed(args.seed + ordinal * 101)
         random.seed(args.seed + ordinal * 101)
+
         variants = [
-            ("clean_crop", cropped),
-            ("gaussian_blur_r0.45", gaussian_blur(cropped, 0.45)),
-            ("gaussian_blur_r0.90", gaussian_blur(cropped, 0.90)),
-            ("gaussian_noise_std3", gaussian_luminance_noise(cropped, 3.0)),
-            ("gaussian_noise_std7", gaussian_luminance_noise(cropped, 7.0)),
-            ("speckle_0.0005", speckle_noise(cropped, 0.0005)),
+            ("clean_grayscale", clean),
+            ("blur_r0.70", gaussian_blur(clean, 0.70)),
+            ("blur_r1.40", gaussian_blur(clean, 1.40)),
+            ("gaussian_noise_std8", gaussian_luminance_noise(clean, 8.0)),
+            ("gaussian_noise_std16", gaussian_luminance_noise(clean, 16.0)),
+            ("speckle_0.0010", speckle_noise(clean, 0.0010)),
             (
-                "mild_brightness_contrast",
+                "contrast_brightness_strong",
                 adjust_brightness_contrast(
-                    cropped, brightness_factor=0.97, contrast_factor=1.06
+                    clean, brightness_factor=0.90, contrast_factor=1.22
                 ),
             ),
         ]
 
         combined = adjust_brightness_contrast(
-            cropped, brightness_factor=0.98, contrast_factor=1.07
+            clean, brightness_factor=0.94, contrast_factor=1.18
         )
-        combined = gaussian_blur(combined, 0.55)
-        combined = gaussian_luminance_noise(combined, 4.5)
-        combined = speckle_noise(combined, 0.00035)
-        variants.append(("combined_candidate", combined))
+        combined = gaussian_blur(combined, 1.05)
+        combined = gaussian_luminance_noise(combined, 12.0)
+        combined = speckle_noise(combined, 0.0008)
+        variants.append(("combined_training_strength", combined))
 
         model_inputs = []
         for name, variant in variants:
@@ -111,10 +115,12 @@ def main():
             )
             model_inputs.append((name, normalized))
 
-        sample_dir = output / f"sample_{ordinal:02d}_{sample['source_pair_id']}_{sample['side']}_line_{sample['line_idx']:02d}"
+        sample_dir = output / (
+            f"sample_{ordinal:02d}_{sample['source_pair_id']}_"
+            f"{sample['side']}_line_{sample['line_idx']:02d}"
+        )
         sample_dir.mkdir(parents=True, exist_ok=True)
-        original.save(sample_dir / "original_line.png")
-        cropped.save(sample_dir / "clean_crop.png")
+        clean.save(sample_dir / "clean_grayscale_crop.png")
         for name, image in variants:
             image.save(sample_dir / f"{name}.png")
         for name, image in model_inputs:
@@ -131,19 +137,23 @@ def main():
                 "source_pair_id": sample["source_pair_id"],
                 "side": sample["side"],
                 "line_idx": int(sample["line_idx"]),
-                "image": str(image_path),
-                "original_size": list(original.size),
-                "crop_size": list(cropped.size),
-                "crop_mode": crop_meta.get("crop_mode"),
-                "crop_detector": crop_meta.get("crop_detector"),
+                "clean_size": list(clean.size),
+                "clean_mode": clean.mode,
                 "geometry_changed_by_augmentation": False,
+                "strong_preview": {
+                    "blur_radius": 1.05,
+                    "gaussian_noise_std": 12.0,
+                    "speckle_fraction": 0.0008,
+                    "brightness_factor": 0.94,
+                    "contrast_factor": 1.18,
+                },
             }
         )
 
     (output / "summary.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    print(f"Wrote {len(summary)} augmentation previews to {output}")
+    print(f"Wrote {len(summary)} strong grayscale augmentation previews to {output}")
 
 
 if __name__ == "__main__":
