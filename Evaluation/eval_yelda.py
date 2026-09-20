@@ -205,6 +205,11 @@ def configure_geometry(config, image_preprocessing="original"):
         "zero_shot_preserve_aspect": "ZERO_SHOT_PRESERVE_ASPECT",
         "zero_shot_foreground_crop": "ZERO_SHOT_FOREGROUND_CROP",
         "real_binarize": "REAL_BINARIZE", "synthetic_binarize": "SYNTHETIC_BINARIZE",
+        "visual_grayscale": "VISUAL_GRAYSCALE",
+        "visual_input_channels": "VISUAL_INPUT_CHANNELS",
+        "real_bbox_crop": "REAL_BBOX_CROP",
+        "real_bbox_margin_ratio": "REAL_BBOX_MARGIN_RATIO",
+        "real_bbox_min_margin_px": "REAL_BBOX_MIN_MARGIN_PX",
     }
     for key, env in mapping.items():
         if key in config:
@@ -216,12 +221,18 @@ def configure_geometry(config, image_preprocessing="original"):
     if geometry_mode not in {
         "source-compatible-height",
         "crop-aspect-preserving-rgb",
+        "xml-bbox-gray-aspect-preserving",
     }:
         raise ValueError(f"Unsupported checkpoint geometry: {geometry_mode}")
     os.environ["LINE_GEOMETRY_MODE"] = geometry_mode
     os.environ["ZERO_SHOT_SOURCE_GEOMETRY"] = (
         "1" if geometry_mode == "source-compatible-height" else "0"
     )
+    if geometry_mode == "xml-bbox-gray-aspect-preserving":
+        os.environ["REAL_BBOX_CROP"] = "1"
+        os.environ["VISUAL_GRAYSCALE"] = "1"
+        os.environ["REAL_GRAYSCALE"] = "1"
+        os.environ["ZERO_SHOT_FOREGROUND_CROP"] = "0"
     from unified_line_geometry import install_evaluation_geometry
     return install_evaluation_geometry()
 
