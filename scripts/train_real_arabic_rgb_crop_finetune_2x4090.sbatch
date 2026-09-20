@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=real_arabic_rgb_ft
+#SBATCH --job-name=real_arabic_gray_bbox_aug
 #SBATCH --partition=rtx4090
 #SBATCH --gpus=rtx_4090:2
 #SBATCH --ntasks=1
@@ -19,7 +19,7 @@ TORCHRUN_BIN="${TORCHRUN_BIN:-${HOME}/.conda/envs/manucripts_align/bin/torchrun}
 PYTHON_BIN="${PYTHON_BIN:-$(dirname "${TORCHRUN_BIN}")/python}"
 
 cd "${PROJECT_DIR}"
-mkdir -p out Results/Diagnostics/ArabicDatasetRGBCrop
+mkdir -p out Results/Diagnostics/RealBBoxCrop Results/Diagnostics/RealScanAugmentation
 
 [[ -x "${TORCHRUN_BIN}" ]] || { echo "ERROR: torchrun not executable: ${TORCHRUN_BIN}" >&2; exit 2; }
 [[ -d "${DATASET}" ]] || { echo "ERROR: ArabicDataset not found: ${DATASET}" >&2; exit 2; }
@@ -27,7 +27,7 @@ mkdir -p out Results/Diagnostics/ArabicDatasetRGBCrop
 
 # Use the architecture that produced the stronger fused Point-2 results.
 export MODEL_BACKEND_VARIANT="resnet_token"
-export JOB_NAME="${JOB_NAME:-res18_tinyvit_real_arabic_rgb_crop_sigreg_l020}"
+export JOB_NAME="${JOB_NAME:-res18_tinyvit_real_gray_bbox_aug_sigreg_l020}"
 export RESTORATION_EPOCHS="${RESTORATION_EPOCHS:-30}"
 export RESTORATION_LEARNING_RATE="${RESTORATION_LEARNING_RATE:-2e-5}"
 # 0 means use all manifest rows that pass the real-data label filters.
@@ -35,14 +35,40 @@ export RESTORATION_NUM_SAMPLES="${RESTORATION_NUM_SAMPLES:-0}"
 # 0 means do not repeat the same real rows to an artificial epoch length.
 export REAL_TRAIN_SAMPLES_PER_EPOCH="${REAL_TRAIN_SAMPLES_PER_EPOCH:-0}"
 
-# ArabicDataset preprocessing requested for this run:
-# TEMP mask for crop only -> untouched original RGB -> 1024x128 geometry.
+# ArabicDataset preprocessing for the new run:
+# source XML text envelope -> crop ALL FOUR SIDES -> true grayscale ->
+# training-only scan augmentation -> aspect-preserving 1024x128 canvas.
 export DATASET_TYPE=real
 export REAL_SYNTHETIC_STYLE=0
 export REAL_BINARIZE=0
 export REAL_BINARIZE_AUTO_INVERT=0
 export REAL_BINARIZE_AUTOCONTRAST=0
+# Disable the old paired augmentor; REAL_SCAN_AUGMENT is the only augmentation.
 export REAL_AUGMENT=0
+export VISUAL_INPUT_CHANNELS=1
+export VISUAL_GRAYSCALE=1
+export REAL_GRAYSCALE=1
+export REAL_BBOX_CROP=1
+export REAL_BBOX_CROP_STRICT=1
+export REAL_BBOX_MARGIN_RATIO="${REAL_BBOX_MARGIN_RATIO:-0.05}"
+export REAL_BBOX_MIN_MARGIN_PX="${REAL_BBOX_MIN_MARGIN_PX:-2}"
+# The XML crop already identifies text support. Do not run a second heuristic
+# foreground crop on top of it.
+export ZERO_SHOT_FOREGROUND_CROP=0
+
+# Strong but non-geometric scan augmentation, training split only.
+export REAL_SCAN_AUGMENT=1
+export REAL_SCAN_AUGMENT_PROB="${REAL_SCAN_AUGMENT_PROB:-0.95}"
+export REAL_SCAN_BRIGHTNESS_DELTA="${REAL_SCAN_BRIGHTNESS_DELTA:-0.12}"
+export REAL_SCAN_CONTRAST_DELTA="${REAL_SCAN_CONTRAST_DELTA:-0.22}"
+export REAL_SCAN_BLUR_PROB="${REAL_SCAN_BLUR_PROB:-0.55}"
+export REAL_SCAN_BLUR_RADIUS_MIN="${REAL_SCAN_BLUR_RADIUS_MIN:-0.35}"
+export REAL_SCAN_BLUR_RADIUS_MAX="${REAL_SCAN_BLUR_RADIUS_MAX:-1.40}"
+export REAL_SCAN_GAUSSIAN_NOISE_PROB="${REAL_SCAN_GAUSSIAN_NOISE_PROB:-0.75}"
+export REAL_SCAN_GAUSSIAN_NOISE_STD_MIN="${REAL_SCAN_GAUSSIAN_NOISE_STD_MIN:-5.0}"
+export REAL_SCAN_GAUSSIAN_NOISE_STD_MAX="${REAL_SCAN_GAUSSIAN_NOISE_STD_MAX:-16.0}"
+export REAL_SCAN_SPECKLE_PROB="${REAL_SCAN_SPECKLE_PROB:-0.30}"
+export REAL_SCAN_SPECKLE_FRACTION="${REAL_SCAN_SPECKLE_FRACTION:-0.0010}"
 export REAL_MANIFEST_NAME="dataset_manifest_full_pairs.jsonl"
 export REAL_INDEPENDENT_LINES=1
 # Critical for the small real dataset: scan every line image + its own
@@ -58,7 +84,6 @@ export REAL_SPLIT_BY_PAIR_ID=1
 export REAL_VALIDATE_PATHS="${REAL_VALIDATE_PATHS:-0}"
 export REAL_FILTER_INFEASIBLE_SPAN_DTW=0
 export ZERO_SHOT_PREPROCESS=1
-export ZERO_SHOT_FOREGROUND_CROP=1
 export ZERO_SHOT_CROP_MODE=vertical_borders
 # Match the Point-2 synthetic checkpoint exactly: keep the fixed 1024px canvas
 # token grid (63 windows for width=32/stride=16). Outer artificial side-padding
@@ -123,7 +148,8 @@ export TRAIN_DROP_LAST=1
 
 "${PYTHON_BIN}" -m py_compile \
   train.py model_backend.py vlm_restoration_positive_dtw.py \
-  zero_shot_preprocessing.py RealDataSet.py AugmentedRealDataLoader.py
+  zero_shot_preprocessing.py RealDataSet.py AugmentedRealDataLoader.py \
+  real_line_bbox_crop.py real_scan_augmentation.py
 
 PRETRAINED_WEIGHTS="${PRETRAINED_WEIGHTS}" "${PYTHON_BIN}" - <<'PY'
 import os
@@ -191,7 +217,8 @@ PY
 
 "${PYTHON_BIN}" -m pytest -q \
   tests/test_real_rgb_crop_preprocessing.py \
-  tests/test_vertical_side_border_crop.py \
+  tests/test_real_line_bbox_crop.py \
+  tests/test_real_scan_augmentation.py \
   tests/test_real_independent_lines.py \
   tests/test_resnet18_packed_windows.py \
   tests/test_restoration_positive_dtw.py
@@ -253,10 +280,17 @@ print("  drop last partial batch =", True)
 print("  objective          = each line vs its own transcript; pair labels unused")
 PY
 
-# Save the exact RGB crop/model-input stages before spending GPU time.
-REAL_SYNTHETIC_STYLE=0 REAL_BINARIZE=0 "${PYTHON_BIN}" scripts/diagnose_arabic_rgb_crop.py \
+# Save the exact four-sided crop and visibly corrupted grayscale training
+# examples before spending GPU time.
+"${PYTHON_BIN}" scripts/diagnose_real_bbox_crop.py \
   --dataset "${DATASET}" \
-  --output-dir Results/Diagnostics/ArabicDatasetRGBCrop \
+  --output-dir Results/Diagnostics/RealBBoxCrop \
+  --samples 10 \
+  --margin-ratio "${REAL_BBOX_MARGIN_RATIO}"
+
+"${PYTHON_BIN}" scripts/diagnose_real_scan_augmentation.py \
+  --dataset "${DATASET}" \
+  --output-dir Results/Diagnostics/RealScanAugmentation \
   --samples 10
 
 echo "============================================================"
@@ -272,11 +306,15 @@ echo "SIGReg slice chunk   = ${SIGREG_SLICE_CHUNK}"
 echo "backend              = resnet_token (ResNet18 -> TinyViT -> fused)"
 echo "epochs               = ${RESTORATION_EPOCHS}"
 echo "learning rate        = ${RESTORATION_LEARNING_RATE}"
-echo "preprocessing        = structural/dominant-band crop + ORIGINAL RGB (no binarization)"
+echo "preprocessing        = XML four-sided text crop -> TRUE GRAYSCALE (1 channel)"
+echo "bbox margin          = ratio ${REAL_BBOX_MARGIN_RATIO}, min ${REAL_BBOX_MIN_MARGIN_PX}px"
 echo "output geometry      = 1024x128, aspect preserved"
-echo "crop detector        = frame-aware: left/right/top/bottom rules + handwriting fallback"
-echo "window sequence      = fixed 63-window synthetic grid; outer padding MASKED, not repacked"
-echo "online augmentation  = disabled"
+echo "crop source          = original.xml PartOfWord boxes; left/right/top/bottom"
+echo "window sequence      = fixed 63-window grid; outer canvas padding MASKED, not repacked"
+echo "online augmentation  = scan-only: blur/noise/speckle/brightness/contrast"
+echo "augmentation geom    = NO rotation, NO translation, NO scaling, NO warp"
+echo "scan blur radius     = ${REAL_SCAN_BLUR_RADIUS_MIN}..${REAL_SCAN_BLUR_RADIUS_MAX}"
+echo "scan gaussian std    = ${REAL_SCAN_GAUSSIAN_NOISE_STD_MIN}..${REAL_SCAN_GAUSSIAN_NOISE_STD_MAX}"
 echo "training view        = ALL real page lines + own transcript (aligned or unaligned)"
 echo "dataset source       = direct page-side scan; pair manifest is NOT the sample filter"
 echo "duplicate copies     = deduplicated by source-page image fingerprint + line number"
