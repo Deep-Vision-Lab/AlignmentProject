@@ -10,10 +10,10 @@ from torchvision.models import ResNet18_Weights, resnet18
 
 
 class ResNet18WindowEncoder(nn.Module):
-    """Encode each 3x128x32 physical window with one shared ResNet-18.
+    """Encode each grayscale/RGB 128x32 physical window with shared ResNet-18.
 
     Input:
-        [B, 3, 128, line_width]
+        [B, C, 128, line_width], C in {1,3}
     Output:
         [B, D, 1, T]
 
@@ -30,6 +30,7 @@ class ResNet18WindowEncoder(nn.Module):
         embed_dim: int = 192,
         pretrained: bool = False,
         local_files_only: bool = True,
+        input_channels: int = 3,
     ) -> None:
         super().__init__()
         if int(input_height) != 128 or int(window_size) != 32:
@@ -40,6 +41,9 @@ class ResNet18WindowEncoder(nn.Module):
         self.embed_dim = int(embed_dim)
         self.pretrained = bool(pretrained)
         self.local_files_only = bool(local_files_only)
+        self.input_channels = int(input_channels)
+        if self.input_channels not in {1, 3}:
+            raise ValueError("ResNet18WindowEncoder input_channels must be 1 or 3")
 
         if self.pretrained and self.local_files_only:
             weights = ResNet18_Weights.DEFAULT
@@ -57,6 +61,23 @@ class ResNet18WindowEncoder(nn.Module):
         else:
             weights = ResNet18_Weights.DEFAULT if self.pretrained else None
             self.backbone = resnet18(weights=weights)
+        if self.input_channels == 1:
+            old_conv = self.backbone.conv1
+            gray_conv = nn.Conv2d(
+                1,
+                old_conv.out_channels,
+                kernel_size=old_conv.kernel_size,
+                stride=old_conv.stride,
+                padding=old_conv.padding,
+                bias=False,
+            )
+            with torch.no_grad():
+                # Keep ImageNet initialization by collapsing RGB filters into
+                # one luminance-like channel. BatchNorm absorbs the modest
+                # scale change during fine-tuning.
+                gray_conv.weight.copy_(old_conv.weight.mean(dim=1, keepdim=True))
+            self.backbone.conv1 = gray_conv
+
         self.backbone.fc = nn.Identity()
         self.projection = nn.Sequential(
             nn.Linear(512, self.embed_dim),
@@ -64,8 +85,10 @@ class ResNet18WindowEncoder(nn.Module):
         )
 
     def extract_windows(self, line: torch.Tensor) -> torch.Tensor:
-        if line.ndim != 4 or int(line.shape[1]) != 3:
-            raise ValueError(f"Expected [B,3,H,W], got {tuple(line.shape)}")
+        if line.ndim != 4 or int(line.shape[1]) != self.input_channels:
+            raise ValueError(
+                f"Expected [B,{self.input_channels},H,W], got {tuple(line.shape)}"
+            )
         if int(line.shape[2]) != self.input_height:
             raise ValueError(
                 f"Expected line height {self.input_height}, got {line.shape[2]}"
