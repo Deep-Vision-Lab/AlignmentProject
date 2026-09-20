@@ -23,8 +23,35 @@ from RealDataAugmentation import (
     BinaryInkAugment,
     RealLinePairAugmentor,
 )
-from RealDataSet import ArabicManifestLinePairDataset
+from RealDataSet import ArabicAllPageLinesDataset, ArabicManifestLinePairDataset
+from real_scan_augmentation import ScanOnlyAugmentor
 from real_span_feasibility import filter_subset_by_span_feasibility
+
+
+class AllPageLinesScanAugmentedSubset(Dataset):
+    """Training-only view for the actual REAL_ALL_PAGE_LINES population.
+
+    The base dataset performs deterministic four-sided XML crop + grayscale.
+    This wrapper adds only non-geometric scan corruption, then applies the same
+    model tensor transform. Validation/test continue to use the clean base
+    dataset through ordinary Subset objects.
+    """
+
+    def __init__(self, base_dataset, indices, augmentor: ScanOnlyAugmentor):
+        self.base_dataset = base_dataset
+        self.indices = [int(index) for index in indices]
+        self.augmentor = augmentor
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, local_index):
+        sample_index = self.indices[int(local_index)]
+        text, image = self.base_dataset.read_prepared_pil(sample_index)
+        image, _metadata = self.augmentor.augment_with_metadata(image)
+        if self.base_dataset.transform is not None:
+            image = self.base_dataset.transform(image)
+        return text, image
 
 
 class RepeatToLengthDataset(Dataset):
@@ -255,16 +282,29 @@ def build_dataloaders(data_dir=None):
         )
     )
 
-    augmentor = RealLinePairAugmentor.from_env()
-    if augmentor.enabled:
-        train_dataset = AugmentedRealSubset(
-            base_dataset=full_dataset,
-            indices=train_subset.indices,
-            transform=_train_real_transform(),
-            augmentor=augmentor,
-        )
+    if isinstance(full_dataset, ArabicAllPageLinesDataset):
+        scan_augmentor = ScanOnlyAugmentor.from_env()
+        if scan_augmentor.enabled:
+            train_dataset = AllPageLinesScanAugmentedSubset(
+                base_dataset=full_dataset,
+                indices=train_subset.indices,
+                augmentor=scan_augmentor,
+            )
+        else:
+            train_dataset = train_subset
+        augmentor = None
     else:
-        train_dataset = train_subset
+        augmentor = RealLinePairAugmentor.from_env()
+        if augmentor.enabled:
+            train_dataset = AugmentedRealSubset(
+                base_dataset=full_dataset,
+                indices=train_subset.indices,
+                transform=_train_real_transform(),
+                augmentor=augmentor,
+            )
+        else:
+            train_dataset = train_subset
+        scan_augmentor = None
 
     base_train_samples = len(train_dataset)
     target_train_samples = int(os.environ.get("REAL_TRAIN_SAMPLES_PER_EPOCH", "0"))
@@ -276,10 +316,11 @@ def build_dataloaders(data_dir=None):
         f"samples={len(full_dataset)} base_train={base_train_samples} "
         f"train_per_epoch={len(train_dataset)} "
         f"valid={len(valid_subset)} test={len(test_subset)} "
-        f"augment={augmentor.enabled} "
-        f"stitch_prob={augmentor.stitch_probability:.3f} "
-        f"appearance_prob={augmentor.appearance_probability:.3f} "
-        f"stitch_max_chars={augmentor.stitch_max_text_chars} "
+        f"augment={bool((scan_augmentor and scan_augmentor.enabled) or (augmentor and augmentor.enabled))} "
+        f"scan_only={bool(scan_augmentor and scan_augmentor.enabled)} "
+        f"stitch_prob={(augmentor.stitch_probability if augmentor is not None else 0.0):.3f} "
+        f"appearance_prob={(augmentor.appearance_probability if augmentor is not None else (scan_augmentor.probability if scan_augmentor is not None else 0.0)):.3f} "
+        f"stitch_max_chars={(augmentor.stitch_max_text_chars if augmentor is not None else 0)} "
         f"feasibility_filter={feasibility_stats is not None} "
         f"binarize={base_loader._real_binarize} "
         f"split_by_pair_id={split_by_pair}",
