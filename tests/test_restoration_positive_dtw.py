@@ -247,9 +247,10 @@ def test_strong_sigreg_penalizes_collapsed_pre_l2_embeddings_and_backpropagates(
         valid,
         sketch_dim=32,
         num_knots=17,
-        t_min=-5.0,
-        t_max=5.0,
+        t_min=0.0,
+        t_max=3.0,
         min_samples=32,
+        slice_chunk=8,
     )
 
     collapsed = torch.zeros(8, 16, 192, requires_grad=True)
@@ -260,9 +261,10 @@ def test_strong_sigreg_penalizes_collapsed_pre_l2_embeddings_and_backpropagates(
         valid,
         sketch_dim=32,
         num_knots=17,
-        t_min=-5.0,
-        t_max=5.0,
+        t_min=0.0,
+        t_max=3.0,
         min_samples=32,
+        slice_chunk=8,
     )
 
     assert torch.isfinite(gaussian_loss)
