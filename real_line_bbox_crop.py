@@ -1,8 +1,14 @@
-"""Recover horizontal text bounds for real line images from source XML boxes.
+"""Crop saved real line images to their XML text envelope on all four sides.
 
-The dataset builder groups PartOfWord XML boxes into lines, then saves each
-line image as img[y1:y2, :] -- i.e. vertical crop only, full page width.
-Therefore source-page X coordinates remain directly aligned with line_XX.png.
+The source dataset builder creates each line as:
+    img[y1_padded:y2_padded, :]
+where y1_padded/y2_padded come from the XML line envelope with 25% vertical
+padding, while the full source-page width is retained.  Therefore:
+  * XML x coordinates map directly to the saved line x axis (modulo any resize);
+  * XML y coordinates must be shifted by the padded line-envelope top.
+
+This module reconstructs exactly that geometry and removes left/right/top/bottom
+padding while keeping only a small safety margin around the XML text boxes.
 """
 from __future__ import annotations
 
@@ -82,27 +88,37 @@ def group_boxes_into_lines(boxes, line_threshold=None):
     return lines, threshold
 
 
-def _source_page_width(side_dir: Path):
+def _source_page_size(side_dir: Path):
     candidates = sorted(
-        path
-        for path in side_dir.glob("original_image.*")
-        if path.is_file()
+        path for path in side_dir.glob("original_image.*") if path.is_file()
     )
     if not candidates:
-        return None, ""
+        return None, None, ""
     with Image.open(candidates[0]) as image:
-        return int(image.width), str(candidates[0])
+        return int(image.width), int(image.height), str(candidates[0])
 
 
-def line_horizontal_bounds(
+def _builder_vertical_envelope(line, source_height: int, pad_ratio: float = 0.25):
+    """Reproduce build_new_quran_dataset.py::line_envelope exactly."""
+    raw_y1 = min(box["y1"] for box in line)
+    raw_y2 = max(box["y2"] for box in line)
+    raw_height = max(1, raw_y2 - raw_y1)
+    pad = int(float(pad_ratio) * raw_height)
+    saved_y1 = max(0, raw_y1 - pad)
+    saved_y2 = min(int(source_height), raw_y2 + pad)
+    return raw_y1, raw_y2, saved_y1, saved_y2, pad
+
+
+def line_text_bounds(
     side_dir,
     line_index: int,
-    line_image_width: int,
+    line_image_size,
     *,
-    margin_px: int = 0,
-    margin_ratio_of_line_height: float = 0.0,
-    line_image_height: int | None = None,
+    margin_ratio: float = 0.05,
+    minimum_margin_px: int = 2,
+    builder_vertical_pad_ratio: float = 0.25,
 ):
+    """Return (left, top, right, bottom) text crop in saved line coordinates."""
     side_dir = Path(side_dir)
     xml_path = side_dir / "original.xml"
     if not xml_path.is_file():
@@ -119,28 +135,54 @@ def line_horizontal_bounds(
     line = lines[index]
     raw_x1 = min(box["x1"] for box in line)
     raw_x2 = max(box["x2"] for box in line)
-    source_width, source_image = _source_page_width(side_dir)
-    if source_width is None or source_width <= 0:
-        source_width = int(line_image_width)
+    raw_y1 = min(box["y1"] for box in line)
+    raw_y2 = max(box["y2"] for box in line)
 
-    scale_x = float(line_image_width) / float(source_width)
-    x1 = int(round(raw_x1 * scale_x))
-    x2 = int(round(raw_x2 * scale_x))
-
-    extra = max(0, int(margin_px))
-    if line_image_height is not None:
-        extra = max(
-            extra,
-            int(round(float(line_image_height) * float(margin_ratio_of_line_height))),
+    source_w, source_h, source_image = _source_page_size(side_dir)
+    line_w, line_h = map(int, line_image_size)
+    if source_w is None or source_h is None:
+        raise FileNotFoundError(
+            f"original_image.* is required to map XML coordinates for {side_dir}"
         )
-    left = max(0, x1 - extra)
-    right = min(int(line_image_width), x2 + extra)
-    if right <= left:
+
+    (
+        _raw_y1,
+        _raw_y2,
+        saved_y1,
+        saved_y2,
+        builder_pad,
+    ) = _builder_vertical_envelope(
+        line,
+        source_h,
+        pad_ratio=float(builder_vertical_pad_ratio),
+    )
+    saved_height = max(1, int(saved_y2 - saved_y1))
+
+    scale_x = float(line_w) / float(source_w)
+    scale_y = float(line_h) / float(saved_height)
+
+    text_x1 = float(raw_x1) * scale_x
+    text_x2 = float(raw_x2) * scale_x
+    text_y1 = float(raw_y1 - saved_y1) * scale_y
+    text_y2 = float(raw_y2 - saved_y1) * scale_y
+
+    text_box_height = max(1.0, text_y2 - text_y1)
+    margin = max(
+        int(minimum_margin_px),
+        int(round(text_box_height * max(0.0, float(margin_ratio)))),
+    )
+
+    left = max(0, int(round(text_x1)) - margin)
+    right = min(line_w, int(round(text_x2)) + margin)
+    top = max(0, int(round(text_y1)) - margin)
+    bottom = min(line_h, int(round(text_y2)) + margin)
+    if right <= left or bottom <= top:
         raise RuntimeError(
-            f"Invalid bbox line crop {left}:{right} for width={line_image_width}"
+            "Invalid four-sided XML crop "
+            f"({left},{top})-({right},{bottom}) for line size {(line_w, line_h)}"
         )
 
-    return (left, right), {
+    return (left, top, right, bottom), {
         "xml_path": str(xml_path),
         "source_image": source_image,
         "line_index": int(line_index),
@@ -148,16 +190,31 @@ def line_horizontal_bounds(
         "line_threshold": int(threshold),
         "line_box_count": len(line),
         "raw_source_x1": int(raw_x1),
+        "raw_source_y1": int(raw_y1),
         "raw_source_x2": int(raw_x2),
-        "source_page_width": int(source_width),
-        "line_image_width": int(line_image_width),
+        "raw_source_y2": int(raw_y2),
+        "source_page_width": int(source_w),
+        "source_page_height": int(source_h),
+        "builder_saved_y1": int(saved_y1),
+        "builder_saved_y2": int(saved_y2),
+        "builder_vertical_pad": int(builder_pad),
+        "line_image_width": int(line_w),
+        "line_image_height": int(line_h),
         "scale_x": float(scale_x),
-        "unmargined_x1": int(x1),
-        "unmargined_x2": int(x2),
-        "margin_px": int(extra),
+        "scale_y": float(scale_y),
+        "text_local_x1": float(text_x1),
+        "text_local_y1": float(text_y1),
+        "text_local_x2": float(text_x2),
+        "text_local_y2": float(text_y2),
+        "margin_ratio": float(margin_ratio),
+        "margin_px": int(margin),
         "crop_left": int(left),
+        "crop_top": int(top),
         "crop_right": int(right),
+        "crop_bottom": int(bottom),
         "crop_width": int(right - left),
+        "crop_height": int(bottom - top),
+        "crop_method": "source-xml-four-sided-text-envelope",
     }
 
 
@@ -166,27 +223,46 @@ def bbox_crop_line(
     side_dir,
     line_index: int,
     *,
-    margin_ratio_of_line_height: float = 0.20,
-    minimum_margin_px: int = 8,
+    margin_ratio: float = 0.05,
+    minimum_margin_px: int = 2,
 ):
-    source = image.convert("RGB")
-    bounds, metadata = line_horizontal_bounds(
+    source = image.copy()
+    bounds, metadata = line_text_bounds(
         side_dir,
         line_index,
-        source.width,
-        margin_px=int(minimum_margin_px),
-        margin_ratio_of_line_height=float(margin_ratio_of_line_height),
-        line_image_height=source.height,
+        source.size,
+        margin_ratio=float(margin_ratio),
+        minimum_margin_px=int(minimum_margin_px),
     )
-    left, right = bounds
-    cropped = source.crop((left, 0, right, source.height))
+    cropped = source.crop(bounds)
     metadata.update(
         {
-            "crop_top": 0,
-            "crop_bottom": int(source.height),
-            "crop_height": int(source.height),
-            "crop_method": "source-xml-line-envelope-horizontal",
-            "preserved_full_line_height": True,
+            "source_mode": str(source.mode),
+            "crop_mode": str(cropped.mode),
+            "preserved_full_line_height": False,
+            "all_four_sides_cropped": True,
         }
     )
     return cropped, metadata
+
+
+# Backward-compatible name used by the first diagnostic revision.
+def line_horizontal_bounds(
+    side_dir,
+    line_index: int,
+    line_image_width: int,
+    *,
+    margin_px: int = 0,
+    margin_ratio_of_line_height: float = 0.0,
+    line_image_height: int | None = None,
+):
+    height = int(line_image_height or 128)
+    bounds, metadata = line_text_bounds(
+        side_dir,
+        line_index,
+        (int(line_image_width), height),
+        margin_ratio=float(margin_ratio_of_line_height),
+        minimum_margin_px=int(margin_px),
+    )
+    left, _top, right, _bottom = bounds
+    return (left, right), metadata
