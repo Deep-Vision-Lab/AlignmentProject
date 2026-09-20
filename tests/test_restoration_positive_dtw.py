@@ -75,6 +75,22 @@ def test_unicode_arabic_cleaning_keeps_wasla_and_decomposes_ligature():
     assert cleaned == ["ٱ", "ل", "ل", "ا"]
 
 
+def test_resnet18_window_encoder_accepts_true_grayscale_windows():
+    encoder = ResNet18WindowEncoder(
+        input_height=128,
+        window_size=32,
+        stride=16,
+        embed_dim=192,
+        pretrained=False,
+        input_channels=1,
+    )
+    image = torch.randn(1, 1, 128, 64)
+    tokens = encoder(image)
+    assert tokens.shape == (1, 192, 1, 3)
+    assert encoder.backbone.conv1.in_channels == 1
+    assert tuple(encoder.backbone.conv1.weight.shape[:2]) == (64, 1)
+
+
 def test_resnet18_window_encoder_keeps_one_token_per_window():
     encoder = ResNet18WindowEncoder(
         input_height=128,
