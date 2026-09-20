@@ -158,6 +158,34 @@ def _all_gradients_finite(parameters) -> bool:
     return True
 
 
+def _nonfinite_gradient_names(named_parameters, limit: int = 8):
+    bad = []
+    for name, parameter in named_parameters:
+        gradient = parameter.grad
+        if gradient is None:
+            continue
+        finite = torch.isfinite(gradient)
+        if bool(finite.all().item()):
+            continue
+        finite_values = gradient.detach().float()[finite]
+        max_abs = (
+            float(finite_values.abs().max().item())
+            if finite_values.numel()
+            else float("nan")
+        )
+        bad.append(
+            {
+                "name": str(name),
+                "shape": tuple(gradient.shape),
+                "finite_fraction": float(finite.float().mean().item()),
+                "finite_max_abs": max_abs,
+            }
+        )
+        if len(bad) >= int(limit):
+            break
+    return bad
+
+
 def _all_parameters_finite(parameters) -> bool:
     for parameter in parameters:
         if not bool(torch.isfinite(parameter.detach()).all().item()):
@@ -358,6 +386,21 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
                     not _all_gradients_finite(clip_parameters),
                 )
                 if gradients_bad:
+                    bad_gradients = _nonfinite_gradient_names(named_trainable)
+                    if train_module.CTX.is_main:
+                        print(
+                            "NONFINITE_GRAD "
+                            f"epoch={epoch_number} batch={batch_idx + 1}/{effective_batches} "
+                            f"loss={float(loss.detach().item()):.8f} "
+                            f"amp_dtype={getattr(train_module, 'AMP_DTYPE', None)} "
+                            f"scaler_enabled={int(scaler.is_enabled())} "
+                            f"scale={float(scaler.get_scale()) if scaler.is_enabled() else 1.0:.1f} "
+                            f"dtw={float(stats.get('positive_letter_dtw', stats.get('norm_pos', float('nan')))):.8f} "
+                            f"sigreg={float(stats.get('sigreg_loss', 0.0)):.8f} "
+                            f"sigreg_weighted={float(stats.get('sigreg_weighted', 0.0)):.8f} "
+                            f"bad={bad_gradients}",
+                            flush=True,
+                        )
                     optimizer.zero_grad(set_to_none=True)
                     scaler.update()
                     consecutive_nonfinite += 1
