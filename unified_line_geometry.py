@@ -117,15 +117,23 @@ def install_training_geometry() -> dict[str, Any]:
         from torchvision import transforms
 
         def train_real_transform():
+            grayscale = _flag("VISUAL_GRAYSCALE", False)
+            mean = (
+                preprocessing.IMAGENET_GRAY_MEAN
+                if grayscale
+                else preprocessing.IMAGENET_MEAN
+            )
+            std = (
+                preprocessing.IMAGENET_GRAY_STD
+                if grayscale
+                else preprocessing.IMAGENET_STD
+            )
             return transforms.Compose(
                 [
                     preprocessing.build_preprocessor("real", training=True),
                     augmented_real.BinaryInkAugment.from_env(),
                     transforms.ToTensor(),
-                    transforms.Normalize(
-                        preprocessing.IMAGENET_MEAN,
-                        preprocessing.IMAGENET_STD,
-                    ),
+                    transforms.Normalize(mean, std),
                 ]
             )
 
