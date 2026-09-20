@@ -17,6 +17,8 @@ import torch.nn.functional as F
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
+IMAGENET_GRAY_MEAN = (0.449,)
+IMAGENET_GRAY_STD = (0.226,)
 
 
 class LocalContextFusion(nn.Module):
@@ -55,12 +57,17 @@ def denormalize_imagenet_windows(patches: torch.Tensor) -> torch.Tensor:
 
 
 def _foreground_bbox_from_rgb(rgb: torch.Tensor, safety: int = 2):
-    """Temporary foreground detector; RGB is never modified by this function."""
-    gray = (
-        0.2989 * rgb[0].float()
-        + 0.5870 * rgb[1].float()
-        + 0.1140 * rgb[2].float()
-    )
+    """Temporary foreground detector for normalized grayscale or RGB pixels."""
+    if rgb.ndim != 3 or int(rgb.shape[0]) not in {1, 3}:
+        raise ValueError(f"Expected [1|3,H,W], got {tuple(rgb.shape)}")
+    if int(rgb.shape[0]) == 1:
+        gray = rgb[0].float()
+    else:
+        gray = (
+            0.2989 * rgb[0].float()
+            + 0.5870 * rgb[1].float()
+            + 0.1140 * rgb[2].float()
+        )
     h, w = int(gray.shape[0]), int(gray.shape[1])
     border_h = max(1, int(round(h * 0.05)))
     border_w = max(1, int(round(w * 0.02)))
@@ -105,10 +112,17 @@ def line_padding_masks(
     Internal spaces remain valid because the valid region is one rectangle from
     the first to last foreground extent, not an ink-per-window threshold.
     """
-    if normalized_line.ndim != 4 or int(normalized_line.shape[1]) != 3:
-        raise ValueError("Expected normalized RGB line [B,3,H,W]")
-    mean = normalized_line.new_tensor(IMAGENET_MEAN).view(1, 3, 1, 1)
-    std = normalized_line.new_tensor(IMAGENET_STD).view(1, 3, 1, 1)
+    if normalized_line.ndim != 4 or int(normalized_line.shape[1]) not in {1, 3}:
+        raise ValueError(
+            f"Expected normalized grayscale/RGB line [B,1|3,H,W], got {tuple(normalized_line.shape)}"
+        )
+    channels = int(normalized_line.shape[1])
+    if channels == 1:
+        mean = normalized_line.new_tensor(IMAGENET_GRAY_MEAN).view(1, 1, 1, 1)
+        std = normalized_line.new_tensor(IMAGENET_GRAY_STD).view(1, 1, 1, 1)
+    else:
+        mean = normalized_line.new_tensor(IMAGENET_MEAN).view(1, 3, 1, 1)
+        std = normalized_line.new_tensor(IMAGENET_STD).view(1, 3, 1, 1)
     rgb = (normalized_line.float() * std + mean).clamp(0.0, 1.0)
     b, _, h, w = rgb.shape
     starts = list(range(0, w - int(window_size) + 1, int(stride)))
