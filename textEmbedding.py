@@ -108,7 +108,7 @@ class TextEmbedding(nn.Module):
                 batch_first=True, 
                 padding_value=self.PAD_TOKEN_IDX
             )
-            emb = self.embedding(padded.to(device))
+            emb = self.embedding(padded.to(self.embedding.weight.device))
         
         else:
             # Already a tensor of indices
@@ -292,7 +292,7 @@ class FastTextCharEmbedding(nn.Module):
 
     def forward(self, text):
         if isinstance(text, str):
-            idx = self.text_to_indices(text).to(device)
+            idx = self.text_to_indices(text)
             emb = self.embedding(idx)
         elif isinstance(text, (list, tuple)):
             batch_indices = [self.text_to_indices(t) for t in text]
@@ -301,9 +301,9 @@ class FastTextCharEmbedding(nn.Module):
             padded = nn.utils.rnn.pad_sequence(
                 batch_indices, batch_first=True, padding_value=self.PAD_TOKEN_IDX
             )
-            emb = self.embedding(padded.to(device))
+            emb = self.embedding(padded.to(self.embedding.weight.device))
         else:
-            emb = self.embedding(text)
+            emb = self.embedding(text.to(self.embedding.weight.device))
 
         if self.projection is not None:
             emb = self.projection(emb)
@@ -360,26 +360,35 @@ class OrthogonalCharEmbedding(nn.Module):
 
     def text_to_indices(self, text):
         indices = [self.char_to_index(c) for c in text]
-        return torch.tensor(indices, dtype=torch.long, device=device)
+        return torch.tensor(
+            indices,
+            dtype=torch.long,
+            device=self.embedding.weight.device,
+        )
 
     def get_space_embedding(self):
         return self.embedding.weight[self.SPACE_TOKEN_IDX]
 
     def forward(self, text):
         if isinstance(text, str):
-            idx = self.text_to_indices(text).to(device)
+            idx = self.text_to_indices(text)
             emb = self.embedding(idx)
         elif isinstance(text, (list, tuple)):
             batch_indices = [self.text_to_indices(t) for t in text]
             if not batch_indices:
-                return torch.empty(0, 0, self.embedding_dim, device=device)
+                return torch.empty(
+                    0,
+                    0,
+                    self.embedding_dim,
+                    device=self.embedding.weight.device,
+                )
             padded = nn.utils.rnn.pad_sequence(
                 batch_indices, batch_first=True,
                 padding_value=self.PAD_TOKEN_IDX,
             )
-            emb = self.embedding(padded.to(device))
+            emb = self.embedding(padded.to(self.embedding.weight.device))
         else:
-            emb = self.embedding(text)
+            emb = self.embedding(text.to(self.embedding.weight.device))
         return self.text_norm(emb)
 
 

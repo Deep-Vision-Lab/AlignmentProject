@@ -760,6 +760,18 @@ def optimized_train(train_module):
         best_validation = float("inf")
         full_every = max(1, _integer("FULL_CHECKPOINT_EVERY_N_EPOCHS", 5))
         weights_every = max(1, _integer("MODEL_WEIGHTS_EVERY_N_EPOCHS", 2))
+        diagnostic_hook = getattr(
+            train_module, "epoch_diagnostic_hook", None
+        )
+        diagnostic_epochs = set()
+        if callable(diagnostic_hook) and _flag("TRAIN_SAMPLE_EVAL", False):
+            for value in os.environ.get(
+                "TRAIN_SAMPLE_EVAL_EPOCHS", "1,5,10,15,20,25,30"
+            ).split(","):
+                try:
+                    diagnostic_epochs.add(int(value.strip()))
+                except ValueError:
+                    continue
 
         for epoch in range(start_epoch, args.epochs):
             epoch_start_hook = getattr(train_module, "epoch_start_hook", None)
@@ -839,9 +851,15 @@ def optimized_train(train_module):
                 # Keep immutable epoch snapshots for longitudinal evaluation.
                 # Unlike model_latest.pth these are never overwritten, so the
                 # same held-out sample can be compared at epochs 5,10,... .
-                if (epoch + 1) == 1 or (epoch + 1) % weights_every == 0 or final_epoch:
+                diagnostic_snapshot = (epoch + 1) in diagnostic_epochs
+                if (
+                    (epoch + 1) == 1
+                    or (epoch + 1) % weights_every == 0
+                    or final_epoch
+                    or diagnostic_snapshot
+                ):
                     epoch_payload = dict(base_payload)
-                    epoch_payload["epoch"] = int(epoch)
+                    epoch_payload["epoch"] = int(epoch + 1)
                     atomic_torch_save(
                         epoch_payload,
                         directory / f"model_epoch_{epoch + 1:03d}.pth",
@@ -860,9 +878,6 @@ def optimized_train(train_module):
                         checkpoint, directory / "checkpoint_latest.pth"
                     )
 
-                diagnostic_hook = getattr(
-                    train_module, "epoch_diagnostic_hook", None
-                )
                 if callable(diagnostic_hook):
                     diagnostic_hook(
                         model=train_module._unwrap_model(model),

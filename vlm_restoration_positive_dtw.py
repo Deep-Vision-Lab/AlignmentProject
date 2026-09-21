@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import unicodedata
 
 import torch
@@ -1303,6 +1304,8 @@ def install_training_objective(train_module):
             / str(job_id)
             / f"epoch_{epoch:03d}"
         )
+        if output_root.exists() and any(output_root.iterdir()):
+            output_root = output_root / f"rerun_{time.time_ns()}_{os.getpid()}"
         nw_output = output_root / "nw"
         dtw_output = output_root / "dtw"
 
@@ -1635,4 +1638,3 @@ def model_config(P):
             P.keep_paired_lines_for_independent_training
         ),
     }
-
