@@ -222,17 +222,24 @@ def configure_geometry(config, image_preprocessing="original"):
         "source-compatible-height",
         "crop-aspect-preserving-rgb",
         "xml-bbox-gray-aspect-preserving",
+        "xml-bbox-gray-full-resize",
     }:
         raise ValueError(f"Unsupported checkpoint geometry: {geometry_mode}")
     os.environ["LINE_GEOMETRY_MODE"] = geometry_mode
     os.environ["ZERO_SHOT_SOURCE_GEOMETRY"] = (
         "1" if geometry_mode == "source-compatible-height" else "0"
     )
-    if geometry_mode == "xml-bbox-gray-aspect-preserving":
+    if geometry_mode in {
+        "xml-bbox-gray-aspect-preserving",
+        "xml-bbox-gray-full-resize",
+    }:
         os.environ["REAL_BBOX_CROP"] = "1"
         os.environ["VISUAL_GRAYSCALE"] = "1"
         os.environ["REAL_GRAYSCALE"] = "1"
         os.environ["ZERO_SHOT_FOREGROUND_CROP"] = "0"
+    if geometry_mode == "xml-bbox-gray-full-resize":
+        os.environ["ZERO_SHOT_PRESERVE_ASPECT"] = "0"
+        os.environ["FULL_IMAGE_NO_PADDING"] = "1"
     from unified_line_geometry import install_evaluation_geometry
     return install_evaluation_geometry()
 
