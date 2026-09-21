@@ -345,6 +345,24 @@ def _explicit_real_pairs(root: Path, split: str) -> list[Pair]:
                     index=len(pairs) + 1,
                     image1=_resolve_path(value1, manifest),
                     image2=_resolve_path(value2, manifest),
+                    text1=(
+                        _resolve_path(
+                            _first(a, "text_original_path", "text_path", "transcript_path"),
+                            manifest,
+                        )
+                        if _first(a, "text_original_path", "text_path", "transcript_path")
+                        is not None
+                        else None
+                    ),
+                    text2=(
+                        _resolve_path(
+                            _first(b, "text_original_path", "text_path", "transcript_path"),
+                            manifest,
+                        )
+                        if _first(b, "text_original_path", "text_path", "transcript_path")
+                        is not None
+                        else None
+                    ),
                     side1_type="real",
                     side2_type="real",
                     source_type="real-synthetic-injection",
@@ -391,6 +409,24 @@ def _bridge_pairs(root: Path, version: int) -> list[Pair]:
                 index=len(pairs) + 1,
                 image1=_resolve_path(value1, manifest),
                 image2=_resolve_path(value2, manifest),
+                text1=(
+                    _resolve_path(
+                        _first(a, "text_original_path", "text_path", "transcript_path"),
+                        manifest,
+                    )
+                    if _first(a, "text_original_path", "text_path", "transcript_path")
+                    is not None
+                    else None
+                ),
+                text2=(
+                    _resolve_path(
+                        _first(b, "text_original_path", "text_path", "transcript_path"),
+                        manifest,
+                    )
+                    if _first(b, "text_original_path", "text_path", "transcript_path")
+                    is not None
+                    else None
+                ),
                 side1_type="real",
                 side2_type="synthetic",
                 source_type=f"real-synthetic-bridge-v{version}",
@@ -455,6 +491,22 @@ def _generic_manifest_pairs(manifest: Path) -> list[Pair]:
                 raise ValueError(f"Manifest row {position} is missing A/B image paths")
             image1 = _resolve_path(value1, manifest)
             image2 = _resolve_path(value2, manifest)
+            text_value1 = _first(
+                a, "text_original_path", "text_path", "transcript_path"
+            )
+            text_value2 = _first(
+                b, "text_original_path", "text_path", "transcript_path"
+            )
+            text1 = (
+                _resolve_path(text_value1, manifest)
+                if text_value1 is not None
+                else None
+            )
+            text2 = (
+                _resolve_path(text_value2, manifest)
+                if text_value2 is not None
+                else None
+            )
             fallback = "real" if manifest.name == _REAL_MANIFEST else "synthetic"
             scores = record.get("scores") if isinstance(record.get("scores"), dict) else {}
             text_score = float(scores.get("text_score", record.get("text_score", 0.0)) or 0.0)
@@ -466,6 +518,8 @@ def _generic_manifest_pairs(manifest: Path) -> list[Pair]:
                 raise ValueError(f"Manifest row {position} is missing image1/image2")
             image1 = resolve_manifest_image(str(value1), manifest, manifest.parent)
             image2 = resolve_manifest_image(str(value2), manifest, manifest.parent)
+            text1 = None
+            text2 = None
             fallback = _domain(record.get("dataset_type"), "synthetic")
             text_score = float(record.get("text_score", 0.0) or 0.0)
         type1 = _infer_side_type(a, record, image1, 1, fallback)
@@ -494,6 +548,8 @@ def _generic_manifest_pairs(manifest: Path) -> list[Pair]:
                 split=str(record.get("split", "")),
                 gt_mask1=gt_mask1,
                 gt_mask2=gt_mask2,
+                text1=text1,
+                text2=text2,
             )
         )
     return pairs
