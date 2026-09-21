@@ -233,14 +233,50 @@ def _transcript_path_for_line(
     image_path: Path,
     exact_transcript_path: Path | None = None,
 ) -> Path:
-    """Resolve the transcript for an image, preferring the manifest association.
+    """Resolve the transcript belonging to the exact displayed line image.
 
-    Real ArabicDataset evaluation must use the exact transcript path carried by
-    the manifest/dataset sample. Filename-based lookup is retained only as a
-    backward-compatible fallback for old/synthetic manifests that do not store
-    transcript paths.
+    For native ArabicDataset lines, the image itself is authoritative:
+      .../<side>/linesImages/line_XX.png
+        -> .../<side>/text/final/original/line_XX.txt
+
+    This avoids accidentally using a transcript path inherited from a paired
+    record that belongs to another line. Manifest association remains a
+    fallback only for layouts without the native side/line structure.
     """
     image_path = Path(image_path)
+
+    # Native real-data layout: force same-side, same-line transcript.
+    if image_path.parent.name == "linesImages":
+        side_dir = image_path.parent.parent
+        native_candidates = [
+            side_dir / "text" / "final" / "original" / f"{image_path.stem}.txt",
+            side_dir / "text" / "final" / f"{image_path.stem}.txt",
+            side_dir / "text" / f"{image_path.stem}.txt",
+        ]
+        for candidate in native_candidates:
+            if candidate.is_file():
+                # If the pair manifest points somewhere else, log it loudly;
+                # never silently substitute that mismatched transcript.
+                if exact_transcript_path is not None:
+                    exact = Path(exact_transcript_path)
+                    try:
+                        same = exact.resolve() == candidate.resolve()
+                    except OSError:
+                        same = str(exact) == str(candidate)
+                    if not same:
+                        print(
+                            "DTW_TRANSCRIPT_MISMATCH "
+                            f"image={image_path} native={candidate} "
+                            f"manifest={exact}; using native same-line transcript",
+                            flush=True,
+                        )
+                return candidate
+        raise FileNotFoundError(
+            f"No same-line transcript found for native image {image_path}; "
+            f"tried: {', '.join(str(path) for path in native_candidates)}"
+        )
+
+    # Non-native layouts may only carry an explicit manifest transcript.
     if exact_transcript_path is not None:
         exact = Path(exact_transcript_path)
         if not exact.is_file():
@@ -262,7 +298,6 @@ def _transcript_path_for_line(
         f"Transcript not found for {image_path}; tried: "
         + ", ".join(str(candidate) for candidate in candidates)
     )
-
 
 def _hard_letter_dtw_path(
     costs: np.ndarray,
@@ -531,7 +566,10 @@ def save_letter_dtw_overview(
 
     ax_line = fig.add_subplot(grid[0, 0])
     ax_line.imshow(np.asarray(line1.convert("L")), cmap="gray", vmin=0, vmax=255)
-    ax_line.set_title("Line 1 — exact grayscale evaluation input")
+    ax_line.set_title(
+        "Line 1 — exact grayscale evaluation input\n"
+        f"Transcript: {result1['text']}"
+    )
     ax_line.axis("off")
 
     ax_heat = fig.add_subplot(grid[1, 0])
@@ -696,9 +734,16 @@ def evaluate_architecture(
             "DTW_TRANSCRIPT_AUDIT "
             f"pair={pair.index} "
             f"image1={pair.image1} transcript1={side1['transcript_path']} "
+            f"image_stem={Path(pair.image1).stem} "
+            f"transcript_stem={Path(side1['transcript_path']).stem} "
             f"text1={side1['text']!r}",
             flush=True,
         )
+        if Path(pair.image1).stem != Path(side1["transcript_path"]).stem:
+            raise RuntimeError(
+                "DTW transcript/image line mismatch: "
+                f"image={pair.image1}, transcript={side1['transcript_path']}"
+            )
 
         save_letter_dtw_overview(
             line1,
