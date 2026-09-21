@@ -119,11 +119,9 @@ class Pair:
     index: int
     image1: Path
     image2: Path
-    text1: Path | None = None
-    text2: Path | None = None
-    side1_type: str = "synthetic"
-    side2_type: str = "synthetic"
-    source_type: str = "synthetic"
+    side1_type: str
+    side2_type: str
+    source_type: str
     side1_preprocess: str = ""
     side2_preprocess: str = ""
     pair_id: str = ""
@@ -133,6 +131,8 @@ class Pair:
     split: str = ""
     gt_mask1: Path | None = None
     gt_mask2: Path | None = None
+    text1: Path | None = None
+    text2: Path | None = None
 
     def preprocess_domain(self, role: int) -> str:
         if int(role) == 1:
