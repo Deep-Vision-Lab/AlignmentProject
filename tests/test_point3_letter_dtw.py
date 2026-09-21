@@ -85,3 +85,41 @@ def test_manifest_transcript_path_overrides_filename_guess(tmp_path):
     resolved = point3._transcript_path_for_line(image, exact_text)
     assert resolved == exact_text
     assert resolved.read_text(encoding="utf-8") == "صحيح"
+
+
+
+def test_native_line_transcript_wins_over_mismatched_manifest(tmp_path):
+    side = tmp_path / "DatasetPairs" / "page_pairs" / "pair_000001" / "A"
+    images = side / "linesImages"
+    texts = side / "text" / "final" / "original"
+    images.mkdir(parents=True)
+    texts.mkdir(parents=True)
+
+    image = images / "line_07.png"
+    image.write_bytes(b"placeholder")
+    native = texts / "line_07.txt"
+    native.write_text("الصحيح", encoding="utf-8")
+
+    wrong = tmp_path / "wrong.txt"
+    wrong.write_text("خطأ", encoding="utf-8")
+
+    resolved = point3._transcript_path_for_line(image, wrong)
+    assert resolved == native
+
+
+def test_native_line_without_same_stem_transcript_fails(tmp_path):
+    import pytest
+
+    side = tmp_path / "DatasetPairs" / "page_pairs" / "pair_000001" / "A"
+    images = side / "linesImages"
+    texts = side / "text" / "final" / "original"
+    images.mkdir(parents=True)
+    texts.mkdir(parents=True)
+
+    image = images / "line_07.png"
+    image.write_bytes(b"placeholder")
+    wrong = texts / "line_08.txt"
+    wrong.write_text("غير صحيح", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError):
+        point3._transcript_path_for_line(image, wrong)
