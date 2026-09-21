@@ -119,9 +119,11 @@ class Pair:
     index: int
     image1: Path
     image2: Path
-    side1_type: str
-    side2_type: str
-    source_type: str
+    text1: Path | None = None
+    text2: Path | None = None
+    side1_type: str = "synthetic"
+    side2_type: str = "synthetic"
+    source_type: str = "synthetic"
     side1_preprocess: str = ""
     side2_preprocess: str = ""
     pair_id: str = ""
@@ -303,6 +305,8 @@ def _real_pairs(manifest: Path, split: str) -> list[Pair]:
             index=position,
             image1=Path(item.image1),
             image2=Path(item.image2),
+            text1=Path(item.text1) if item.text1 is not None else None,
+            text2=Path(item.text2) if item.text2 is not None else None,
             side1_type="real",
             side2_type="real",
             source_type="real",
