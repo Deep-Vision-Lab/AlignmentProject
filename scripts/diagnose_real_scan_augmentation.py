@@ -23,7 +23,7 @@ from real_scan_augmentation import (
     speckle_noise,
     adjust_brightness_contrast,
 )
-from zero_shot_preprocessing import aspect_preserving_pad_with_metadata
+from zero_shot_preprocessing import build_preprocessor
 
 
 def _sheet(images, labels, width=1024):
@@ -66,12 +66,18 @@ def main():
     os.environ.setdefault("REAL_BBOX_MIN_MARGIN_PX", "2")
     os.environ["VISUAL_GRAYSCALE"] = "1"
     os.environ["REAL_GRAYSCALE"] = "1"
+    os.environ["REAL_BINARIZE"] = "0"
+    os.environ["REAL_BINARIZE_AUTOCONTRAST"] = "0"
+    os.environ["ZERO_SHOT_PREPROCESS"] = "1"
+    os.environ["ZERO_SHOT_FOREGROUND_CROP"] = "0"
+    os.environ["ZERO_SHOT_PRESERVE_ASPECT"] = "0"
 
     dataset = ArabicAllPageLinesDataset(
         args.dataset, transform=None, validate_paths=False
     )
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    preprocessor = build_preprocessor("real", training=False)
 
     rng = random.Random(args.seed)
     indices = list(range(len(dataset)))
@@ -112,12 +118,7 @@ def main():
 
         model_inputs = []
         for name, variant in variants:
-            normalized, _ = aspect_preserving_pad_with_metadata(
-                variant,
-                size=(128, 1024),
-                target_ink_height_ratio=0.72,
-                horizontal_jitter=0.0,
-            )
+            normalized, _ = preprocessor.preprocess_with_metadata(variant)
             model_inputs.append((name, normalized))
 
         sample_dir = output / (
