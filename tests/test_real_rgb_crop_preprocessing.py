@@ -101,3 +101,32 @@ def test_real_training_preprocessor_outputs_true_grayscale(monkeypatch):
     assert values.ndim == 2
     assert len(np.unique(values)) > 3
     assert np.any(values == 255)
+
+
+
+def test_direct_resize_adds_no_artificial_white_canvas(monkeypatch):
+    """Direct full-image geometry must never synthesize a white canvas."""
+    monkeypatch.setenv("VISUAL_GRAYSCALE", "1")
+    monkeypatch.setenv("REAL_GRAYSCALE", "1")
+    monkeypatch.setenv("REAL_BINARIZE", "0")
+    monkeypatch.setenv("REAL_BINARIZE_AUTOCONTRAST", "0")
+    monkeypatch.setenv("ZERO_SHOT_PREPROCESS", "1")
+    monkeypatch.setenv("ZERO_SHOT_FOREGROUND_CROP", "0")
+    monkeypatch.setenv("ZERO_SHOT_PRESERVE_ASPECT", "0")
+
+    # No input pixel is white. If the output contains 255, preprocessing added
+    # artificial white padding, which this geometry explicitly forbids.
+    image = Image.new("L", (317, 53), 173)
+    preprocessor = build_preprocessor("real", training=False)
+    output, meta = preprocessor.preprocess_with_metadata(image)
+
+    assert output.mode == "L"
+    assert output.size == (1024, 128)
+    values = np.asarray(output)
+    assert np.all(values == 173)
+    assert not np.any(values == 255)
+    assert meta["offset_x"] == 0
+    assert meta["offset_y"] == 0
+    assert meta["resized_width"] == 1024
+    assert meta["resized_height"] == 128
+    assert meta["preserve_aspect"] is False
