@@ -229,9 +229,26 @@ def select_pairs(dataset: Path, split: str, training_samples: int, split_seed: i
 
 
 
-def _transcript_path_for_line(image_path: Path) -> Path:
-    """Resolve the transcript paired with one native ArabicDataset line image."""
+def _transcript_path_for_line(
+    image_path: Path,
+    exact_transcript_path: Path | None = None,
+) -> Path:
+    """Resolve the transcript for an image, preferring the manifest association.
+
+    Real ArabicDataset evaluation must use the exact transcript path carried by
+    the manifest/dataset sample. Filename-based lookup is retained only as a
+    backward-compatible fallback for old/synthetic manifests that do not store
+    transcript paths.
+    """
     image_path = Path(image_path)
+    if exact_transcript_path is not None:
+        exact = Path(exact_transcript_path)
+        if not exact.is_file():
+            raise FileNotFoundError(
+                f"Manifest transcript for {image_path} does not exist: {exact}"
+            )
+        return exact
+
     side_dir = image_path.parent.parent
     candidates = [
         side_dir / "text" / "final" / "original" / f"{image_path.stem}.txt",
@@ -317,9 +334,15 @@ def _hard_letter_dtw_path(
     return path, matrix.astype(np.float32)
 
 
-def _letter_dtw_side(features, image_path: Path, text_encoder, pconfig) -> dict:
-    """Evaluate exactly one line against its own normalized Arabic transcript."""
-    transcript_path = _transcript_path_for_line(image_path)
+def _letter_dtw_side(
+    features,
+    image_path: Path,
+    transcript_path: Path | None,
+    text_encoder,
+    pconfig,
+) -> dict:
+    """Evaluate exactly one line against its manifest-linked transcript."""
+    transcript_path = _transcript_path_for_line(image_path, transcript_path)
     text = transcript_path.read_text(encoding="utf-8").strip()
     letters = _clean_letters(text)
     if not letters:
@@ -644,8 +667,12 @@ def evaluate_architecture(
                 models, line1_file, line2_file, "fused"
             )
 
-        side1 = _letter_dtw_side(first, pair.image1, text_encoder, pconfig)
-        side2 = _letter_dtw_side(second, pair.image2, text_encoder, pconfig)
+        side1 = _letter_dtw_side(
+            first, pair.image1, pair.text1, text_encoder, pconfig
+        )
+        side2 = _letter_dtw_side(
+            second, pair.image2, pair.text2, text_encoder, pconfig
+        )
 
         window_size = int(config.get("window_size", 32))
         stride = int(config.get("stride", 16))
@@ -663,6 +690,14 @@ def evaluate_architecture(
             window_size=window_size,
             stride=stride,
             use_flip=use_flip,
+        )
+
+        print(
+            "DTW_TRANSCRIPT_AUDIT "
+            f"pair={pair.index} "
+            f"image1={pair.image1} transcript1={side1['transcript_path']} "
+            f"text1={side1['text']!r}",
+            flush=True,
         )
 
         save_letter_dtw_overview(
@@ -689,6 +724,8 @@ def evaluate_architecture(
             "split": pair.split,
             "image1": str(pair.image1),
             "image2": str(pair.image2),
+            "pair_manifest_text1": str(pair.text1) if pair.text1 is not None else None,
+            "pair_manifest_text2": str(pair.text2) if pair.text2 is not None else None,
             "weights": str(weights),
             "image_preprocessing": preprocessing,
             "geometry1": geometry1,
