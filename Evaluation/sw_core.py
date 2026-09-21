@@ -20,13 +20,13 @@ class ImagePair:
     index: int
     image1: Path
     image2: Path
-    text1: Path | None = None
-    text2: Path | None = None
     pair_id: str = ""
     label_type: str = ""
     text_score: float = 0.0
     manifest_position: int = -1
     split: str = ""
+    text1: Path | None = None
+    text2: Path | None = None
 
 
 @dataclass(frozen=True)
