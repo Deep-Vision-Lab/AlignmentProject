@@ -95,8 +95,8 @@ if [[ "${CUDA_RC}" -ne 0 ]]; then
 fi
 
 # Evaluation must match the deterministic part of the real training pipeline:
-# XML PartOfWord bbox crop on all four sides -> grayscale -> aspect-preserving
-# 1024x128 canvas -> 1-channel ResNet18.  Stochastic scan augmentation is
+# XML PartOfWord bbox crop on all four sides -> grayscale -> direct
+# 1024x128 resize with no artificial canvas -> 1-channel ResNet18.  Stochastic scan augmentation is
 # deliberately disabled so the same held-out sample is identical at every epoch.
 export EVAL_SIDE_PADDING_PX="${SIDE_PADDING_PX}"
 export ZERO_SHOT_CROP_MODE="${CROP_MODE}"
@@ -104,6 +104,7 @@ export DATASET_TYPE=real
 export LINE_HEIGHT=128
 export LINE_WIDTH=1024
 export PACK_VALID_WINDOWS=0
+export FULL_IMAGE_NO_PADDING=1
 export REAL_SYNTHETIC_STYLE=0
 export REAL_BINARIZE=0
 export REAL_BINARIZE_AUTO_INVERT=0
@@ -119,10 +120,10 @@ export REAL_BBOX_MARGIN_RATIO="${REAL_BBOX_MARGIN_RATIO:-0.05}"
 export REAL_BBOX_MIN_MARGIN_PX="${REAL_BBOX_MIN_MARGIN_PX:-2}"
 export ZERO_SHOT_PREPROCESS=1
 export ZERO_SHOT_FOREGROUND_CROP=0
-export ZERO_SHOT_PRESERVE_ASPECT=1
+export ZERO_SHOT_PRESERVE_ASPECT=0
 export ZERO_SHOT_SOURCE_GEOMETRY=0
 export ZERO_SHOT_TARGET_INK_HEIGHT_RATIO="${ZERO_SHOT_TARGET_INK_HEIGHT_RATIO:-0.72}"
-export LINE_GEOMETRY_MODE=xml-bbox-gray-aspect-preserving
+export LINE_GEOMETRY_MODE=xml-bbox-gray-full-resize
 export EVAL_COMPACT_OUTPUT=1
 
 echo "============================================================"
@@ -132,7 +133,7 @@ echo "samples           = ${N_SAMPLES}"
 echo "start_index       = ${START_INDEX}"
 echo "representation    = fused"
 echo "preprocessing     = ${IMAGE_PREPROCESSING}"
-echo "input pipeline    = XML 4-side bbox -> grayscale -> 1024x128 aspect-preserved"
+echo "input pipeline    = XML 4-side bbox -> grayscale -> DIRECT 1024x128, no artificial padding"
 echo "visual channels   = ${VISUAL_INPUT_CHANNELS}"
 echo "bbox crop         = ${REAL_BBOX_CROP} margin_ratio=${REAL_BBOX_MARGIN_RATIO} min=${REAL_BBOX_MIN_MARGIN_PX}px"
 echo "scan augmentation = ${REAL_SCAN_AUGMENT} (must stay 0 for deterministic eval)"
