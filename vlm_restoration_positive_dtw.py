@@ -1,7 +1,7 @@
 """Arabic window encoder with ResNet-18 local features, ViT-Tiny context and DTW.
 
 Pipeline:
-  crop outer margins -> proportional resize -> overlapping real RGB windows ->
+  XML crop outer margins -> direct 1024x128 resize -> overlapping grayscale windows ->
   shared ResNet-18 window encoder -> ViT-Tiny sequence context ->
   local/context fusion -> positive letter-DTW.
 
@@ -95,8 +95,8 @@ def apply_branch_config(P):
         int(getattr(P, "real_train_samples_per_epoch", 0)),
     )
     P.zero_shot_preprocess = True
-    P.zero_shot_preserve_aspect = True
-    P.zero_shot_foreground_crop = True
+    P.zero_shot_preserve_aspect = _env_flag("ZERO_SHOT_PRESERVE_ASPECT", True)
+    P.zero_shot_foreground_crop = _env_flag("ZERO_SHOT_FOREGROUND_CROP", True)
     P.zero_shot_source_geometry = False
     os.environ["SYNTHETIC_BINARIZE"] = "0"
     os.environ["REAL_BINARIZE"] = "1" if synthetic_style_real else "0"
@@ -108,11 +108,20 @@ def apply_branch_config(P):
     os.environ.setdefault("ZERO_SHOT_FOREGROUND_CROP", "1")
     os.environ.setdefault("ZERO_SHOT_PRESERVE_ASPECT", "1")
     os.environ.setdefault("ZERO_SHOT_SOURCE_GEOMETRY", "0")
-    os.environ["LINE_GEOMETRY_MODE"] = (
-        "xml-bbox-gray-aspect-preserving"
-        if _env_flag("VISUAL_GRAYSCALE", False)
-        else "crop-aspect-preserving-rgb"
-    )
+    if _env_flag("REAL_BBOX_CROP", False) and _env_flag(
+        "VISUAL_GRAYSCALE", False
+    ):
+        os.environ["LINE_GEOMETRY_MODE"] = (
+            "xml-bbox-gray-aspect-preserving"
+            if _env_flag("ZERO_SHOT_PRESERVE_ASPECT", True)
+            else "xml-bbox-gray-full-resize"
+        )
+    else:
+        os.environ["LINE_GEOMETRY_MODE"] = (
+            "crop-aspect-preserving-rgb"
+            if _env_flag("ZERO_SHOT_PRESERVE_ASPECT", True)
+            else "full-image-resize"
+        )
 
     # Canonical ViT-Tiny dimensions. ResNet-18 creates one token per physical
     # window; the transformer contextualizes that window-token sequence.
@@ -561,12 +570,24 @@ def attach_restoration_dtw_stages(model, P):
             local = tokens.squeeze(2).transpose(1, 2).contiguous()
             if use_flip:
                 local = torch.flip(local, dims=[1])
-            token_valid, _pixel_valid = line_padding_masks(
-                model_input,
-                window_size=self.window_size,
-                stride=self.stride,
-                use_flip=use_flip,
-            )
+            if _env_flag("FULL_IMAGE_NO_PADDING", False):
+                # Direct 1024x128 resize fills the complete model field of view.
+                # There is no artificial canvas to mask: every one of the
+                # physical sliding-window tokens participates in attention,
+                # letter-DTW and SIGReg.
+                token_valid = torch.ones(
+                    (local.shape[0], local.shape[1]),
+                    dtype=torch.bool,
+                    device=local.device,
+                )
+                _pixel_valid = None
+            else:
+                token_valid, _pixel_valid = line_padding_masks(
+                    model_input,
+                    window_size=self.window_size,
+                    stride=self.stride,
+                    use_flip=use_flip,
+                )
 
         local = self.local_norm(local)
 
@@ -1605,6 +1626,7 @@ def model_config(P):
         ),
         "real_positive_partner_required": False,
         "pack_valid_windows": _env_flag("PACK_VALID_WINDOWS", False),
+        "full_image_no_padding": _env_flag("FULL_IMAGE_NO_PADDING", False),
         "real_output_polarity": (
             "white_ink_on_black"
             if _env_flag("REAL_SYNTHETIC_STYLE", False)
@@ -1628,10 +1650,18 @@ def model_config(P):
         "line_geometry_mode": os.environ.get(
             "LINE_GEOMETRY_MODE",
             (
-                "xml-bbox-gray-aspect-preserving"
+                (
+                    "xml-bbox-gray-aspect-preserving"
+                    if _env_flag("ZERO_SHOT_PRESERVE_ASPECT", True)
+                    else "xml-bbox-gray-full-resize"
+                )
                 if bool(P.visual_grayscale)
                 and _env_flag("REAL_BBOX_CROP", False)
-                else "crop-aspect-preserving-rgb"
+                else (
+                    "crop-aspect-preserving-rgb"
+                    if _env_flag("ZERO_SHOT_PRESERVE_ASPECT", True)
+                    else "full-image-resize"
+                )
             ),
         ),
         "keep_paired_lines_for_independent_training": bool(
