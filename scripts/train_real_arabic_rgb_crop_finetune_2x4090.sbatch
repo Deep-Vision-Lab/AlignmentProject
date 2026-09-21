@@ -28,7 +28,7 @@ mkdir -p out Results/Diagnostics/RealBBoxCrop Results/Diagnostics/RealScanAugmen
 
 # Use the architecture that produced the stronger fused Point-2 results.
 export MODEL_BACKEND_VARIANT="resnet_token"
-export JOB_NAME="${JOB_NAME:-res18_tinyvit_real_gray_bbox_aug_sigreg_l020}"
+export JOB_NAME="${JOB_NAME:-res18_tinyvit_real_gray_full1024_sigreg_l020}"
 export RESTORATION_EPOCHS="${RESTORATION_EPOCHS:-30}"
 export RESTORATION_LEARNING_RATE="${RESTORATION_LEARNING_RATE:-2e-5}"
 # 0 means use all manifest rows that pass the real-data label filters.
@@ -97,6 +97,7 @@ export FULL_IMAGE_NO_PADDING=1
 export ZERO_SHOT_PRESERVE_ASPECT=0
 export LINE_GEOMETRY_MODE=xml-bbox-gray-full-resize
 export ZERO_SHOT_TARGET_INK_HEIGHT_RATIO="${ZERO_SHOT_TARGET_INK_HEIGHT_RATIO:-0.72}"
+# DIRECT_RESIZE ignores target ink-height ratio; retained only for checkpoint compatibility.
 
 # Current positive letter-DTW objective.
 export RESTORATION_TRAINING_STAGE=align
@@ -383,6 +384,7 @@ echo "learning rate        = ${RESTORATION_LEARNING_RATE}"
 echo "preprocessing        = XML four-sided crop -> TRUE GRAYSCALE -> direct 1024x128 fill"
 echo "bbox margin          = ratio ${REAL_BBOX_MARGIN_RATIO}, min ${REAL_BBOX_MIN_MARGIN_PX}px"
 echo "output geometry      = 1024x128 DIRECT RESIZE, no artificial white padding"
+echo "all windows valid    = ${FULL_IMAGE_NO_PADDING} (63/63 participate)"
 echo "crop source          = original.xml PartOfWord boxes; left/right/top/bottom"
 echo "window sequence      = fixed 63-window grid; ALL 63 windows valid (no artificial canvas)"
 echo "online augmentation  = scan-only: blur/noise/speckle/brightness/contrast"
