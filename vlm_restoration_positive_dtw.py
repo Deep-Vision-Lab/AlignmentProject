@@ -1333,7 +1333,7 @@ def install_training_objective(train_module):
         env = os.environ.copy()
         # Evaluation must be deterministic/clean and must match the exact
         # deterministic preprocessing used by this real training run:
-        # XML four-sided bbox crop -> grayscale -> aspect-preserving 1024x128.
+        # XML four-sided bbox crop -> grayscale -> direct 1024x128 resize.
         # Only stochastic scan corruption is disabled.
         env.update(
             {
@@ -1341,6 +1341,7 @@ def install_training_objective(train_module):
                 "LINE_HEIGHT": "128",
                 "LINE_WIDTH": "1024",
                 "PACK_VALID_WINDOWS": "0",
+                "FULL_IMAGE_NO_PADDING": "1",
                 "REAL_SYNTHETIC_STYLE": "0",
                 "REAL_BINARIZE": "0",
                 "REAL_BINARIZE_AUTO_INVERT": "0",
@@ -1360,12 +1361,12 @@ def install_training_objective(train_module):
                 ),
                 "ZERO_SHOT_PREPROCESS": "1",
                 "ZERO_SHOT_FOREGROUND_CROP": "0",
-                "ZERO_SHOT_PRESERVE_ASPECT": "1",
+                "ZERO_SHOT_PRESERVE_ASPECT": "0",
                 "ZERO_SHOT_SOURCE_GEOMETRY": "0",
                 "ZERO_SHOT_TARGET_INK_HEIGHT_RATIO": os.environ.get(
                     "ZERO_SHOT_TARGET_INK_HEIGHT_RATIO", "0.72"
                 ),
-                "LINE_GEOMETRY_MODE": "xml-bbox-gray-aspect-preserving",
+                "LINE_GEOMETRY_MODE": "xml-bbox-gray-full-resize",
                 "EVAL_COMPACT_OUTPUT": "1",
             }
         )
