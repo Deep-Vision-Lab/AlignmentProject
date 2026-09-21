@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw
 
 from RealDataSet import ArabicAllPageLinesDataset
 from real_line_bbox_crop import bbox_crop_line
-from zero_shot_preprocessing import aspect_preserving_pad_with_metadata
+from zero_shot_preprocessing import build_preprocessor
 
 
 def _stack(images, labels, width=1024):
@@ -54,9 +54,18 @@ def main():
     parser.add_argument("--margin-ratio", type=float, default=0.05)
     args = parser.parse_args()
 
+    os.environ["VISUAL_GRAYSCALE"] = "1"
+    os.environ["REAL_GRAYSCALE"] = "1"
+    os.environ["REAL_BINARIZE"] = "0"
+    os.environ["REAL_BINARIZE_AUTOCONTRAST"] = "0"
+    os.environ["ZERO_SHOT_PREPROCESS"] = "1"
+    os.environ["ZERO_SHOT_FOREGROUND_CROP"] = "0"
+    os.environ["ZERO_SHOT_PRESERVE_ASPECT"] = "0"
+
     dataset = ArabicAllPageLinesDataset(
         args.dataset, transform=None, validate_paths=False
     )
+    preprocessor = build_preprocessor("real", training=False)
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
 
@@ -99,11 +108,8 @@ def main():
             continue
 
         grayscale = bbox_crop.convert("L")
-        model_input, resize_meta = aspect_preserving_pad_with_metadata(
-            grayscale,
-            size=(128, 1024),
-            target_ink_height_ratio=0.72,
-            horizontal_jitter=0.0,
+        model_input, resize_meta = preprocessor.preprocess_with_metadata(
+            grayscale
         )
 
         overlay = original.copy()
@@ -132,7 +138,7 @@ def main():
                 "2 XML text envelope: all four sides",
                 "3 four-side crop",
                 "4 true grayscale crop",
-                "5 grayscale 1024x128 model canvas",
+                "5 grayscale direct 1024x128 model input — NO artificial padding",
             ],
         ).save(sample_dir / "comparison.png")
 
