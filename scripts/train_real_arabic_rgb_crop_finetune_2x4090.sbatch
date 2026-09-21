@@ -41,7 +41,7 @@ export REAL_TRAIN_AUGMENT_COPIES="${REAL_TRAIN_AUGMENT_COPIES:-3}"
 
 # ArabicDataset preprocessing for the new run:
 # source XML text envelope -> crop ALL FOUR SIDES -> true grayscale ->
-# training-only scan augmentation -> aspect-preserving 1024x128 canvas.
+# training-only scan augmentation -> direct 1024x128 resize with NO artificial canvas.
 export DATASET_TYPE=real
 export REAL_SYNTHETIC_STYLE=0
 export REAL_BINARIZE=0
@@ -89,12 +89,13 @@ export REAL_VALIDATE_PATHS="${REAL_VALIDATE_PATHS:-0}"
 export REAL_FILTER_INFEASIBLE_SPAN_DTW=0
 export ZERO_SHOT_PREPROCESS=1
 export ZERO_SHOT_CROP_MODE=vertical_borders
-# Match the Point-2 synthetic checkpoint exactly: keep the fixed 1024px canvas
-# token grid (63 windows for width=32/stride=16). Outer artificial side-padding
-# windows stay at their original absolute positions but are masked out of
-# TinyViT attention and positive DTW; do NOT repack/rebase them to token 0.
+# Fixed 1024px field gives 63 windows for width=32/stride=16. The XML-cropped
+# line is resized directly to fill 1024x128, so there is NO artificial canvas
+# and all 63 windows are valid for TinyViT, DTW and SIGReg.
 export PACK_VALID_WINDOWS=0
-export ZERO_SHOT_PRESERVE_ASPECT=1
+export FULL_IMAGE_NO_PADDING=1
+export ZERO_SHOT_PRESERVE_ASPECT=0
+export LINE_GEOMETRY_MODE=xml-bbox-gray-full-resize
 export ZERO_SHOT_TARGET_INK_HEIGHT_RATIO="${ZERO_SHOT_TARGET_INK_HEIGHT_RATIO:-0.72}"
 
 # Current positive letter-DTW objective.
@@ -361,7 +362,7 @@ echo "Real ArabicDataset fine-tune"
 echo "dataset              = ${DATASET}"
 echo "mode                 = FINE-TUNE (never train from zero)"
 echo "initial weights      = ${PRETRAINED_WEIGHTS}"
-echo "approved pipeline     = XML 4-side crop -> grayscale -> scan augmentation -> 1ch ResNet18"
+echo "approved pipeline     = XML 4-side crop -> grayscale -> scan augmentation -> DIRECT 1024x128 -> 1ch ResNet18"
 echo "bbox crop             = ${REAL_BBOX_CROP} margin_ratio=${REAL_BBOX_MARGIN_RATIO} min_margin=${REAL_BBOX_MIN_MARGIN_PX}px"
 echo "visual channels       = ${VISUAL_INPUT_CHANNELS} (true grayscale=${VISUAL_GRAYSCALE})"
 echo "scan augmentation     = ${REAL_SCAN_AUGMENT} prob=${REAL_SCAN_AUGMENT_PROB}"
@@ -379,11 +380,11 @@ echo "SIGReg slice chunk   = ${SIGREG_SLICE_CHUNK}"
 echo "backend              = resnet_token (ResNet18 -> TinyViT -> fused)"
 echo "epochs               = ${RESTORATION_EPOCHS}"
 echo "learning rate        = ${RESTORATION_LEARNING_RATE}"
-echo "preprocessing        = XML four-sided text crop -> TRUE GRAYSCALE (1 channel)"
+echo "preprocessing        = XML four-sided crop -> TRUE GRAYSCALE -> direct 1024x128 fill"
 echo "bbox margin          = ratio ${REAL_BBOX_MARGIN_RATIO}, min ${REAL_BBOX_MIN_MARGIN_PX}px"
-echo "output geometry      = 1024x128, aspect preserved"
+echo "output geometry      = 1024x128 DIRECT RESIZE, no artificial white padding"
 echo "crop source          = original.xml PartOfWord boxes; left/right/top/bottom"
-echo "window sequence      = fixed 63-window grid; outer canvas padding MASKED, not repacked"
+echo "window sequence      = fixed 63-window grid; ALL 63 windows valid (no artificial canvas)"
 echo "online augmentation  = scan-only: blur/noise/speckle/brightness/contrast"
 echo "augmentation geom    = NO rotation, NO translation, NO scaling, NO warp"
 echo "scan blur radius     = ${REAL_SCAN_BLUR_RADIUS_MIN}..${REAL_SCAN_BLUR_RADIUS_MAX}"
