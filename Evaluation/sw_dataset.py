@@ -302,6 +302,8 @@ def load_arabic_dataset_pairs(args) -> list[ImagePair]:
                 index=manifest_position,
                 image1=dataset._resolve(side_a["line_image_path"]),
                 image2=dataset._resolve(side_b["line_image_path"]),
+                text1=dataset._resolve(side_a[args.real_text_key]),
+                text2=dataset._resolve(side_b[args.real_text_key]),
                 pair_id=str(sample.get("pair_id", manifest_position)),
                 label_type=str(sample.get("label_type", "")),
                 text_score=float(scores.get("text_score", 0.0)),
