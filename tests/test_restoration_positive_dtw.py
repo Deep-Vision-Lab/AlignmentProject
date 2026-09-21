@@ -7,6 +7,7 @@ from physical_window_vit_encoder import PhysicalWindowEmbedding
 from resnet18_window_encoder import ResNet18WindowEncoder
 from vlm_restoration_positive_dtw import (
     _clean_letters,
+    attach_restoration_dtw_stages,
     _soft_dtw_cost_matrix,
     positive_monotonic_letter_dtw_cost,
     strong_sigreg_loss,
@@ -293,3 +294,44 @@ def test_strong_sigreg_penalizes_collapsed_pre_l2_embeddings_and_backpropagates(
     assert gaussian.grad is not None
     assert torch.isfinite(gaussian.grad).all()
     assert float(gaussian.grad.norm()) > 0.0
+
+
+
+def test_full_image_no_padding_marks_every_window_valid(monkeypatch):
+    monkeypatch.setenv("PACK_VALID_WINDOWS", "0")
+    monkeypatch.setenv("FULL_IMAGE_NO_PADDING", "1")
+
+    model = EmbeddingModel(
+        window_size=32,
+        stride=16,
+        vector_size=192,
+        device="cpu",
+        use_flip=True,
+        input_height=128,
+        vit_layers=12,
+        vit_heads=3,
+        vit_mlp_dim=768,
+        vit_dropout=0.0,
+        vit_max_tokens=64,
+        vit_position_base_tokens=63,
+        vit_binarize_input=False,
+    )
+    config = SimpleNamespace(
+        resnet18_pretrained=False,
+        tiny_vit_pretrained=False,
+        pretrained_local_only=True,
+        restoration_semantic_adapter="identity",
+        visual_input_channels=1,
+    )
+    model = attach_restoration_dtw_stages(model, config)
+
+    # Deliberately white at both sides. In full-image mode these are source
+    # pixels after direct resize, not artificial canvas, so every window stays valid.
+    image = torch.zeros(1, 1, 128, 1024)
+    image[:, :, :, :160] = 2.0
+    image[:, :, :, -160:] = 2.0
+
+    bundle = model(image, return_training_bundle=True)
+    valid = bundle["token_valid"]
+    assert valid.shape == (1, 63)
+    assert bool(valid.all())
