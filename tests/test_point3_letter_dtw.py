@@ -63,3 +63,25 @@ def test_letter_panel_uses_images_not_text_for_x_axis():
     left, right = window_ax.get_xlim()
     assert left > right  # RTL: first model window is displayed on the right.
     plt.close(fig)
+
+
+
+def test_manifest_transcript_path_overrides_filename_guess(tmp_path):
+    side = tmp_path / "A"
+    images = side / "linesImages"
+    guessed = side / "text" / "final" / "original"
+    exact = side / "manifest_text"
+    images.mkdir(parents=True)
+    guessed.mkdir(parents=True)
+    exact.mkdir(parents=True)
+
+    image = images / "line_01.png"
+    image.write_bytes(b"not-an-image-needed-for-path-test")
+    guessed_text = guessed / "line_01.txt"
+    guessed_text.write_text("خطأ", encoding="utf-8")
+    exact_text = exact / "different_name.txt"
+    exact_text.write_text("صحيح", encoding="utf-8")
+
+    resolved = point3._transcript_path_for_line(image, exact_text)
+    assert resolved == exact_text
+    assert resolved.read_text(encoding="utf-8") == "صحيح"
