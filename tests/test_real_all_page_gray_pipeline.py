@@ -5,7 +5,7 @@ import torch
 from PIL import Image, ImageDraw
 
 from RealDataSet import ArabicAllPageLinesDataset
-from zero_shot_preprocessing import build_tensor_transform
+from zero_shot_preprocessing import build_preprocessor, build_tensor_transform
 
 
 XML = """<?xml version="1.0"?>
@@ -49,7 +49,7 @@ def test_all_page_line_pipeline_is_four_side_crop_then_true_grayscale(monkeypatc
     monkeypatch.setenv("REAL_BINARIZE", "0")
     monkeypatch.setenv("ZERO_SHOT_PREPROCESS", "1")
     monkeypatch.setenv("ZERO_SHOT_FOREGROUND_CROP", "0")
-    monkeypatch.setenv("ZERO_SHOT_PRESERVE_ASPECT", "1")
+    monkeypatch.setenv("ZERO_SHOT_PRESERVE_ASPECT", "0")
     monkeypatch.setenv("ZERO_SHOT_TARGET_INK_HEIGHT_RATIO", "0.72")
 
     dataset = ArabicAllPageLinesDataset(
@@ -63,6 +63,18 @@ def test_all_page_line_pipeline_is_four_side_crop_then_true_grayscale(monkeypatc
     assert prepared.mode == "L"
     assert prepared.width < 400
     assert prepared.height < 67
+
+    preprocessor = build_preprocessor("real", training=False)
+    direct, meta = preprocessor.preprocess_with_metadata(prepared)
+    assert direct.mode == "L"
+    assert direct.size == (1024, 128)
+    assert preprocessor.preserve_aspect is False
+    assert meta["preserve_aspect"] is False
+    assert meta["offset_x"] == 0
+    assert meta["offset_y"] == 0
+    assert meta["resized_width"] == 1024
+    assert meta["resized_height"] == 128
+    assert meta["scale_x"] != meta["scale_y"]
 
     dataset.transform = build_tensor_transform("real", training=False)
     _text, tensor = dataset[0]
