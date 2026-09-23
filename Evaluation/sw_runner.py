@@ -78,37 +78,28 @@ def evaluate_sample(
         missing = [str(path) for path in (image1, image2) if not path.is_file()]
         raise FileNotFoundError("Missing image pair: " + ", ".join(missing))
 
-    binarized = str(dataset_type).lower() == "real"
+    real_input = str(dataset_type).lower() == "real"
+    binarized = models.contract.real_binarize if real_input else models.contract.synthetic_binarize
     binary1 = binary2 = ""
     temporary_directory = None
     try:
-        if binarized:
-            arr1 = display_image(image1, "real")
-            arr2 = display_image(image2, "real")
-            if save_binary:
-                model_image1, model_image2 = save_binarized_inputs(
-                    arr1, arr2, output, pair.index
-                )
-                binary1, binary2 = str(model_image1), str(model_image2)
-            else:
-                temporary_directory = tempfile.TemporaryDirectory(
-                    prefix="sw_real_binary_"
-                )
-                temp_root = Path(temporary_directory.name)
-                model_image1, model_image2 = temp_root / "line1.png", temp_root / "line2.png"
-                Image.fromarray(arr1).save(model_image1)
-                Image.fromarray(arr2).save(model_image2)
-            feature_dataset_type = "synthetic"
+        prepared1, _ = models.contract.prepare_line(image1, dataset_type)
+        prepared2, _ = models.contract.prepare_line(image2, dataset_type)
+        arr1 = np.asarray(prepared1.convert("RGB"))
+        arr2 = np.asarray(prepared2.convert("RGB"))
+        if real_input and save_binary:
+            model_image1, model_image2 = save_binarized_inputs(
+                np.asarray(prepared1), np.asarray(prepared2), output, pair.index)
+            binary1, binary2 = str(model_image1), str(model_image2)
         else:
-            with Image.open(image1) as opened:
-                arr1 = np.asarray(opened.convert("RGB"))
-            with Image.open(image2) as opened:
-                arr2 = np.asarray(opened.convert("RGB"))
-            model_image1, model_image2 = image1, image2
-            feature_dataset_type = "synthetic"
+            temporary_directory = tempfile.TemporaryDirectory(prefix="sw_prepared_")
+            temp_root = Path(temporary_directory.name)
+            model_image1, model_image2 = temp_root / "line1.png", temp_root / "line2.png"
+            prepared1.save(model_image1)
+            prepared2.save(model_image2)
 
-        features1 = get_image_features(models, model_image1, feature_dataset_type)
-        features2 = get_image_features(models, model_image2, feature_dataset_type)
+        features1 = get_image_features(models, model_image1, dataset_type, prepared=True)
+        features2 = get_image_features(models, model_image2, dataset_type, prepared=True)
         raw_similarity = compute_similarity(
             features1.select(feature), features2.select(feature)
         ).cpu().numpy()
@@ -417,18 +408,33 @@ def main():
     if args.n_samples <= 0:
         raise SystemExit("--n-samples must be greater than zero")
 
+    models = load_evaluation_models(args.weights, args.device, load_text_model=False)
+    models.contract.install()
     manifest_pairs = []
     manifest = arabic_manifest_path(args)
     if args.dataset_type == "real" and not args.pair_manifest and manifest.is_file():
-        manifest_pairs = load_arabic_dataset_pairs(args)
+        manifest_pairs = load_arabic_dataset_pairs(args, checkpoint_config=models.config)
         print(
             f"Loaded ArabicDataset manifest: {manifest} split={args.real_split} "
             f"samples={len(manifest_pairs)}", flush=True
         )
     elif args.pair_manifest:
         manifest_pairs = load_pair_manifest(args.pair_manifest, args.data_dir)
+        if args.dataset_type == "real" and models.contract.real_all_page_lines:
+            from Evaluation.sw_dataset import select_source_page_pairs
+            if args.split_seed != models.contract.split_seed:
+                raise ValueError("Requested split seed differs from checkpoint training seed")
+            manifest_pairs, _ = select_source_page_pairs(
+                manifest_pairs, args.data_dir, text_key=args.real_text_key,
+                seed=models.contract.split_seed, split=args.real_split)
+    elif args.dataset_type == "real" and models.contract.real_all_page_lines:
+        raise FileNotFoundError(f"Cannot reproduce checkpoint source-page split: missing manifest {manifest}")
 
-    models = load_evaluation_models(args.weights, args.device, load_text_model=False)
+    from Evaluation.checkpoint_contract import evaluation_metadata
+    contract_metadata = evaluation_metadata(models, args.weights, dataset=args.data_dir)
+    metadata_path = Path(args.output_dir) / "evaluation_contract.json" if args.batch else Path(args.output).with_suffix(".contract.json")
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(json.dumps(contract_metadata, indent=2), encoding="utf-8")
     common = dict(
         dataset_type=args.dataset_type, feature=args.feature, threshold=args.threshold,
         gap=args.gap, score_mode=args.score_mode, score_clip=args.score_clip,
@@ -444,6 +450,12 @@ def main():
             ImagePair(args.index, Path(args.image1), Path(args.image2))
             if args.image1 else pair_for_index(args, args.index, manifest_pairs)
         )
+        if args.image1 and args.dataset_type == "real" and models.contract.real_all_page_lines:
+            from Evaluation.sw_dataset import select_source_page_pairs
+            selected, _ = select_source_page_pairs(
+                [pair], args.data_dir, text_key=args.real_text_key,
+                seed=models.contract.split_seed, split=args.real_split)
+            pair = selected[0]
         evaluate_sample(models, pair, output=Path(args.output), **common)
         return
 

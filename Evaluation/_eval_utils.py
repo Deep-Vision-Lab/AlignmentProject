@@ -23,6 +23,9 @@ from arabic_token_text_encoder import ArabicTokenTextEncoder
 from embeddingModel import EmbeddingModel
 from span_alignment_loss import hard_span_dtw_path
 from textEmbedding import OrthogonalCharEmbedding, TextEmbedding
+from Evaluation.checkpoint_contract import (
+    EvaluationContract, evaluation_environment, resolve_evaluation_contract,
+)
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -62,6 +65,8 @@ def _force_odd_head_mha_reference_path(model: torch.nn.Module) -> tuple[str, ...
     for name, module in model.named_modules():
         if not isinstance(module, torch.nn.MultiheadAttention):
             continue
+        if getattr(module, "_reference_attention", False):
+            continue
         if int(module.num_heads) % 2 == 0:
             continue
         dropout = float(module.dropout)
@@ -82,6 +87,11 @@ class EvaluationModels:
     config: dict
     checkpoint: dict | torch.Tensor
     device: torch.device
+    contract: EvaluationContract | None = None
+
+    def __post_init__(self):
+        if self.contract is None:
+            self.contract = resolve_evaluation_contract(self.config)
 
 
 @dataclass
@@ -91,6 +101,8 @@ class ImageFeatures:
     grouped: torch.Tensor
     ink: torch.Tensor
     image_size: tuple[int, int]
+    token_valid: torch.Tensor | None = None
+    physical_window_indices: torch.Tensor | None = None
 
     def select(self, name: str) -> torch.Tensor:
         value = str(name).lower()
@@ -234,6 +246,8 @@ def load_evaluation_models(
     """Load the exact visual/text architecture recorded in a checkpoint."""
     dev = _device(device)
     checkpoint = torch.load(weights_path, map_location="cpu")
+    if isinstance(checkpoint, dict):
+        checkpoint["_evaluation_path"] = str(Path(weights_path).expanduser().resolve())
     config = _config(checkpoint)
 
     use_local_grouping = _bool(config, "use_local_window_grouping", True)
@@ -252,6 +266,19 @@ def load_evaluation_models(
         os.environ["SPAN_BLANK_PENALTY"] = str(config["span_blank_penalty"])
     if "max_windows_per_span" in config:
         os.environ["MAX_WINDOWS_PER_SPAN"] = str(config["max_windows_per_span"])
+
+    image_model = _load_checkpoint_visual_model(checkpoint, config, dev, use_local_grouping)
+
+    text_model = _load_checkpoint_text_model(checkpoint, config, dev) if load_text_model else None
+    return EvaluationModels(image_model, text_model, config, checkpoint, dev)
+
+
+def _load_checkpoint_visual_model(checkpoint, config, dev, use_local_grouping):
+    if str(config.get("architecture_family", "")) == "restoration-positive-dtw-window-encoder":
+        # One strict reconstruction path for current grayscale and older RGB,
+        # including the optional physical-window backend.
+        from Evaluation.point2_runtime import load_point2_visual_models
+        return load_point2_visual_models(checkpoint, dev).image_model
 
     image_model = EmbeddingModel(
         window_size=int(config.get("window_size", 32)),
@@ -275,36 +302,7 @@ def load_evaluation_models(
     ).to(dev)
 
     family = str(config.get("architecture_family", ""))
-    if family == "restoration-positive-dtw-window-encoder":
-        from types import SimpleNamespace
-        from vlm_restoration_positive_dtw import attach_restoration_dtw_stages
-
-        restoration_config = SimpleNamespace(
-            restoration_decoder_channels=int(
-                config.get("restoration_decoder_channels", 64)
-            ),
-            restoration_contrast_scale=float(
-                config.get("restoration_contrast_scale", 0.15)
-            ),
-            restoration_semantic_adapter=str(
-                config.get("restoration_semantic_adapter", "identity")
-            ),
-            restoration_local_encoder=str(
-                config.get("restoration_local_encoder", "resnet18")
-            ),
-            # Checkpoint state is loaded immediately, so evaluation does not
-            # need to fetch pretrained initialization again.
-            resnet18_pretrained=False,
-            tiny_vit_pretrained=False,
-            tiny_vit_pretrained_model=str(
-                config.get("tiny_vit_pretrained_model", "facebook/deit-tiny-patch16-224")
-            ),
-            pretrained_local_only=True,
-        )
-        image_model = attach_restoration_dtw_stages(
-            image_model, restoration_config
-        )
-    elif family == "cfm-inspired-spatial-language-alignment":
+    if family == "cfm-inspired-spatial-language-alignment":
         from types import SimpleNamespace
         from vlm_spatial_language_alignment import attach_spatial_language_stages
 
@@ -338,7 +336,10 @@ def load_evaluation_models(
             flush=True,
         )
 
-    text_model = None
+    return image_model
+
+
+def _load_checkpoint_text_model(checkpoint, config, dev):
     text_type = str(
         config.get(
             "text_encoder_type",
@@ -347,59 +348,65 @@ def load_evaluation_models(
             else "arabic_span",
         )
     )
-    if load_text_model:
-        vector_size = int(config.get("vector_size", 128))
-        if text_type == "arabic_span":
-            model_name = str(
-                config.get("arabic_text_model_name", "aubmindlab/bert-base-arabertv02")
+    vector_size = int(config.get("vector_size", 128))
+    if text_type == "arabic_span":
+        model_name = str(
+            config.get("arabic_text_model_name", "aubmindlab/bert-base-arabertv02")
+        )
+        _resolve_hf_home(model_name)
+        text_model = ArabicSpanTextEncoder(
+            model_name=model_name,
+            output_dim=vector_size,
+            max_span_chars=int(config.get("max_text_span_chars", 2)),
+            freeze_backbone=True,
+            device=dev,
+            strip_text_edges=_bool(config, "strip_span_text_edges", True),
+            cache_size=int(config.get("span_feature_cache_size", 8192)),
+            cache_dtype=str(config.get("span_feature_cache_dtype", "float16")),
+        )
+    elif text_type == "arabic_token":
+        model_name = str(
+            config.get("arabic_text_model_name", "aubmindlab/bert-base-arabertv02")
+        )
+        _resolve_hf_home(model_name)
+        text_model = ArabicTokenTextEncoder(
+            model_name=model_name,
+            output_dim=vector_size,
+            max_token_chars=int(config.get("max_text_token_chars", 2)),
+            freeze_backbone=True,
+            device=dev,
+        )
+    elif text_type == "char":
+        if (
+            str(config.get("letter_codebook", ""))
+            == "frozen-orthogonal-character-identities"
+        ):
+            text_model = OrthogonalCharEmbedding(
+                embedding_dim=vector_size,
+                vocab_size=int(config.get("letter_codebook_vocab_size", 4096)),
+                seed=int(config.get("letter_codebook_seed", 1234)),
             )
-            _resolve_hf_home(model_name)
-            text_model = ArabicSpanTextEncoder(
-                model_name=model_name,
-                output_dim=vector_size,
-                max_span_chars=int(config.get("max_text_span_chars", 2)),
-                freeze_backbone=True,
-                device=dev,
-                strip_text_edges=_bool(config, "strip_span_text_edges", True),
-                cache_size=int(config.get("span_feature_cache_size", 8192)),
-                cache_dtype=str(config.get("span_feature_cache_dtype", "float16")),
-            )
-        elif text_type == "arabic_token":
-            model_name = str(
-                config.get("arabic_text_model_name", "aubmindlab/bert-base-arabertv02")
-            )
-            _resolve_hf_home(model_name)
-            text_model = ArabicTokenTextEncoder(
-                model_name=model_name,
-                output_dim=vector_size,
-                max_token_chars=int(config.get("max_text_token_chars", 2)),
-                freeze_backbone=True,
-                device=dev,
-            )
-        elif text_type == "char":
-            if (
-                str(config.get("letter_codebook", ""))
-                == "frozen-orthogonal-character-identities"
-            ):
-                text_model = OrthogonalCharEmbedding(
-                    embedding_dim=vector_size,
-                    vocab_size=int(config.get("letter_codebook_vocab_size", 4096)),
-                    seed=int(config.get("letter_codebook_seed", 1234)),
-                )
-            else:
-                text_model = TextEmbedding(embedding_dim=vector_size)
         else:
-            raise ValueError(f"Unsupported text_encoder_type={text_type!r}")
+            text_model = TextEmbedding(embedding_dim=vector_size)
+    else:
+        raise ValueError(f"Unsupported text_encoder_type={text_type!r}")
 
-        if isinstance(checkpoint, dict):
-            state = checkpoint.get("text_encoder_state_dict")
-            if state is None:
-                state = checkpoint.get("text_embedder_state_dict")
-            if state:
-                text_model.load_state_dict(_strip_module_prefix(state), strict=False)
-        text_model = text_model.to(dev).eval()
+    if isinstance(checkpoint, dict):
+        state = checkpoint.get("text_encoder_state_dict")
+        if state is None:
+            state = checkpoint.get("text_embedder_state_dict")
+        if state:
+            strict_codebook = config.get("letter_codebook") == "frozen-orthogonal-character-identities"
+            text_model.load_state_dict(_strip_module_prefix(state), strict=strict_codebook)
+    text_model = text_model.to(dev).eval()
+    if config.get("codebook_state_sha256"):
+        import hashlib
+        identity = hashlib.sha256(b"".join(k.encode() + v.detach().cpu().contiguous().numpy().tobytes()
+            for k, v in text_model.state_dict().items())).hexdigest()
+        if identity != config["codebook_state_sha256"]:
+            raise ValueError("Frozen character codebook identity differs from checkpoint metadata")
 
-    return EvaluationModels(image_model, text_model, config, checkpoint, dev)
+    return text_model
 
 
 class ResizeAndBinarize:
@@ -459,7 +466,30 @@ def _resize_height_only_no_padding(image: Image.Image, height: int = 128) -> Ima
     return image.resize((width, int(height)), Image.Resampling.BILINEAR)
 
 
-def build_transform(dataset_type: str = "synthetic"):
+def build_transform(dataset_type: str = "synthetic", *, config=None, contract=None, prepared=False):
+    """Use checkpoint tensorization for prepared images; retain the old no-config API.
+
+    XML cropping needs the source path and belongs in contract.prepare_line,
+    never in a transform of an already prepared PIL image.
+    """
+    if contract is not None or config is not None or prepared:
+        contract = contract or resolve_evaluation_contract(config or {})
+        tensorize = contract.tensor_transform()
+        if prepared:
+            return tensorize
+        if dataset_type == "real" and contract.real_bbox_crop:
+            raise ValueError("XML crop requires a source path; prepare_line first, then prepared=True")
+        from zero_shot_preprocessing import build_preprocessor
+        from unified_line_geometry import install_evaluation_geometry
+        with evaluation_environment(contract.environment()):
+            install_evaluation_geometry()
+            processor = build_preprocessor(dataset_type, training=False)
+
+        def transform(image):
+            with evaluation_environment(contract.environment()):
+                return tensorize(processor(image))
+        return transform
+
     tight_no_padding = os.environ.get("EVAL_TIGHT_NO_PADDING", "0").strip().lower() in {
         "1", "true", "yes", "on"
     }
@@ -535,12 +565,19 @@ def get_image_features(
     models: EvaluationModels,
     image_path: str | os.PathLike,
     dataset_type: str = "synthetic",
+    *,
+    prepared: bool = False,
+    image_preprocessing: str = "training",
 ) -> ImageFeatures:
-    with Image.open(image_path) as opened:
-        image = opened.convert("RGB")
-        original_size = image.size
-        model_image = build_transform(dataset_type)(image)
-        tensor = model_image.unsqueeze(0).to(models.device)
+    contract = models.contract
+    if prepared:
+        with Image.open(image_path) as opened:
+            image = opened.convert(contract.color_mode)
+    else:
+        image, _geometry = contract.prepare_line(image_path, dataset_type, image_preprocessing)
+    original_size = image.size
+    model_image = build_transform(contract=contract, prepared=True)(image)
+    tensor = model_image.unsqueeze(0).to(models.device)
 
     with torch.no_grad():
         contextual, local, grouped, ink = models.image_model(
@@ -555,19 +592,12 @@ def get_image_features(
         str(models.config.get("architecture_family", ""))
         == "restoration-positive-dtw-window-encoder"
     ):
-        # Estimate occupancy on the exact post-transform RGB canvas used by
-        # the embeddings; this changes only SW blank-window metadata.
-        denorm = model_image.detach().cpu().clone()
-        mean = denorm.new_tensor(IMAGENET_MEAN).view(3, 1, 1)
-        std = denorm.new_tensor(IMAGENET_STD).view(3, 1, 1)
-        rgb_tensor = (denorm * std + mean).clamp(0.0, 1.0)
-        rgb_uint8 = (
-            rgb_tensor.permute(1, 2, 0).numpy() * 255.0
-        ).round().astype(np.uint8)
+        # Occupancy is computed from the prepared pixels, independently of
+        # channel-specific normalization. It never changes the embeddings.
         resolved_ink = _visual_ink_ratios(
-            Image.fromarray(rgb_uint8),
-            window_size=int(models.config.get("window_size", 32)),
-            stride=_compute_stride(models.config),
+            image,
+            window_size=contract.window_size,
+            stride=contract.stride,
             expected_count=int(contextual.shape[1]),
             use_flip=bool(models.image_model.use_flip),
             contrast_threshold=float(models.config.get("ink_contrast_threshold", 0.15))
@@ -575,11 +605,15 @@ def get_image_features(
         )
 
     return ImageFeatures(
-        contextual=F.normalize(contextual[0].float(), p=2, dim=-1),
+        contextual=(contextual[0].float() if models.config.get("architecture_variant") == "resnet18_128d_5l_1h_no_pos"
+                    else F.normalize(contextual[0].float(), p=2, dim=-1)),
         local=F.normalize(local[0].float(), p=2, dim=-1),
         grouped=F.normalize(grouped[0].float(), p=2, dim=-1),
         ink=resolved_ink.to(contextual.device),
         image_size=original_size,
+        token_valid=ink[0].bool().detach(),
+        physical_window_indices=(models.image_model.vit_encoder.last_physical_window_indices[0].detach()
+                                 if hasattr(getattr(models.image_model, "vit_encoder", None), "last_physical_window_indices") else None),
     )
 
 

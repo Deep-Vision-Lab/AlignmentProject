@@ -758,6 +758,10 @@ def optimized_train(train_module):
         run = train_module.init_wandb(args, config)
         history = []
         best_validation = float("inf")
+        monitor = None
+        if _flag("EPOCH_MONITORING", False):
+            from epoch_monitoring import EpochMonitor
+            monitor = EpochMonitor(train_module, train_loader, valid_loader, config, args.job_id)
         full_every = max(1, _integer("FULL_CHECKPOINT_EVERY_N_EPOCHS", 5))
         weights_every = max(1, _integer("MODEL_WEIGHTS_EVERY_N_EPOCHS", 2))
         diagnostic_hook = getattr(
@@ -800,7 +804,16 @@ def optimized_train(train_module):
                 ((epoch + 1) % train_module.P.valid_every_n_epochs == 0)
                 or ((epoch + 1) == args.epochs)
             )
-            if should_validate:
+            monitored = None
+            if monitor is not None:
+                from epoch_monitoring import deterministic_evaluation
+                with deterministic_evaluation(train_module._unwrap_model(model), text_encoder, monitor.seed):
+                    monitored = monitor.run(model, text_encoder, epoch + 1, train_loss, train_stats,
+                                            optimizer.param_groups[0]["lr"])
+                val_stats = monitored["row"]["val_eval"]
+                val_loss = val_stats["total"] if val_stats["total"] is not None else float("nan")
+                should_validate = True
+            elif should_validate:
                 val_loss, val_stats = train_module.validate(
                     model,
                     text_encoder,
@@ -844,14 +857,25 @@ def optimized_train(train_module):
                 base_payload = model_payload(
                     train_module, model, text_encoder, config
                 )
+                base_payload["epoch"] = epoch + 1
+                if monitor is not None:
+                    atomic_torch_save(base_payload, directory / "model_latest.pth")
+                    if monitored["improved"]:
+                        atomic_torch_save(base_payload, directory / "model_best_validation_dtw.pth")
                 if final_epoch or improved or ((epoch + 1) % weights_every == 0):
                     atomic_torch_save(base_payload, directory / "model_latest.pth")
                     if improved:
-                        atomic_torch_save(base_payload, directory / "model_best.pth")
+                        if monitor is None:
+                            atomic_torch_save(base_payload, directory / "model_best.pth")
+                        else:
+                            total_payload = dict(base_payload, selection_metric={
+                                "name": "val_eval.total", "value": val_loss, "epoch": epoch + 1,
+                                "gamma": monitor.P.positive_letter_dtw_gamma})
+                            atomic_torch_save(total_payload, directory / "model_best_validation_total.pth")
                 # Keep immutable epoch snapshots for longitudinal evaluation.
                 # Unlike model_latest.pth these are never overwritten, so the
                 # same held-out sample can be compared at epochs 5,10,... .
-                diagnostic_snapshot = (epoch + 1) in diagnostic_epochs
+                diagnostic_snapshot = monitor is not None or (epoch + 1) in diagnostic_epochs
                 if (
                     (epoch + 1) == 1
                     or (epoch + 1) % weights_every == 0
@@ -878,7 +902,7 @@ def optimized_train(train_module):
                         checkpoint, directory / "checkpoint_latest.pth"
                     )
 
-                if callable(diagnostic_hook):
+                if callable(diagnostic_hook) and monitor is None:
                     diagnostic_hook(
                         model=train_module._unwrap_model(model),
                         text_encoder=text_encoder,

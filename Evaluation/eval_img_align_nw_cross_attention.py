@@ -34,8 +34,8 @@ class _PairFeatureState:
         self.pending = None
         self.printed = False
 
-    def get(self, models, image_path, dataset_type="synthetic"):
-        features = _independent_get_image_features(models, image_path, dataset_type)
+    def get(self, models, image_path, dataset_type="synthetic", **input_options):
+        features = _independent_get_image_features(models, image_path, dataset_type, **input_options)
         enabled = bool(models.config.get("cross_attention_enabled", False))
         if not enabled:
             return features

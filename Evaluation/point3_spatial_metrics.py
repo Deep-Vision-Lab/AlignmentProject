@@ -84,7 +84,10 @@ def _column_labels(intervals, width):
     return values
 
 
-def _window_labels(intervals, width):
+def _window_labels(intervals, width, physical_windows=None):
+    if physical_windows is not None:
+        return np.asarray([any(max(a, x0) < min(b, x1) for x0, x1 in intervals)
+                           for a, b in physical_windows], dtype=bool)
     n = max(1, 1 + max(0, int(width) - WINDOW_WIDTH) // WINDOW_STRIDE)
     labels = []
     for i in range(n):
@@ -136,7 +139,7 @@ def _max_consecutive_true(values):
     return best
 
 
-def _region_matches(pred_intervals, gt_intervals, width, min_windows, min_iou):
+def _region_matches(pred_intervals, gt_intervals, width, min_windows, min_iou, physical_windows=None):
     """Match every GT interval to its best predicted interval.
 
     The >=N-window rule is deliberately paired with interval IoU. Otherwise a
@@ -156,9 +159,9 @@ def _region_matches(pred_intervals, gt_intervals, width, min_windows, min_iou):
             pred_index, pred, best_iou = None, None, 0.0
 
         overlap_windows = []
-        for i in range(n_windows):
-            a = i * WINDOW_STRIDE
-            b = min(width, a + WINDOW_WIDTH)
+        windows = physical_windows if physical_windows is not None else [
+            (i * WINDOW_STRIDE, min(width, i * WINDOW_STRIDE + WINDOW_WIDTH)) for i in range(n_windows)]
+        for a, b in windows:
             overlaps_gt = max(a, gt[0]) < min(b, gt[1])
             overlaps_pred = (
                 pred is not None and max(a, pred[0]) < min(b, pred[1])
@@ -186,6 +189,31 @@ def _region_matches(pred_intervals, gt_intervals, width, min_windows, min_iou):
             }
         )
     return matches
+
+
+def source_window_intervals(geometry, window_size, stride):
+    """Actual physical model windows mapped into source space, never source 32/16."""
+    from Evaluation.yelda_geometry import source_intervals
+    width = int(geometry["canvas_width"])
+    result = []
+    for x in range(0, width - int(window_size) + 1, int(stride)):
+        mapped = source_intervals([[x, x + int(window_size)]], geometry)
+        result.append(tuple(mapped[0]) if mapped else (0.0, 0.0))
+    return result
+
+
+def score_source_regions(pred, gt_path, geometry, window_size, stride, min_windows=5, min_iou=0.5):
+    gt_mask = _load_mask(Path(gt_path))
+    width = int(geometry["source_width"])
+    if gt_mask.shape != (int(geometry["source_height"]), width):
+        raise ValueError("GT mask must use original source-image coordinates")
+    gt = _runs(gt_mask)
+    metrics = _binary_metrics(_column_labels(pred, width), np.any(gt_mask, axis=0))
+    metrics["center_error_px"] = _best_center_errors(pred, gt, width)[0]
+    matches = _region_matches(pred, gt, width, min_windows, min_iou,
+                              physical_windows=source_window_intervals(geometry, window_size, stride))
+    metrics["region_success_rate"] = _mean(m["success"] for m in matches)
+    return metrics
 
 
 def _coverage(intervals, width):
@@ -225,6 +253,9 @@ def main():
     root = Path(args.eval_root).expanduser().resolve()
     out = Path(args.output_dir).expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
+    run_metadata_path = root / "run.json"
+    run_metadata = json.loads(run_metadata_path.read_text()) if run_metadata_path.is_file() else {}
+    recorded_geometry = run_metadata.get("evaluation_contract", run_metadata.get("model_config", {}))
 
     rows = []
     region_rows = []
@@ -264,8 +295,11 @@ def main():
             gt_columns = np.any(gt_mask, axis=0)
             col = _binary_metrics(pred_columns, gt_columns, "column")
 
-            pred_windows = _window_labels(pred, width)
-            gt_windows = _window_labels(gt, width)
+            if "window_size" not in recorded_geometry or "stride" not in recorded_geometry:
+                raise ValueError("Source-space support requires checkpoint window_size/stride in run.json; no implicit source 32/16 grid")
+            physical_windows = source_window_intervals(geometry, recorded_geometry["window_size"], recorded_geometry["stride"])
+            pred_windows = _window_labels(pred, width, physical_windows)
+            gt_windows = _window_labels(gt, width, physical_windows)
             win = _binary_metrics(pred_windows, gt_windows, "window")
 
             whole = _binary_metrics(
@@ -285,6 +319,7 @@ def main():
                 width,
                 args.min_consecutive_windows,
                 args.min_region_iou,
+                physical_windows=physical_windows,
             )
             all_region_matches.extend(matches)
             for match in matches:

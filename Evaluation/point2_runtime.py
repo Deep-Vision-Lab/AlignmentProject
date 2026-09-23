@@ -18,7 +18,6 @@ from types import SimpleNamespace
 import torch
 import torch.nn.functional as F
 from PIL import Image
-from torchvision import transforms
 
 from embeddingModel import EmbeddingModel
 from Evaluation._eval_utils import (
@@ -26,10 +25,8 @@ from Evaluation._eval_utils import (
     ImageFeatures,
     _model_state,
     _force_odd_head_mha_reference_path,
-    IMAGENET_MEAN,
-    IMAGENET_STD,
 )
-from zero_shot_preprocessing import IMAGENET_GRAY_MEAN, IMAGENET_GRAY_STD
+from Evaluation.checkpoint_contract import evaluation_environment, resolve_evaluation_contract
 
 POINT2_MODES = ("local", "context", "fused", "fused_wrong_context")
 
@@ -72,6 +69,14 @@ def _is_physical_window_checkpoint(config: dict) -> bool:
 def load_point2_visual_models(checkpoint, device="auto", expected_branch="auto"):
     """Reconstruct either Point-2 architecture exactly, then load checkpoint."""
     config = dict(checkpoint["model_config"])
+    from architecture_experiment import VARIANT
+    if config.get("architecture_variant") == VARIANT:
+        required = {"vector_size": 128, "vit_embed_dim": 128, "vit_layers": 5,
+                    "vit_heads": 1, "vit_mlp_dim": 512, "position_mode": "none"}
+        wrong = {k: config.get(k) for k, v in required.items() if config.get(k) != v}
+        if wrong:
+            raise ValueError(f"{VARIANT} requires {required}; incompatible metadata: {wrong}")
+    contract = resolve_evaluation_contract(config)
     family = str(config.get("architecture_family", ""))
     if family != "restoration-positive-dtw-window-encoder":
         raise ValueError(
@@ -85,12 +90,12 @@ def load_point2_visual_models(checkpoint, device="auto", expected_branch="auto")
     dev = torch.device(device)
 
     model = EmbeddingModel(
-        window_size=int(config.get("window_size", 32)),
-        stride=int(config.get("stride", 16)),
+        window_size=contract.window_size,
+        stride=contract.stride,
         vector_size=int(config.get("vector_size", 192)),
         device=dev,
         use_flip=str(config.get("lang", "Arabic")).lower() == "arabic",
-        input_height=int(config.get("vit_input_height", 128)),
+        input_height=contract.line_height,
         vit_layers=int(config.get("vit_layers", 12)),
         vit_heads=int(config.get("vit_heads", 3)),
         vit_mlp_dim=int(config.get("vit_mlp_dim", 768)),
@@ -104,6 +109,8 @@ def load_point2_visual_models(checkpoint, device="auto", expected_branch="auto")
     ).to(dev)
 
     attach_config = SimpleNamespace(
+        architecture_variant=config.get("architecture_variant", "resnet18_tinyvit_192d_12l_3h"),
+        local_dropout=float(config.get("local_dropout", 0.10)),
         restoration_decoder_channels=int(config.get("restoration_decoder_channels", 64)),
         restoration_contrast_scale=float(config.get("restoration_contrast_scale", 0.15)),
         restoration_semantic_adapter=str(
@@ -118,18 +125,17 @@ def load_point2_visual_models(checkpoint, device="auto", expected_branch="auto")
             config.get("tiny_vit_pretrained_model", "facebook/deit-tiny-patch16-224")
         ),
         pretrained_local_only=True,
-        visual_input_channels=int(config.get("visual_input_channels", 3)),
-        visual_grayscale=_flag(config.get("visual_grayscale", False)),
+        visual_input_channels=contract.visual_input_channels,
+        visual_grayscale=contract.visual_grayscale,
     )
 
-    if _is_physical_window_checkpoint(config):
-        from physical_window_vit_branch import attach_physical_window_vit_stages
-
-        model = attach_physical_window_vit_stages(model, attach_config)
-    else:
-        from vlm_restoration_positive_dtw import attach_restoration_dtw_stages
-
-        model = attach_restoration_dtw_stages(model, attach_config)
+    with evaluation_environment({"FUSION_DROPOUT": config.get("fusion_dropout", 0.0)}):
+        if contract.backend_variant == "physical_window":
+            from physical_window_vit_branch import attach_physical_window_vit_stages
+            model = attach_physical_window_vit_stages(model, attach_config)
+        else:
+            from vlm_restoration_positive_dtw import attach_restoration_dtw_stages
+            model = attach_restoration_dtw_stages(model, attach_config)
 
     model.load_state_dict(_model_state(checkpoint), strict=True)
     model.eval()
@@ -142,7 +148,8 @@ def load_point2_visual_models(checkpoint, device="auto", expected_branch="auto")
             flush=True,
         )
 
-    models = EvaluationModels(model, None, config, checkpoint, dev)
+    contract.bind_model(model)
+    models = EvaluationModels(model, None, config, checkpoint, dev, contract)
     models.pair_cross_attention = None
     return models
 
@@ -180,23 +187,12 @@ def _encode_line(models, image_path, mode: str, *, side: int) -> ImageFeatures:
     if mode not in POINT2_MODES:
         raise ValueError(f"Unknown Point-2 representation {mode!r}")
 
-    input_channels = int(models.config.get("visual_input_channels", 3))
-    grayscale = bool(models.config.get("visual_grayscale", input_channels == 1))
-    if input_channels not in {1, 3}:
-        raise ValueError(f"Unsupported Point-2 visual_input_channels={input_channels}")
     with Image.open(image_path) as opened:
-        image = opened.convert("L" if grayscale else "RGB")
+        image = opened.convert(models.contract.color_mode)
         original_size = image.size
         # The image has already been prepared by yelda_geometry. Do not resize
         # it again here. Normalize with the same statistics as training.
-        mean = IMAGENET_GRAY_MEAN if grayscale else IMAGENET_MEAN
-        std = IMAGENET_GRAY_STD if grayscale else IMAGENET_STD
-        tensor = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize(mean, std),
-            ]
-        )(image).unsqueeze(0).to(models.device)
+        tensor = models.contract.tensor_transform()(image).unsqueeze(0).to(models.device)
 
     image_model = models.image_model
     vit = image_model.vit_encoder
@@ -251,6 +247,9 @@ def _encode_line(models, image_path, mode: str, *, side: int) -> ImageFeatures:
         grouped=local_out,
         ink=token_valid[0].float().detach(),
         image_size=original_size,
+        token_valid=token_valid[0].bool().detach(),
+        physical_window_indices=(vit.last_physical_window_indices[0].detach()
+                                 if hasattr(vit, "last_physical_window_indices") else None),
     )
 
 

@@ -34,6 +34,7 @@ def read_checkpoint(path):
     if flag(checkpoint["model_config"].get("window_cnn_enabled", False)):
         raise ValueError("This branch evaluates original depiction checkpoints; use the window-CNN branch for window_cnn_enabled=True")
     checkpoint["_evaluation_sha256"] = digest.hexdigest()
+    checkpoint["_evaluation_path"] = str(Path(path).expanduser().resolve())
     return checkpoint
 
 
@@ -52,6 +53,9 @@ def load_visual_models(checkpoint, device="auto", expected_branch="auto"):
     )
     if expected_branch not in {"auto", branch}:
         raise ValueError(f"Requested {expected_branch}, but checkpoint is {branch}")
+    if restoration:
+        from Evaluation.point2_runtime import load_point2_visual_models
+        return load_point2_visual_models(checkpoint, device, expected_branch)
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
     dev = torch.device(device)
@@ -72,29 +76,7 @@ def load_visual_models(checkpoint, device="auto", expected_branch="auto"):
         vit_binarize_contrast_threshold=float(config.get("vit_binarize_contrast_threshold", 0.15)),
     ).to(dev)
     # Reconstruct the exact branch-specific stages BEFORE loading.
-    if restoration:
-        from types import SimpleNamespace
-        from vlm_restoration_positive_dtw import attach_restoration_dtw_stages
-
-        restoration_config = SimpleNamespace(
-            restoration_decoder_channels=int(
-                config.get("restoration_decoder_channels", 64)
-            ),
-            restoration_contrast_scale=float(
-                config.get("restoration_contrast_scale", 0.15)
-            ),
-            # Historical checkpoints from this branch predate the config field
-            # and therefore used the residual MLP. New diagnostic-first runs
-            # record identity explicitly.
-            restoration_semantic_adapter=str(
-                config.get("restoration_semantic_adapter", "residual_mlp")
-            ),
-            restoration_local_encoder=str(
-                config.get("restoration_local_encoder", "fullheight_conv")
-            ),
-        )
-        model = attach_restoration_dtw_stages(model, restoration_config)
-    elif spatial:
+    if spatial:
         from types import SimpleNamespace
         from vlm_spatial_language_alignment import attach_spatial_language_stages
 
@@ -154,13 +136,14 @@ def configure_image_preprocessing(models, image_preprocessing):
     return {"image_preprocessing": image_preprocessing,
             "checkpoint_vit_binarize_input": checkpoint_binarize,
             "effective_vit_binarize_input": effective,
-            "tensor_normalization": "ImageNet mean/std"}
+            "tensor_normalization": {"mean": list(models.contract.normalization_mean),
+                                     "std": list(models.contract.normalization_std)}}
 
 
 def pair_features(models, image1, image2, representation="primary"):
     """Pair-local state only: an error cannot mix features from different pairs."""
-    first = get_image_features(models, image1, "synthetic")
-    second = get_image_features(models, image2, "synthetic")
+    first = get_image_features(models, image1, "synthetic", prepared=True)
+    second = get_image_features(models, image2, "synthetic", prepared=True)
     module = models.pair_cross_attention
     if representation in {"primary", "joint"} and module is not None:
         with torch.inference_mode():

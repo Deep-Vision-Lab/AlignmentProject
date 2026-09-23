@@ -73,6 +73,8 @@ def install_vit_evaluation_loader() -> None:
 
     def load_evaluation_models(weights_path, device="auto", load_text_model=True):
         config = _checkpoint_config(weights_path)
+        if config.get("architecture_family") == "restoration-positive-dtw-window-encoder":
+            return original_loader(weights_path, device, load_text_model)
         encoder_type = str(
             config.get(
                 "visual_encoder_type",

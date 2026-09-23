@@ -1,0 +1,4 @@
+epoch,split,run_id,gamma,generalization_gap,learning_rate,total,positive_dtw,evaluated,skipped,sigreg_raw,sigreg_weighted,aggregation,negative,invalid,valid_tokens,sigreg_populations,letters_mean,windows_mean,seconds
+1,train_online,resnet18_128d_5l_1h_no_pos_smoke_20260923d,0.05,0.007501045862833955,2e-05,7.197071075439453,2.293104887008667,1.0,0.0,24.51983070373535,4.903966426849365,optimization-batch weighted; weights change; augmented/dropout-active,,,,,,,
+1,train_eval,resnet18_128d_5l_1h_no_pos_smoke_20260923d,0.05,0.007501045862833955,2e-05,18.244501622517905,2.1929022471110025,3,0,80.2579968770345,16.0515993754069,,,0,189,2,37.0,63.0,1.5860773269087076
+1,val_eval,resnet18_128d_5l_1h_no_pos_smoke_20260923d,0.05,0.007501045862833955,2e-05,17.69268692334493,2.2004032929738364,3,0,77.46141815185547,15.492283630371094,,,0,189,2,36.666666666666664,63.0,1.556447010487318

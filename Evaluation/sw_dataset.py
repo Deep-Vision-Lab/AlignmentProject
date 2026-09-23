@@ -91,6 +91,20 @@ def manifest_image_value(record: dict, role: int) -> str:
     raise ValueError(f"Manifest record is missing image{role}: {record}")
 
 
+def manifest_text_value(record: dict, role: int) -> str | None:
+    """Read an explicitly associated transcript path from a flat pair record."""
+    for key in (
+        f"text{role}", f"text_{role}", f"text{role}_path",
+        f"text_path{role}", f"text_original_path{role}",
+        f"transcript{role}", f"transcript_{role}",
+        f"transcript_path{role}",
+    ):
+        value = record.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
 def resolve_manifest_image(value: str, manifest: Path, data_dir: str | Path) -> Path:
     path = Path(value).expanduser()
     if path.is_absolute():
@@ -134,6 +148,8 @@ def load_pair_manifest(path: str | Path, data_dir: str | Path) -> list[ImagePair
     pairs = []
     for position, record in enumerate(records, start=1):
         index = int(record.get("index", record.get("id", position)))
+        text1 = manifest_text_value(record, 1)
+        text2 = manifest_text_value(record, 2)
         pairs.append(
             ImagePair(
                 index=index,
@@ -143,6 +159,8 @@ def load_pair_manifest(path: str | Path, data_dir: str | Path) -> list[ImagePair
                 image2=resolve_manifest_image(
                     manifest_image_value(record, 2), manifest, data_dir
                 ),
+                text1=resolve_manifest_image(text1, manifest, data_dir) if text1 is not None else None,
+                text2=resolve_manifest_image(text2, manifest, data_dir) if text2 is not None else None,
                 pair_id=str(record.get("pair_id", "")),
                 label_type=str(record.get("label_type", "")),
                 manifest_position=position,
@@ -263,6 +281,20 @@ def _all_page_line_split_map(
         else:
             split_name = "test"
         split_map[str(group_id)] = split_name
+    page_sets = {name: {key for key, split in split_map.items() if split == name}
+                 for name in ("train", "valid", "test")}
+    intersections = {f"{a}_{b}": sorted(page_sets[a] & page_sets[b])
+                     for a, b in (("train", "valid"), ("train", "test"), ("valid", "test"))}
+    if any(intersections.values()) or not all(page_sets.values()):
+        raise ValueError("Cannot reproduce three disjoint nonempty training source-page splits")
+    dataset.evaluation_split_diagnostics = {
+        "strategy": "all_page_lines_source_page_split",
+        "seed": int(seed),
+        "source_page_counts": {key: len(value) for key, value in page_sets.items()},
+        "source_page_intersections": intersections,
+        "line_counts": {name: sum(len(groups[key]) for key in pages) for name, pages in page_sets.items()},
+        "pair_eligibility": "Both source pages must belong to the requested training split; mixed pairs are excluded except for split=all.",
+    }
     return split_map, dataset
 
 
@@ -279,7 +311,29 @@ def _page_key_for_real_line(image_path: str | Path, dataset) -> str:
     return str(page_key)
 
 
-def load_arabic_dataset_pairs(args) -> list[ImagePair]:
+def select_source_page_pairs(pairs, dataset_root, *, text_key, seed, split):
+    """Apply the training page split to native or explicit evaluation pairs."""
+    split_map, dataset = _all_page_line_split_map(dataset_root, text_key=text_key, seed=seed)
+    diagnostics = dataset.evaluation_split_diagnostics
+    print("Evaluation source-page split: " + json.dumps(diagnostics, sort_keys=True), flush=True)
+    selected = []
+    for pair in pairs:
+        split1 = split_map.get(_page_key_for_real_line(pair.image1, dataset))
+        split2 = split_map.get(_page_key_for_real_line(pair.image2, dataset))
+        if split1 is None or split2 is None:
+            raise ValueError(f"Cannot recover training source-page identity for pair {pair.pair_id}: {pair.image1}, {pair.image2}")
+        pair_split = split1 if split1 == split2 else "mixed"
+        if split == "all" or pair_split == split:
+            selected.append(replace(pair, split=pair_split))
+    if split != "all" and not selected:
+        raise ValueError(
+            "No real evaluation pairs have both source pages in the "
+            f"{split!r} split reconstructed from REAL_ALL_PAGE_LINES."
+        )
+    return selected, diagnostics
+
+
+def load_arabic_dataset_pairs(args, *, checkpoint_config=None) -> list[ImagePair]:
     from RealDataSet import ArabicManifestLinePairDataset
 
     manifest = arabic_manifest_path(args)
@@ -311,28 +365,25 @@ def load_arabic_dataset_pairs(args) -> list[ImagePair]:
             )
         )
 
-    if env_flag("REAL_ALL_PAGE_LINES", False):
-        split_map, all_lines_dataset = _all_page_line_split_map(
-            manifest.parent,
-            text_key=args.real_text_key,
-            seed=args.split_seed,
-        )
-        selected = []
-        for pair in pairs:
-            split1 = split_map.get(
-                _page_key_for_real_line(pair.image1, all_lines_dataset)
-            )
-            split2 = split_map.get(
-                _page_key_for_real_line(pair.image2, all_lines_dataset)
-            )
-            pair_split = split1 if split1 == split2 else "mixed"
-            if args.real_split == "all" or pair_split == args.real_split:
-                selected.append(replace(pair, split=pair_split))
-        if args.real_split != "all" and not selected:
-            raise ValueError(
-                "No real evaluation pairs have both source pages in the "
-                f"{args.real_split!r} split reconstructed from REAL_ALL_PAGE_LINES."
-            )
+    if args.real_split == "all":
+        # Enumeration only. Callers with actual saved memberships must not
+        # regenerate a split merely to inspect the available annotations.
+        return pairs
+
+    if checkpoint_config is not None:
+        from Evaluation.checkpoint_contract import resolve_evaluation_contract
+        contract = resolve_evaluation_contract(checkpoint_config)
+        all_page_lines = contract.real_all_page_lines
+        split_seed = contract.split_seed
+        if all_page_lines and int(args.split_seed) != split_seed:
+            raise ValueError(f"Requested split seed {args.split_seed} differs from checkpoint training seed {split_seed}")
+    else:
+        all_page_lines = env_flag("REAL_ALL_PAGE_LINES", False)
+        split_seed = args.split_seed
+
+    if all_page_lines:
+        selected, args.evaluation_split_diagnostics = select_source_page_pairs(
+            pairs, manifest.parent, text_key=args.real_text_key, seed=split_seed, split=args.real_split)
     else:
         train, valid, test = group_split_pairs(pairs, args.split_seed)
         selected = {"all": pairs, "train": train, "valid": valid, "test": test}[

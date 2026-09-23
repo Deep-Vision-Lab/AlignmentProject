@@ -1239,7 +1239,7 @@ def _accumulate_stats(stats_sum: dict, stats: dict, weight: int) -> None:
             continue
         if math.isnan(numeric):
             continue
-        stats_sum[key] = stats_sum.get(key, 0.0) + numeric * weight
+        stats_sum[key] = stats_sum.get(key, 0.0) + numeric * (1 if key.startswith("line_") else weight)
 
 
 def _merge_epoch_payload(local_payload: dict) -> tuple[float, dict]:
@@ -1249,7 +1249,8 @@ def _merge_epoch_payload(local_payload: dict) -> tuple[float, dict]:
         dist.all_gather_object(payloads, local_payload)
     total_weight = sum(float(item.get("weight", 0.0)) for item in payloads)
     if total_weight <= 0:
-        return float("nan"), {}
+        count_keys = {key for item in payloads for key in item.get("stats_sum", {}) if key.startswith("line_")}
+        return float("nan"), {key: sum(item.get("stats_sum", {}).get(key, 0) for item in payloads) for key in count_keys}
     loss = sum(float(item.get("loss_sum", 0.0)) for item in payloads) / total_weight
     keys = set()
     for item in payloads:
@@ -1259,9 +1260,11 @@ def _merge_epoch_payload(local_payload: dict) -> tuple[float, dict]:
             float((item.get("stats_sum") or {}).get(key, 0.0))
             for item in payloads
         )
-        / total_weight
+        / (1 if key.startswith("line_") else total_weight)
         for key in keys
     }
+    if merged.get("line_evaluated_count", 0) > 0:
+        merged["positive_letter_dtw"] = merged["line_dtw_sum"] / merged["line_evaluated_count"]
     return loss, merged
 
 

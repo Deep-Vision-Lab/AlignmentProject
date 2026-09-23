@@ -31,6 +31,7 @@ class ResNet18WindowEncoder(nn.Module):
         pretrained: bool = False,
         local_files_only: bool = True,
         input_channels: int = 3,
+        local_dropout: float | None = None,
     ) -> None:
         super().__init__()
         if int(input_height) != 128 or int(window_size) != 32:
@@ -58,6 +59,7 @@ class ResNet18WindowEncoder(nn.Module):
             self.backbone = resnet18(weights=None)
             state = torch.load(checkpoint, map_location="cpu")
             self.backbone.load_state_dict(state, strict=True)
+            self.initialization_source_path = str(checkpoint)
         else:
             weights = ResNet18_Weights.DEFAULT if self.pretrained else None
             self.backbone = resnet18(weights=weights)
@@ -81,7 +83,7 @@ class ResNet18WindowEncoder(nn.Module):
         self.backbone.fc = nn.Identity()
         self.projection = nn.Sequential(
             nn.Linear(512, self.embed_dim),
-            nn.LayerNorm(self.embed_dim),
+            nn.LayerNorm(self.embed_dim) if local_dropout is None else nn.Dropout(local_dropout),
         )
 
     def extract_windows(self, line: torch.Tensor) -> torch.Tensor:

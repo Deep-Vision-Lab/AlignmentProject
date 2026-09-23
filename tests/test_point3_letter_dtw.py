@@ -67,17 +67,17 @@ def test_letter_panel_uses_images_not_text_for_x_axis():
 
 
 def test_manifest_transcript_path_overrides_filename_guess(tmp_path):
-    side = tmp_path / "A"
-    images = side / "linesImages"
+    side = tmp_path / "generic"
+    images = side / "images"
     guessed = side / "text" / "final" / "original"
     exact = side / "manifest_text"
     images.mkdir(parents=True)
     guessed.mkdir(parents=True)
     exact.mkdir(parents=True)
 
-    image = images / "line_01.png"
+    image = images / "foo.png"
     image.write_bytes(b"not-an-image-needed-for-path-test")
-    guessed_text = guessed / "line_01.txt"
+    guessed_text = guessed / "foo.txt"
     guessed_text.write_text("خطأ", encoding="utf-8")
     exact_text = exact / "different_name.txt"
     exact_text.write_text("صحيح", encoding="utf-8")

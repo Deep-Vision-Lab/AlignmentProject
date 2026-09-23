@@ -33,81 +33,18 @@ from Evaluation._eval_utils import (
     load_evaluation_models,
 )
 from Evaluation.eval_yelda import configure_geometry, synthetic_split
+from Evaluation.point3_core import (
+    effective_cell_costs as _position_prior,
+    hard_letter_path,
+    hard_monotonic_path as _hard_monotonic_path,
+    sequence_to_physical_window as _physical_window,
+)
 from Evaluation.yelda_geometry import prepare_line, source_intervals
 from vlm_restoration_positive_dtw import (
     _clean_letters,
     _soft_dtw_cost_matrix,
     letter_dtw_cost_matrix,
 )
-
-
-def _hard_monotonic_path(
-    cell_costs: np.ndarray,
-    *,
-    vertical_penalty: float,
-    horizontal_penalty: float,
-    disable_horizontal_when_feasible: bool,
-):
-    costs = np.asarray(cell_costs, dtype=np.float64)
-    if costs.ndim != 2 or min(costs.shape) < 1:
-        raise ValueError(f"Expected non-empty [T,L] costs, got {costs.shape}")
-    t_count, l_count = costs.shape
-    h_penalty = float(horizontal_penalty)
-    if disable_horizontal_when_feasible and t_count >= l_count:
-        h_penalty = 1e4
-
-    dp = np.full((t_count, l_count), np.inf, dtype=np.float64)
-    back = np.full((t_count, l_count), -1, dtype=np.int8)  # 0 diag, 1 vertical, 2 horizontal
-    dp[0, 0] = costs[0, 0]
-
-    for i in range(t_count):
-        for j in range(l_count):
-            if i == 0 and j == 0:
-                continue
-            choices = []
-            if i > 0 and j > 0:
-                choices.append((dp[i - 1, j - 1], 0))
-            if i > 0:
-                choices.append((dp[i - 1, j] + float(vertical_penalty), 1))
-            if j > 0:
-                choices.append((dp[i, j - 1] + h_penalty, 2))
-            value, direction = min(choices, key=lambda item: (item[0], item[1]))
-            dp[i, j] = costs[i, j] + value
-            back[i, j] = direction
-
-    i, j = t_count - 1, l_count - 1
-    path = [(i, j)]
-    while i > 0 or j > 0:
-        direction = int(back[i, j])
-        if direction == 0:
-            i -= 1
-            j -= 1
-        elif direction == 1:
-            i -= 1
-        elif direction == 2:
-            j -= 1
-        else:
-            raise RuntimeError(f"Invalid traceback at {(i, j)}")
-        path.append((i, j))
-    path.reverse()
-    return path, dp
-
-
-def _position_prior(costs: np.ndarray, weight: float):
-    result = np.asarray(costs, dtype=np.float64).copy()
-    t_count, l_count = result.shape
-    if weight > 0 and t_count > 1 and l_count > 1:
-        ipos = np.linspace(0.0, 1.0, t_count)
-        lpos = np.linspace(0.0, 1.0, l_count)
-        result += float(weight) * np.abs(ipos[:, None] - lpos[None, :])
-    return result
-
-
-def _physical_window(sequence_index, count, *, width, window, stride, use_flip):
-    physical_index = count - 1 - int(sequence_index) if use_flip else int(sequence_index)
-    left = physical_index * int(stride)
-    right = min(int(width), left + int(window))
-    return physical_index, float(left), float(right)
 
 
 def _source_interval_or_none(x0, x1, geometry):
@@ -130,6 +67,7 @@ def _write_image_text_path(
     use_flip,
     sequence_indices,
     total_window_count,
+    physical_indices=None,
 ):
     """Write DTW rows using original sequence indices after valid-token filtering."""
     width = int(geometry["canvas_width"])
@@ -141,6 +79,7 @@ def _write_image_text_path(
     with path_file.open("w", newline="", encoding="utf-8") as handle:
         fields = [
             "step", "dtw_window_index", "sequence_window", "physical_window",
+            "logical_sequence_index", "physical_window_index",
             "canvas_x0", "canvas_x1", "source_x0", "source_x1",
             "source_mapped", "letter_index", "letter", "cell_cost"
         ]
@@ -149,12 +88,12 @@ def _write_image_text_path(
         for step, (i, j) in enumerate(path):
             sequence_index = int(sequence_indices[int(i)])
             physical, x0, x1 = _physical_window(
-                sequence_index,
-                int(total_window_count),
+                sequence_index if physical_indices is None else int(physical_indices[sequence_index]),
+                int(total_window_count) if physical_indices is None else 1 + (width-window_size)//stride,
                 width=width,
                 window=window_size,
                 stride=stride,
-                use_flip=use_flip,
+                use_flip=use_flip if physical_indices is None else False,
             )
             source_x0, source_x1, source_mapped = _source_interval_or_none(
                 x0, x1, geometry
@@ -164,6 +103,8 @@ def _write_image_text_path(
                 "dtw_window_index": int(i),
                 "sequence_window": sequence_index,
                 "physical_window": physical,
+                "logical_sequence_index": sequence_index,
+                "physical_window_index": physical,
                 "canvas_x0": x0,
                 "canvas_x1": x1,
                 "source_x0": source_x0,
@@ -213,9 +154,11 @@ def _write_image_image_path(
             "step",
             "line1_dtw_window_index", "line1_sequence_window",
             "line1_physical_window", "line1_canvas_x0", "line1_canvas_x1",
+            "line1_logical_sequence_index", "line1_physical_window_index",
             "line1_source_x0", "line1_source_x1", "line1_source_mapped",
             "line2_dtw_window_index", "line2_sequence_window",
             "line2_physical_window", "line2_canvas_x0", "line2_canvas_x1",
+            "line2_logical_sequence_index", "line2_physical_window_index",
             "line2_source_x0", "line2_source_x1", "line2_source_mapped",
             "cosine",
         ]
@@ -247,6 +190,8 @@ def _write_image_image_path(
                 "line1_dtw_window_index": int(i),
                 "line1_sequence_window": seq1,
                 "line1_physical_window": p1,
+                "line1_logical_sequence_index": seq1,
+                "line1_physical_window_index": p1,
                 "line1_canvas_x0": a0,
                 "line1_canvas_x1": a1,
                 "line1_source_x0": s1x0,
@@ -255,6 +200,8 @@ def _write_image_image_path(
                 "line2_dtw_window_index": int(j),
                 "line2_sequence_window": seq2,
                 "line2_physical_window": p2,
+                "line2_logical_sequence_index": seq2,
+                "line2_physical_window_index": p2,
                 "line2_canvas_x0": b0,
                 "line2_canvas_x1": b1,
                 "line2_source_x0": s2x0,
@@ -284,7 +231,7 @@ def _transcript_path(dataset, pair, side):
 def _extract_training_bundle(models, image_path):
     from PIL import Image
     with Image.open(image_path) as opened:
-        tensor = build_transform("synthetic")(opened.convert("RGB")).unsqueeze(0).to(models.device)
+        tensor = build_transform(contract=models.contract, prepared=True)(opened).unsqueeze(0).to(models.device)
     with torch.inference_mode():
         bundle = models.image_model(tensor, return_training_bundle=True)
     return bundle
@@ -302,6 +249,45 @@ def _namespace(config):
     }
     defaults.update(config)
     return SimpleNamespace(**defaults)
+
+
+def monitoring_preview(output, record, transcript, image, bundle, index, model, text_encoder, P, config):
+    """Fixed-ID epoch preview using the same scientific core and coordinate writer."""
+    from PIL import Image
+    from Evaluation.checkpoint_contract import resolve_evaluation_contract
+    output.mkdir(parents=True, exist_ok=True)
+    contract = resolve_evaluation_contract(config)
+    source = Path(record["_root"]) / record["line_image_path"]
+    prepared, geometry = contract.prepare_line(source, domain="real", preprocessing="training")
+    expected = contract.tensor_transform()(prepared)
+    if not torch.equal(expected, image.cpu()):
+        raise ValueError(f"Monitoring preview/training pixel contract differs: {source}")
+    with Image.open(source) as original:
+        original.save(output / "source.png")
+    prepared.save(output / "model_input.png")
+    letters = _clean_letters(transcript)
+    valid = bundle["token_valid"][index].bool()
+    raw = letter_dtw_cost_matrix(P, text_encoder, bundle["semantic"][index][valid], letters).float().cpu().numpy()
+    hard = hard_letter_path(raw,
+        vertical_penalty=P.positive_letter_dtw_vertical_penalty,
+        horizontal_penalty=P.positive_letter_dtw_horizontal_penalty,
+        position_prior_weight=P.positive_letter_dtw_position_prior,
+        disable_horizontal_when_feasible=P.positive_letter_dtw_disable_horizontal_when_feasible)
+    np.save(output / "training_cell_cost.npy", raw)
+    np.save(output / "effective_cell_cost.npy", hard.effective_costs)
+    _write_image_text_path(output / "path.csv", hard.path, letters, hard.effective_costs,
+        geometry=geometry, window_size=contract.window_size, stride=contract.stride,
+        use_flip=model.use_flip, sequence_indices=torch.where(valid)[0].tolist(),
+        total_window_count=len(valid), physical_indices=(bundle["physical_window_indices"][index]
+                                                       if "physical_window_indices" in bundle else None))
+    _heatmap(hard.effective_costs, hard.path, output / "cost_path.png",
+        "Training cost + unchanged DTW prior; hard argmin (not localization accuracy)",
+        "Transcript letter index", "Logical window index")
+    (output / "metadata.json").write_text(json.dumps(dict(record=record, transcript=transcript,
+        letters=letters, geometry=geometry, hard_objective_normalized=hard.hard_objective_normalized,
+        transformer_position_mode=config.get("position_mode"), dtw_position_prior=P.positive_letter_dtw_position_prior),
+        ensure_ascii=False, indent=2))
+    (output / "transcript.txt").write_text(transcript, encoding="utf-8")
 
 
 def select_pairs(dataset, split, training_samples, split_seed, start_index, n_samples):
@@ -357,11 +343,13 @@ def main():
         bundles = []
         valid_sequence_indices = []
         total_window_counts = []
+        letter_objectives = []
         for side in (1, 2):
             image, geometry = prepare_line(
                 getattr(pair, f"image{side}"),
                 pair.preprocess_domain(side),
                 args.image_preprocessing,
+                contract=models.contract,
             )
             image_path = pair_dir / f"line{side}_model_input.png"
             image.save(image_path)
@@ -397,17 +385,17 @@ def main():
                     ),
                 )
             raw_np = raw.detach().cpu().numpy()
-            effective = _position_prior(
-                raw_np, float(P.positive_letter_dtw_position_prior)
-            )
-            path, dp = _hard_monotonic_path(
-                effective,
+            hard = hard_letter_path(
+                raw_np,
                 vertical_penalty=float(P.positive_letter_dtw_vertical_penalty),
                 horizontal_penalty=float(P.positive_letter_dtw_horizontal_penalty),
+                position_prior_weight=float(P.positive_letter_dtw_position_prior),
                 disable_horizontal_when_feasible=bool(
                     P.positive_letter_dtw_disable_horizontal_when_feasible
                 ),
             )
+            effective, path, dp = hard.effective_costs, hard.path, hard.dp
+            letter_objectives.append(hard)
             np.save(pair_dir / f"line{side}_letter_cost_raw.npy", raw_np.astype(np.float32))
             np.savetxt(pair_dir / f"line{side}_letter_cost_raw.csv", raw_np, delimiter=",")
             np.save(pair_dir / f"line{side}_letter_cost_effective.npy", effective.astype(np.float32))
@@ -424,12 +412,15 @@ def main():
                 use_flip=use_flip,
                 sequence_indices=valid_sequence_indices[-1],
                 total_window_count=total_window_counts[-1],
+                physical_indices=(bundles[-1]["physical_window_indices"][0]
+                                  if "physical_window_indices" in bundles[-1] else None),
             )
             _heatmap(
                 effective,
                 path,
                 pair_dir / f"line{side}_image_to_text_path.png",
-                f"Line {side}: actual training cost + hard minimum path; soft-DTW={float(soft):.5f}",
+                f"Line {side}: actual training cost + hard minimum path; "
+                f"soft-DTW={float(soft):.5f}; hard={hard.hard_objective_normalized:.5f}",
                 "Transcript letter index",
                 "Image window index (model sequence order)",
             )
@@ -477,6 +468,12 @@ def main():
             "dataset_index": int(pair.manifest_position),
             "line1_windows": int(similarity.shape[0]),
             "line2_windows": int(similarity.shape[1]),
+            "line1_mean_path_cell_cost": letter_objectives[0].mean_path_cell_cost,
+            "line2_mean_path_cell_cost": letter_objectives[1].mean_path_cell_cost,
+            "line1_hard_objective_total": letter_objectives[0].hard_objective_total,
+            "line2_hard_objective_total": letter_objectives[1].hard_objective_total,
+            "line1_hard_objective_normalized": letter_objectives[0].hard_objective_normalized,
+            "line2_hard_objective_normalized": letter_objectives[1].hard_objective_normalized,
             "image_image_path_points": len(image_path),
         })
 
@@ -492,6 +489,7 @@ def main():
         "dataset": str(Path(args.dataset).resolve()),
         "pairs": len(selected),
         "image_preprocessing": args.image_preprocessing,
+        "preprocessing_override": args.image_preprocessing != "training",
         "window_size": window_size,
         "stride": stride,
         "use_flip": use_flip,
@@ -516,6 +514,8 @@ def main():
             "Image-to-image hard DTW is a structural diagnostic and was not a training loss."
         ),
     }
+    from Evaluation.checkpoint_contract import evaluation_metadata
+    metadata["evaluation_contract"] = evaluation_metadata(models, args.weights, args.image_preprocessing, args.dataset)
     (output / "summary.json").write_text(
         json.dumps(metadata, indent=2, allow_nan=False), encoding="utf-8"
     )

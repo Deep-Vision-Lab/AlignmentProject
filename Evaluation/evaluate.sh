@@ -131,9 +131,9 @@ print_config() {
     "  real data           = ${REAL_DATA_DIR}" \
     "  split / labels      = ${REAL_SPLIT} / ${LABELS}" \
     "  feature             = ${FEATURE} (restoration contextual = trained fused output)" \
-    "  model input         = exact checkpoint training preprocessing; RGB, no binarization" \
-    "  geometry            = foreground crop + aspect-preserving scale to ~92px ink height + white 1024x128 canvas" \
-    "  checkpoint windows  = physical 128x32, stride 16" \
+    "  model input         = channels and normalization resolved from checkpoint" \
+    "  geometry            = deterministic checkpoint training preprocessing" \
+    "  checkpoint windows  = size, stride, packing and validity resolved from checkpoint" \
     "  checklist           = P3:${RUN_POINT3} P4-5:${RUN_POINT45} P6:${RUN_POINT6}" \
     "  results             = ${RESULTS_ROOT}"
 }
@@ -160,20 +160,8 @@ fi
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 
-# Match the checkpoint's training geometry while preserving original RGB
-# intensities.  This removes only outer blank margins, preserves aspect ratio,
-# and records the crop/scale transform so predicted windows can be mapped back
-# to source-image coordinates.  Do NOT binarize.
-export LINE_HEIGHT=128
-export LINE_WIDTH=1024
-export LINE_GEOMETRY_MODE="${LINE_GEOMETRY_MODE:-crop-aspect-preserving-rgb}"
-export ZERO_SHOT_PREPROCESS=1
-export ZERO_SHOT_PRESERVE_ASPECT=1
-export ZERO_SHOT_FOREGROUND_CROP=1
-export REAL_BINARIZE=0
-export SYNTHETIC_BINARIZE=0
-export REAL_BINARIZE_AUTOCONTRAST=0
-export REAL_BINARIZE_AUTO_INVERT=0
+# Each Python entrypoint resolves geometry, color, normalization and mask flags
+# from model_config after its imports. Shell environment is not the contract.
 export REAL_EVAL_BALANCED=1
 export SW_INK_AWARE=1
 export SW_MIN_INK="${MIN_INK}"
@@ -197,6 +185,7 @@ print("GPU:", torch.cuda.get_device_name(0))
 PY
 
 python -m py_compile \
+  Evaluation/checkpoint_contract.py \
   Evaluation/_eval_utils.py \
   Evaluation/eval_img_align_sw.py \
   Evaluation/sw_runner.py \
@@ -214,24 +203,15 @@ python -m py_compile \
 # MHA incompatibility and checkpoint reconstruction problems immediately.
 WEIGHTS="${WEIGHTS}" python - <<'PY'
 import os
-import torch
+import json
 from Evaluation._eval_utils import load_evaluation_models
+from Evaluation.checkpoint_contract import evaluation_metadata, visual_preflight
 
 models = load_evaluation_models(
     os.environ["WEIGHTS"], device="cuda", load_text_model=False
 )
-dummy = torch.zeros((1, 3, 128, 1024), device=models.device)
-with torch.inference_mode():
-    contextual, local, grouped, ink = models.image_model(
-        dummy, return_local=True, return_grouped=True, return_ink=True
-    )
-print(
-    "Visual forward preflight: OK",
-    "contextual=", tuple(contextual.shape),
-    "local=", tuple(local.shape),
-    "grouped=", tuple(grouped.shape),
-    "ink=", tuple(ink.shape),
-)
+print("Evaluation contract:", json.dumps(evaluation_metadata(models, os.environ["WEIGHTS"]), sort_keys=True))
+print("Visual forward preflight: OK", json.dumps(visual_preflight(models), sort_keys=True))
 PY
 
 print_config

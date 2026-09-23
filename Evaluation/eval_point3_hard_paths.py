@@ -26,6 +26,7 @@ import argparse
 import csv
 import json
 import math
+import re
 import shutil
 import tempfile
 from types import SimpleNamespace
@@ -41,6 +42,11 @@ from Evaluation._eval_utils import compute_similarity
 from Evaluation import eval_img_align_nw_diagnostic as pair_loader
 from Evaluation.eval_yelda import synthetic_split, balanced_pairs, configure_geometry
 from Evaluation.point2_runtime import load_point2_visual_models, point2_pair_features
+from Evaluation.point3_core import (
+    hard_letter_path,
+    hard_monotonic_path,
+    sequence_to_physical_window,
+)
 from Evaluation.yelda_geometry import prepare_line
 from Evaluation.yelda_runtime import read_checkpoint
 from textEmbedding import OrthogonalCharEmbedding
@@ -50,46 +56,10 @@ from vlm_restoration_positive_dtw import _clean_letters, letter_dtw_cost_matrix
 def hard_dtw_path(similarity: np.ndarray) -> list[tuple[int, int]]:
     """Classic DTW on cost=1-cosine with deterministic diagonal tie preference."""
     sim = np.asarray(similarity, dtype=np.float64)
-    if sim.ndim != 2 or sim.shape[0] < 1 or sim.shape[1] < 1:
-        raise ValueError(f"Expected non-empty 2-D similarity matrix, got {sim.shape}")
-
-    n, m = sim.shape
-    cost = 1.0 - sim
-    dp = np.full((n, m), np.inf, dtype=np.float64)
-    back = np.full((n, m), -1, dtype=np.int8)  # 0 diag, 1 up, 2 left
-    dp[0, 0] = cost[0, 0]
-
-    for i in range(n):
-        for j in range(m):
-            if i == 0 and j == 0:
-                continue
-            candidates: list[tuple[float, int]] = []
-            if i > 0 and j > 0:
-                candidates.append((dp[i - 1, j - 1], 0))
-            if i > 0:
-                candidates.append((dp[i - 1, j], 1))
-            if j > 0:
-                candidates.append((dp[i, j - 1], 2))
-            prev, direction = min(candidates, key=lambda item: (item[0], item[1]))
-            dp[i, j] = cost[i, j] + prev
-            back[i, j] = direction
-
-    i, j = n - 1, m - 1
-    path = [(i, j)]
-    while i > 0 or j > 0:
-        direction = int(back[i, j])
-        if direction == 0:
-            i -= 1
-            j -= 1
-        elif direction == 1:
-            i -= 1
-        elif direction == 2:
-            j -= 1
-        else:
-            raise RuntimeError(f"Invalid DTW traceback at {(i, j)}: {direction}")
-        path.append((i, j))
-    path.reverse()
-    return path
+    return hard_monotonic_path(
+        1.0 - sim, vertical_penalty=0.0, horizontal_penalty=0.0,
+        disable_horizontal_when_feasible=False,
+    )[0]
 
 
 def _finite_mean(values):
@@ -213,8 +183,11 @@ def write_path_csv(path_file: Path, path: list[tuple[int, int]], similarity: np.
 
 
 def select_pairs(dataset: Path, split: str, training_samples: int, split_seed: int,
-                 start_index: int, n_samples: int):
-    layout, pairs = pair_loader.load_pairs(dataset, split)
+                 start_index: int, n_samples: int, checkpoint_config=None):
+    if checkpoint_config is None:
+        layout, pairs = pair_loader.load_pairs(dataset, split)
+    else:
+        layout, pairs = pair_loader.load_checkpoint_pairs(dataset, split, checkpoint_config, split_seed)
     if layout == "synthetic":
         pairs = synthetic_split(pairs, split, training_samples, split_seed)
     else:
@@ -246,7 +219,7 @@ def _transcript_path_for_line(
     image_path = Path(image_path)
 
     # Native real-data layout: force same-side, same-line transcript.
-    if image_path.parent.name == "linesImages":
+    if image_path.parent.name == "linesImages" and re.fullmatch(r"line_\d+", image_path.stem):
         side_dir = image_path.parent.parent
         native_candidates = [
             side_dir / "text" / "final" / "original" / f"{image_path.stem}.txt",
@@ -307,66 +280,14 @@ def _hard_letter_dtw_path(
     position_prior_weight: float,
     disable_horizontal_when_feasible: bool,
 ) -> tuple[list[tuple[int, int]], np.ndarray]:
-    """Hard-path counterpart of the training letter-DTW over [window, letter]."""
-    matrix = np.asarray(costs, dtype=np.float64).copy()
-    if matrix.ndim != 2 or matrix.shape[0] < 1 or matrix.shape[1] < 1:
-        raise ValueError(
-            f"Expected non-empty [windows, letters] cost matrix, got {matrix.shape}"
-        )
-
-    n_windows, n_letters = matrix.shape
-    if position_prior_weight > 0.0 and n_windows > 1 and n_letters > 1:
-        window_position = np.linspace(0.0, 1.0, n_windows)[:, None]
-        letter_position = np.linspace(0.0, 1.0, n_letters)[None, :]
-        matrix += float(position_prior_weight) * np.abs(
-            window_position - letter_position
-        )
-
-    horizontal = float(horizontal_penalty)
-    if disable_horizontal_when_feasible and n_windows >= n_letters:
-        horizontal = 1e4
-
-    dp = np.full((n_windows, n_letters), np.inf, dtype=np.float64)
-    back = np.full((n_windows, n_letters), -1, dtype=np.int8)
-    dp[0, 0] = matrix[0, 0]
-
-    for i in range(n_windows):
-        for j in range(n_letters):
-            if i == 0 and j == 0:
-                continue
-            candidates: list[tuple[float, int]] = []
-            if i > 0 and j > 0:
-                candidates.append((dp[i - 1, j - 1], 0))
-            if i > 0:
-                candidates.append(
-                    (dp[i - 1, j] + float(vertical_penalty), 1)
-                )
-            if j > 0:
-                candidates.append((dp[i, j - 1] + horizontal, 2))
-            previous, direction = min(
-                candidates, key=lambda item: (item[0], item[1])
-            )
-            dp[i, j] = matrix[i, j] + previous
-            back[i, j] = direction
-
-    i, j = n_windows - 1, n_letters - 1
-    path = [(i, j)]
-    while i > 0 or j > 0:
-        direction = int(back[i, j])
-        if direction == 0:
-            i -= 1
-            j -= 1
-        elif direction == 1:
-            i -= 1
-        elif direction == 2:
-            j -= 1
-        else:
-            raise RuntimeError(
-                f"Invalid letter-DTW traceback at window={i}, letter={j}"
-            )
-        path.append((i, j))
-    path.reverse()
-    return path, matrix.astype(np.float32)
+    """Compatibility view of the one shared Point-3 hard-path core."""
+    result = hard_letter_path(
+        costs, vertical_penalty=vertical_penalty,
+        horizontal_penalty=horizontal_penalty,
+        position_prior_weight=position_prior_weight,
+        disable_horizontal_when_feasible=disable_horizontal_when_feasible,
+    )
+    return result.path, result.effective_costs.astype(np.float32)
 
 
 def _letter_dtw_side(
@@ -375,6 +296,11 @@ def _letter_dtw_side(
     transcript_path: Path | None,
     text_encoder,
     pconfig,
+    *,
+    window_size: int = 32,
+    stride: int = 16,
+    use_flip: bool = True,
+    image_width: int | None = None,
 ) -> dict:
     """Evaluate exactly one line against its manifest-linked transcript."""
     transcript_path = _transcript_path_for_line(image_path, transcript_path)
@@ -386,14 +312,16 @@ def _letter_dtw_side(
         )
 
     visual = features.contextual
-    physical_window_indices = torch.arange(
+    logical_sequence_indices = torch.arange(
         visual.shape[0], device=visual.device, dtype=torch.long
     )
-    valid = getattr(features, "ink", None)
+    valid = getattr(features, "token_valid", None)
+    if valid is None:
+        valid = getattr(features, "ink", None)
     if valid is not None:
         valid = valid.to(visual.device).bool()
         if bool(valid.any()):
-            physical_window_indices = physical_window_indices[valid]
+            logical_sequence_indices = logical_sequence_indices[valid]
             visual = visual[valid]
     if visual.shape[0] == 0:
         raise ValueError(f"No valid visual windows for {image_path}")
@@ -407,7 +335,7 @@ def _letter_dtw_side(
             .astype(np.float32)
         )
 
-    path, display_costs = _hard_letter_dtw_path(
+    hard = hard_letter_path(
         costs,
         vertical_penalty=float(pconfig.positive_letter_dtw_vertical_penalty),
         horizontal_penalty=float(pconfig.positive_letter_dtw_horizontal_penalty),
@@ -416,26 +344,37 @@ def _letter_dtw_side(
             pconfig.positive_letter_dtw_disable_horizontal_when_feasible
         ),
     )
-
-    path_values = np.asarray(
-        [display_costs[i, j] for i, j in path], dtype=np.float64
-    )
+    display_costs = hard.effective_costs.astype(np.float32)
+    full_window_count = int(features.contextual.shape[0])
+    width = int(image_width) if image_width is not None else int(window_size + (full_window_count - 1) * stride)
+    physical_indices = getattr(features, "physical_window_indices", None)
+    if physical_indices is None and 1 + (width - int(window_size)) // int(stride) != full_window_count:
+        raise ValueError("Model sequence length does not match prepared-image window geometry")
+    logical_indices = logical_sequence_indices.detach().cpu().numpy().astype(np.int64)
+    mapping = [sequence_to_physical_window(
+        index if physical_indices is None else int(physical_indices[index]),
+        full_window_count if physical_indices is None else 1+(width-window_size)//stride,
+        width=width, window=window_size,
+        stride=stride, use_flip=use_flip if physical_indices is None else False) for index in logical_indices]
     return {
         "transcript_path": str(transcript_path),
         "text": text,
         "letters": letters,
         "costs": display_costs,
-        "path": path,
-        "physical_window_indices": (
-            physical_window_indices.detach().cpu().numpy().astype(np.int64)
-        ),
+        "path": hard.path,
+        "logical_sequence_indices": logical_indices,
+        "physical_window_indices": np.asarray([value[0] for value in mapping], dtype=np.int64),
+        "canvas_window_intervals": [(value[1], value[2]) for value in mapping],
         "windows": int(display_costs.shape[0]),
         "letter_count": int(display_costs.shape[1]),
-        "mean_path_cost": float(path_values.mean()),
-        "normalized_hard_path_cost": float(
-            path_values.sum()
-            / max(1, display_costs.shape[0] + display_costs.shape[1])
-        ),
+        "mean_path_cost": hard.mean_path_cell_cost,
+        "mean_path_cell_cost": hard.mean_path_cell_cost,
+        "hard_objective_total": hard.hard_objective_total,
+        "hard_objective_normalized": hard.hard_objective_normalized,
+        "normalized_hard_path_cost": hard.hard_objective_normalized,
+        "vertical_steps": hard.vertical_steps,
+        "horizontal_steps": hard.horizontal_steps,
+        "effective_horizontal_penalty": hard.effective_horizontal_penalty,
     }
 
 
@@ -491,13 +430,10 @@ def _extract_window_images(
 
     for sequence_index in sequence_window_indices:
         sequence_index = int(sequence_index)
-        grid_index = (
-            total_windows - 1 - sequence_index
-            if use_flip
-            else sequence_index
-        )
-        left = int(grid_index * stride)
-        right = int(left + window_size)
+        _physical, x0, x1 = sequence_to_physical_window(
+            sequence_index, total_windows, width=width, window=window_size,
+            stride=stride, use_flip=use_flip)
+        left, right = int(x0), int(x1)
         windows.append(image.crop((left, 0, right, height)))
 
     return windows
@@ -578,7 +514,8 @@ def save_letter_dtw_overview(
         result1,
         (
             "Line 1: visual-window images × transcript letters | "
-            f"mean hard-path cost={result1['mean_path_cost']:.3f}"
+            f"mean path cell cost={result1['mean_path_cell_cost']:.3f}; "
+            f"normalized hard objective={result1['hard_objective_normalized']:.3f}"
         ),
     )
 
@@ -616,7 +553,10 @@ def _write_letter_paths(
                 "side",
                 "step",
                 "valid_window_index",
+                "logical_sequence_index",
                 "physical_window_index",
+                "canvas_x0",
+                "canvas_x1",
                 "letter_index",
                 "letter",
                 "cost",
@@ -625,13 +565,18 @@ def _write_letter_paths(
         writer.writeheader()
         for side, result in side_results:
             physical = result["physical_window_indices"]
+            logical = result["logical_sequence_indices"]
+            intervals = result["canvas_window_intervals"]
             for step, (window, letter_index) in enumerate(result["path"]):
                 writer.writerow(
                     {
                         "side": int(side),
                         "step": int(step),
                         "valid_window_index": int(window),
+                        "logical_sequence_index": int(logical[window]),
                         "physical_window_index": int(physical[window]),
+                        "canvas_x0": int(intervals[window][0]),
+                        "canvas_x1": int(intervals[window][1]),
                         "letter_index": int(letter_index),
                         "letter": result["letters"][letter_index],
                         "cost": float(result["costs"][window, letter_index]),
@@ -646,6 +591,7 @@ def evaluate_architecture(
     output_root: Path,
     device: str,
     preprocessing: str,
+    dataset: Path | None = None,
 ) -> list[dict]:
     checkpoint = read_checkpoint(weights)
     models = load_point2_visual_models(checkpoint, device, "restoration")
@@ -683,16 +629,19 @@ def evaluate_architecture(
     rows: list[dict] = []
     arch_root = output_root / label
     arch_root.mkdir(parents=True, exist_ok=True)
+    from Evaluation.checkpoint_contract import evaluation_metadata
+    (arch_root / "evaluation_contract.json").write_text(
+        json.dumps(evaluation_metadata(models, weights, preprocessing, dataset), indent=2), encoding="utf-8")
 
     for ordinal, pair in enumerate(selected, start=1):
         pair_dir = arch_root / f"pair_{int(pair.index):05d}"
         pair_dir.mkdir(parents=True, exist_ok=True)
 
         line1, geometry1 = prepare_line(
-            pair.image1, pair.preprocess_domain(1), preprocessing
+            pair.image1, pair.preprocess_domain(1), preprocessing, contract=models.contract
         )
         line2, geometry2 = prepare_line(
-            pair.image2, pair.preprocess_domain(2), preprocessing
+            pair.image2, pair.preprocess_domain(2), preprocessing, contract=models.contract
         )
 
         with tempfile.TemporaryDirectory(prefix="letter_dtw_") as tmp:
@@ -705,44 +654,40 @@ def evaluate_architecture(
                 models, line1_file, line2_file, "fused"
             )
 
+        window_size = models.contract.window_size
+        stride = models.contract.stride
+        use_flip = bool(models.image_model.use_flip)
         side1 = _letter_dtw_side(
-            first, pair.image1, pair.text1, text_encoder, pconfig
+            first, pair.image1, pair.text1, text_encoder, pconfig,
+            window_size=window_size, stride=stride, use_flip=use_flip,
+            image_width=line1.width,
         )
         side2 = _letter_dtw_side(
-            second, pair.image2, pair.text2, text_encoder, pconfig
+            second, pair.image2, pair.text2, text_encoder, pconfig,
+            window_size=window_size, stride=stride, use_flip=use_flip,
+            image_width=line2.width,
         )
-
-        window_size = int(config.get("window_size", 32))
-        stride = int(config.get("stride", 16))
-        use_flip = bool(models.image_model.use_flip)
         side1["window_images"] = _extract_window_images(
             line1,
-            side1["physical_window_indices"],
+            side1["logical_sequence_indices"],
             window_size=window_size,
             stride=stride,
             use_flip=use_flip,
         )
         side2["window_images"] = _extract_window_images(
             line2,
-            side2["physical_window_indices"],
+            side2["logical_sequence_indices"],
             window_size=window_size,
             stride=stride,
             use_flip=use_flip,
         )
 
-        print(
-            "DTW_TRANSCRIPT_AUDIT "
-            f"pair={pair.index} "
-            f"image1={pair.image1} transcript1={side1['transcript_path']} "
-            f"image_stem={Path(pair.image1).stem} "
-            f"transcript_stem={Path(side1['transcript_path']).stem} "
-            f"text1={side1['text']!r}",
-            flush=True,
-        )
-        if Path(pair.image1).stem != Path(side1["transcript_path"]).stem:
-            raise RuntimeError(
-                "DTW transcript/image line mismatch: "
-                f"image={pair.image1}, transcript={side1['transcript_path']}"
+        for side, image_path, result in ((1, pair.image1, side1), (2, pair.image2, side2)):
+            print(
+                "DTW_TRANSCRIPT_AUDIT "
+                f"pair={pair.index} side={side} image={image_path} "
+                f"transcript={result['transcript_path']} text={result['text']!r}",
+                flush=True,
             )
 
         save_letter_dtw_overview(
@@ -783,9 +728,16 @@ def evaluate_architecture(
             "line2_letters": side2["letter_count"],
             "line1_mean_path_cost": side1["mean_path_cost"],
             "line2_mean_path_cost": side2["mean_path_cost"],
+            "line1_mean_path_cell_cost": side1["mean_path_cell_cost"],
+            "line2_mean_path_cell_cost": side2["mean_path_cell_cost"],
+            "line1_hard_objective_total": side1["hard_objective_total"],
+            "line2_hard_objective_total": side2["hard_objective_total"],
+            "line1_hard_objective_normalized": side1["hard_objective_normalized"],
+            "line2_hard_objective_normalized": side2["hard_objective_normalized"],
             "line1_normalized_hard_path_cost": side1["normalized_hard_path_cost"],
             "line2_normalized_hard_path_cost": side2["normalized_hard_path_cost"],
             "window_display_order": "RTL; W0 shown at right",
+            "window_index_definition": "logical is post-RTL model order; physical is left-to-right crop order",
             "dtw_axis_definition": "x=visual windows, y=normalized Arabic transcript letters",
             "dtw_cost_mode": pconfig.positive_letter_dtw_cost_mode,
         }
@@ -824,6 +776,10 @@ def aggregate(rows: list[dict], label: str) -> dict:
         "line2_mean_path_cost",
         "line1_normalized_hard_path_cost",
         "line2_normalized_hard_path_cost",
+        "line1_hard_objective_total",
+        "line2_hard_objective_total",
+        "line1_hard_objective_normalized",
+        "line2_hard_objective_normalized",
     ]
     return {
         "architecture": label,
@@ -848,9 +804,15 @@ def main() -> None:
     parser.add_argument("--n-samples", type=int, default=10)
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
-        "--image-preprocessing", choices=("original", "training"), default="original"
+        "--image-preprocessing", choices=("original", "training"), default="training"
     )
     args = parser.parse_args()
+    if args.image_preprocessing != "training":
+        print(
+            "POINT3_PREPROCESSING_OVERRIDE: requested an ablation mode; "
+            "results do not use checkpoint-faithful training geometry",
+            flush=True,
+        )
 
     dataset = Path(args.dataset).expanduser().resolve()
     single_weights = (
@@ -883,6 +845,11 @@ def main() -> None:
         raise SystemExit(f"Output directory is not empty: {output}")
     output.mkdir(parents=True, exist_ok=True)
 
+    selection_configs = [read_checkpoint(path)["model_config"] for path, _name in checkpoints]
+    from Evaluation.checkpoint_contract import resolve_evaluation_contract
+    selection_contracts = [resolve_evaluation_contract(config) for config in selection_configs]
+    if len({(c.real_all_page_lines, c.split_seed) for c in selection_contracts}) != 1:
+        raise ValueError("Point-3 checkpoint comparison requires the same training split contract")
     layout, selected = select_pairs(
         dataset,
         args.split,
@@ -890,6 +857,7 @@ def main() -> None:
         args.split_seed,
         args.start_index,
         args.n_samples,
+        checkpoint_config=selection_configs[0],
     )
     selection = [
         {
@@ -920,6 +888,7 @@ def main() -> None:
             output,
             args.device,
             args.image_preprocessing,
+            dataset,
         )
         write_rows(output / "point3_samples.csv", rows)
         aggregates = [aggregate(rows, "checkpoint")]
@@ -931,6 +900,7 @@ def main() -> None:
             output,
             args.device,
             args.image_preprocessing,
+            dataset,
         )
         new_rows = evaluate_architecture(
             "physical_window_vit",
@@ -939,6 +909,7 @@ def main() -> None:
             output,
             args.device,
             args.image_preprocessing,
+            dataset,
         )
         all_rows = old_rows + new_rows
         write_rows(output / "point3_samples.csv", all_rows)
@@ -958,6 +929,7 @@ def main() -> None:
         "split": args.split,
         "selected": len(selected),
         "image_preprocessing": args.image_preprocessing,
+        "preprocessing_override": args.image_preprocessing != "training",
         "architectures": aggregates,
     }
     (output / "summary.json").write_text(

@@ -32,7 +32,7 @@ import torch
 import torch.nn.functional as F
 
 from Evaluation import eval_img_align_nw_diagnostic as pair_loader
-from Evaluation._eval_utils import build_transform
+from Evaluation.checkpoint_contract import evaluation_metadata
 from Evaluation.eval_yelda import synthetic_split
 from Evaluation.point2_runtime import load_point2_visual_models
 from Evaluation.yelda_geometry import prepare_line
@@ -90,7 +90,7 @@ def _ink_fraction_windows(image: np.ndarray, window: int, stride: int) -> np.nda
 
 
 def _encode_line(models, image: Image.Image, source_path: Path, pair_id: str, side: int):
-    tensor = build_transform("synthetic")(image.convert("RGB")).unsqueeze(0).to(models.device)
+    tensor = models.contract.tensor_transform()(image).unsqueeze(0).to(models.device)
     model = models.image_model
     vit = model.vit_encoder
     encoder = getattr(vit, "encode_restoration_sequence", None)
@@ -139,10 +139,11 @@ def _encode_line(models, image: Image.Image, source_path: Path, pair_id: str, si
     )
 
 
-def _select_pairs(args):
+def _select_pairs(args, models):
     pair_loader.P.real_dataset_labels = args.labels
     pair_loader.P.dataset_split_seed = args.split_seed
-    layout, pairs = pair_loader.load_pairs(Path(args.dataset), args.split)
+    layout, pairs = pair_loader.load_checkpoint_pairs(
+        Path(args.dataset), args.split, models.config, args.split_seed)
     if layout == "synthetic":
         pairs = synthetic_split(pairs, args.split, args.training_samples, args.split_seed)
     rng = random.Random(args.seed)
@@ -163,14 +164,14 @@ def _build_lines(models, pairs, preprocessing):
                     continue
                 seen.add(str(source))
                 prepared, _geometry = prepare_line(
-                    source, pair.preprocess_domain(side), preprocessing
+                    source, pair.preprocess_domain(side), preprocessing, contract=models.contract
                 )
                 # Keep an exact PIL copy; the temporary file only gives the shared
                 # transform an unambiguous already-prepared synthetic-domain input.
                 path = root / f"line_{len(lines):05d}.png"
                 prepared.save(path)
                 with Image.open(path) as opened:
-                    exact = opened.convert("RGB").copy()
+                    exact = opened.copy()
                 lines.append(
                     _encode_line(
                         models,
@@ -266,13 +267,14 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     checkpoint = read_checkpoint(args.weights)
     models = load_point2_visual_models(checkpoint, args.device, "restoration")
+    models.contract.install()
     if str(models.config.get("model_backend", "")) == "resnet18_physical_window_tinyvit_positive_dtw":
         raise RuntimeError(
             "Point 6 is intended for the selected original ResNet->TinyViT checkpoint, "
             "not the physical-window ViT ablation."
         )
 
-    layout, pairs = _select_pairs(args)
+    layout, pairs = _select_pairs(args, models)
     if len(pairs) < 2:
         raise RuntimeError("Point 6 needs at least two line pairs")
     lines = _build_lines(models, pairs, args.image_preprocessing)
@@ -408,6 +410,7 @@ def main():
         writer.writerows(query_summary)
 
     summary = {
+        "evaluation_contract": evaluation_metadata(models, args.weights, args.image_preprocessing, args.dataset),
         "point": 6,
         "diagnostic_only": True,
         "dataset_layout": layout,

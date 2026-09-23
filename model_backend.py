@@ -31,6 +31,9 @@ else:
     )
 
 apply_branch_config(P)
+from architecture_experiment import is_compact, metadata as architecture_metadata
+if is_compact(P) and _VARIANT != "resnet_token":
+    raise ValueError("The compact architecture requires MODEL_BACKEND_VARIANT=resnet_token")
 if _VARIANT == "physical_window":
     P.experiment_name = "resnet18_physical_window_tinyvit_positive_dtw"
     P.restoration_context_input = "direct_physical_128x32_rgb_window"
@@ -38,6 +41,8 @@ else:
     P.experiment_name = "resnet18_tinyvit_positive_dtw"
     P.restoration_context_input = "resnet18_window_token"
 P.export_environment()
+if is_compact(P):
+    P.experiment_name = P.architecture_variant
 
 MODEL_NAME = (
     "resnet18_physical_window_tinyvit_positive_dtw"
@@ -45,6 +50,8 @@ MODEL_NAME = (
     else "resnet18_tinyvit_positive_dtw"
 )
 VISUAL_ENCODER_TYPE = "vit"
+if is_compact(P):
+    MODEL_NAME = P.architecture_variant
 
 
 def _flag(name, default):
@@ -116,7 +123,7 @@ def visual_model_config():
         "window_width": 32,
         "window_stride": int(round(P.window_size * P.stride_ratio)),
         "local_encoder_type": "resnet18",
-        "local_input": "physical_rgb_128x32_window",
+        "local_input": "physical_gray_128x32_window" if P.visual_input_channels == 1 else "physical_rgb_128x32_window",
         "resnet18_pretrained": bool(P.resnet18_pretrained),
         "resnet18_pretrained_source": "torchvision/ResNet18_Weights.DEFAULT",
         "vit_variant": "vit_tiny",
@@ -156,4 +163,5 @@ def visual_model_config():
             }
         )
     config.update(restoration_model_config(P))
+    config.update(architecture_metadata(P))
     return config

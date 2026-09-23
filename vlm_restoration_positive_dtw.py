@@ -10,6 +10,7 @@ this revision. The frozen character codebook supervises only the fused visual
 representation during training; final evaluation remains image-only.
 """
 from __future__ import annotations
+from contextlib import nullcontext
 
 from types import MethodType
 import os
@@ -140,6 +141,13 @@ def apply_branch_config(P):
     P.restoration_local_encoder = "resnet18"
     P.resnet18_pretrained = _env_flag("RESNET18_PRETRAINED", True)
     P.tiny_vit_pretrained = _env_flag("TINY_VIT_PRETRAINED", True)
+    from architecture_experiment import LEGACY, is_compact
+    P.architecture_variant = os.environ.get("ARCHITECTURE_VARIANT", LEGACY)
+    P.local_dropout = _env_float("LOCAL_DROPOUT", 0.10)
+    if is_compact(P):
+        P.vector_size, P.vit_layers, P.vit_heads, P.vit_mlp_dim = 128, 5, 1, 512
+        P.restoration_context_layers = 5
+        P.tiny_vit_pretrained = False
     P.tiny_vit_pretrained_model = os.environ.get(
         "TINY_VIT_PRETRAINED_MODEL", "facebook/deit-tiny-patch16-224"
     ).strip()
@@ -470,7 +478,11 @@ def attach_restoration_dtw_stages(model, P):
 
     vit = model.vit_encoder
     dim = int(vit.embed_dim)
-    if dim != 192:
+    from architecture_experiment import is_compact, install_compact_context, LinearContextFusion, VARIANT
+    compact = is_compact(P)
+    if compact:
+        install_compact_context(model)
+    if not compact and dim != 192:
         raise ValueError(
             f"ViT-Tiny requires a 192-D token space, got embed_dim={dim}. "
             "Build this branch with VECTOR_SIZE=192."
@@ -488,27 +500,28 @@ def attach_restoration_dtw_stages(model, P):
         pretrained=bool(getattr(P, "resnet18_pretrained", True)),
         local_files_only=bool(getattr(P, "pretrained_local_only", True)),
         input_channels=int(getattr(P, "visual_input_channels", 1)),
+        local_dropout=float(getattr(P, "local_dropout", 0.10)) if compact else None,
     ).to(device=device, dtype=dtype)
     vit.restoration_local_encoder = "resnet18"
     vit.local_encoder_type = "resnet18"
 
     # The shared sequence transformer is required to match ViT-Tiny.
-    if len(vit.encoder.layers) != 12:
+    if not compact and len(vit.encoder.layers) != 12:
         raise ValueError(
             f"Expected 12 ViT-Tiny transformer layers, got {len(vit.encoder.layers)}"
         )
     first_layer = vit.encoder.layers[0]
-    if int(first_layer.self_attn.num_heads) != 3:
+    if not compact and int(first_layer.self_attn.num_heads) != 3:
         raise ValueError(
             f"Expected 3 ViT-Tiny attention heads, got {first_layer.self_attn.num_heads}"
         )
-    if int(first_layer.linear1.out_features) != 768:
+    if not compact and int(first_layer.linear1.out_features) != 768:
         raise ValueError(
             f"Expected ViT-Tiny MLP width 768, got {first_layer.linear1.out_features}"
         )
-    vit.vit_variant = "vit_tiny_192d_12l_3h"
+    vit.vit_variant = VARIANT if compact else "vit_tiny_192d_12l_3h"
 
-    if bool(getattr(P, "tiny_vit_pretrained", False)):
+    if not compact and bool(getattr(P, "tiny_vit_pretrained", False)):
         initialize_tiny_vit_from_pretrained(
             vit,
             model_name=str(
@@ -528,7 +541,7 @@ def attach_restoration_dtw_stages(model, P):
     vit.semantic_adapter = IdentitySemanticAdapter().to(device=device)
     vit.restoration_semantic_adapter = "identity"
 
-    vit.fusion_head = LocalContextFusion(dim).to(device=device, dtype=dtype)
+    vit.fusion_head = (LinearContextFusion() if compact else LocalContextFusion(dim)).to(device=device, dtype=dtype)
 
     def encode_restoration_sequence(self, image, *, use_flip):
         expected_channels = int(getattr(P, "visual_input_channels", 1))
@@ -563,6 +576,12 @@ def attach_restoration_dtw_stages(model, P):
             if tokens.shape[2] != 1:
                 raise RuntimeError("Window encoder must produce one token row")
             local = tokens.squeeze(2).transpose(1, 2).contiguous()
+            physical_indices = torch.full(token_valid.shape, -1, dtype=torch.long, device=image.device)
+            for row in range(image.shape[0]):
+                indices = torch.where(physical_valid[row])[0]
+                if use_flip:
+                    indices = indices.flip(0)
+                physical_indices[row, :len(indices)] = indices
         else:
             tokens = self.patch_embedding(model_input)
             if tokens.shape[2] != 1:
@@ -570,6 +589,10 @@ def attach_restoration_dtw_stages(model, P):
             local = tokens.squeeze(2).transpose(1, 2).contiguous()
             if use_flip:
                 local = torch.flip(local, dims=[1])
+            physical_indices = torch.arange(local.shape[1], device=image.device)
+            if use_flip:
+                physical_indices = physical_indices.flip(0)
+            physical_indices = physical_indices.expand(local.shape[0], -1)
             if _env_flag("FULL_IMAGE_NO_PADDING", False):
                 # Direct 1024x128 resize fills the complete model field of view.
                 # There is no artificial canvas to mask: every one of the
@@ -591,7 +614,7 @@ def attach_restoration_dtw_stages(model, P):
 
         local = self.local_norm(local)
 
-        positional = local + self._position_tokens(local.shape[1]).to(
+        positional = local if compact else local + self._position_tokens(local.shape[1]).to(
             dtype=local.dtype, device=local.device
         )
         contextual = self.encoder(
@@ -599,6 +622,7 @@ def attach_restoration_dtw_stages(model, P):
             src_key_padding_mask=~token_valid,
         )
         fused = self.fusion_head(local, contextual)
+        self.last_physical_window_indices = physical_indices
         return fused, local, contextual, model_input, token_valid
 
     def minimal_window_forward(self, image, *, use_flip, return_model_input=False):
@@ -636,7 +660,7 @@ def attach_restoration_dtw_stages(model, P):
         if not return_training_bundle:
             if show_dims:
                 print(
-                    "image embeddings: ResNet18 + ViT-Tiny "
+                    f"image embeddings: {self.vit_encoder.vit_variant} "
                     f"fused={tuple(fused_out.shape)} local={tuple(local_out.shape)} "
                     f"context={tuple(contextual.shape)}",
                     flush=True,
@@ -680,6 +704,10 @@ def attach_restoration_dtw_stages(model, P):
             "primitive": local_out,
             "primitive_raw": local,
             "contextual": contextual_out,
+            "local_raw": local,
+            "contextual_raw": contextual,
+            "fused_normalized": fused_out,
+            "physical_window_indices": self.vit_encoder.last_physical_window_indices,
             "ink": token_valid.float(),
             "token_valid": token_valid,
             "model_input": model_input,
@@ -773,6 +801,8 @@ def positive_letter_dtw_loss(P, text_encoder, semantic_tokens, ink_ratios, posit
     if not losses:
         zero = semantic_tokens.sum() * 0.0
         return zero, {
+            "line_dtw_sum": 0.0, "line_evaluated_count": 0,
+            "line_skipped_count": len(positive_texts),
             "positive_letter_dtw": 0.0,
             "dtw_windows": 0.0,
             "dtw_letters": 0.0,
@@ -783,6 +813,8 @@ def positive_letter_dtw_loss(P, text_encoder, semantic_tokens, ink_ratios, posit
 
     loss = torch.stack(losses).mean()
     return loss, {
+        "line_dtw_sum": sum(path_cost_means), "line_evaluated_count": len(losses),
+        "line_skipped_count": len(positive_texts) - len(losses),
         "positive_letter_dtw": float(loss.detach().item()),
         "dtw_windows": sum(windows_used) / len(windows_used),
         "dtw_letters": sum(letters_used) / len(letters_used),
@@ -886,6 +918,7 @@ def strong_sigreg_loss(
     t_max: float = 3.0,
     min_samples: int = 32,
     slice_chunk: int = 128,
+    distributed_statistics: bool = True,
 ):
     """DDP-correct sliced Epps-Pulley SIGReg on valid pre-L2 fused tokens.
 
@@ -915,7 +948,7 @@ def strong_sigreg_loss(
 
     local_n = int(values.shape[0])
     d = int(values.shape[-1])
-    distributed = dist.is_available() and dist.is_initialized()
+    distributed = distributed_statistics and dist.is_available() and dist.is_initialized()
 
     count = torch.tensor(float(local_n), device=values.device, dtype=torch.float32)
     if distributed:
@@ -1055,6 +1088,9 @@ def install_training_objective(train_module):
                 raise ValueError("Resume from an old objective is unsupported; start a new run")
             if not args.pretrained_weights:
                 return None
+            from architecture_experiment import is_compact
+            if is_compact(train_module.P):
+                raise ValueError("The compact experiment starts fresh: no full-model --weights or optimizer resume; cached ImageNet ResNet initialization only")
             loaded = torch.load(args.pretrained_weights, map_location=train_module.P.device)
             loaded_config = loaded.get("model_config", {}) if isinstance(loaded, dict) else {}
             loaded_family = str(loaded_config.get("architecture_family", ""))
@@ -1188,10 +1224,10 @@ def install_training_objective(train_module):
     def single_line_loss(
         image_embedder, text_encoder, images, texts, negative_texts=None
     ):
-        with train_module.autocast(
+        with (train_module.autocast(
             dtype=train_module.AMP_DTYPE,
             enabled=train_module.USE_AMP,
-        ):
+        ) if train_module.USE_AMP else nullcontext()):
             bundle = image_embedder(images, return_training_bundle=True)
         return loss_from_bundle(bundle, text_encoder, texts, negative_texts)
 
@@ -1209,10 +1245,10 @@ def install_training_objective(train_module):
 
             pair_batch = int(images1.shape[0])
             combined_images = torch.cat([images1, images2], dim=0)
-            with train_module.autocast(
+            with (train_module.autocast(
                 dtype=train_module.AMP_DTYPE,
                 enabled=train_module.USE_AMP,
-            ):
+            ) if train_module.USE_AMP else nullcontext()):
                 combined = image_embedder(
                     combined_images, return_training_bundle=True
                 )
@@ -1243,6 +1279,8 @@ def install_training_objective(train_module):
             )
             loss = 0.5 * (loss1 + loss2)
             stats = train_module.average_stats([stats1, stats2])
+            for key in ("line_dtw_sum", "line_evaluated_count", "line_skipped_count"):
+                stats[key] = stats1[key] + stats2[key]
             stats["independent_lines_per_pair"] = 2.0
             stats["model_forwards_per_batch"] = 1.0
             stats["total"] = float(loss.detach().item())

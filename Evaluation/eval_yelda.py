@@ -142,6 +142,13 @@ def configure_geometry(config, image_preprocessing="original"):
     # contract explicit so a tightly cropped variable-width line is not resized
     # back to the historical fixed 1024-pixel canvas later.
     os.environ["EVAL_TIGHT_NO_PADDING"] = "1" if image_preprocessing == "tight" else "0"
+    if image_preprocessing == "training":
+        from Evaluation.checkpoint_contract import resolve_evaluation_contract
+        contract = resolve_evaluation_contract(config)
+        geometry = contract.install()
+        return dict(geometry, color_mode=contract.color_mode,
+                    preserve_aspect=contract.preserve_aspect, padding=contract.padding,
+                    crop_foreground=contract.foreground_crop, real_bbox_crop=contract.real_bbox_crop)
     if image_preprocessing == "cropped_1024":
         return {
             "line_height": 128,
@@ -196,52 +203,6 @@ def configure_geometry(config, image_preprocessing="original"):
             f"Unknown image preprocessing: {image_preprocessing}; "
             "use original, training, tight, cropped_1024, or wide_side_padding"
         )
-    # Current runs record geometry; older preprocessing flags fall back to the
-    # branch's Parameters.py. The resolved values are included in the report.
-    mapping = {
-        "line_height": "LINE_HEIGHT", "line_width": "LINE_WIDTH",
-        "target_ink_height_ratio": "TARGET_INK_HEIGHT_RATIO",
-        "zero_shot_preprocess": "ZERO_SHOT_PREPROCESS",
-        "zero_shot_preserve_aspect": "ZERO_SHOT_PRESERVE_ASPECT",
-        "zero_shot_foreground_crop": "ZERO_SHOT_FOREGROUND_CROP",
-        "real_binarize": "REAL_BINARIZE", "synthetic_binarize": "SYNTHETIC_BINARIZE",
-        "visual_grayscale": "VISUAL_GRAYSCALE",
-        "visual_input_channels": "VISUAL_INPUT_CHANNELS",
-        "real_bbox_crop": "REAL_BBOX_CROP",
-        "real_bbox_margin_ratio": "REAL_BBOX_MARGIN_RATIO",
-        "real_bbox_min_margin_px": "REAL_BBOX_MIN_MARGIN_PX",
-    }
-    for key, env in mapping.items():
-        if key in config:
-            value = config[key]
-            os.environ[env] = str(int(value)) if isinstance(value, bool) else str(value)
-    geometry_mode = str(
-        config.get("line_geometry_mode", "source-compatible-height")
-    )
-    if geometry_mode not in {
-        "source-compatible-height",
-        "crop-aspect-preserving-rgb",
-        "xml-bbox-gray-aspect-preserving",
-        "xml-bbox-gray-full-resize",
-    }:
-        raise ValueError(f"Unsupported checkpoint geometry: {geometry_mode}")
-    os.environ["LINE_GEOMETRY_MODE"] = geometry_mode
-    os.environ["ZERO_SHOT_SOURCE_GEOMETRY"] = (
-        "1" if geometry_mode == "source-compatible-height" else "0"
-    )
-    if geometry_mode in {
-        "xml-bbox-gray-aspect-preserving",
-        "xml-bbox-gray-full-resize",
-    }:
-        os.environ["REAL_BBOX_CROP"] = "1"
-        os.environ["VISUAL_GRAYSCALE"] = "1"
-        os.environ["REAL_GRAYSCALE"] = "1"
-        os.environ["ZERO_SHOT_FOREGROUND_CROP"] = "0"
-    if geometry_mode == "xml-bbox-gray-full-resize":
-        os.environ["ZERO_SHOT_PRESERVE_ASPECT"] = "0"
-        os.environ["FULL_IMAGE_NO_PADDING"] = "1"
-    from unified_line_geometry import install_evaluation_geometry
-    return install_evaluation_geometry()
 
 
 def _compact_eval_cleanup(destination: Path) -> None:
@@ -292,7 +253,8 @@ def evaluate_pair(base, models, pair, args, destination):
     destination.mkdir(parents=True)
     prepared, geometry = [], []
     for role, path in ((1, pair.image1), (2, pair.image2)):
-        image, mapping = prepare_line(path, pair.preprocess_domain(role), args.image_preprocessing)
+        image, mapping = prepare_line(path, pair.preprocess_domain(role), args.image_preprocessing,
+                                      contract=models.contract)
         output = destination / f"line{role}_model_input.png"
         image.save(output)
 
@@ -316,7 +278,7 @@ def evaluate_pair(base, models, pair, args, destination):
     transformed = replace(pair, image1=prepared[0], image2=prepared[1],
                           side1_preprocess="synthetic", side2_preprocess="synthetic",
                           gt_mask1=None, gt_mask2=None)
-    row = base.evaluate(models, transformed, args, destination)
+    row = base.evaluate(models, transformed, args, destination, prepared=True)
     # Score region masks in ORIGINAL source coordinates, using the inverse
     # crop/scale/pad transform. Do not stretch raw GT to the normalized canvas.
     for role, mapping, gt_path in ((1, geometry[0], pair.gt_mask1), (2, geometry[1], pair.gt_mask2)):
@@ -389,7 +351,7 @@ def main(argv=None):
     os.environ["SW_BLANK_BLANK_SCORE"] = "-0.20"
     os.environ["SW_BLANK_INK_SCORE"] = "-0.50"
     args.feature = "local" if args.representation == "local" else "contextual"
-    layout, pairs = base.load_pairs(dataset, args.split)
+    layout, pairs = base.load_checkpoint_pairs(dataset, args.split, models.config, args.split_seed)
     if layout == "synthetic":
         pairs = synthetic_split(pairs, args.split, args.training_samples, args.split_seed)
     elif args.split != "all" and any(pair.split != args.split for pair in pairs):
@@ -447,6 +409,8 @@ def main(argv=None):
                 ),
                 "mask_metrics_are_character_alignment_accuracy": False,
                 "resolved_crop_mode": os.environ.get("ZERO_SHOT_CROP_MODE", "legacy_otsu")}
+    from Evaluation.checkpoint_contract import evaluation_metadata
+    metadata["evaluation_contract"] = evaluation_metadata(models, weights, args.image_preprocessing, dataset)
     write_json(destination / "run.json", metadata)
     print(
         f"Yelda evaluation: branch={branch} stage={stage} unit={args.alignment_unit} "

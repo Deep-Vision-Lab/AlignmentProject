@@ -1,0 +1,45 @@
+{
+  "algorithm": "Smith-Waterman",
+  "trace_direction": "maximum_dp_to_zero",
+  "full_diagonal_matches": [
+    [
+      45,
+      7
+    ],
+    [
+      46,
+      8
+    ],
+    [
+      47,
+      9
+    ]
+  ],
+  "traceback_boundaries_col_row": [
+    [
+      10.0,
+      48.0
+    ],
+    [
+      9.0,
+      47.0
+    ],
+    [
+      8.0,
+      46.0
+    ],
+    [
+      7.0,
+      45.0
+    ]
+  ],
+  "component_settings": {
+    "support_floor": 0.0,
+    "max_bridge_steps": 0,
+    "max_window_gap": 0,
+    "min_matches": 5
+  },
+  "components": [],
+  "line1_component_intervals_px": [],
+  "line2_component_intervals_px": []
+}

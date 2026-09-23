@@ -97,6 +97,7 @@ from Evaluation.sw_core import build_match_scores, resolve_score_mode, smith_wat
 from Evaluation.sw_dataset import (
     display_image,
     load_arabic_dataset_pairs,
+    manifest_text_value,
     read_manifest_records,
     resolve_manifest_image,
 )
@@ -288,7 +289,7 @@ def _synthetic_pairs(root: Path) -> list[Pair]:
     return pairs
 
 
-def _real_pairs(manifest: Path, split: str) -> list[Pair]:
+def _real_pairs(manifest: Path, split: str, checkpoint_config=None) -> list[Pair]:
     loader_args = SimpleNamespace(
         arabic_manifest=str(manifest),
         data_dir=str(manifest.parent),
@@ -299,7 +300,7 @@ def _real_pairs(manifest: Path, split: str) -> list[Pair]:
         split_seed=int(getattr(P, "dataset_split_seed", 42)),
         real_split=split,
     )
-    loaded = load_arabic_dataset_pairs(loader_args)
+    loaded = load_arabic_dataset_pairs(loader_args, checkpoint_config=checkpoint_config)
     return [
         Pair(
             index=position,
@@ -518,8 +519,10 @@ def _generic_manifest_pairs(manifest: Path) -> list[Pair]:
                 raise ValueError(f"Manifest row {position} is missing image1/image2")
             image1 = resolve_manifest_image(str(value1), manifest, manifest.parent)
             image2 = resolve_manifest_image(str(value2), manifest, manifest.parent)
-            text1 = None
-            text2 = None
+            text_value1 = manifest_text_value(record, 1)
+            text_value2 = manifest_text_value(record, 2)
+            text1 = _resolve_path(text_value1, manifest) if text_value1 is not None else None
+            text2 = _resolve_path(text_value2, manifest) if text_value2 is not None else None
             fallback = _domain(record.get("dataset_type"), "synthetic")
             text_score = float(record.get("text_score", 0.0) or 0.0)
         type1 = _infer_side_type(a, record, image1, 1, fallback)
@@ -579,6 +582,30 @@ def _load_one_root(root: Path, real_split: str) -> tuple[str, list[Pair]]:
     return "unknown", []
 
 
+def load_checkpoint_pairs(dataset: Path, real_split: str, config: dict, split_seed: int):
+    """Select native real pairs from the checkpoint's training-defined population."""
+    from Evaluation.checkpoint_contract import evaluation_environment, resolve_evaluation_contract
+    contract = resolve_evaluation_contract(config)
+    dataset = Path(dataset)
+    if dataset.is_dir() and _is_synthetic_flat(dataset):
+        return load_pairs(dataset, real_split)
+    root = dataset.parent if dataset.is_file() else dataset
+    manifest = dataset if dataset.is_file() else root / str(config.get("real_manifest_name", "dataset_manifest.jsonl"))
+    if contract.real_all_page_lines and int(split_seed) != contract.split_seed:
+        raise ValueError(f"Requested split seed {split_seed} differs from checkpoint training seed {contract.split_seed}")
+    previous_seed = P.dataset_split_seed
+    try:
+        P.dataset_split_seed = contract.split_seed if contract.real_all_page_lines else int(split_seed)
+        with evaluation_environment(contract.environment()):
+            if manifest.is_file() and (contract.real_all_page_lines or manifest.name == config.get("real_manifest_name", "dataset_manifest.jsonl")):
+                return "real", _real_pairs(manifest, real_split, config)
+            if contract.real_all_page_lines:
+                raise FileNotFoundError(f"Cannot reproduce checkpoint source-page split: missing manifest {manifest}")
+            return load_pairs(dataset, real_split)
+    finally:
+        P.dataset_split_seed = previous_seed
+
+
 def load_pairs(dataset: Path, real_split: str) -> tuple[str, list[Pair]]:
     if dataset.is_file():
         parent = dataset.parent
@@ -616,9 +643,14 @@ def load_pairs(dataset: Path, real_split: str) -> tuple[str, list[Pair]]:
     return (next(iter(kinds)) if len(kinds) == 1 else "real-synthetic-mixed-root"), combined
 
 
-def _prepare(path: Path, preprocess_domain: str, temporary_root: Path, role: int):
+def _prepare(path: Path, preprocess_domain: str, temporary_root: Path, role: int, contract=None):
     if not path.is_file():
         raise FileNotFoundError(f"Missing input image: {path}")
+    if contract is not None:
+        prepared, _ = contract.prepare_line(path, preprocess_domain)
+        model_path = temporary_root / f"line{role}.png"
+        prepared.save(model_path)
+        return np.asarray(prepared.convert("RGB")), model_path
     if preprocess_domain == "real":
         array = display_image(path, "real")
         model_path = temporary_root / f"line{role}.png"
@@ -738,8 +770,8 @@ def _visualize(
 def get_pair_image_features(models, image1, image2):
     """Extract a complete pair; pair-aware evaluators override this one hook."""
     return (
-        get_image_features(models, image1, "synthetic"),
-        get_image_features(models, image2, "synthetic"),
+        get_image_features(models, image1, "synthetic", prepared=True),
+        get_image_features(models, image2, "synthetic", prepared=True),
     )
 
 
@@ -1034,16 +1066,16 @@ def _evaluate_word_level(
     return row
 
 
-def evaluate(models, pair: Pair, args, output_dir: Path) -> dict:
+def evaluate(models, pair: Pair, args, output_dir: Path, *, prepared=False) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="nw_diag_") as temporary:
         preprocess1 = pair.preprocess_domain(1)
         preprocess2 = pair.preprocess_domain(2)
-        arr1, model_image1 = _prepare(pair.image1, preprocess1, Path(temporary), 1)
-        arr2, model_image2 = _prepare(pair.image2, preprocess2, Path(temporary), 2)
+        contract = None if prepared else models.contract
+        arr1, model_image1 = _prepare(pair.image1, preprocess1, Path(temporary), 1, contract)
+        arr2, model_image2 = _prepare(pair.image2, preprocess2, Path(temporary), 2, contract)
 
-        # Both inputs are already transformed into their training-equivalent
-        # display geometry. Using synthetic here applies only Resize+Normalize.
+        # Both inputs are prepared already; feature extraction tensorizes only.
         features1, features2 = get_pair_image_features(models, model_image1, model_image2)
         if str(getattr(args, "alignment_unit", "window")).lower() == "word":
             return _evaluate_word_level(
@@ -1485,7 +1517,9 @@ def main():
     if not weights.is_file():
         raise SystemExit(f"Weights do not exist: {weights}")
 
-    layout, pairs = load_pairs(dataset, args.real_split)
+    models = load_evaluation_models(weights, args.device, load_text_model=False)
+    models.contract.install()
+    layout, pairs = load_checkpoint_pairs(dataset, args.real_split, models.config, models.contract.split_seed)
     if not pairs:
         raise SystemExit("No evaluable image pairs were found")
     start = args.start_index - 1
@@ -1518,7 +1552,6 @@ def main():
         flush=True,
     )
 
-    models = load_evaluation_models(weights, args.device, load_text_model=False)
     rows = []
     for pair in selected:
         pair_dir = output_dir / f"pair_{pair.index:05d}"
@@ -1562,7 +1595,9 @@ def main():
         writer.writerows(csv_rows)
 
     successful = [row for row in rows if row.get("status") == "ok"]
+    from Evaluation.checkpoint_contract import evaluation_metadata
     summary = {
+        "evaluation_contract": evaluation_metadata(models, weights, dataset=dataset),
         "algorithm": "needleman_wunsch",
         "traceback": "terminal_(N,M)_to_origin_(0,0)",
         "dataset": str(dataset),
@@ -1590,4 +1625,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -1,0 +1,70 @@
+{
+  "train_eval": {
+    "in_sample": true,
+    "eligible_pairs": 0,
+    "annotated_pairs": 0,
+    "eligible_sides": 0,
+    "pair_eligibility": "both source-line identities must be actual members of this monitoring split",
+    "region_metrics": {
+      "iou": null,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "center_error_px": null,
+      "region_success_rate": null
+    },
+    "localization_status": "unavailable: no matching source-space region masks in eligible pair records",
+    "character_localization": "XML text-fragment localization is reported separately only on exact identity matches; multi-letter boxes are not per-letter ground truth",
+    "region_masks_are_character_accuracy": false,
+    "xml_part_localization": {
+      "eligible_lines": 0,
+      "eligible_regions": 0,
+      "unavailable_reasons": {
+        "XML_part_text_does_not_exactly_match_own_transcript": 5
+      },
+      "metrics": {
+        "interval_iou": null,
+        "precision": null,
+        "recall": null,
+        "f1": null,
+        "center_error_px": null,
+        "boundary_error_px": null,
+        "success_iou_and_support": null
+      }
+    }
+  },
+  "val_eval": {
+    "in_sample": false,
+    "eligible_pairs": 0,
+    "annotated_pairs": 0,
+    "eligible_sides": 0,
+    "pair_eligibility": "both source-line identities must be actual members of this monitoring split",
+    "region_metrics": {
+      "iou": null,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "center_error_px": null,
+      "region_success_rate": null
+    },
+    "localization_status": "unavailable: no matching source-space region masks in eligible pair records",
+    "character_localization": "XML text-fragment localization is reported separately only on exact identity matches; multi-letter boxes are not per-letter ground truth",
+    "region_masks_are_character_accuracy": false,
+    "xml_part_localization": {
+      "eligible_lines": 0,
+      "eligible_regions": 0,
+      "unavailable_reasons": {
+        "XML_part_text_does_not_exactly_match_own_transcript": 5
+      },
+      "metrics": {
+        "interval_iou": null,
+        "precision": null,
+        "recall": null,
+        "f1": null,
+        "center_error_px": null,
+        "boundary_error_px": null,
+        "success_iou_and_support": null
+      }
+    }
+  }
+}

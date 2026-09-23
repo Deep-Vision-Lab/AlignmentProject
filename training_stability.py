@@ -361,6 +361,7 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
                 not bool(torch.isfinite(loss.detach()).all().item()),
             )
             if bad_loss:
+                stats_sum["line_invalid_count"] = stats_sum.get("line_invalid_count", 0) + batch_weight * stats.get("independent_lines_per_pair", 1)
                 consecutive_nonfinite += 1
                 if consecutive_nonfinite >= max_nonfinite_skips:
                     raise FloatingPointError(
@@ -386,6 +387,7 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
                     not _all_gradients_finite(clip_parameters),
                 )
                 if gradients_bad:
+                    stats_sum["line_invalid_count"] = stats_sum.get("line_invalid_count", 0) + batch_weight * stats.get("independent_lines_per_pair", 1)
                     bad_gradients = _nonfinite_gradient_names(named_trainable)
                     if train_module.CTX.is_main:
                         print(
@@ -416,7 +418,9 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
                     + list(vit.local_norm.parameters())
                 )
                 vit_param_grad = parameter_grad_norm(
-                    list(vit.encoder.parameters()) + [vit.position_embedding]
+                    list(vit.encoder.parameters()) + (
+                        [vit.position_embedding] if vit.position_embedding is not None else []
+                    )
                 )
                 fusion_param_grad = parameter_grad_norm(
                     list(vit.fusion_head.parameters())
@@ -461,7 +465,7 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
                         )
                         print(
                             f"GRAD epoch={epoch_number} batch={batch_idx + 1} pass={pass_idx} "
-                            "after=ViT-Tiny "
+                            "after=Transformer "
                             f"activation_norm={activation_grad_norm(record.get('after_vit_tiny'), backward_scale):.8e}",
                             flush=True,
                         )
@@ -483,7 +487,7 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
                         flush=True,
                     )
                     print(
-                        f"GRAD epoch={epoch_number} batch={batch_idx + 1} part=ViT-Tiny "
+                        f"GRAD epoch={epoch_number} batch={batch_idx + 1} part=Transformer "
                         f"parameter_norm={vit_param_grad:.8e}",
                         flush=True,
                     )
@@ -525,6 +529,7 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
                 consecutive_nonfinite = 0
 
             weight = batch_weight
+            stats["line_optimizer_steps"] = 1
             loss_sum += float(loss.detach().item()) * weight
             total_weight += weight
             train_module._accumulate_stats(stats_sum, stats, weight)

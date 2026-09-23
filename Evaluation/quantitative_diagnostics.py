@@ -215,7 +215,7 @@ def run_robustness(runtime, models, pairs, args, output: Path):
             base_left, base_right = _region_intervals(runtime, models, baseline)
             from Evaluation.yelda_geometry import prepare_line
             prepared_line2, _geometry = prepare_line(
-                pair.image2, "real", args.image_preprocessing
+                pair.image2, "real", args.image_preprocessing, contract=models.contract
             )
             line2 = np.asarray(prepared_line2.convert("RGB"))
             score_values = [float(baseline["normalized_score"])]
@@ -227,7 +227,7 @@ def run_robustness(runtime, models, pairs, args, output: Path):
                 path = root / f"perturb_{order:04d}_{mode}.png"
                 Image.fromarray(perturbed).save(path)
                 perturbed_features = runtime.utils.get_image_features(
-                    models, path, "synthetic"
+                    models, path, "synthetic", prepared=True
                 )
                 aligned = _alignment(
                     runtime, left_features, perturbed_features, args

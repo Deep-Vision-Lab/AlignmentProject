@@ -1,0 +1,38 @@
+{
+  "train_eval": {
+    "in_sample": true,
+    "eligible_pairs": 0,
+    "annotated_pairs": 0,
+    "eligible_sides": 0,
+    "pair_eligibility": "both source-line identities must be actual members of this monitoring split",
+    "region_metrics": {
+      "iou": null,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "center_error_px": null,
+      "region_success_rate": null
+    },
+    "localization_status": "unavailable: no matching source-space region masks in eligible pair records",
+    "character_localization": "unavailable: no matching character/word identity-to-box annotations in current manifest",
+    "region_masks_are_character_accuracy": false
+  },
+  "val_eval": {
+    "in_sample": false,
+    "eligible_pairs": 0,
+    "annotated_pairs": 0,
+    "eligible_sides": 0,
+    "pair_eligibility": "both source-line identities must be actual members of this monitoring split",
+    "region_metrics": {
+      "iou": null,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "center_error_px": null,
+      "region_success_rate": null
+    },
+    "localization_status": "unavailable: no matching source-space region masks in eligible pair records",
+    "character_localization": "unavailable: no matching character/word identity-to-box annotations in current manifest",
+    "region_masks_are_character_accuracy": false
+  }
+}

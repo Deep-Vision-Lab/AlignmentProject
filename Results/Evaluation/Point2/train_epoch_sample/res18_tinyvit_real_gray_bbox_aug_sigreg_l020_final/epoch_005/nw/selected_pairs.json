@@ -1,0 +1,9 @@
+[
+  {
+    "pair_id": "pair_000021",
+    "index": 1,
+    "split": "test",
+    "image1": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000021/A/linesImages/line_10.png",
+    "image2": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset/DatasetPairs/page_pairs/pair_000021/B/linesImages/line_07.png"
+  }
+]

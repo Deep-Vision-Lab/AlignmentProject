@@ -180,7 +180,9 @@ def _wide_side_padding_1024(
     )
     return canvas, geometry
 
-def prepare_line(path, domain, image_preprocessing="original"):
+def prepare_line(path, domain, image_preprocessing="original", *, contract=None):
+    if contract is not None:
+        return contract.prepare_line(path, domain, image_preprocessing)
     with Image.open(path) as opened:
         original = opened.convert("RGB")
     if image_preprocessing == "tight":

@@ -1,0 +1,29 @@
+{
+  "algorithm": "Smith-Waterman",
+  "trace_direction": "maximum_dp_to_zero",
+  "full_diagonal_matches": [
+    [
+      54,
+      42
+    ]
+  ],
+  "traceback_boundaries_col_row": [
+    [
+      43.0,
+      55.0
+    ],
+    [
+      42.0,
+      54.0
+    ]
+  ],
+  "component_settings": {
+    "support_floor": 0.0,
+    "max_bridge_steps": 0,
+    "max_window_gap": 0,
+    "min_matches": 5
+  },
+  "components": [],
+  "line1_component_intervals_px": [],
+  "line2_component_intervals_px": []
+}

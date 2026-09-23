@@ -16,6 +16,7 @@ fine-tuning.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -31,11 +32,21 @@ RANK_DEVICE = isolate_local_rank_cuda_device()
 
 import Parameters as P
 import model_backend
+from architecture_experiment import is_compact
+if is_compact(P):
+    os.environ.setdefault("EPOCH_MONITORING", "1")
+    if os.environ["EPOCH_MONITORING"] != "1":
+        raise ValueError("The compact experiment requires end-of-epoch train/validation monitoring")
 
 # Import the branch backend before exporting environment/config or constructing
 # dataloaders. This branch changes the text encoder to a frozen char codebook,
 # uses positive transcript DTW by default, and keeps evaluation image-only.
 P.export_environment()
+if os.environ.get("EPOCH_MONITORING", "0") == "1":
+    # Explicit smoke controls, not optimizer or objective changes.
+    P.batch_size = int(os.environ.get("EXPERIMENT_BATCH_SIZE", P.batch_size))
+    P.profile_max_batches = int(os.environ.get("EXPERIMENT_SMOKE_BATCHES", "0"))
+    P.export_environment()
 
 
 def _contains_cached_model(cache_root: Path, model_name: str) -> bool:
@@ -143,7 +154,7 @@ def _model_config(stride, args):
         {
             "experiment_name": P.experiment_name,
             "configuration_source": "Parameters.py + branch backend",
-            "initialization": "pretrained-resnet18+pretrained-deit-tiny",
+            "initialization": model_backend.visual_model_config().get("initialization", "pretrained-resnet18+pretrained-deit-tiny"),
             "dataset_type": args.dataset_type,
             "dataset_path": args.data_dir,
             "training_sample_view": (
@@ -205,6 +216,9 @@ def _training_args(cli: argparse.Namespace) -> SimpleNamespace:
     finetune = weights is not None
     resolved_dataset_type = _resolve_dataset_type(dataset)
     job_id = resolve_training_job_id(P.experiment_name, finetune=finetune)
+    from architecture_experiment import is_compact
+    if is_compact(P) and (PROJECT_DIR / "Weights" / job_id).exists():
+        raise SystemExit(f"New experiment requires a new JOB_NAME; refusing to overwrite Weights/{job_id}")
     os.environ["DATASET_TYPE"] = resolved_dataset_type
 
     return SimpleNamespace(
@@ -262,6 +276,11 @@ def _validate_constructed_backend(model: nn.Module) -> None:
     if not any("fusion_head" in key for key in keys):
         raise RuntimeError("Backend is missing local/context fusion parameters")
     vit = model.vit_encoder
+    from architecture_experiment import is_compact
+    if is_compact(P):
+        if (vit.embed_dim, len(vit.encoder.layers)) != (128, 5):
+            raise RuntimeError("Compact backend dimension/layer mismatch")
+        return
     if int(vit.embed_dim) != 192:
         raise RuntimeError(f"ViT-Tiny embed_dim must be 192, got {vit.embed_dim}")
     if len(vit.encoder.layers) != 12:
@@ -309,6 +328,30 @@ def main() -> None:
 
         criterion = base.build_criterion()
         config = base.model_config(stride, args)
+        config["parameter_counts"] = {
+            "visual_total": sum(p.numel() for p in raw_model.parameters()),
+            "visual_trainable": sum(p.numel() for p in raw_model.parameters() if p.requires_grad),
+            "text_total": sum(p.numel() for p in text_encoder.parameters()),
+            "text_trainable": sum(p.numel() for p in text_encoder.parameters() if p.requires_grad),
+            "components": {name: sum(p.numel() for p in module.parameters()) for name, module in raw_model.vit_encoder.named_children()},
+        }
+        config["codebook_state_sha256"] = hashlib.sha256(b"".join(
+            k.encode() + v.detach().cpu().contiguous().numpy().tobytes()
+            for k, v in text_encoder.state_dict().items())).hexdigest()
+        initialization_path = getattr(raw_model.vit_encoder.patch_embedding, "initialization_source_path", None)
+        config["initialization_provenance"] = {
+            "resnet_cached_weights": initialization_path,
+            "resnet_cached_sha256": hashlib.sha256(Path(initialization_path).read_bytes()).hexdigest() if initialization_path else None,
+            "grayscale_conv_policy": "mean over RGB input-channel filters; existing policy",
+            "full_model_initialization": args.pretrained_weights,
+            "optimizer_resumed": resume_payload is not None,
+            "transformer_pretrained": bool(P.tiny_vit_pretrained),
+            "fresh_modules": ["local_projection", "transformer", "fusion"] if not P.tiny_vit_pretrained else ["fusion"],
+        }
+        config["dataset_split_seed"] = P.dataset_split_seed
+        config["real_text_key"] = os.environ.get("REAL_TEXT_KEY", "text_original_path")
+        config["normalization_mean"] = [0.449] if P.visual_input_channels == 1 else [0.485, 0.456, 0.406]
+        config["normalization_std"] = [0.226] if P.visual_input_channels == 1 else [0.229, 0.224, 0.225]
         config.update(
             {
                 "hf_home": os.environ.get("HF_HOME", ""),
@@ -333,9 +376,9 @@ def main() -> None:
             )
             print(
                 "MODELS "
-                "encoder=ResNet-18[ImageNet1K-pretrained](512->192) "
-                f"vit=ViT-Tiny[{P.tiny_vit_pretrained_model}-pretrained]"
-                "(dim=192,layers=12,heads=3,mlp=768)",
+                f"variant={P.architecture_variant} dim={P.vector_size} layers={P.vit_layers} "
+                f"heads={P.vit_heads} mlp={P.vit_mlp_dim} deit_pretrained={P.tiny_vit_pretrained} "
+                f"parameters={config['parameter_counts']}",
                 flush=True,
             )
 

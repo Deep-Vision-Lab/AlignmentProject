@@ -175,7 +175,8 @@ def _load_pairs(runtime, args, split: str | None = None) -> list:
         split_seed=args.split_seed,
         real_split=split or args.real_split,
     )
-    pairs = runtime.dataset.load_arabic_dataset_pairs(loader_args)
+    pairs = runtime.dataset.load_arabic_dataset_pairs(
+        loader_args, checkpoint_config=getattr(runtime, "checkpoint_config", None))
     if not pairs:
         raise RuntimeError("No real pairs matched the requested split and labels")
     return pairs
@@ -251,12 +252,10 @@ def _feature_cache(
                 if temp_root is None:
                     raise ValueError("temp_root is required for real feature caching")
                 if resolved not in prepared:
-                    # Use the same deterministic crop/aspect-preserving RGB geometry
-                    # as training, then feed the already-prepared canvas through the
-                    # synthetic tensor transform so geometry is not applied twice.
+                    # Prepare source geometry once, then only tensorize it.
                     from Evaluation.yelda_geometry import prepare_line
                     prepared_image, _geometry = prepare_line(
-                        feature_path, "real", image_preprocessing
+                        feature_path, "real", image_preprocessing, contract=models.contract
                     )
                     prepared_path = temp_root / f"real_{len(prepared):06d}.png"
                     prepared_image.save(prepared_path)
@@ -264,7 +263,7 @@ def _feature_cache(
                 feature_path = prepared[resolved]
                 feature_dataset_type = "synthetic"
             cache[key] = runtime.utils.get_image_features(
-                models, feature_path, feature_dataset_type
+                models, feature_path, feature_dataset_type, prepared=True
             )
         return cache[key]
 
@@ -305,7 +304,7 @@ def calibrate_sw_on_validation(runtime, models, pairs, args, output: Path) -> di
         for example_id, line_path in enumerate(line_paths, start=1):
             from Evaluation.yelda_geometry import prepare_line
 
-            prepared_image, _geometry = prepare_line(line_path, "real", args.image_preprocessing)
+            prepared_image, _geometry = prepare_line(line_path, "real", args.image_preprocessing, contract=models.contract)
             array = np.asarray(prepared_image.convert("RGB"))
             _height, width = array.shape[:2]
             ink = _ink_mask(array)
@@ -319,7 +318,7 @@ def calibrate_sw_on_validation(runtime, models, pairs, args, output: Path) -> di
             query_path = temp_root / f"calibration_query_{example_id:05d}.png"
             Image.fromarray(query).save(query_path)
             query_features = runtime.utils.get_image_features(
-                models, query_path, "synthetic"
+                models, query_path, "synthetic", prepared=True
             )
             target_features = get_features(line_path)
             examples.append(
@@ -424,7 +423,7 @@ def run_crop_localization(runtime, models, pairs, args, output: Path) -> tuple[l
         crop_id = 0
         for line_index, line_path in enumerate(line_paths, start=1):
             from Evaluation.yelda_geometry import prepare_line
-            prepared_image, _geometry = prepare_line(line_path, "real", args.image_preprocessing)
+            prepared_image, _geometry = prepare_line(line_path, "real", args.image_preprocessing, contract=models.contract)
             array = np.asarray(prepared_image.convert("RGB"))
             _height, width = array.shape[:2]
             ink = _ink_mask(array)
@@ -447,7 +446,7 @@ def run_crop_localization(runtime, models, pairs, args, output: Path) -> tuple[l
                     query_path = temp_root / f"query_{example_id:06d}.png"
                     Image.fromarray(query).save(query_path)
                     query_features = runtime.utils.get_image_features(
-                        models, query_path, "synthetic"
+                        models, query_path, "synthetic", prepared=True
                     )
                     aligned = _alignment(
                         runtime, query_features, target_features, args
@@ -875,8 +874,8 @@ def run_sparse_intervals(runtime, models, args, output: Path) -> tuple[list[dict
             if coordinate_space in {"source", "source_image", "original"}:
                 from Evaluation.yelda_geometry import prepare_line, source_intervals
 
-                _prepared1, geometry1 = prepare_line(image1, "real", args.image_preprocessing)
-                _prepared2, geometry2 = prepare_line(image2, "real", args.image_preprocessing)
+                _prepared1, geometry1 = prepare_line(image1, "real", args.image_preprocessing, contract=models.contract)
+                _prepared2, geometry2 = prepare_line(image2, "real", args.image_preprocessing, contract=models.contract)
                 mapped1 = source_intervals([pred1_canvas], geometry1)
                 mapped2 = source_intervals([pred2_canvas], geometry2)
                 pred1 = tuple(mapped1[0]) if mapped1 else (0.0, 0.0)
@@ -1113,8 +1112,7 @@ def parse_args() -> argparse.Namespace:
         choices=("original", "training", "tight", "cropped_1024"),
         default="training",
         help=(
-            "training reproduces the checkpoint preprocessing: foreground crop, "
-            "aspect-preserving scale to the training ink height, and white 1024x128 canvas"
+            "training reproduces the checkpoint's crop, color, resize, and padding contract"
         ),
     )
     parser.add_argument("--real-data-dir", default="DataSet/ArabicDataset")
@@ -1177,6 +1175,8 @@ def main() -> None:
     models = runtime.utils.load_evaluation_models(
         args.weights, device=args.device, load_text_model=False
     )
+    models.contract.install()
+    runtime.checkpoint_config = models.config
     pairs = _load_pairs(runtime, args)
     if args.real_split == "all":
         raise ValueError(
@@ -1267,6 +1267,8 @@ def main() -> None:
             "diagnostic_only": ["cycle_consistency", "robustness", "mean_path_cosine", "normalized_sw_score"],
         },
     }
+    from Evaluation.checkpoint_contract import evaluation_metadata
+    summary["evaluation_contract"] = evaluation_metadata(models, args.weights, args.image_preprocessing, args.real_data_dir)
     (output / "summary.json").write_text(
         json.dumps(_json_ready(summary), ensure_ascii=False, indent=2), encoding="utf-8"
     )

@@ -235,37 +235,28 @@ def install_runner_patches(runner) -> None:
             missing = [str(path) for path in (image1, image2) if not path.is_file()]
             raise FileNotFoundError("Missing image pair: " + ", ".join(missing))
 
-        binarized = str(dataset_type).lower() == "real"
+        real_input = str(dataset_type).lower() == "real"
+        binarized = models.contract.real_binarize if real_input else models.contract.synthetic_binarize
         binary1 = binary2 = ""
         temporary_directory = None
         try:
-            if binarized:
-                arr1 = display_image(image1, "real")
-                arr2 = display_image(image2, "real")
-                if save_binary:
-                    model_image1, model_image2 = runner.save_binarized_inputs(
-                        arr1, arr2, output, pair.index
-                    )
-                    binary1, binary2 = str(model_image1), str(model_image2)
-                else:
-                    temporary_directory = tempfile.TemporaryDirectory(
-                        prefix="sw_real_binary_"
-                    )
-                    root = Path(temporary_directory.name)
-                    model_image1, model_image2 = root / "line1.png", root / "line2.png"
-                    Image.fromarray(arr1).save(model_image1)
-                    Image.fromarray(arr2).save(model_image2)
-                feature_dataset_type = "synthetic"
+            prepared1, _ = models.contract.prepare_line(image1, dataset_type)
+            prepared2, _ = models.contract.prepare_line(image2, dataset_type)
+            arr1 = np.asarray(prepared1.convert("RGB"))
+            arr2 = np.asarray(prepared2.convert("RGB"))
+            if real_input and save_binary:
+                model_image1, model_image2 = runner.save_binarized_inputs(
+                    np.asarray(prepared1), np.asarray(prepared2), output, pair.index)
+                binary1, binary2 = str(model_image1), str(model_image2)
             else:
-                with Image.open(image1) as opened:
-                    arr1 = np.asarray(opened.convert("RGB"))
-                with Image.open(image2) as opened:
-                    arr2 = np.asarray(opened.convert("RGB"))
-                model_image1, model_image2 = image1, image2
-                feature_dataset_type = "synthetic"
+                temporary_directory = tempfile.TemporaryDirectory(prefix="sw_prepared_")
+                root = Path(temporary_directory.name)
+                model_image1, model_image2 = root / "line1.png", root / "line2.png"
+                prepared1.save(model_image1)
+                prepared2.save(model_image2)
 
-            features1 = runner.get_image_features(models, model_image1, feature_dataset_type)
-            features2 = runner.get_image_features(models, model_image2, feature_dataset_type)
+            features1 = runner.get_image_features(models, model_image1, dataset_type, prepared=True)
+            features2 = runner.get_image_features(models, model_image2, dataset_type, prepared=True)
             raw_similarity = runner.compute_similarity(
                 features1.select(feature), features2.select(feature)
             ).cpu().numpy()
