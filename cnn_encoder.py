@@ -17,9 +17,9 @@ class CNNEncoder(nn.Module):
         self.initialization = 'random'
         if encoder_type == 'simple':
             self.backbone = nn.Sequential(
-                nn.Conv2d(input_channels, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
-                nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
-                nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(), nn.AdaptiveAvgPool2d(1), nn.Flatten())
+                nn.Conv2d(input_channels, 32, 3, padding=1), nn.GELU(), nn.AdaptiveAvgPool2d(2),
+                nn.Conv2d(32, 64, 3, padding=1), nn.GELU(), nn.AdaptiveAvgPool2d(2),
+                nn.Conv2d(64, 128, 3, padding=1), nn.GELU(), nn.AdaptiveAvgPool2d(1), nn.Flatten())
             features = 128
         elif encoder_type == 'resnet18':
             self.backbone = resnet18(weights=None)

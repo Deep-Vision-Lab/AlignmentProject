@@ -29,10 +29,10 @@ class Config:
     rtl: bool = True
     text_embedding_seed: int = 1234
     text_vocab_size: int = 4096
-    positive_dtw_weight: float = 1.
-    negative_dtw_weight: float = 0.
+    positive_dtw_weight: float = 1.0
+    negative_dtw_weight: float = 0.0
     negative_margin: float = .20
-    sigreg_weight: float = .20
+    sigreg_weight: float = 0.0
     sigreg_sketch_dim: int = 1024
     sigreg_num_knots: int = 17
     sigreg_min_samples: int = 32
