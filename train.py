@@ -1,402 +1,255 @@
-#!/usr/bin/env python3
-"""Single user-facing trainer for AlignmentProject.
-
-Usage:
-    # Train from scratch
-    python train.py --dataset DataSet/ArabicDataset
-
-    # Fine-tune from pretrained weights
-    python train.py --dataset DataSet/ArabicDataset \
-        --weights Weights/vit_synthetic/model_latest.pth
-
-All architecture, loss, optimization, augmentation, and runtime settings live in
-Parameters.py. Supplying --weights is the only switch that turns the run into
-fine-tuning.
-"""
+"""Standalone training: data -> model -> objective -> train/validate -> checkpoint."""
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict, fields
 import hashlib
+import json
 import os
-import sys
 from pathlib import Path
-from types import SimpleNamespace
+import random
+import time
 
-PROJECT_DIR = Path(__file__).resolve().parent
-if str(PROJECT_DIR) not in sys.path:
-    sys.path.insert(0, str(PROJECT_DIR))
-
-from runtime_device_setup import isolate_local_rank_cuda_device
-
-RANK_DEVICE = isolate_local_rank_cuda_device()
-
-import Parameters as P
-import model_backend
-from architecture_experiment import is_compact
-if is_compact(P):
-    os.environ.setdefault("EPOCH_MONITORING", "1")
-    if os.environ["EPOCH_MONITORING"] != "1":
-        raise ValueError("The compact experiment requires end-of-epoch train/validation monitoring")
-
-# Import the branch backend before exporting environment/config or constructing
-# dataloaders. This branch changes the text encoder to a frozen char codebook,
-# uses positive transcript DTW by default, and keeps evaluation image-only.
-P.export_environment()
-if os.environ.get("EPOCH_MONITORING", "0") == "1":
-    # Explicit smoke controls, not optimizer or objective changes.
-    P.batch_size = int(os.environ.get("EXPERIMENT_BATCH_SIZE", P.batch_size))
-    P.profile_max_batches = int(os.environ.get("EXPERIMENT_SMOKE_BATCHES", "0"))
-    P.export_environment()
-
-
-def _contains_cached_model(cache_root: Path, model_name: str) -> bool:
-    slug = "models--" + model_name.replace("/", "--")
-    for layout in (cache_root, cache_root / "hub"):
-        snapshots = layout / slug / "snapshots"
-        if not snapshots.is_dir():
-            continue
-        for snapshot in snapshots.iterdir():
-            if not snapshot.is_dir() or not (snapshot / "config.json").is_file():
-                continue
-            if any(snapshot.glob("model*.safetensors")) or any(
-                snapshot.glob("pytorch_model*.bin")
-            ):
-                return True
-    return False
-
-
-def _resolve_hf_home() -> None:
-    # Character-codebook branches require no HuggingFace model at all.
-    if str(P.text_encoder_type).strip().lower() == "char":
-        return
-
-    explicit = os.environ.get("HF_HOME", "").strip()
-    candidates = []
-    if explicit:
-        candidates.append(Path(explicit).expanduser())
-    candidates.extend(
-        [
-            PROJECT_DIR / ".hf_cache",
-            Path(str(PROJECT_DIR) + "_clone") / ".hf_cache",
-            Path.home() / ".cache" / "huggingface",
-        ]
-    )
-    for candidate in candidates:
-        if candidate.is_dir() and _contains_cached_model(
-            candidate, P.arabic_text_model_name
-        ):
-            os.environ["HF_HOME"] = str(candidate)
-            os.environ.pop("TRANSFORMERS_CACHE", None)
-            return
-    if explicit:
-        os.environ["HF_HOME"] = explicit
-        return
-    raise RuntimeError(
-        f"Could not find an offline cache for {P.arabic_text_model_name}. Checked: "
-        + ", ".join(str(path) for path in candidates)
-    )
-
-
-_resolve_hf_home()
-
-import trainer_core as base
-
+import numpy as np
 import torch
-import torch.nn as nn
-from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data import DataLoader, DistributedSampler
 
-from ddp_runtime_policy import resolve_ddp_static_graph
-from distributed_runtime_guard import install_distributed_runtime_guard
-from epoch_subset_sampling import install_epoch_subset_sampling
-from job_id_runtime import resolve_training_job_id
-from training_optimizations import install as install_optimizations
-from training_stability import install_training_stability
-from unified_line_geometry import install_training_geometry
-from vit_checkpoint_migration import install as install_vit_checkpoint_migration
-
-# Install shared optimization/runtime helpers first. The branch backend then
-# replaces compute_batch_loss with positive letter-DTW by default.
-install_optimizations(base)
-
-install_vit_checkpoint_migration(base)
-install_distributed_runtime_guard(base)
-install_epoch_subset_sampling(base)
-_GEOMETRY_CONFIG = install_training_geometry()
-
-model_backend.install_training_backend(base)
+from dataloader import create_dataloaders, collate_samples
+from losses import compute_loss
+from model import AlignmentModel
+from parameters import Config
+from text_embedding import OrthogonalCharEmbedding
 
 
-def _branch_build_image_embedding(stride):
-    return model_backend.build_visual_model(
-        window_size=P.window_size,
-        stride=stride,
-        vector_size=P.vector_size,
-        device=P.device,
-        use_flip=(P.lang.lower() == "arabic"),
-        use_bilstm=P.use_bilstm,
-        bilstm_layers=P.bilstm_layers,
-        bilstm_hidden_dim=P.bilstm_hidden_dim,
-        use_local_grouping=P.use_local_window_grouping,
-        local_group_size=P.local_group_size,
-    )
+def build_model(config, initialize=True):
+    return AlignmentModel(cnn_type=config.cnn_type, transformer_type=config.transformer_type,
+                          embedding_dim=config.embedding_dim, window_width=config.window_width,
+                          stride=config.window_stride, pretrained_cnn=initialize and config.cnn_pretrained,
+                          use_positional_encoding=config.use_positional_encoding,
+                          input_channels=1 if config.grayscale else 3, local_dropout=config.local_dropout,
+                          transformer_dropout=config.transformer_dropout, rtl=config.rtl)
 
 
-base.build_image_embedding = _branch_build_image_embedding
-
-_original_model_config = base.model_config
-
-
-def _model_config(stride, args):
-    config = _original_model_config(stride, args)
-    config.update(_GEOMETRY_CONFIG)
-    config.update(model_backend.visual_model_config())
-    config.update(
-        {
-            "experiment_name": P.experiment_name,
-            "configuration_source": "Parameters.py + branch backend",
-            "initialization": model_backend.visual_model_config().get("initialization", "pretrained-resnet18+pretrained-deit-tiny"),
-            "dataset_type": args.dataset_type,
-            "dataset_path": args.data_dir,
-            "training_sample_view": (
-                "all-page-lines-own-transcript"
-                if os.environ.get("REAL_ALL_PAGE_LINES", "0").strip().lower()
-                in {"1", "true", "yes", "on"}
-                else (
-                    "independent-line-transcript"
-                    if os.environ.get("REAL_INDEPENDENT_LINES", "0").strip().lower()
-                    in {"1", "true", "yes", "on"}
-                    else "paired-lines-single-ddp-forward"
-                )
-            ),
-        }
-    )
-    install_training_stability(base, config, args.job_id)
-    return config
+def build_loaders(dataset, config, split_ids=None):
+    return create_dataloaders(dataset, config.dataset_type, config.train_ratio, config.val_ratio,
+                              config.test_ratio, config.split_mode, config.split_seed,
+                              config.batch_size, config.num_workers, config.augmentation,
+                              split_ids=split_ids, paired=config.paired,
+                              image_size=(config.image_height,config.image_width),
+                              grayscale=config.grayscale, crop=config.crop, binarize=config.binarize)
 
 
-base.model_config = _model_config
+def _batch_lines(batch, device):
+    images, texts = batch['image'], list(batch['text'])
+    if torch.is_tensor(batch['image2']):
+        images = torch.cat((images,batch['image2']))
+        texts.extend(batch['text2'])
+    return images.to(device), texts
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--dataset",
-        required=True,
-        help="Dataset directory. Dataset type is resolved from Parameters.py/manifest.",
-    )
-    parser.add_argument(
-        "--weights",
-        default=None,
-        help="Optional compatible visual initialization. Mismatched shapes are skipped.",
-    )
-    return parser.parse_args()
+def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_batches=0):
+    training = optimizer is not None
+    model.train(training)
+    text_encoder.eval()
+    distributed = training and dist.is_available() and dist.is_initialized()
+    # DTW is aggregated per LINE, including both sides, excluding empty text.
+    # SIGReg is a token-weighted batch-population statistic, not a per-line loss.
+    totals = torch.zeros(8,dtype=torch.float64,device=device)
+    started = time.monotonic()
+    for index,batch in enumerate(loader):
+        if max_batches and index >= max_batches:
+            break
+        images,texts = _batch_lines(batch,device)
+        if training:
+            optimizer.zero_grad(set_to_none=True)
+        with torch.set_grad_enabled(training):
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+                                enabled=config.use_amp and device.type=='cuda'):
+                output = model(images)
+            loss,stats = compute_loss(output,texts,text_encoder,config,
+                                     distributed_statistics=distributed,
+                                     sketch_seed=None if training else config.seed)
+            if not torch.isfinite(loss):
+                raise FloatingPointError('Nonfinite objective; no optimizer step taken')
+            if training:
+                loss.backward()
+                if any(p.grad is not None and not torch.isfinite(p.grad).all() for p in model.parameters()):
+                    raise FloatingPointError('Nonfinite gradients; no optimizer step taken')
+                optimizer.step()
+        tokens = stats['valid_tokens']
+        totals += totals.new_tensor([stats['dtw_sum'],stats['evaluated'],stats['skipped'],
+                                      (stats['sigreg'] or 0.)*tokens,tokens,
+                                      sum(t for t,l in stats['lengths']),
+                                      sum(l for t,l in stats['lengths']),1])
+    if distributed:
+        dist.all_reduce(totals)
+    dtw_sum,n,skipped,sig_sum,tokens,windows,letters,batches = totals.tolist()
+    positive = dtw_sum/n if n else None
+    sigreg = sig_sum/tokens if tokens and config.sigreg_weight else None
+    total = None if positive is None else config.positive_dtw_weight*positive + config.sigreg_weight*(sigreg or 0.)
+    return dict(total=total,positive_dtw=positive,negative_dtw=None,sigreg=sigreg,
+                weighted_sigreg=config.sigreg_weight*(sigreg or 0.),evaluated=int(n),skipped=int(skipped),
+                valid_tokens=int(tokens),batches=int(batches),mean_windows=windows/n if n else None,
+                mean_letters=letters/n if n else None,gamma=config.dtw_gamma,
+                population='explicit-batch-subset' if max_batches else 'full-split',
+                seconds=time.monotonic()-started)
 
 
-def _resolve_dataset_type(dataset: Path) -> str:
-    configured = str(P.dataset_type).strip().lower()
-    if configured in {"real", "synthetic"}:
-        return configured
-    if configured != "auto":
-        raise ValueError("Parameters.dataset_type must be auto, real, or synthetic")
-    return "real" if (dataset / P.real_manifest_name).is_file() else "synthetic"
+def train_one_epoch(model,text_encoder,loader,optimizer,config,device,max_batches=0):
+    return _run_epoch(model,text_encoder,loader,config,torch.device(device),optimizer,max_batches)
 
 
-def _training_args(cli: argparse.Namespace) -> SimpleNamespace:
-    dataset = Path(cli.dataset).expanduser().resolve()
-    if not dataset.is_dir():
-        raise SystemExit(f"Dataset directory does not exist: {dataset}")
-
-    weights = None
-    if cli.weights:
-        weights_path = Path(cli.weights).expanduser().resolve()
-        if not weights_path.is_file():
-            raise SystemExit(f"Pretrained weights do not exist: {weights_path}")
-        weights = str(weights_path)
-
-    finetune = weights is not None
-    resolved_dataset_type = _resolve_dataset_type(dataset)
-    job_id = resolve_training_job_id(P.experiment_name, finetune=finetune)
-    from architecture_experiment import is_compact
-    if is_compact(P) and (PROJECT_DIR / "Weights" / job_id).exists():
-        raise SystemExit(f"New experiment requires a new JOB_NAME; refusing to overwrite Weights/{job_id}")
-    os.environ["DATASET_TYPE"] = resolved_dataset_type
-
-    return SimpleNamespace(
-        job_id=job_id,
-        data_dir=str(dataset),
-        dataset_type=resolved_dataset_type,
-        augment=P.real_augment if resolved_dataset_type == "real" else False,
-        train_samples_per_epoch=(
-            P.real_train_samples_per_epoch if resolved_dataset_type == "real" else None
-        ),
-        num_samples=P.num_samples,
-        pretrained_weights=weights,
-        resume=None,
-        finetune=finetune,
-        window_size=None,
-        stride_ratio=None,
-        window_overlap_mode=None,
-        negative_mode=None,
-        epochs=P.finetune_epochs if finetune else P.epochs,
-        learning_rate=P.finetune_learning_rate if finetune else P.learning_rate,
-        num_negatives=None,
-        use_bilstm=None,
-        use_local_hard_negatives=None,
-        local_hard_negative_weight=None,
-        image_variance_loss_weight=None,
-        use_image_pair_contrastive=None,
-        image_pair_loss_weight=None,
-    )
-
-
-def _validate_constructed_backend(model: nn.Module) -> None:
-    backend = str(model_backend.MODEL_NAME).strip().lower()
-    keys = tuple(model.state_dict().keys())
-    has_vit = any(key.startswith("vit_encoder.") for key in keys)
-    has_cnn = any(key.startswith("cnn_encoder.") for key in keys)
-    has_bilstm = any(key.startswith("sequence_encoder.bilstm.") for key in keys)
-    has_resnet18 = any(
-        key.startswith("vit_encoder.patch_embedding.backbone.layer4.")
-        for key in keys
-    )
-    has_decoder = any("stroke_decoder" in key for key in keys)
-    visual_type = str(
-        getattr(model_backend, "VISUAL_ENCODER_TYPE", backend)
-    ).strip().lower()
-    if visual_type == "vit" and (not has_vit or has_cnn or has_bilstm):
-        raise RuntimeError(
-            "ViT branch built the wrong model: "
-            f"backend={backend} has_vit={has_vit} has_cnn={has_cnn} "
-            f"has_bilstm={has_bilstm}"
-        )
-    if not has_resnet18:
-        raise RuntimeError("ResNet18/ViT-Tiny backend is missing ResNet-18 parameters")
-    if has_decoder:
-        raise RuntimeError("Decoder parameters found even though restoration was removed")
-    if not any("fusion_head" in key for key in keys):
-        raise RuntimeError("Backend is missing local/context fusion parameters")
-    vit = model.vit_encoder
-    from architecture_experiment import is_compact
-    if is_compact(P):
-        if (vit.embed_dim, len(vit.encoder.layers)) != (128, 5):
-            raise RuntimeError("Compact backend dimension/layer mismatch")
-        return
-    if int(vit.embed_dim) != 192:
-        raise RuntimeError(f"ViT-Tiny embed_dim must be 192, got {vit.embed_dim}")
-    if len(vit.encoder.layers) != 12:
-        raise RuntimeError("ViT-Tiny must contain 12 transformer layers")
-
-
-def main() -> None:
-    base.CTX.initialize()
+def validate_one_epoch(model,text_encoder,loader,config,device,max_batches=0):
+    """Local unwrapped evaluation: no DDP collectives, updates or RNG side effects."""
+    if isinstance(model,DistributedDataParallel):
+        raise ValueError('Coordinated rank-zero validation requires model.module')
+    if loader.dataset.augment:
+        raise ValueError('Validation must use an augmentation-free dataset view')
+    device = torch.device(device)
+    modes = [(module,module.training) for module in list(model.modules())+list(text_encoder.modules())]
+    python_rng,numpy_rng = random.getstate(),np.random.get_state()
+    loader_rng = loader.generator.get_state() if loader.generator is not None else None
     try:
-        base._strip_torchrun_rank_arguments()
-        cli = parse_args()
-        args = _training_args(cli)
-        base._seed_everything(P.train_seed, base.CTX.rank)
-
-        stride = base.compute_stride(
-            P.window_size, P.stride_ratio, P.window_overlap_mode
-        )
-        train_loader, valid_loader, test_loader, train_sampler = (
-            base.select_dataloaders(args)
-        )
-        text_encoder = base.build_text_encoder()
-        raw_model = base.build_image_embedding(stride).to(P.device)
-        _validate_constructed_backend(raw_model)
-        resume_payload = base._load_initial_states(args, raw_model, text_encoder)
-        model_backend.prepare_visual_model(raw_model)
-        base._broadcast_trainable_text_parameters(text_encoder)
-
-        model: nn.Module = raw_model
-        # Paired manuscript lines are consolidated into one model forward.
-        # Every active visual parameter participates in every batch, so this
-        # branch uses DDP static-graph mode across the two GPUs.
-        os.environ["DDP_STATIC_GRAPH"] = "1"
-        os.environ["DDP_STATIC_GRAPH_EFFECTIVE"] = "1"
-        static_graph = resolve_ddp_static_graph()
-        if base.CTX.enabled:
-            model = DDP(
-                raw_model,
-                device_ids=[0],
-                output_device=0,
-                broadcast_buffers=False,
-                find_unused_parameters=False,
-                gradient_as_bucket_view=True,
-                static_graph=bool(static_graph.enabled),
-            )
-
-        criterion = base.build_criterion()
-        config = base.model_config(stride, args)
-        config["parameter_counts"] = {
-            "visual_total": sum(p.numel() for p in raw_model.parameters()),
-            "visual_trainable": sum(p.numel() for p in raw_model.parameters() if p.requires_grad),
-            "text_total": sum(p.numel() for p in text_encoder.parameters()),
-            "text_trainable": sum(p.numel() for p in text_encoder.parameters() if p.requires_grad),
-            "components": {name: sum(p.numel() for p in module.parameters()) for name, module in raw_model.vit_encoder.named_children()},
-        }
-        config["codebook_state_sha256"] = hashlib.sha256(b"".join(
-            k.encode() + v.detach().cpu().contiguous().numpy().tobytes()
-            for k, v in text_encoder.state_dict().items())).hexdigest()
-        initialization_path = getattr(raw_model.vit_encoder.patch_embedding, "initialization_source_path", None)
-        config["initialization_provenance"] = {
-            "resnet_cached_weights": initialization_path,
-            "resnet_cached_sha256": hashlib.sha256(Path(initialization_path).read_bytes()).hexdigest() if initialization_path else None,
-            "grayscale_conv_policy": "mean over RGB input-channel filters; existing policy",
-            "full_model_initialization": args.pretrained_weights,
-            "optimizer_resumed": resume_payload is not None,
-            "transformer_pretrained": bool(P.tiny_vit_pretrained),
-            "fresh_modules": ["local_projection", "transformer", "fusion"] if not P.tiny_vit_pretrained else ["fusion"],
-        }
-        config["dataset_split_seed"] = P.dataset_split_seed
-        config["real_text_key"] = os.environ.get("REAL_TEXT_KEY", "text_original_path")
-        config["normalization_mean"] = [0.449] if P.visual_input_channels == 1 else [0.485, 0.456, 0.406]
-        config["normalization_std"] = [0.226] if P.visual_input_channels == 1 else [0.229, 0.224, 0.225]
-        config.update(
-            {
-                "hf_home": os.environ.get("HF_HOME", ""),
-                "original_cuda_visible_devices": RANK_DEVICE.original_visible_devices,
-                "selected_cuda_device": RANK_DEVICE.selected_device,
-                "ddp_static_graph": bool(static_graph.enabled),
-                "ddp_static_graph_reason": static_graph.description,
-                "ddp_find_unused_parameters": False,
-            }
-        )
-
-        if base.CTX.is_main:
-            train_size = len(train_loader.dataset)
-            valid_size = len(valid_loader.dataset)
-            test_size = len(test_loader.dataset)
-            dataset_size = train_size + valid_size + test_size
-            print(
-                f"DATASET path={args.data_dir} type={args.dataset_type} "
-                f"size={dataset_size} train={train_size} "
-                f"valid={valid_size} test={test_size}",
-                flush=True,
-            )
-            print(
-                "MODELS "
-                f"variant={P.architecture_variant} dim={P.vector_size} layers={P.vit_layers} "
-                f"heads={P.vit_heads} mlp={P.vit_mlp_dim} deit_pretrained={P.tiny_vit_pretrained} "
-                f"parameters={config['parameter_counts']}",
-                flush=True,
-            )
-
-        base.CTX.barrier()
-        base.train(
-            model,
-            text_encoder,
-            criterion,
-            train_loader,
-            valid_loader,
-            train_sampler,
-            args,
-            config,
-            resume_payload=resume_payload,
-        )
+        with torch.random.fork_rng(devices=[device.index or 0] if device.type=='cuda' else []), torch.no_grad():
+            return _run_epoch(model,text_encoder,loader,config,device,max_batches=max_batches)
     finally:
-        base.CTX.close()
+        for module,mode in modes:
+            module.training = mode
+        random.setstate(python_rng)
+        np.random.set_state(numpy_rng)
+        if loader_rng is not None:
+            loader.generator.set_state(loader_rng)
 
 
-if __name__ == "__main__":
+def save_checkpoint(path,model,optimizer,epoch,best_val,config,text_encoder,split_ids,**metadata):
+    raw = model.module if isinstance(model,DistributedDataParallel) else model
+    payload = dict(format_version=1,architecture_family='simple-alignment-core',
+                   model=raw.state_dict(),text_embedding=text_encoder.state_dict(),
+                   optimizer=optimizer.state_dict() if optimizer else None,epoch=epoch,best_val=best_val,
+                   config=asdict(config),split_ids=split_ids,
+                   split_manifest_sha256=hashlib.sha256(json.dumps(split_ids,sort_keys=True).encode()).hexdigest(),
+                   parameter_count=sum(p.numel() for p in raw.parameters()),
+                   initialization=raw.cnn.initialization,**metadata)
+    path = Path(path)
+    temporary = path.with_suffix('.tmp')
+    torch.save(payload,temporary)
+    temporary.replace(path)
+
+
+def load_checkpoint(path,device='cpu'):
+    """Strict new-format reconstruction. Legacy checkpoints are not migrated."""
+    saved = torch.load(path,map_location='cpu')
+    if saved.get('format_version') != 1 or saved.get('architecture_family') != 'simple-alignment-core':
+        raise ValueError('Incompatible legacy checkpoint: expected standalone simple-alignment-core format 1')
+    config = Config(**saved['config'])
+    model = build_model(config,initialize=False).to(device)
+    model.load_state_dict(saved['model'],strict=True)
+    text = OrthogonalCharEmbedding(config.embedding_dim,config.text_vocab_size,config.text_embedding_seed).to(device)
+    text.load_state_dict(saved['text_embedding'],strict=True)
+    if hashlib.sha256(json.dumps(saved['split_ids'],sort_keys=True).encode()).hexdigest() != saved['split_manifest_sha256']:
+        raise ValueError('Checkpoint split identity is inconsistent')
+    model.eval()
+    text.eval()
+    return model,text,config,saved
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--dataset',required=True)
+    parser.add_argument('--run-name',required=True)
+    parser.add_argument('--output-root',default='Weights')
+    parser.add_argument('--device',default='auto')
+    parser.add_argument('--max-batches',type=int,default=0,help='Explicit smoke cap on BOTH passes; 0=full splits')
+    parser.add_argument('--resume',help='New-format checkpoint; config must match (epochs may increase)')
+    for field in fields(Config):
+        kwargs = dict(default=field.default)
+        if isinstance(field.default,bool): kwargs['action']=argparse.BooleanOptionalAction
+        else: kwargs['type']=type(field.default)
+        parser.add_argument('--'+field.name.replace('_','-'),**kwargs)
+    args = parser.parse_args(argv)
+    config = Config(**{f.name:getattr(args,f.name) for f in fields(Config)})
+    if config.negative_dtw_weight:
+        raise ValueError('This CLI has no negative-transcript source; leave negative_dtw_weight=0')
+    if args.max_batches < 0 or Path(args.run_name).name != args.run_name:
+        raise ValueError('Use a simple run name and nonnegative smoke cap')
+    rank,world,local_rank = [int(os.environ.get(k,d)) for k,d in [('RANK','0'),('WORLD_SIZE','1'),('LOCAL_RANK','0')]]
+    device = torch.device(('cuda:'+str(local_rank) if torch.cuda.is_available() else 'cpu') if args.device=='auto' else args.device)
+    if device.type=='cuda': torch.cuda.set_device(device)
+    if world>1: dist.init_process_group('nccl' if device.type=='cuda' else 'gloo')
+    random.seed(config.seed+rank)
+    np.random.seed(config.seed+rank)
+    torch.manual_seed(config.seed+rank)
+    output_dir = Path(args.output_root)/args.run_name
+    if output_dir.exists() and not args.resume:
+        raise FileExistsError(f'Refusing to overwrite run {output_dir}; use a new run name')
+    if world>1: dist.barrier()
+    if rank==0: output_dir.mkdir(parents=True,exist_ok=bool(args.resume))
+    if world>1: dist.barrier()
+    start,best,saved = 0,float('inf'),None
+    if args.resume:
+        model,text,saved_config,saved = load_checkpoint(args.resume,device)
+        expected,actual = asdict(saved_config),asdict(config)
+        expected.pop('epochs')
+        actual.pop('epochs')
+        if expected != actual: raise ValueError('Resume configuration differs from checkpoint')
+        start,best = saved['epoch'],saved['best_val']
+    else:
+        model = build_model(config).to(device)
+        text = OrthogonalCharEmbedding(config.embedding_dim,config.text_vocab_size,config.text_embedding_seed).to(device)
+    loaders = build_loaders(args.dataset,config,saved['split_ids'] if saved else None)
+    train_loader,val_loader,_test_loader = loaders  # Never iterate test during training.
+    if not len(train_loader.dataset) or not len(val_loader.dataset):
+        raise ValueError('Training and validation need nonempty group splits')
+    split_ids = {name:[r['sample_id'] for r in loader.dataset.records]
+                 for name,loader in zip(('train','val','test'),loaders)}
+    sampler = None
+    if world>1:
+        sampler = DistributedSampler(train_loader.dataset,seed=config.seed,shuffle=True)
+        train_loader = DataLoader(train_loader.dataset,batch_size=config.batch_size,sampler=sampler,
+                                  num_workers=config.num_workers,collate_fn=collate_samples)
+        model = DistributedDataParallel(model,device_ids=[device.index] if device.type=='cuda' else None)
+    optimizer = torch.optim.Adam(model.parameters(),lr=config.learning_rate,weight_decay=config.weight_decay)
+    if saved: optimizer.load_state_dict(saved['optimizer'])
+    history_path = output_dir/'history.json'
+    history = json.loads(history_path.read_text()) if args.resume and history_path.exists() else []
+    if rank==0:
+        print('CONFIG',json.dumps(asdict(config),sort_keys=True),flush=True)
+        print('SPLITS',{name:len(ids) for name,ids in split_ids.items()},flush=True)
+        print('SIGReg: token-weighted batch statistic; validation seeded sketches, local collectives disabled.',flush=True)
+        (output_dir/'split_manifest.json').write_text(json.dumps(split_ids,indent=2))
+    for epoch in range(start+1,config.epochs+1):
+        if sampler: sampler.set_epoch(epoch)
+        train_stats = train_one_epoch(model,text,train_loader,optimizer,config,device,args.max_batches)
+        if world>1: dist.barrier()
+        result = [None]
+        if rank==0:
+            try:
+                raw = model.module if world>1 else model
+                val_stats = validate_one_epoch(raw,text,val_loader,config,device,args.max_batches)
+                if val_stats['total'] is None: raise ValueError('Validation has no nonempty cleaned transcripts')
+                result[0] = dict(stats=val_stats)
+            except Exception as exc:
+                result[0] = dict(error=f'{type(exc).__name__}: {exc}')
+        if world>1: dist.broadcast_object_list(result,src=0)
+        if 'error' in result[0]: raise RuntimeError(result[0]['error'])
+        val_stats = result[0]['stats']
+        improved = val_stats['total'] < best
+        best = min(best,val_stats['total'])
+        if rank==0:
+            print(f'Epoch {epoch}/{config.epochs}\nTrain loss: {train_stats["total"]}\nValidation loss: {val_stats["total"]}',flush=True)
+            entry = dict(epoch=epoch,train=train_stats,validation=val_stats)
+            history.append(entry)
+            history_path.write_text(json.dumps(history,indent=2))
+            kwargs = dict(selection_metric='validation.total',selection_population=val_stats['population'],
+                          dataset=str(Path(args.dataset).resolve()),max_batches=args.max_batches,metrics=entry)
+            save_checkpoint(output_dir/'checkpoint_latest.pt',model,optimizer,epoch,best,config,text,split_ids,**kwargs)
+            if improved: save_checkpoint(output_dir/'checkpoint_best.pt',model,optimizer,epoch,best,config,text,split_ids,**kwargs)
+        if world>1: dist.barrier()
+    if world>1: dist.destroy_process_group()
+    return output_dir
+
+
+if __name__=='__main__':
     main()
