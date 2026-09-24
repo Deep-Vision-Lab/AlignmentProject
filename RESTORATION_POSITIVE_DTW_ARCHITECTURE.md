@@ -52,9 +52,7 @@ available to it.
 
 Run without arguments:
 
-```bash
-bash scripts/train_restoration_stage_a.sh
-```
+The former Stage A launcher has been retired.
 
 Default output:
 
@@ -81,9 +79,7 @@ the configured margin.
 
 Run without arguments:
 
-```bash
-bash scripts/train_restoration_stage_b.sh
-```
+The former Stage B launcher has been retired.
 
 It expects:
 
@@ -170,9 +166,7 @@ Weights/Pretrained/Restormer/<checkpoint>.pth
 
 then run:
 
-```bash
-bash scripts/restoration_points/03_pretrained_restormer.sh
-```
+The former Restormer probe launcher has been retired.
 
 The probe loads the pretrained Restormer, captures its latent encoder feature,
 checks that two manuscript-like windows produce distinct latent features, and
@@ -184,9 +178,7 @@ performed.
 
 Before a full run:
 
-```bash
-bash scripts/restoration_points/12_small_overfit.sh
-```
+The former small-overfit launcher has been retired.
 
 This trains the local encoder/decoder on eight distinct windows, checks that
 reconstruction loss falls, checks that decoded windows do not collapse to one
@@ -196,9 +188,7 @@ template, and verifies that swapping encoded features changes the outputs.
 
 After Stage B:
 
-```bash
-bash scripts/eval_yelda_restoration_positive_dtw.sh
-```
+The former image-only evaluation launcher has been retired.
 
 The evaluation launcher defaults to the same training crop/resize geometry and
 to `REPRESENTATION=primary`, which is the fused image vector. No text encoder is
@@ -208,9 +198,5 @@ loaded for the alignment itself.
 
 Run all thirteen recommendation diagnostics:
 
-```bash
-bash scripts/restoration_points/run_all.sh
-```
-
-Or run any numbered script in `scripts/restoration_points/` independently.
-See `RESTORATION_RECOMMENDATION_CHECKLIST.md` for the point-to-script mapping.
+The former all-points and per-point launchers have been retired. The archived
+diagnostic descriptions remain in `RESTORATION_RECOMMENDATION_CHECKLIST.md`.

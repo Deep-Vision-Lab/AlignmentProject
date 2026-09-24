@@ -5,7 +5,7 @@ Do not artificially force a different DTW route every epoch. Instead, recompute 
 
 ## Run
 ```bash
-bash scripts/restoration_points/10_dtw_recompute.sh
+The historical Point 10 launcher has been retired.
 ```
 
 No flags are required.

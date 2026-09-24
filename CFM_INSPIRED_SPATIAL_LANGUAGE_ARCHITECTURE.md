@@ -220,15 +220,11 @@ language losses now provide stronger, semantically meaningful local supervision.
 
 Main fair-comparison run:
 
-    TEXT_ANCHOR_WEIGHTS="$PWD/Weights/vit_vlm_cross/model_best.pth" \
-      sbatch scripts/train_cfm_spatial_2x4090.sbatch
+    # Historical launcher retired; this archived run is not directly launchable.
 
 Dense stride-8 run:
 
-    TEXT_ANCHOR_WEIGHTS="$PWD/Weights/vit_vlm_cross/model_best.pth" \
-    CFM_STRIDE_RATIO=0.25 \
-    JOB_NAME=vit_cfm_spatial_s8 \
-      sbatch scripts/train_cfm_spatial_2x4090.sbatch
+    # Historical launcher retired; this archived run is not directly launchable.
 
 ## Evaluation interpretation
 

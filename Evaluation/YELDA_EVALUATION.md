@@ -54,15 +54,11 @@ the corresponding branch. These launch in the foreground and show progress.
 
 Hierarchy (default weights match its training script's `vit_vlm_letters` job):
 
-```bash
-WEIGHTS="$PWD/Weights/vit_vlm_letters/model_best.pth" bash scripts/eval_yelda.sh
-```
+The legacy hierarchy launcher command has been retired.
 
 Cross-attention (default weights match its `vit_vlm_cross` job):
 
-```bash
-WEIGHTS="$PWD/Weights/vit_vlm_cross/model_best.pth" bash scripts/eval_yelda.sh
-```
+The legacy cross-attention launcher command has been retired.
 
 Use your actual checkpoint path if you trained with a different job name.
 The checkpoint must exist. Use `model_latest.pth` explicitly for an interim

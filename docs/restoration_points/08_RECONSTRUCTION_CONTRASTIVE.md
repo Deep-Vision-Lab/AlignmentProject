@@ -5,7 +5,7 @@ Train the image representation to preserve visual detail while also learning pos
 
 ## Run
 ```bash
-bash scripts/restoration_points/08_reconstruction_contrastive.sh
+The historical Point 08 launcher has been retired.
 ```
 
 No flags are required.

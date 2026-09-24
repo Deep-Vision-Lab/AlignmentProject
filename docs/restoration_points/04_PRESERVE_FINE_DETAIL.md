@@ -5,7 +5,7 @@ Avoid excessive spatial downsampling, especially across window width, so Arabic 
 
 ## Run
 ```bash
-bash scripts/restoration_points/04_preserve_fine_detail.sh
+The historical Point 04 launcher has been retired.
 ```
 
 No flags are required.

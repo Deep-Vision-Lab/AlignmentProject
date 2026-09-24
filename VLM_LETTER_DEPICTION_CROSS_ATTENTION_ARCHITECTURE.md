@@ -180,9 +180,7 @@ Added here:
 
 ## Training
 
-```bash
-sbatch scripts/train_synthetic63_2x4090.sbatch
-```
+The legacy training launcher has been retired.
 
 Slurm job name: `vit_vlm_cross`.
 

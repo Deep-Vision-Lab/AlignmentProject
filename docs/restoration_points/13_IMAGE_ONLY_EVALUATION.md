@@ -5,7 +5,7 @@ Keep the final manuscript-to-manuscript evaluation image-only. Both lines must u
 
 ## Run
 ```bash
-bash scripts/restoration_points/13_image_only_evaluation.sh
+The historical Point 13 launcher has been retired.
 ```
 
 No flags are required.
@@ -24,5 +24,5 @@ Pytest ends with `1 passed`; both lines yield valid fused vectors and their imag
 ## Full dataset evaluation
 After training, use:
 ```bash
-bash scripts/eval_yelda_restoration_positive_dtw.sh
+The historical image-only evaluation launcher has been retired.
 ```

@@ -131,8 +131,6 @@ The new local letter-depiction loss is added before these contextual/pair object
 
 ## Training job
 
-```bash
-sbatch scripts/train_synthetic63_2x4090.sbatch
-```
+The legacy training launcher has been retired.
 
 Expected Slurm job name: `vit_vlm_letters`.

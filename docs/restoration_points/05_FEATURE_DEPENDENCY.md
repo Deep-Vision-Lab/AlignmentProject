@@ -5,7 +5,7 @@ Prevent a decoder or skip path from reconstructing the image while the vector us
 
 ## Run
 ```bash
-bash scripts/restoration_points/05_feature_dependency.sh
+The historical Point 05 launcher has been retired.
 ```
 
 No flags are required.

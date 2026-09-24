@@ -5,7 +5,7 @@ Before full training, prove that the restoration encoder/decoder can memorize se
 
 ## Run
 ```bash
-bash scripts/restoration_points/12_small_overfit.sh
+The historical Point 12 launcher has been retired.
 ```
 
 No flags are required.

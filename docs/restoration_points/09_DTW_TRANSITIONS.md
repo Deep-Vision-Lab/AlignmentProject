@@ -5,7 +5,7 @@ Make sure the DTW recurrence allows the correspondence patterns required by the 
 
 ## Run
 ```bash
-bash scripts/restoration_points/09_dtw_transitions.sh
+The historical Point 09 launcher has been retired.
 ```
 
 No flags are required.

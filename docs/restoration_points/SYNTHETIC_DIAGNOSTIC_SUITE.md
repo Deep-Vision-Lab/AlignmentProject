@@ -5,9 +5,7 @@ Restormer source plus an official checkpoint.
 
 Run once from the repository root:
 
-```bash
-bash scripts/setup_restormer_pretrained.sh
-```
+The former Restormer setup launcher has been retired.
 
 This creates:
 
@@ -21,9 +19,7 @@ The setup verifies that `real_denoising.pth` loads strictly into the official
 
 After that run:
 
-```bash
-bash scripts/restoration_points/03_pretrained_restormer.sh
-```
+The former Restormer probe launcher has been retired.
 
 ---
 
@@ -33,9 +29,7 @@ Branch: `agent/restoration-positive-dtw-window-encoder`
 
 Run one command:
 
-```bash
-bash scripts/restoration_points/run_all_synthetic.sh
-```
+The former full-suite launcher has been retired.
 
 No flags are required.
 

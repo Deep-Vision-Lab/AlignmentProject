@@ -5,7 +5,7 @@ Let every physical window use information from neighboring windows instead of ma
 
 ## Run
 ```bash
-bash scripts/restoration_points/06_sequence_context.sh
+The historical Point 06 launcher has been retired.
 ```
 
 No flags are required.

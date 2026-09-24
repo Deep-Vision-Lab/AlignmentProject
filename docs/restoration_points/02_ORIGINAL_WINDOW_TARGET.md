@@ -5,7 +5,7 @@ Use the complete original RGB window as both the restoration input and reconstru
 
 ## Run
 ```bash
-bash scripts/restoration_points/02_original_window_target.sh
+The historical Point 02 launcher has been retired.
 ```
 
 No flags are required.

@@ -5,7 +5,7 @@ Keep one fused vector per physical window as the baseline, but make it possible 
 
 ## Run
 ```bash
-bash scripts/restoration_points/11_multi_vector_ablation.sh
+The historical Point 11 launcher has been retired.
 ```
 
 No flags are required.

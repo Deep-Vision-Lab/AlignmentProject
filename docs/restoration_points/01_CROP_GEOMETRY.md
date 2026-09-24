@@ -5,7 +5,7 @@ Crop only the blank outer margins of each full manuscript line before window sli
 
 ## Run
 ```bash
-bash scripts/restoration_points/01_crop_geometry.sh
+The historical Point 01 launcher has been retired.
 ```
 
 No flags are required.

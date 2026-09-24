@@ -5,7 +5,7 @@ Evaluate whether a known pretrained restoration architecture provides better man
 
 ## Run
 ```bash
-bash scripts/restoration_points/03_pretrained_restormer.sh
+The historical Point 03 launcher has been retired.
 ```
 
 No flags are required.

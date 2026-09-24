@@ -5,7 +5,7 @@ local restoration, Stage A, Stage B, context, fusion, DTW, and image-image
 similarity, run:
 
 ```bash
-bash scripts/restoration_points/run_all_synthetic.sh
+The historical full-suite launcher has been retired.
 ```
 
 No flags are required. The main result is written to
@@ -22,7 +22,7 @@ Before the controlled point checks, you can inspect the actual preprocessing and
 window slicing on a real synthetic line:
 
 ```bash
-bash scripts/restoration_points/synthetic_line_visual_check.sh
+The historical synthetic-line launcher has been retired.
 ```
 
 The script automatically prefers `DataSet/Synthetic63/images/img1_132.png`,
@@ -38,7 +38,7 @@ For a full **trained-model** window-by-window diagnostic on the restoration
 branch's synthetic line, use:
 
 ```bash
-bash scripts/analyze_restoration_line.sh
+The historical trained-line launcher has been retired.
 ```
 
 That second command requires a compatible trained restoration checkpoint.
@@ -63,7 +63,7 @@ Start by opening `summary.txt` in the point folder. Then inspect the PNG files.
 Run:
 
 ```bash
-bash scripts/restoration_points/01_crop_geometry.sh
+The historical Point 01 launcher has been retired.
 ```
 
 Inspect:
@@ -82,7 +82,7 @@ small upper dot retained, and RGB/color information preserved.
 Run:
 
 ```bash
-bash scripts/restoration_points/02_original_window_target.sh
+The historical Point 02 launcher has been retired.
 ```
 
 Inspect:
@@ -100,7 +100,7 @@ diagnostic unless trained weights are being used.
 Run:
 
 ```bash
-bash scripts/restoration_points/03_pretrained_restormer.sh
+The historical Point 03 launcher has been retired.
 ```
 
 Inspect:
@@ -118,7 +118,7 @@ good initialization.
 Run:
 
 ```bash
-bash scripts/restoration_points/04_preserve_fine_detail.sh
+The historical Point 04 launcher has been retired.
 ```
 
 Inspect:
@@ -135,7 +135,7 @@ then decreases more gradually to 8 rather than collapsing early.
 Run:
 
 ```bash
-bash scripts/restoration_points/05_feature_dependency.sh
+The historical Point 05 launcher has been retired.
 ```
 
 Inspect:
@@ -152,7 +152,7 @@ features, proving the decoder cannot bypass the encoded vector.
 Run:
 
 ```bash
-bash scripts/restoration_points/06_sequence_context.sh
+The historical Point 06 launcher has been retired.
 ```
 
 Inspect:
@@ -169,7 +169,7 @@ neighbor/context influence.
 Run:
 
 ```bash
-bash scripts/restoration_points/07_local_context_fusion.sh
+The historical Point 07 launcher has been retired.
 ```
 
 Inspect:
@@ -186,7 +186,7 @@ effect. The summary also prints the fused-vector norms, which should be near 1.
 Run:
 
 ```bash
-bash scripts/restoration_points/08_reconstruction_contrastive.sh
+The historical Point 08 launcher has been retired.
 ```
 
 Inspect:
@@ -203,7 +203,7 @@ gradient on the positive DTW cost.
 Run:
 
 ```bash
-bash scripts/restoration_points/09_dtw_transitions.sh
+The historical Point 09 launcher has been retired.
 ```
 
 Inspect:
@@ -220,7 +220,7 @@ letter and, when required, one window can span several text positions.
 Run:
 
 ```bash
-bash scripts/restoration_points/10_dtw_recompute.sh
+The historical Point 10 launcher has been retired.
 ```
 
 Inspect:
@@ -238,7 +238,7 @@ matrix rather than being forced to stay fixed or forced to change arbitrarily.
 Run:
 
 ```bash
-bash scripts/restoration_points/11_multi_vector_ablation.sh
+The historical Point 11 launcher has been retired.
 ```
 
 Inspect:
@@ -255,7 +255,7 @@ fused vector per physical window.
 Run:
 
 ```bash
-bash scripts/restoration_points/12_small_overfit.sh
+The historical Point 12 launcher has been retired.
 ```
 
 Inspect:
@@ -279,7 +279,7 @@ single numerical metric looks acceptable.
 Run:
 
 ```bash
-bash scripts/restoration_points/13_image_only_evaluation.sh
+The historical Point 13 launcher has been retired.
 ```
 
 Inspect:
@@ -297,7 +297,7 @@ uses fresh diagnostic weights, so it is not a final accuracy claim. For actual
 trained-model alignment quality, run:
 
 ```bash
-bash scripts/eval_yelda_restoration_positive_dtw.sh
+The historical image-only evaluation launcher has been retired.
 ```
 
 and inspect the normal evaluation outputs.
@@ -307,7 +307,7 @@ and inspect the normal evaluation outputs.
 After inspecting the points individually:
 
 ```bash
-bash scripts/restoration_points/run_all.sh
+The historical all-points launcher has been retired.
 ```
 
 For model development, it is better to run points individually first, especially

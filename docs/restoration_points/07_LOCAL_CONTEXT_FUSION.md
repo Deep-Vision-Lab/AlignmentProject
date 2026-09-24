@@ -5,7 +5,7 @@ Combine each window's local visual evidence with its sequence-aware contextual r
 
 ## Run
 ```bash
-bash scripts/restoration_points/07_local_context_fusion.sh
+The historical Point 07 launcher has been retired.
 ```
 
 No flags are required.
