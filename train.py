@@ -146,6 +146,7 @@ def load_checkpoint(path,device='cpu'):
     config = Config(**saved['config'])
     model = build_model(config,initialize=False).to(device)
     model.load_state_dict(saved['model'],strict=True)
+    model.cnn.initialization = saved['initialization']
     text = OrthogonalCharEmbedding(config.embedding_dim,config.text_vocab_size,config.text_embedding_seed).to(device)
     text.load_state_dict(saved['text_embedding'],strict=True)
     if hashlib.sha256(json.dumps(saved['split_ids'],sort_keys=True).encode()).hexdigest() != saved['split_manifest_sha256']:
