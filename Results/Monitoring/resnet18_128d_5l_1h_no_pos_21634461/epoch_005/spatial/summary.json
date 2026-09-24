@@ -1,0 +1,70 @@
+{
+  "train_eval": {
+    "in_sample": true,
+    "eligible_pairs": 342,
+    "annotated_pairs": 0,
+    "eligible_sides": 0,
+    "pair_eligibility": "both source-line identities must be actual members of this monitoring split",
+    "region_metrics": {
+      "iou": null,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "center_error_px": null,
+      "region_success_rate": null
+    },
+    "localization_status": "unavailable: no matching source-space region masks in eligible pair records",
+    "character_localization": "XML text-fragment localization is reported separately only on exact identity matches; multi-letter boxes are not per-letter ground truth",
+    "region_masks_are_character_accuracy": false,
+    "xml_part_localization": {
+      "eligible_lines": 45,
+      "eligible_regions": 827,
+      "unavailable_reasons": {
+        "XML_part_text_does_not_exactly_match_own_transcript": 766
+      },
+      "metrics": {
+        "interval_iou": 0.24298266542503394,
+        "precision": 0.3006908521608412,
+        "recall": 0.4146291704226313,
+        "f1": 0.3226415740530855,
+        "center_error_px": 76.7314748337364,
+        "boundary_error_px": 80.10917661729141,
+        "success_iou_and_support": 0.1185006045949214
+      }
+    }
+  },
+  "val_eval": {
+    "in_sample": false,
+    "eligible_pairs": 33,
+    "annotated_pairs": 0,
+    "eligible_sides": 0,
+    "pair_eligibility": "both source-line identities must be actual members of this monitoring split",
+    "region_metrics": {
+      "iou": null,
+      "precision": null,
+      "recall": null,
+      "f1": null,
+      "center_error_px": null,
+      "region_success_rate": null
+    },
+    "localization_status": "unavailable: no matching source-space region masks in eligible pair records",
+    "character_localization": "XML text-fragment localization is reported separately only on exact identity matches; multi-letter boxes are not per-letter ground truth",
+    "region_masks_are_character_accuracy": false,
+    "xml_part_localization": {
+      "eligible_lines": 26,
+      "eligible_regions": 476,
+      "unavailable_reasons": {
+        "XML_part_text_does_not_exactly_match_own_transcript": 251
+      },
+      "metrics": {
+        "interval_iou": 0.2576246833646021,
+        "precision": 0.3165691729502602,
+        "recall": 0.43802190542711544,
+        "f1": 0.33943943419631195,
+        "center_error_px": 75.86001509978992,
+        "boundary_error_px": 80.00303637079831,
+        "success_iou_and_support": 0.12605042016806722
+      }
+    }
+  }
+}

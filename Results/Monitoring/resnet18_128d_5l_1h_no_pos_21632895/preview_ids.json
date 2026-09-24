@@ -1,0 +1,90 @@
+{
+  "train_eval": [
+    {
+      "line_image_path": "DatasetPairs/page_pairs/pair_000053/A/linesImages/line_01.png",
+      "text_path": "DatasetPairs/page_pairs/pair_000053/A/text/final/original/line_01.txt",
+      "text_key": "text_original_path",
+      "pair_id": "page_sha1:b5b640914f3057b92923fc00e14c5047d772fa1e",
+      "source_pair_id": "pair_000053",
+      "side": "A",
+      "line_idx": 1,
+      "page_dir": "DatasetPairs/page_pairs/pair_000053/A",
+      "original_image": "DatasetPairs/page_pairs/pair_000053/A/original_image.png",
+      "line_source": "all_page_lines_scan",
+      "_root": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset",
+      "record_id": "ebe4bd31dea41c8a68e38a2a51b6b93aaadbb56a30eb3b66aec94b58b7dff073"
+    },
+    {
+      "line_image_path": "DatasetPairs/page_pairs/pair_000053/A/linesImages/line_02.png",
+      "text_path": "DatasetPairs/page_pairs/pair_000053/A/text/final/original/line_02.txt",
+      "text_key": "text_original_path",
+      "pair_id": "page_sha1:b5b640914f3057b92923fc00e14c5047d772fa1e",
+      "source_pair_id": "pair_000053",
+      "side": "A",
+      "line_idx": 2,
+      "page_dir": "DatasetPairs/page_pairs/pair_000053/A",
+      "original_image": "DatasetPairs/page_pairs/pair_000053/A/original_image.png",
+      "line_source": "all_page_lines_scan",
+      "_root": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset",
+      "record_id": "03752a2d1859949e50895273ccaf1965d520ffbe0be7f27a25617d763b72a320"
+    },
+    {
+      "line_image_path": "DatasetPairs/page_pairs/pair_000053/A/linesImages/line_03.png",
+      "text_path": "DatasetPairs/page_pairs/pair_000053/A/text/final/original/line_03.txt",
+      "text_key": "text_original_path",
+      "pair_id": "page_sha1:b5b640914f3057b92923fc00e14c5047d772fa1e",
+      "source_pair_id": "pair_000053",
+      "side": "A",
+      "line_idx": 3,
+      "page_dir": "DatasetPairs/page_pairs/pair_000053/A",
+      "original_image": "DatasetPairs/page_pairs/pair_000053/A/original_image.png",
+      "line_source": "all_page_lines_scan",
+      "_root": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset",
+      "record_id": "c4d87d81996d314444872010bc5cc6c4b42a9a68ef891b607f0a2e01f1355269"
+    }
+  ],
+  "val_eval": [
+    {
+      "line_image_path": "DatasetPairs/page_pairs/pair_000003/B/linesImages/line_01.png",
+      "text_path": "DatasetPairs/page_pairs/pair_000003/B/text/final/original/line_01.txt",
+      "text_key": "text_original_path",
+      "pair_id": "page_sha1:4a1118c57242e4d5057acec84fb8219ff2504f2b",
+      "source_pair_id": "pair_000003",
+      "side": "B",
+      "line_idx": 1,
+      "page_dir": "DatasetPairs/page_pairs/pair_000003/B",
+      "original_image": "DatasetPairs/page_pairs/pair_000003/B/original_image.png",
+      "line_source": "all_page_lines_scan",
+      "_root": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset",
+      "record_id": "0a1cb747f88dfd32ecc4645388625e767b431d2bd556be7a9832113a03c08692"
+    },
+    {
+      "line_image_path": "DatasetPairs/page_pairs/pair_000003/B/linesImages/line_02.png",
+      "text_path": "DatasetPairs/page_pairs/pair_000003/B/text/final/original/line_02.txt",
+      "text_key": "text_original_path",
+      "pair_id": "page_sha1:4a1118c57242e4d5057acec84fb8219ff2504f2b",
+      "source_pair_id": "pair_000003",
+      "side": "B",
+      "line_idx": 2,
+      "page_dir": "DatasetPairs/page_pairs/pair_000003/B",
+      "original_image": "DatasetPairs/page_pairs/pair_000003/B/original_image.png",
+      "line_source": "all_page_lines_scan",
+      "_root": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset",
+      "record_id": "419ae4512643d7a7e9b4b8bafaf954a7a5a6ae5011d34d8dd2d43370814ab2fa"
+    },
+    {
+      "line_image_path": "DatasetPairs/page_pairs/pair_000003/B/linesImages/line_03.png",
+      "text_path": "DatasetPairs/page_pairs/pair_000003/B/text/final/original/line_03.txt",
+      "text_key": "text_original_path",
+      "pair_id": "page_sha1:4a1118c57242e4d5057acec84fb8219ff2504f2b",
+      "source_pair_id": "pair_000003",
+      "side": "B",
+      "line_idx": 3,
+      "page_dir": "DatasetPairs/page_pairs/pair_000003/B",
+      "original_image": "DatasetPairs/page_pairs/pair_000003/B/original_image.png",
+      "line_source": "all_page_lines_scan",
+      "_root": "/home/ahmedmas/BGU-Lab/AlignmentProject/DataSet/ArabicDataset",
+      "record_id": "f19cdd6d2f386f3b0fcb66993b8317b85ec59e65bfdf1e82cc7c0dd88af94826"
+    }
+  ]
+}
