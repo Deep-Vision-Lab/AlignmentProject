@@ -128,6 +128,71 @@ def smith_waterman(
     return (path, best_score, score, traceback) if return_traceback else (path, best_score, score)
 
 
+@dataclass(frozen=True)
+class AffineLocalAlignment:
+    """Forward traceback; None denotes a gap, never a positive correspondence."""
+
+    steps: list[tuple[int | None, int | None]]
+    score: float
+
+
+def smith_waterman_affine(match_scores, gap_open=0.20, gap_extend=0.05):
+    """Local alignment on both axes with cost open + (length-1)*extend.
+
+    Scores are rewards, penalties are nonnegative costs. Negative infinity
+    forbids a diagonal match (used by greedy noncrossing region extraction).
+    This is separate from the historical constant-gap API above.
+    """
+    scores = np.asarray(match_scores, dtype=np.float64)
+    if scores.ndim != 2 or np.isnan(scores).any() or np.isposinf(scores).any():
+        raise ValueError("Expected a 2-D reward matrix without NaN/+inf")
+    if not np.isfinite([gap_open, gap_extend]).all() or not gap_open >= gap_extend >= 0:
+        raise ValueError("Require finite gap_open >= gap_extend >= 0")
+    n, m = scores.shape
+    h = np.zeros((n + 1, m + 1), dtype=np.float64)
+    up = np.full_like(h, -np.inf)
+    left = np.full_like(h, -np.inf)
+    trace = np.zeros(h.shape, dtype=np.uint8)
+    up_extend = np.zeros(h.shape, dtype=bool)
+    left_extend = np.zeros(h.shape, dtype=bool)
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            up_extend[i, j] = up[i-1, j] - gap_extend > h[i-1, j] - gap_open
+            up[i, j] = (up[i-1, j] - gap_extend if up_extend[i, j]
+                        else h[i-1, j] - gap_open)
+            left_extend[i, j] = left[i, j-1] - gap_extend > h[i, j-1] - gap_open
+            left[i, j] = (left[i, j-1] - gap_extend if left_extend[i, j]
+                          else h[i, j-1] - gap_open)
+            choices = (0., h[i-1, j-1] + scores[i-1, j-1], up[i, j], left[i, j])
+            direction = int(np.argmax(choices))
+            h[i, j], trace[i, j] = choices[direction], direction
+    i, j = map(int, np.unravel_index(np.argmax(h), h.shape))
+    best = float(h[i, j])
+    steps, state = [], 0
+    while i > 0 or j > 0:
+        if state == 0:
+            if h[i, j] <= 0:
+                break
+            state = int(trace[i, j])
+            if state == 1:
+                steps.append((i-1, j-1))
+                i, j, state = i-1, j-1, 0
+                continue
+            if state == 0:
+                break
+        if state == 2:
+            steps.append((i-1, None))
+            extend = up_extend[i, j]
+            i -= 1
+            state = 2 if extend else 0
+        elif state == 3:
+            steps.append((None, j-1))
+            extend = left_extend[i, j]
+            j -= 1
+            state = 3 if extend else 0
+    return AffineLocalAlignment(list(reversed(steps)), best)
+
+
 def dense_alignment_region(path, traceback=None) -> DenseAlignmentRegion:
     """Convert a sparse SW correspondence path into two dense line intervals."""
     pairs = [(int(row), int(col)) for row, col in path]
