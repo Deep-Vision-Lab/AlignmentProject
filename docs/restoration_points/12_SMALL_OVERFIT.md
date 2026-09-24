@@ -11,13 +11,12 @@ The historical Point 12 launcher has been retired.
 No flags are required.
 
 ## What the script does
-It launches `tools/restoration_tiny_overfit.py`, trains the local restoration encoder+decoder on eight distinct windows, and checks:
+The retired tool trained the local restoration encoder+decoder on eight distinct windows and checked:
 - reconstruction loss decreases;
 - the eight outputs do not collapse to the same image;
 - swapping encoded features measurably changes the reconstructions.
 
 ## Main code involved
-- `tools/restoration_tiny_overfit.py`
 - `restoration_window_seq2seq.py`
 
 ## Pass condition

@@ -151,14 +151,7 @@ Or submit the dedicated launcher (not submitted by implementation):
 sbatch scripts/train_resnet18_128d_5l_1h_no_pos_2x4090.sbatch
 ```
 
-Standalone checkpoint re-evaluation of full **saved** train/validation membership:
-
-```bash
-python scripts/evaluate_epoch_checkpoint.py \
-  --weights Weights/RUN/model_best_validation_dtw.pth \
-  --manifest Results/Monitoring/RUN/split_manifest.json \
-  --output Results/Monitoring/RUN/standalone_full.json --device auto
-```
+The historical standalone monitoring re-evaluation launcher has been retired.
 
 Explicit final held-out test diagnostic, separately invoked after review:
 
