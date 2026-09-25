@@ -22,6 +22,7 @@ from losses import compute_loss
 from model import AlignmentModel, validate_fusion_config
 from parameters import Config
 from text_embedding import OrthogonalCharEmbedding
+from text_embedding import ARABIC_LETTERS, clean_letters
 
 
 def build_model(config, initialize=True):
@@ -29,6 +30,8 @@ def build_model(config, initialize=True):
                           embedding_dim=config.embedding_dim, window_width=config.window_width,
                           stride=config.window_stride, pretrained_cnn=initialize and config.cnn_pretrained,
                           use_positional_encoding=config.use_positional_encoding,
+                          transformer_layers=config.transformer_layers,
+                          transformer_heads=config.transformer_heads,
                           input_channels=1 if config.grayscale else 3, local_dropout=config.local_dropout,
                           transformer_dropout=config.transformer_dropout, rtl=config.rtl,
                           fusion_mode=config.fusion_mode,
@@ -124,6 +127,42 @@ def _batch_lines(batch, device):
     return images.to(device), texts
 
 
+def _embedding_diagnostics(output, texts, text_encoder):
+    """Detached cosine and representation diagnostics for a batch."""
+    values = {key: [] for key in ('positive_similarity', 'negative_similarity',
+              'similarity_min', 'similarity_max', 'similarity_mean', 'similarity_std',
+              'local_vector_norm', 'contextual_vector_norm', 'fused_vector_norm')}
+    with torch.no_grad():
+        for index, raw_text in enumerate(texts):
+            letters = clean_letters(raw_text)
+            valid = output['token_valid'][index]
+            if not letters or not valid.any():
+                continue
+            visual = output['fused'][index][valid].detach().float()
+            own = text_encoder.encode(''.join(letters)).detach().float()
+            matrix = visual @ own.T
+            values['positive_similarity'].append(float(matrix.max(dim=0).values.mean()))
+            values['similarity_min'].append(float(matrix.min()))
+            values['similarity_max'].append(float(matrix.max()))
+            values['similarity_mean'].append(float(matrix.mean()))
+            values['similarity_std'].append(float(matrix.std(unbiased=False)))
+            absent = ''.join(letter for letter in ARABIC_LETTERS if letter not in set(letters))
+            if absent:
+                other = text_encoder.encode(absent).detach().float()
+                values['negative_similarity'].append(float((visual @ other.T).max(dim=1).values.mean()))
+            for key, tensor_key in (('local_vector_norm', 'local'),
+                                    ('contextual_vector_norm', 'context'),
+                                    ('fused_vector_norm', 'fused')):
+                values[key].append(float(output[tensor_key][index][valid].detach().float().norm(dim=-1).mean()))
+        gate = output.get('fusion_gate')
+        gate_stats = None
+        if gate is not None:
+            gate = gate[output['token_valid']].detach().float()
+            gate_stats = dict(mean=float(gate.mean()), std=float(gate.std(unbiased=False)),
+                              min=float(gate.min()), max=float(gate.max()))
+    return values, gate_stats
+
+
 def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_batches=0,
                epoch=None, epochs=None, rank=0):
     training = optimizer is not None
@@ -136,6 +175,10 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                          device=device)
     started = time.monotonic()
     gradient_batches = []
+    diagnostics = []
+    gates = []
+    if device.type == 'cuda':
+        torch.cuda.reset_peak_memory_stats(device)
     batch_total = min(len(loader), max_batches) if max_batches else len(loader)
     phase = 'TRAIN' if training else 'VAL'
     progress = tqdm(loader, desc=f'Epoch {epoch}/{epochs} {phase}' if epoch else phase,
@@ -164,6 +207,10 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                 optimizer.step()
             else:
                 gradients = None
+            batch_diagnostics, gate_stats = _embedding_diagnostics(output, texts, text_encoder)
+            diagnostics.append(batch_diagnostics)
+            if gate_stats is not None:
+                gates.append(gate_stats)
         tokens = stats['valid_tokens']
         evaluated = stats['evaluated']
         batch_stats = dict(stats, mean_windows=(sum(t for t, _ in stats['lengths']) / evaluated
@@ -188,6 +235,20 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                 mean_letters=letters/n if n else None,gamma=config.dtw_gamma,
                 population='explicit-batch-subset' if max_batches else 'full-split',
                 seconds=time.monotonic()-started)
+    for key in diagnostics[0] if diagnostics else ():
+        values = [value for batch in diagnostics for value in batch[key]]
+        result[key] = sum(values) / len(values) if values else None
+    positive_similarity = result.get('positive_similarity')
+    negative_similarity = result.get('negative_similarity')
+    result['similarity_margin'] = (positive_similarity - negative_similarity
+                                   if positive_similarity is not None and negative_similarity is not None else None)
+    result['gate_mean'] = sum(item['mean'] for item in gates) / len(gates) if gates else None
+    result['gate_std'] = sum(item['std'] for item in gates) / len(gates) if gates else None
+    result['gate_min'] = min((item['min'] for item in gates), default=None)
+    result['gate_max'] = max((item['max'] for item in gates), default=None)
+    result['learning_rate'] = optimizer.param_groups[0]['lr'] if optimizer else config.learning_rate
+    result['gpu_memory_mb'] = (torch.cuda.max_memory_allocated(device) / 1024 ** 2
+                               if device.type == 'cuda' else None)
     if training:
         def mean(name):
             values = [item[name] for item in gradient_batches if item[name] is not None]
@@ -349,7 +410,7 @@ def _print_epoch_summary(epoch, epochs, train_stats, val_stats, gradients, previ
     print('=' * 60, flush=True)
 
 
-def main(argv=None):
+def main(argv=None, epoch_callback=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset',required=True)
     parser.add_argument('--run-name',required=True)
@@ -400,6 +461,7 @@ def main(argv=None):
     else:
         model = build_model(config).to(device)
         text = OrthogonalCharEmbedding(config.embedding_dim,config.text_vocab_size,config.text_embedding_seed).to(device)
+    model_parameter_count = sum(parameter.numel() for parameter in model.parameters())
     loaders = build_loaders(args.dataset,config,saved['split_ids'] if saved else None)
     train_loader,val_loader,_test_loader = loaders  # Never iterate test during training.
     if not len(train_loader.dataset) or not len(val_loader.dataset):
@@ -451,7 +513,8 @@ def main(argv=None):
         best = min(best,val_stats['total'])
         if rank==0:
             entry = dict(epoch=epoch,train=train_stats,validation=val_stats,
-                         gradients=train_stats.get('gradients', {}))
+                         gradients=train_stats.get('gradients', {}),
+                         model_parameter_count=model_parameter_count)
             history.append(entry)
             history_path.write_text(json.dumps(history,indent=2))
             kwargs = dict(selection_metric='validation.total',selection_population=val_stats['population'],
@@ -461,6 +524,8 @@ def main(argv=None):
             _print_epoch_summary(epoch, config.epochs, train_stats, val_stats, entry['gradients'],
                                  previous_best,
                                  improved, output_dir/'checkpoint_latest.pt', output_dir/'checkpoint_best.pt')
+            if epoch_callback is not None:
+                epoch_callback(entry)
         if world>1: dist.barrier()
     if world>1: dist.destroy_process_group()
     return output_dir

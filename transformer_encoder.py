@@ -25,11 +25,16 @@ class _SelfAttention(nn.MultiheadAttention):
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, preset='tiny', embedding_dim=None, use_positional_encoding=False, dropout=0.):
+    def __init__(self, preset='tiny', embedding_dim=None, use_positional_encoding=False, dropout=0.,
+                 layers=0, heads=0):
         super().__init__()
         if preset not in PRESETS:
             raise ValueError(f'Unknown Transformer preset: {preset}')
-        dim, depth, heads, mlp = PRESETS[preset]
+        dim, depth, preset_heads, mlp = PRESETS[preset]
+        depth = layers or depth
+        heads = heads or preset_heads
+        if depth < 1 or heads < 1:
+            raise ValueError('Transformer layers and heads must be positive or zero for the preset')
         self.dim = dim if embedding_dim is None else embedding_dim
         if self.dim % heads:
             raise ValueError('embedding_dim must be divisible by attention heads')

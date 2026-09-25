@@ -22,6 +22,8 @@ class Config:
     cnn_type: str = 'resnet18'
     cnn_pretrained: bool = True
     transformer_type: str = 'tiny'
+    transformer_layers: int = 0  # 0 uses the preset depth.
+    transformer_heads: int = 0  # 0 uses the preset head count.
     use_positional_encoding: bool = False
     embedding_dim: int = 128
     local_dropout: float = .10
