@@ -35,7 +35,11 @@ def build_model(config, initialize=True):
 
 def resolve_device(device='auto', local_rank=0):
     if device == 'auto':
-        return torch.device(f'cuda:{local_rank}' if torch.cuda.is_available() else 'cpu')
+        if torch.cuda.is_available():
+            return torch.device(f'cuda:{local_rank}')
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            return torch.device('mps')
+        return torch.device('cpu')
     return torch.device(device)
 
 
@@ -126,7 +130,8 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
     distributed = training and dist.is_available() and dist.is_initialized()
     # DTW is aggregated per LINE, including both sides, excluding empty text.
     # SIGReg is a token-weighted batch-population statistic, not a per-line loss.
-    totals = torch.zeros(8,dtype=torch.float64,device=device)
+    totals = torch.zeros(8,dtype=torch.float32 if device.type == 'mps' else torch.float64,
+                         device=device)
     started = time.monotonic()
     gradient_batches = []
     batch_total = min(len(loader), max_batches) if max_batches else len(loader)

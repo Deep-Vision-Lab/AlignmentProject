@@ -173,6 +173,16 @@ class AlignmentDataset(Dataset):
         def resolve(value):
             p = Path(value).expanduser()
             p = p if p.is_absolute() else self.root / p
+            # Manifests may have been produced on another machine and store
+            # absolute paths from that checkout. Rebase paths rooted at this
+            # dataset directory onto the dataset currently being loaded.
+            if not p.is_file() and Path(value).expanduser().is_absolute():
+                parts = p.parts
+                anchors = [i for i, part in enumerate(parts) if part == self.root.name]
+                if anchors:
+                    rebased = self.root.joinpath(*parts[anchors[-1] + 1:])
+                    if rebased.is_file():
+                        p = rebased
             if not p.is_file():
                 raise FileNotFoundError(p)
             return str(p.resolve())

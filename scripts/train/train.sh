@@ -33,8 +33,16 @@ echo "Run name      : $RUN_NAME"
 echo "Weights       : Weights/$RUN_NAME"
 echo "========================================"
 
-sbatch \
-    --job-name="$RUN_NAME" \
-    scripts/train/train.sbatch \
-    --dataset "$DATASET" \
-    --dataset-type "$DATASET_TYPE"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    python train.py \
+        --dataset "$DATASET" \
+        --dataset-type "$DATASET_TYPE" \
+        --run-name "$RUN_NAME" \
+        --device auto
+else
+    sbatch \
+        --job-name="$RUN_NAME" \
+        scripts/train/train.sbatch \
+        --dataset "$DATASET" \
+        --dataset-type "$DATASET_TYPE"
+fi
