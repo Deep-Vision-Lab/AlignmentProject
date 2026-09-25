@@ -10,8 +10,8 @@ Usage:
         --weights Weights/vit_synthetic/model_latest.pth
 
 All architecture, loss, optimization, augmentation, and runtime settings live in
-Parameters.py. Supplying --weights is the only switch that turns the run into
-fine-tuning.
+Parameters.py, except for the explicit fusion CLI choices. Supplying --weights
+is the only switch that turns the run into fine-tuning.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ RANK_DEVICE = isolate_local_rank_cuda_device()
 
 import Parameters as P
 import model_backend
-from architecture_experiment import is_compact
+from architecture_experiment import is_compact, add_fusion_arguments, resolve_fusion
 if is_compact(P):
     os.environ.setdefault("EPOCH_MONITORING", "1")
     if os.environ["EPOCH_MONITORING"] != "1":
@@ -179,6 +179,7 @@ base.model_config = _model_config
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    add_fusion_arguments(parser)
     parser.add_argument(
         "--dataset",
         required=True,
@@ -189,7 +190,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional compatible visual initialization. Mismatched shapes are skipped.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    try:
+        resolve_fusion(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+    return args
 
 
 def _resolve_dataset_type(dataset: Path) -> str:
@@ -292,6 +298,8 @@ def main() -> None:
     try:
         base._strip_torchrun_rank_arguments()
         cli = parse_args()
+        P.fusion_mode, P.use_gated_fusion = resolve_fusion(cli)
+        P.gate_diagnostics = bool(cli.gate_diagnostics)
         args = _training_args(cli)
         base._seed_everything(P.train_seed, base.CTX.rank)
 
@@ -364,6 +372,9 @@ def main() -> None:
         )
 
         if base.CTX.is_main:
+            print(f"Fusion mode: {P.fusion_mode}\n"
+                  f"Gated fusion: {'ENABLED' if P.use_gated_fusion else 'DISABLED'}\n"
+                  f"Gate diagnostics: {'ON' if P.gate_diagnostics else 'OFF'}", flush=True)
             train_size = len(train_loader.dataset)
             valid_size = len(valid_loader.dataset)
             test_size = len(test_loader.dataset)

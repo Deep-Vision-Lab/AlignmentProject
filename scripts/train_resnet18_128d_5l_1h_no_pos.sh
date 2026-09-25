@@ -68,7 +68,7 @@ export TRAIN_SAMPLE_EVAL=0
 export PYTHONPATH="$PROJECT_DIR:${PYTHONPATH:-}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 if [[ "${NPROC:-1}" == 1 ]]; then
-    exec "$PYTHON_BIN" train.py --dataset "${DATASET:-DataSet/ArabicDataset}"
+    exec "$PYTHON_BIN" train.py --dataset "${DATASET:-DataSet/ArabicDataset}" "$@"
 else
-    exec "$PYTHON_BIN" -m torch.distributed.run --standalone --nproc_per_node="$NPROC" train.py --dataset "${DATASET:-DataSet/ArabicDataset}"
+    exec "$PYTHON_BIN" -m torch.distributed.run --standalone --nproc_per_node="$NPROC" train.py --dataset "${DATASET:-DataSet/ArabicDataset}" "$@"
 fi

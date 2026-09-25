@@ -442,6 +442,11 @@ def install_training_stability(train_module, config: dict, job_id: str) -> None:
                     point2_enabled = _env_flag("POINT2_DIAGNOSTICS", True)
                     point2_every = max(1, _env_int("POINT2_DIAGNOSTIC_EVERY", 1))
                     for pass_idx, record in enumerate(records, start=1):
+                        if record.get("gate_alpha") is not None:
+                            from architecture_experiment import gate_statistics
+                            stats = gate_statistics(record["gate_alpha"], record["token_valid"])
+                            print(f"GATE epoch={epoch_number} batch={batch_idx + 1} pass={pass_idx} "
+                                  + " ".join(f"{key}={value:.6f}" for key, value in stats.items()), flush=True)
                         if point2_enabled and (batch_idx + 1) % point2_every == 0:
                             diag = _point2_representation_diagnostics(vit, record)
                             if diag:

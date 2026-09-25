@@ -478,7 +478,8 @@ def attach_restoration_dtw_stages(model, P):
 
     vit = model.vit_encoder
     dim = int(vit.embed_dim)
-    from architecture_experiment import is_compact, install_compact_context, LinearContextFusion, VARIANT
+    from architecture_experiment import is_compact, install_compact_context, build_fusion, resolve_fusion, VARIANT
+    resolve_fusion(P)
     compact = is_compact(P)
     if compact:
         install_compact_context(model)
@@ -541,7 +542,7 @@ def attach_restoration_dtw_stages(model, P):
     vit.semantic_adapter = IdentitySemanticAdapter().to(device=device)
     vit.restoration_semantic_adapter = "identity"
 
-    vit.fusion_head = (LinearContextFusion() if compact else LocalContextFusion(dim)).to(device=device, dtype=dtype)
+    vit.fusion_head = build_fusion(P, dim, compact=compact).to(device=device, dtype=dtype)
 
     def encode_restoration_sequence(self, image, *, use_flip):
         expected_channels = int(getattr(P, "visual_input_channels", 1))
@@ -694,6 +695,7 @@ def attach_restoration_dtw_stages(model, P):
                     "pre_l2_fused": fused_pre_l2,
                     "final_fused": fused_out,
                     "token_valid": token_valid,
+                    "gate_alpha": getattr(self.vit_encoder.fusion_head, "last_gate", None),
                 }
             )
 

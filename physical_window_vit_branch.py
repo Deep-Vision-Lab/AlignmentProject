@@ -111,7 +111,8 @@ def attach_physical_window_vit_stages(model, P):
 
     vit.semantic_adapter = nn.Identity().to(device=device)
     vit.restoration_semantic_adapter = "identity"
-    vit.fusion_head = LocalContextFusion(dim).to(device=device, dtype=dtype)
+    from architecture_experiment import build_fusion
+    vit.fusion_head = build_fusion(P, dim, compact=False).to(device=device, dtype=dtype)
 
     def encode_physical_window_sequence(self, image, *, use_flip):
         if image.ndim != 4 or int(image.shape[1]) != 3:
@@ -241,6 +242,7 @@ def attach_physical_window_vit_stages(model, P):
                     "after_fusion": fused,
                     "final_fused": fused_out,
                     "token_valid": token_valid,
+                    "gate_alpha": getattr(self.vit_encoder.fusion_head, "last_gate", None),
                 }
             )
 

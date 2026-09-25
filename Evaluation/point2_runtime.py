@@ -69,7 +69,8 @@ def _is_physical_window_checkpoint(config: dict) -> bool:
 def load_point2_visual_models(checkpoint, device="auto", expected_branch="auto"):
     """Reconstruct either Point-2 architecture exactly, then load checkpoint."""
     config = dict(checkpoint["model_config"])
-    from architecture_experiment import VARIANT
+    from architecture_experiment import VARIANT, resolve_fusion
+    fusion_mode, gated = resolve_fusion(config)
     if config.get("architecture_variant") == VARIANT:
         required = {"vector_size": 128, "vit_embed_dim": 128, "vit_layers": 5,
                     "vit_heads": 1, "vit_mlp_dim": 512, "position_mode": "none"}
@@ -109,6 +110,9 @@ def load_point2_visual_models(checkpoint, device="auto", expected_branch="auto")
     ).to(dev)
 
     attach_config = SimpleNamespace(
+        fusion_mode=fusion_mode,
+        use_gated_fusion=gated,
+        gate_diagnostics=False,
         architecture_variant=config.get("architecture_variant", "resnet18_tinyvit_192d_12l_3h"),
         local_dropout=float(config.get("local_dropout", 0.10)),
         restoration_decoder_channels=int(config.get("restoration_decoder_channels", 64)),
