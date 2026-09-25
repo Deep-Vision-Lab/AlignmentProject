@@ -3,7 +3,6 @@
 set -euo pipefail
 
 TYPE="${1:-}"
-
 case "$TYPE" in
     real)
         DATASET="$PWD/DataSet/ArabicDataset"

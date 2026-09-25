@@ -27,9 +27,9 @@ echo "Gated fusion: $USE_GATED_FUSION"
 # Preserve the GPU assignment made by SLURM
 # --------------------------------------------------
 
-SLURM_CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"
+# SLURM_CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"
 
-echo "CUDA_VISIBLE_DEVICES before conda: ${CUDA_VISIBLE_DEVICES:-NOT_SET}"
+# echo "CUDA_VISIBLE_DEVICES before conda: ${CUDA_VISIBLE_DEVICES:-NOT_SET}"
 echo "SLURM_JOB_GPUS: ${SLURM_JOB_GPUS:-NOT_SET}"
 echo "SLURM_STEP_GPUS: ${SLURM_STEP_GPUS:-NOT_SET}"
 
@@ -42,14 +42,14 @@ source "$CONDA_BASE/etc/profile.d/conda.sh"
 
 conda activate manucripts_align
 
-# Conda must NOT override SLURM's GPU assignment.
-if [[ -n "$SLURM_CUDA_VISIBLE_DEVICES" ]]; then
-    export CUDA_VISIBLE_DEVICES="$SLURM_CUDA_VISIBLE_DEVICES"
-fi
+# # Conda must NOT override SLURM's GPU assignment.
+# if [[ -n "$SLURM_CUDA_VISIBLE_DEVICES" ]]; then
+#     export CUDA_VISIBLE_DEVICES="$SLURM_CUDA_VISIBLE_DEVICES"
+# fi
 
 echo "Conda environment: $CONDA_DEFAULT_ENV"
 echo "Python: $(which python)"
-echo "CUDA_VISIBLE_DEVICES after conda: ${CUDA_VISIBLE_DEVICES:-NOT_SET}"
+# echo "CUDA_VISIBLE_DEVICES after conda: ${CUDA_VISIBLE_DEVICES:-NOT_SET}"
 
 # --------------------------------------------------
 # GPU diagnostic
