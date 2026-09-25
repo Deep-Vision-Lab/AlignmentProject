@@ -15,9 +15,13 @@
 set -euo pipefail
 
 RUN_NAME="${SLURM_JOB_NAME}"
+FUSION_MODE="${FUSION_MODE:-concat}"
+USE_GATED_FUSION="${USE_GATED_FUSION:-0}"
 
 echo "Job name: $SLURM_JOB_NAME"
 echo "Run name: $RUN_NAME"
+echo "Fusion mode: $FUSION_MODE"
+echo "Gated fusion: $USE_GATED_FUSION"
 
 # --------------------------------------------------
 # Preserve the GPU assignment made by SLURM
@@ -89,4 +93,6 @@ exec python -m torch.distributed.run \
     --nproc_per_node=2 \
     train.py \
     --run-name "$RUN_NAME" \
+    --fusion-mode "$FUSION_MODE" \
+    --use-gated-fusion "$USE_GATED_FUSION" \
     "$@"

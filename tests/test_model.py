@@ -1,8 +1,13 @@
 import pytest
 import torch
 
+from dtw import cosine_similarity_matrix
+from losses import compute_loss
 from cnn_encoder import CNNEncoder
 from model import AlignmentModel, extract_windows
+from parameters import Config
+from text_embedding import OrthogonalCharEmbedding
+from train import build_model
 from transformer_encoder import TransformerEncoder
 
 
@@ -54,3 +59,43 @@ def test_padding_mask_is_reversed_and_respected():
     output = model(torch.randn(1,1,32,64), valid)
     assert output['token_valid'].tolist() == [[False,True,True]]
     assert torch.isfinite(output['fused']).all()
+
+
+@pytest.mark.parametrize(('fusion_mode', 'use_gated_fusion'),
+                         [('concat', 0), ('sum', 0), ('sum', 1)])
+def test_fusion_modes_support_forward_similarity_loss_and_backward(fusion_mode, use_gated_fusion):
+    model = AlignmentModel(cnn_type='simple', pretrained_cnn=False, local_dropout=0.,
+                           fusion_mode=fusion_mode, use_gated_fusion=use_gated_fusion).eval()
+    image = torch.randn(2,1,32,64)
+    output = model(image)
+    for name in ('local', 'context', 'fused', 'fused_pre_l2'):
+        assert output[name].shape == (2,3,128)
+        assert torch.isfinite(output[name]).all()
+    similarity = cosine_similarity_matrix(output['fused'][0], OrthogonalCharEmbedding(vocab_size=4096).encode('باب'))
+    assert similarity.shape == (3,3)
+    assert torch.isfinite(similarity).all()
+    config = Config(cnn_type='simple', cnn_pretrained=False, image_height=32, image_width=64,
+                    batch_size=2, num_workers=0, sigreg_weight=0., fusion_mode=fusion_mode,
+                    use_gated_fusion=use_gated_fusion)
+    text = OrthogonalCharEmbedding(vocab_size=4096)
+    loss, stats = compute_loss(output, ['باب', 'سلام'], text, config, sketch_seed=7)
+    assert torch.isfinite(loss)
+    assert stats['evaluated'] == 2
+    loss.backward()
+    assert model.cnn.projection[0].weight.grad.abs().sum() > 0
+    assert model.transformer.layers[0].linear1.weight.grad.abs().sum() > 0
+    if use_gated_fusion:
+        gate = output['fusion_gate']
+        assert gate.shape == (2,3,128)
+        assert output['fusion_gate_stats'] is not None
+        assert torch.all((gate >= 0) & (gate <= 1))
+        grads = [parameter.grad for name, parameter in model.named_parameters() if 'fusion.gate_mlp' in name]
+        assert grads and sum(float(grad.abs().sum()) for grad in grads if grad is not None) > 0
+    else:
+        assert output['fusion_gate'] is None
+        assert output['fusion_gate_stats'] is None
+
+
+def test_concat_with_gated_fusion_is_rejected():
+    with pytest.raises(ValueError, match='concat \+ gate ON'):
+        build_model(Config(cnn_type='simple', cnn_pretrained=False, fusion_mode='concat', use_gated_fusion=1))

@@ -19,7 +19,7 @@ from tqdm.auto import tqdm
 
 from dataloader import create_dataloaders, collate_samples
 from losses import compute_loss
-from model import AlignmentModel
+from model import AlignmentModel, validate_fusion_config
 from parameters import Config
 from text_embedding import OrthogonalCharEmbedding
 
@@ -30,7 +30,9 @@ def build_model(config, initialize=True):
                           stride=config.window_stride, pretrained_cnn=initialize and config.cnn_pretrained,
                           use_positional_encoding=config.use_positional_encoding,
                           input_channels=1 if config.grayscale else 3, local_dropout=config.local_dropout,
-                          transformer_dropout=config.transformer_dropout, rtl=config.rtl)
+                          transformer_dropout=config.transformer_dropout, rtl=config.rtl,
+                          fusion_mode=config.fusion_mode,
+                          use_gated_fusion=config.use_gated_fusion)
 
 
 def resolve_device(device='auto', local_rank=0):
@@ -300,6 +302,8 @@ def _print_runtime(device, world, rank, config):
     print(f'CUDA available: {torch.cuda.is_available()}', flush=True)
     print(f'Visible GPUs: {torch.cuda.device_count()}', flush=True)
     print(f'Device: {device}', flush=True)
+    print(f'Fusion mode: {config.fusion_mode}', flush=True)
+    print(f'Gated fusion: {"enabled" if config.use_gated_fusion else "disabled"}', flush=True)
     for index in range(torch.cuda.device_count()):
         print(f'GPU {index}: {torch.cuda.get_device_name(index)}', flush=True)
     print(f'AMP: {"ON" if config.use_amp and device.type == "cuda" else "OFF"}', flush=True)
@@ -360,6 +364,8 @@ def main(argv=None):
         parser.add_argument('--'+field.name.replace('_','-'),**kwargs)
     args = parser.parse_args(argv)
     config = Config(**{f.name:getattr(args,f.name) for f in fields(Config)})
+    config.fusion_mode, gated = validate_fusion_config(config.fusion_mode, config.use_gated_fusion)
+    config.use_gated_fusion = int(gated)
     if config.negative_dtw_weight:
         raise ValueError('This CLI has no negative-transcript source; leave negative_dtw_weight=0')
     if args.max_batches < 0 or Path(args.run_name).name != args.run_name:

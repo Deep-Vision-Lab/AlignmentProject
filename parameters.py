@@ -26,6 +26,8 @@ class Config:
     embedding_dim: int = 128
     local_dropout: float = .10
     transformer_dropout: float = 0.
+    fusion_mode: str = 'concat'
+    use_gated_fusion: int = 0
     rtl: bool = True
     text_embedding_seed: int = 1234
     text_vocab_size: int = 4096

@@ -25,12 +25,18 @@ esac
 
 # Automatically create a unique experiment/job name.
 RUN_NAME="${TYPE}_$(date +%Y%m%d_%H%M%S)"
+FUSION_MODE="${FUSION_MODE:-concat}"
+USE_GATED_FUSION="${USE_GATED_FUSION:-0}"
+
+export FUSION_MODE USE_GATED_FUSION
 
 echo "========================================"
 echo "Training type : $TYPE"
 echo "Dataset       : $DATASET"
 echo "Run name      : $RUN_NAME"
 echo "Weights       : Weights/$RUN_NAME"
+echo "Fusion mode   : $FUSION_MODE"
+echo "Gated fusion  : $USE_GATED_FUSION"
 echo "========================================"
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -38,6 +44,8 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
         --dataset "$DATASET" \
         --dataset-type "$DATASET_TYPE" \
         --run-name "$RUN_NAME" \
+        --fusion-mode "$FUSION_MODE" \
+        --use-gated-fusion "$USE_GATED_FUSION" \
         --device auto
 else
     sbatch \
