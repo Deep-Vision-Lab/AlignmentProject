@@ -6,7 +6,8 @@ repository root:
 ```bash
 python scripts/train/run_optuna.py \
   --dataset DataSet/ArabicDataset \
-  --n-trials 30 --epochs 20
+  --n-trials 30 --epochs 20 \
+  --study-name alignment_no_pruning_v2
 ```
 
 On the project SLURM cluster, submit the same arguments with
@@ -18,15 +19,16 @@ It exists before the first trial. After each trial finishes, the Optuna
 callback reads that trial's saved `history.json`, writes both train and
 validation rows for **every** completed epoch, updates `Trials`, physically
 sorts `RankedResults`, refreshes `Dashboard`, and atomically replaces the
-workbook. A failed or pruned trial retains all epochs that finished before
-it stopped. SQLite study state and per-trial checkpoints/logs are also under
-`results/optuna/`.
+workbook. A failed trial retains all epochs that finished before its error.
+Optimization pruning is disabled; valid trials run all configured epochs.
+SQLite study state is stored in `results/optuna/study_no_pruning_v2.db` by
+default. Checkpoints and logs are separated by study under `results/optuna/`.
 
 `RankedResults` orders only `COMPLETE` trials at the top. Final validation
 Alignment F1 takes precedence when available, then Mask IoU, then lowest
 total loss. If final values of the same metric differ by at most `1e-4`,
-validation improvement from epoch 1 breaks the tie. `PRUNED` and `FAILED`
-trials follow completed trials without a rank number. Workbook objective
+validation improvement from epoch 1 breaks the tie. `FAILED` trials follow
+completed trials without a rank number. Workbook objective
 cells show the actual metric value: F1 and IoU are higher-is-better, and
 loss is lower-is-better. The `Learning_Improvement` column is positive for
 either rising F1/IoU or falling loss.
@@ -46,4 +48,12 @@ Use `--base-config config.json` to override fixed `Config` defaults and
 parameters shown in `SearchSpace`. `--max-batches` is for smoke runs only;
 zero uses full splits. A run can resume its Optuna study with the same
 `--study-name`, `--storage`, and workbook path; existing trial rows are
-upserted by trial ID.
+upserted by study-qualified trial ID.
+
+The corrected search samples vector dimensions `64`, `128`, and `256`.
+For each dimension, the valid head choices are `[1, 2]`; the requested
+candidate `3` is excluded before sampling because none of these dimensions
+is divisible by `3`. The old `alignment` study used the categorical head
+distribution `[1, 2, 3]` and **cannot safely resume** with the corrected
+distribution. The runner rejects that study before starting a trial. Use
+the new default study name and database shown above.

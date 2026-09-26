@@ -172,7 +172,18 @@ def _sort_trials(left, right):
             return -1 if ia > ib else 1
         if sa != sb:
             return -1 if (sa < sb if la[6] == 'Total loss' else sa > sb) else 1
-    return (left['id'] > right['id']) - (left['id'] < right['id'])
+    return (_trial_id_key(left) > _trial_id_key(right)) - (
+        _trial_id_key(left) < _trial_id_key(right))
+
+
+def _trial_id_key(trial):
+    """Sort old numeric IDs and study-qualified IDs without collisions."""
+    trial_id = trial['id']
+    if isinstance(trial_id, int):
+        return ('', trial_id)
+    study_name, separator, number = str(trial_id).rpartition(':')
+    return (study_name if separator else str(trial_id),
+            int(number) if separator and number.isdigit() else -1)
 
 
 def _style_table(sheet, headers, rows, color='16324F'):
@@ -345,7 +356,7 @@ def save_trial(path, *, trial_id, status, config, history, checkpoint=None,
                                _ranked_row(trial))
         _style_table(ranked_sheet, RANKED_HEADERS, ranked_rows)
         trial_rows = []
-        for trial in sorted(trials.values(), key=lambda item: item['id']):
+        for trial in sorted(trials.values(), key=_trial_id_key):
             trial_rows.append(_config_values(trial['id'], trial['status'], trial['config']) +
                 _summary(trial['history'], trial.get('checkpoint'), trial.get('log_path'),
                          trial['config'].get('seed')) +
@@ -353,7 +364,7 @@ def save_trial(path, *, trial_id, status, config, history, checkpoint=None,
                  datetime.now(timezone.utc).isoformat()))
         _style_table(book.create_sheet('Trials'), TRIAL_HEADERS, trial_rows)
         epoch_rows = []
-        for trial in sorted(trials.values(), key=lambda item: item['id']):
+        for trial in sorted(trials.values(), key=_trial_id_key):
             for entry in trial['history']:
                 for split in ('train', 'validation'):
                     if split in entry:
@@ -368,13 +379,19 @@ def save_trial(path, *, trial_id, status, config, history, checkpoint=None,
                 search_space = {row[0]: json.loads(row[1]) for row in
                     existing['SearchSpace'].iter_rows(min_row=2, values_only=True) if row[0]}
             existing.close()
-        space_rows = [(key, json.dumps(value), 'Optuna search choices')
+        dimensions = (search_space or {}).get('vector_dimension', [])
+        heads = (search_space or {}).get('transformer_heads', [])
+        head_note = '; '.join(
+            f'{dimension}: {json.dumps([head for head in heads if dimension % head == 0])}'
+            for dimension in dimensions) if heads else ''
+        space_rows = [(key, json.dumps(value),
+                       head_note if key == 'transformer_heads' else 'Optuna search choices')
                       for key, value in (search_space or {}).items()]
         space_sheet = book.create_sheet('SearchSpace')
         _style_table(space_sheet, ('Parameter', 'Values', 'Notes'), space_rows)
         space_sheet.column_dimensions['A'].width = 28
         space_sheet.column_dimensions['B'].width = 46
-        space_sheet.column_dimensions['C'].width = 25
+        space_sheet.column_dimensions['C'].width = 68
         fd, temporary = tempfile.mkstemp(prefix='.optuna_tracker_', suffix='.xlsx', dir=path.parent)
         os.close(fd)
         try:
