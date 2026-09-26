@@ -26,9 +26,7 @@ logs/performance/
 
 
 TrainResults/
-results/optuna/*.lock
-results/optuna/*.db
-results/optuna/checkpoints/
-results/optuna/logs/
+[Rr]esults/
+
 # External pretrained model source checkouts
 third_party/Restormer/
