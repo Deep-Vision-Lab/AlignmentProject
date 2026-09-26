@@ -63,3 +63,16 @@ def test_f1_priority_and_improvement_tie_break(tmp_path):
     book = load_workbook(path, data_only=True)
     assert [row[1] for row in book['RankedResults'].iter_rows(min_row=2, values_only=True)] == [1, 2, 0]
     book.close()
+
+
+def test_old_and_new_study_trial_ids_do_not_collide(tmp_path):
+    path = tmp_path / 'tracker.xlsx'
+    save_trial(path, trial_id=0, status='COMPLETE', config=_config(),
+               history=_history([2., 1.]))
+    save_trial(path, trial_id='alignment_no_pruning_v2:0', status='COMPLETE',
+               config=_config(), history=_history([2., .5]))
+    book = load_workbook(path, data_only=True)
+    assert [row[1] for row in book['RankedResults'].iter_rows(min_row=2, values_only=True)] == [
+        'alignment_no_pruning_v2:0', 0]
+    assert book['Trials'].max_row == 3
+    book.close()

@@ -8,8 +8,10 @@ from __future__ import annotations
 import argparse
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import asdict, fields
+import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 import traceback
 
@@ -18,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 import optuna
 
-from optuna_tracker import DEFAULT_TRACKER, initialize, objective, ranking_score, save_trial
+from optuna_tracker import DEFAULT_TRACKER, initialize, ranking_score, save_trial
 from parameters import Config
 from train import main as train_main
 
@@ -55,11 +57,17 @@ def _load_json(path, default):
 
 
 def _suggest_config(trial, base, search_space):
-    choices = {name: trial.suggest_categorical(name, values)
-               for name, values in search_space.items()}
     required = set(DEFAULT_SEARCH_SPACE)
-    if set(choices) != required:
+    if set(search_space) != required:
         raise ValueError(f'Search space needs exactly these keys: {sorted(required)}')
+    vector_dim = trial.suggest_categorical('vector_dimension', search_space['vector_dimension'])
+    valid_heads = [head for head in search_space['transformer_heads']
+                   if vector_dim % head == 0]
+    transformer_heads = trial.suggest_categorical('transformer_heads', valid_heads)
+    choices = {'vector_dimension': vector_dim, 'transformer_heads': transformer_heads}
+    choices.update({name: trial.suggest_categorical(name, values)
+                    for name, values in search_space.items()
+                    if name not in ('vector_dimension', 'transformer_heads')})
     config = dict(base)
     fusion = choices['fusion']
     config.update(fusion_mode='sum' if fusion == 'gated_sum' else fusion,
@@ -73,9 +81,35 @@ def _suggest_config(trial, base, search_space):
                   transformer_heads=choices['transformer_heads'],
                   window_width=choices['window_size'],
                   window_stride=max(1, round(choices['window_size'] * choices['stride_ratio'])))
-    if config['embedding_dim'] % config['transformer_heads']:
-        raise ValueError('Vector dimension must be divisible by transformer heads')
     return config
+
+
+def _valid_head_choices(search_space):
+    dimensions = search_space['vector_dimension']
+    heads = search_space['transformer_heads']
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 1
+           for value in dimensions + heads):
+        raise ValueError('Vector dimensions and Transformer heads must be positive integers')
+    choices = {dimension: tuple(head for head in heads if dimension % head == 0)
+               for dimension in dimensions}
+    if any(not valid for valid in choices.values()):
+        raise ValueError('Every vector dimension needs at least one divisible head choice')
+    if len(set(choices.values())) != 1:
+        raise ValueError('This Optuna storage requires the same valid Transformer-head '
+                         'choices for every vector dimension')
+    return choices
+
+
+def _check_existing_study(study, valid_heads):
+    """Reject older categorical distributions before running or writing trials."""
+    expected = tuple(next(iter(valid_heads.values())))
+    for trial in study.get_trials(deepcopy=False):
+        distribution = trial.distributions.get('transformer_heads')
+        if distribution is not None and tuple(distribution.choices) != expected:
+            raise RuntimeError(
+                f'Study {study.study_name!r} has Transformer-head choices '
+                f'{tuple(distribution.choices)!r}; corrected search requires {expected!r}. '
+                'Use a new --study-name and --storage database.')
 
 
 def _config_args(config, args, trial_name):
@@ -106,7 +140,7 @@ def main(argv=None):
     parser.add_argument('--checkpoint-root', type=Path, default=Path('results/optuna/checkpoints'))
     parser.add_argument('--log-root', type=Path, default=Path('results/optuna/logs'))
     parser.add_argument('--storage', help='Optuna SQLAlchemy URL; defaults beside the workbook')
-    parser.add_argument('--study-name', default='alignment')
+    parser.add_argument('--study-name', default='alignment_no_pruning_v2')
     args = parser.parse_args(argv)
     if args.n_trials < 1 or args.epochs < 1 or args.max_batches < 0:
         parser.error('n-trials and epochs must be positive; max-batches must be nonnegative')
@@ -114,6 +148,10 @@ def main(argv=None):
     if set(search_space) != set(DEFAULT_SEARCH_SPACE) or any(
             not isinstance(values, list) or not values for values in search_space.values()):
         parser.error('Search space must contain a nonempty choice list for each default parameter')
+    try:
+        valid_heads = _valid_head_choices(search_space)
+    except ValueError as exc:
+        parser.error(str(exc))
     base = asdict(Config())
     overrides = _load_json(args.base_config, {})
     unknown = set(overrides) - set(base)
@@ -124,12 +162,19 @@ def main(argv=None):
     args.checkpoint_root.mkdir(parents=True, exist_ok=True)
     args.log_root.mkdir(parents=True, exist_ok=True)
     args.tracker.parent.mkdir(parents=True, exist_ok=True)
-    initialize(args.tracker, search_space)
-    storage = args.storage or f'sqlite:///{(args.tracker.parent.resolve() / "study.db")}'
+    storage = args.storage or f'sqlite:///{(args.tracker.parent.resolve() / "study_no_pruning_v2.db")}'
     study = optuna.create_study(study_name=args.study_name, storage=storage,
         direction='maximize', load_if_exists=True,
         sampler=optuna.samplers.TPESampler(seed=args.seed),
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1))
+        pruner=optuna.pruners.NopPruner())
+    _check_existing_study(study, valid_heads)
+    study_tag = re.sub(r'[^A-Za-z0-9_.-]+', '_', study.study_name)
+    study_tag += '_' + hashlib.sha256(storage.encode()).hexdigest()[:8]
+    args.checkpoint_root = args.checkpoint_root / study_tag
+    args.log_root = args.log_root / study_tag
+    args.checkpoint_root.mkdir(parents=True, exist_ok=True)
+    args.log_root.mkdir(parents=True, exist_ok=True)
+    initialize(args.tracker, search_space)
 
     def run_trial(trial):
         config = _suggest_config(trial, base, search_space)
@@ -140,17 +185,10 @@ def main(argv=None):
         trial.set_user_attr('output_dir', str(output_dir))
         trial.set_user_attr('log_path', str(log_path))
 
-        def on_epoch(entry):
-            score, _ = ranking_score(entry['validation'])
-            if score is not None:
-                trial.report(score, entry['epoch'])
-                if trial.should_prune():
-                    raise optuna.TrialPruned(f'Pruned after epoch {entry["epoch"]}')
-
         with log_path.open('w') as log, redirect_stdout(_Tee(sys.stdout, log)), \
                 redirect_stderr(_Tee(sys.stderr, log)):
             try:
-                train_main(_config_args(config, args, run_name), epoch_callback=on_epoch)
+                train_main(_config_args(config, args, run_name))
                 history = json.loads((output_dir / 'history.json').read_text())
                 score, metric = ranking_score(history[-1]['validation'])
                 if score is None:
@@ -171,7 +209,7 @@ def main(argv=None):
             status = 'FAILED'
         elif status == 'FAIL':
             status = 'FAILED'
-        save_trial(args.tracker, trial_id=frozen.number, status=status,
+        save_trial(args.tracker, trial_id=f'{study.study_name}:{frozen.number}', status=status,
                    config=frozen.user_attrs.get('config', base), history=history,
                    checkpoint=output_dir / 'checkpoint_latest.pt',
                    log_path=frozen.user_attrs.get('log_path'),
