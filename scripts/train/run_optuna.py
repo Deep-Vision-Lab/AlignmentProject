@@ -32,7 +32,7 @@ DEFAULT_SEARCH_SPACE = {
     'sigreg_weight': [0.0, 0.3],
     'dtw_gamma': [0.02, 0.05, 0.1],
     'transformer_layers': [1, 3, 5],
-    'transformer_heads': [1, 2, 3],
+    'transformer_heads': [1, 2, 4],
     'window_size': [32, 64, 128],
     'stride_ratio': [0.5, 0.75, 1.0],
 }
