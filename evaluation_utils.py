@@ -12,6 +12,8 @@ import json
 import math
 from pathlib import Path
 import random
+import re
+import unicodedata
 import uuid
 
 import numpy as np
@@ -22,7 +24,6 @@ from tqdm.auto import tqdm
 from dataset import AlignmentDataset, file_hash, prepare_image
 from dtw import cosine_similarity_matrix, hard_dtw_path, letter_cost_matrix
 from evaluate import region_mask, score_mask, shared_regions, source_interval, smith_waterman_affine
-from model import extract_windows
 from train import build_loaders, load_checkpoint
 
 
@@ -275,6 +276,246 @@ def _load_annotation(annotation, shape):
             mask[:, math.floor(a):math.ceil(b)] = True
         return mask
     return None
+
+
+# --- Ground truth from page-level subword boxes (dataset GT convention) -------
+# Mirrors scripts/data/build_real_alignment_masks.py: page debug/bboxes.json
+# boxes are clustered into page lines with page_meta.json line_threshold_used
+# (largest-gap fallback to num_lines), A/B box texts are aligned by an exact
+# order-preserving LCS, and consecutive matched runs become full-height white
+# x-intervals on a black mask the size of the saved line image.
+_ARABIC_DIACRITICS = re.compile('[\u0610-\u061a\u064b-\u065f\u0670\u06d6-\u06ed]')
+_LINE_NUMBER = re.compile(r'(?:line[_\-\s]*)?0*(\d+)', re.IGNORECASE)
+
+
+def annotation_ground_truth_available(annotation):
+    """Usable GT from pair metadata: an existing mask image or exact-size intervals."""
+    annotation = annotation or {}
+    mask = annotation.get('mask')
+    if mask and Path(mask).is_file():
+        return True
+    return annotation.get('intervals') is not None and annotation.get('source_size') is not None
+
+
+def _boxes_available(side):
+    return any((parent / 'debug' / 'bboxes.json').is_file() for parent in Path(side['image']).parents)
+
+
+def pair_ground_truth_available(pair):
+    """True when BOTH lines can obtain GT: metadata masks/intervals, or page
+    subword boxes for both sides (the LCS build needs both sides' boxes)."""
+    if all(annotation_ground_truth_available(a) for a in pair['annotations']):
+        return True
+    return all(_boxes_available(s) for s in pair['sides'])
+
+
+def positive_pairs(session, require_ground_truth=True):
+    """Real manifest positive pairs in the saved split; line B is always the
+    recorded partner of line A, never an independently sampled line."""
+    pool = [p for p in session.pairs if p['target'] == 1 and not p['constructed_negative']]
+    if require_ground_truth:
+        pool = [p for p in pool if pair_ground_truth_available(p)]
+    return sorted(pool, key=lambda r: r['sample_id'])
+
+
+def shuffled_positive_pairs(session, seed=42, require_ground_truth=True):
+    """Seeded shuffle of the eligible positive pool. Iterate and keep the first
+    valid samples so invalid samples are skipped automatically."""
+    pool = positive_pairs(session, require_ground_truth)
+    return random.Random(seed).sample(pool, len(pool))
+
+
+def _normalized_unit(value):
+    text = unicodedata.normalize('NFKC', str(value or ''))
+    text = _ARABIC_DIACRITICS.sub('', text.replace('\u0640', ''))
+    return ''.join(text.split())
+
+
+def _page_line_boxes(image, line_width):
+    """Subword boxes of one saved line in line-image x coordinates, RTL ordered.
+
+    Returns (boxes, status): boxes = [(x0, x1, text)], empty with reason on failure.
+    """
+    image = Path(image)
+    side_root = next((p for p in image.parents if (p / 'debug' / 'bboxes.json').is_file()), None)
+    if side_root is None:
+        return [], 'no debug/bboxes.json above the line image'
+    try:
+        payload = json.loads((side_root / 'debug' / 'bboxes.json').read_text(encoding='utf-8'))
+    except Exception as exc:
+        return [], f'bboxes.json parse error: {type(exc).__name__}: {exc}'
+    boxes = []
+    for row, record in enumerate(payload if isinstance(payload, list) else []):
+        try:
+            x0, x1 = sorted((float(record['x1']), float(record['x2'])))
+            y0, y1 = sorted((float(record['y1']), float(record['y2'])))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if x1 > x0 and y1 > y0:
+            boxes.append(dict(x0=x0, x1=x1, cx=(x0 + x1) / 2, cy=(y0 + y1) / 2,
+                              text=str(record.get('text', '')), row=row))
+    if not boxes:
+        return [], 'no valid x1/y1/x2/y2 box records'
+    meta = {}
+    meta_path = side_root / 'page_meta.json'
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding='utf-8'))
+        except Exception:
+            meta = {}
+    threshold = float(meta.get('line_threshold_used') or 42.)
+    ordered = sorted(boxes, key=lambda b: (b['cy'], b['cx']))
+    clusters, centers = [], []
+    for box in ordered:
+        if clusters and abs(box['cy'] - centers[-1]) <= threshold:
+            clusters[-1].append(box)
+            centers[-1] = float(np.median([b['cy'] for b in clusters[-1]]))
+        else:
+            clusters.append([box])
+            centers.append(box['cy'])
+    expected = int(meta.get('num_lines') or 0)
+    if expected > 1 and len(clusters) != expected and len(ordered) > 1:
+        gaps = sorted(((ordered[i + 1]['cy'] - ordered[i]['cy'], i)
+                       for i in range(len(ordered) - 1)), reverse=True)
+        cut = {i for _, i in gaps[:expected - 1]}
+        clusters, current = [], []
+        for i, box in enumerate(ordered):
+            current.append(box)
+            if i in cut:
+                clusters.append(current)
+                current = []
+        if current:
+            clusters.append(current)
+    clusters.sort(key=lambda group: float(np.mean([b['cy'] for b in group])))
+    number = _LINE_NUMBER.search(image.stem)
+    index = int(number.group(1)) - 1 if number else -1
+    if not 0 <= index < len(clusters):
+        return [], f'line {index + 1} outside {len(clusters)} clustered page lines'
+    originals = sorted(side_root.glob('original_image.*'))
+    page_width = None
+    if originals:
+        with Image.open(originals[0]) as source:
+            page_width = float(source.width)
+    if page_width is None:
+        page_width = max(float(line_width), max(b['x1'] for b in boxes))
+    scale = float(line_width) / max(1., page_width)
+    selected = [dict(b, x0=b['x0'] * scale, x1=b['x1'] * scale) for b in clusters[index]]
+    selected.sort(key=lambda b: (-b['cx'], b['row']))   # RTL reading order
+    return [(b['x0'], b['x1'], b['text']) for b in selected], 'ok'
+
+
+def _lcs_pairs(left, right):
+    n, m = len(left), len(right)
+    dp = np.zeros((n + 1, m + 1), dtype=np.int32)
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            dp[i, j] = 1 + dp[i + 1, j + 1] if left[i] and left[i] == right[j] else max(dp[i + 1, j], dp[i, j + 1])
+    result, i, j = [], 0, 0
+    while i < n and j < m:
+        if left[i] and left[i] == right[j] and dp[i, j] == 1 + dp[i + 1, j + 1]:
+            result.append((i, j)); i += 1; j += 1
+        elif dp[i + 1, j] >= dp[i, j + 1]:
+            i += 1
+        else:
+            j += 1
+    return result
+
+
+def _consecutive_runs(pairs):
+    if not pairs:
+        return []
+    runs = [[pairs[0]]]
+    for pair in pairs[1:]:
+        previous = runs[-1][-1]
+        if pair[0] == previous[0] + 1 and pair[1] == previous[1] + 1:
+            runs[-1].append(pair)
+        else:
+            runs.append([pair])
+    return runs
+
+
+def _mask_intervals(mask):
+    """Exclusive [start, end) column runs of a full-height boolean mask."""
+    intervals = []
+    for column in np.flatnonzero(np.asarray(mask, bool).any(0)):
+        if intervals and column == intervals[-1][1]:
+            intervals[-1][1] = int(column) + 1
+        else:
+            intervals.append([int(column), int(column) + 1])
+    return intervals
+
+
+def boxes_ground_truth(pair):
+    """Build full-height GT masks for both sides from page subword boxes.
+
+    Returns (masks, detail): masks = [bool array | None, bool array | None].
+    """
+    images = [Path(s['image']) for s in pair['sides']]
+    sizes = []
+    for image in images:
+        with Image.open(image) as source:
+            sizes.append(source.size)           # (width, height)
+    boxes, statuses = [], []
+    for (width, _), image in zip(sizes, images):
+        side_boxes, status = _page_line_boxes(image, width)
+        boxes.append(side_boxes)
+        statuses.append(status)
+    if not all(boxes):
+        return [None, None], 'bbox ground truth unavailable: ' + '; '.join(statuses)
+    units = [[_normalized_unit(text) for _, _, text in side] for side in boxes]
+    pairs = _lcs_pairs(*units)
+    runs = _consecutive_runs(pairs)
+    if not runs:
+        return [None, None], 'no matched subword run between the two line box transcripts'
+    masks = []
+    for side, ((width, height), side_boxes) in enumerate(zip(sizes, boxes)):
+        mask = np.zeros((height, width), dtype=bool)
+        for run in runs:
+            selected = [side_boxes[match[side]] for match in run]
+            x0 = max(0, min(width, math.floor(min(b[0] for b in selected))))
+            x1 = max(0, min(width, math.ceil(max(b[1] for b in selected))))
+            if x1 > x0:
+                mask[:, x0:x1] = True
+        masks.append(mask)
+    return masks, f'page debug/bboxes.json LCS: {len(pairs)} matched units in {len(runs)} run(s)'
+
+
+def attach_ground_truth(session, result):
+    """Resolve GT masks strictly AFTER prediction and add localization metrics.
+
+    Per line, dataset metadata wins (alignment mask image, then exact-size
+    aligned intervals). Otherwise full-height masks are built from page-level
+    debug/bboxes.json subword boxes via the dataset's text-LCS convention.
+    GT never enters prediction.
+    """
+    pair, metrics = result['pair'], result['metrics']
+    provenance, boxes, detail = [], None, ''
+    for side, name in enumerate(('a', 'b')):
+        if result['ground_truth'][side] is not None:
+            provenance.append(pair['annotation_provenance'])
+            continue
+        if boxes is None:
+            boxes, detail = boxes_ground_truth(pair)
+        gt = boxes[side]
+        if gt is None:
+            provenance.append(f'unavailable ({detail})')
+            continue
+        mask = np.asarray(result['masks'][side])
+        if gt.shape != mask.shape:
+            raise ValueError('Ground-truth/source geometry mismatch; resizing is forbidden')
+        spatial, _ = localization_metrics(mask, dict(intervals=_mask_intervals(gt),
+            source_size=[int(mask.shape[1]), int(mask.shape[0])]),
+            result['lines'][side], session.config, result['match']['regions'], side)
+        metrics.pop(f'{name}_reason', None)
+        metrics.update({f'{name}_{k}': v for k, v in spatial.items()})
+        result['ground_truth'][side] = gt
+        provenance.append('built from page debug/bboxes.json subword LCS')
+    for metric in ('iou', 'dice'):
+        values = [metrics.get(f'{s}_{metric}') for s in ('a', 'b')]
+        if all(v is not None for v in values):
+            metrics['pair_mean_' + metric] = (values[0] + values[1]) / 2
+    metrics['ground_truth_provenance'] = ' | '.join(provenance)
+    return result
 
 
 def _binary_metrics(pred, gt):
@@ -560,104 +801,92 @@ def _overlay(image, mask, color=(255, 70, 20), alpha=.4):
 
 
 def plot_pair_alignment(session, result):
-    """Full-width originals, source masks, model boundaries, windows, and matches."""
+    """Simplified full-line figure: originals, predicted and ground-truth
+    masks/overlays, similarity heatmaps and the metrics panel.
+
+    No model-input window grids, extracted-window strips or other
+    split-window visualizations are shown.
+    """
     import matplotlib.pyplot as plt
-    from matplotlib.patches import ConnectionPatch
-    pair, metrics, c = result['pair'], result['metrics'], session.config
-    label = 'CONSTRUCTED NEGATIVE (presumed)' if pair['constructed_negative'] else (
-        'GROUND TRUTH LABEL: ALIGNED' if pair['target'] == 1 else 'GROUND TRUTH LABEL: UNALIGNED' if pair['target'] == 0 else 'LABEL UNKNOWN')
-    has_gt = any(gt is not None for gt in result['ground_truth'])
-    model_row = 5 if has_gt else 3
-    fig = plt.figure(figsize=(19, 28 if has_gt else 24))
-    fig.subplots_adjust(left=.05, right=.95, top=.95, bottom=.04, hspace=1.1, wspace=.2)
-    heights = [1, 1, 1] + ([1, 1] if has_gt else []) + [1, 1.3, 3, 2, 2.1]
-    grid = fig.add_gridspec(len(heights), 2, height_ratios=heights)
-    connection_axes = []
+    pair, metrics = result['pair'], result['metrics']
+    if pair['constructed_negative']:
+        label = 'CONSTRUCTED NEGATIVE (presumed)'
+    elif pair['target'] == 1:
+        label = 'RANDOMLY CHOSEN POSITIVE SAMPLE (true manifest pair)'
+    elif pair['target'] == 0:
+        label = 'GROUND TRUTH LABEL: UNALIGNED'
+    else:
+        label = 'LABEL UNKNOWN'
     originals = []
-    for side, name in enumerate(('A', 'B')):
-        info = result['lines'][side]
+    for side in range(2):
         with Image.open(pair['sides'][side]['image']) as image:
-            original = image.convert('RGB')
-        originals.append(original)
-        prepared, tensor, _ = prepare_image(pair['sides'][side]['image'], (c.image_height, c.image_width),
-                                            c.grayscale, c.crop, pair['sides'][side].get('bbox'), False, c.binarize)
-        panels = [(original, f'Line {name} original — source pixels'),
-                  (result['masks'][side], f'Predicted source mask — coverage {metrics[f"mask_coverage_{name.lower()}"]:.1%}'),
-                  (_overlay(original, result['masks'][side]), 'Prediction overlay (orange)')]
-        if has_gt:
-            panels.extend([
-                  (original if result['ground_truth'][side] is None else result['ground_truth'][side],
-                   'GT unavailable' if result['ground_truth'][side] is None else 'Ground truth'),
-                  (original if result['ground_truth'][side] is None else
-                   _overlay(Image.fromarray(_overlay(original, result['ground_truth'][side], (0, 220, 80))), result['masks'][side]),
-                   'GT unavailable' if result['ground_truth'][side] is None else 'GT green + prediction orange overlay')])
-        panels.append((prepared, f'Exact model input: {len(info["physical"])} windows, width={c.window_width}, stride={c.window_stride}'))
-        for row, (image, title) in enumerate(panels):
+            originals.append(image.convert('RGB'))
+    fig = plt.figure(figsize=(19, 28))
+    fig.subplots_adjust(left=.05, right=.95, top=.94, bottom=.03, hspace=1.05, wspace=.15)
+    grid = fig.add_gridspec(7, 2, height_ratios=[1, 1, 1, 1, 1, 2.4, 1.7])
+    for side, name in enumerate(('A', 'B')):
+        gt = result['ground_truth'][side]
+        coverage = metrics[f'mask_coverage_{name.lower()}']
+        rows = [
+            (originals[side], False, f'Line {name} — original full line'),
+            (np.asarray(result['masks'][side]) > 0, True,
+             f'Predicted mask — line {name} (coverage {coverage:.1%})'),
+            (_overlay(originals[side], result['masks'][side]), False,
+             f'Predicted overlay — line {name} (orange on original)'),
+            (None if gt is None else np.asarray(gt, bool), True,
+             f'Ground-truth mask — line {name}' if gt is not None else
+             f'Ground-truth mask — line {name} (UNAVAILABLE)'),
+            (None if gt is None else _overlay(originals[side], gt, (0, 200, 80)), False,
+             f'Ground-truth overlay — line {name} (green on original)' if gt is not None else
+             f'Ground-truth overlay — line {name} (UNAVAILABLE)'),
+        ]
+        for row, (image, binary, title) in enumerate(rows):
             ax = fig.add_subplot(grid[row, side])
-            ax.imshow(image, cmap='gray', vmin=0, vmax=1 if np.asarray(image).dtype == bool else 255, aspect='auto')
-            ax.set_title(title); ax.set_yticks([])
-            if row == model_row:
-                for p in info['physical']:
-                    ax.axvline(int(p)*c.window_stride, color='cyan', lw=.4, alpha=.5)
-                    ax.axvline(int(p)*c.window_stride+c.window_width, color='orange', lw=.4, alpha=.3)
-                ax.set_xlabel('Model x; boundaries in physical LTR order. Model sequence is ' + ('RTL' if c.rtl else 'LTR'))
-        # Extract with the model's function; undo normalization for display only.
-        windows = extract_windows(tensor[None], c.window_width, c.window_stride)[0]
-        chosen = np.linspace(0, len(windows)-1, min(8, len(windows)), dtype=int)
-        mean, std = ((.449,), (.226,)) if c.grayscale else ((.485,.456,.406), (.229,.224,.225))
-        pixels = windows[chosen] * torch.tensor(std)[None, :, None, None] + torch.tensor(mean)[None, :, None, None]
-        strip = torch.cat(list(pixels), dim=-1).permute(1, 2, 0).numpy().clip(0, 1)
-        ax = fig.add_subplot(grid[model_row + 1, side]); ax.imshow(strip.squeeze(), cmap='gray', vmin=0, vmax=1)
-        for index in range(1, len(chosen)):
-            ax.axvline(index * c.window_width - .5, color='orange', lw=1)
-        ax.set_xticks([(index + .5) * c.window_width for index in range(len(chosen))], chosen)
-        ax.set_yticks([])
-        ax.set_title('Actual extracted windows (display subset; physical IDs below)')
-    order = 'RTL reading order' if c.rtl else 'LTR reading order'
+            if image is None:
+                ax.imshow(originals[side], alpha=.2, aspect='auto')
+                ax.text(.5, .5, 'GROUND TRUTH UNAVAILABLE', transform=ax.transAxes,
+                        ha='center', va='center', fontsize=13, color='darkred',
+                        bbox=dict(facecolor='white', alpha=.85, edgecolor='darkred'))
+            elif binary:
+                ax.imshow(np.asarray(image, dtype=float), cmap='gray', vmin=0, vmax=1, aspect='auto')
+            else:
+                ax.imshow(image, aspect='auto')
+            ax.set_title(title)
+            ax.set_yticks([])
+    order = 'RTL reading order' if session.config.rtl else 'LTR reading order'
     for side, (matrix, title) in enumerate(((result['cosine'], 'Raw cosine similarity'),
-                                          (result['match']['rewards'], 'Alignment rewards (NOT cosine/probability)'))):
-        ax = fig.add_subplot(grid[model_row + 2, side])
+                                            (result['match']['rewards'], 'Alignment rewards (NOT cosine/probability)'))):
+        ax = fig.add_subplot(grid[5, side])
         heat = ax.imshow(matrix, origin='lower', aspect='auto', cmap='coolwarm',
                          **({'vmin': -1, 'vmax': 1} if side == 0 else {}))
         for number, region in enumerate(result['match']['regions']):
-            a, b = zip(*region['pairs']); ax.plot(b, a, '.-', color=plt.get_cmap('tab10')(number % 10), ms=4, lw=1)
+            a, b = zip(*region['pairs'])
+            ax.plot(b, a, '.-', color=plt.get_cmap('tab10')(number % 10), ms=4, lw=1)
         ax.set(xlabel=f'Line B window indices ({order})', ylabel=f'Line A window indices ({order})',
                title=f'{title}: {matrix.shape[0]}×{matrix.shape[1]}, {result["representation"]}')
         if not result['match']['regions']:
-            ax.text(.5, .95, 'NO ACCEPTED REGION', transform=ax.transAxes, ha='center', va='top', bbox=dict(facecolor='white', alpha=.8))
+            ax.text(.5, .95, 'NO ACCEPTED REGION', transform=ax.transAxes, ha='center', va='top',
+                    bbox=dict(facecolor='white', alpha=.8))
         fig.colorbar(heat, ax=ax, shrink=.8)
-    nested = grid[model_row + 3, :].subgridspec(2, 1, hspace=.7)
-    for side in (0, 1):
-        ax = fig.add_subplot(nested[side]); ax.imshow(originals[side], aspect='auto')
-        ax.set_yticks([])
-        if side == 0:
-            ax.set_title('Accepted-window connections: line A above, line B below (source pixels)')
-        else:
-            ax.set_xlabel('Line B source x (full width)')
-        connection_axes.append(ax)
-    for number, region in enumerate(result['match']['regions']):
-        for i, j in region['pairs']:
-            xs = []
-            for side, index in enumerate((i, j)):
-                line = result['lines'][side]
-                interval = source_interval(int(line['physical'][index]), line['geometry'], c.window_width, c.window_stride)
-                xs.append(sum(interval)/2)
-            connection = ConnectionPatch((xs[0], originals[0].height-.5), (xs[1], -.5),
-                                         coordsA='data', coordsB='data', axesA=connection_axes[0], axesB=connection_axes[1],
-                                         color=plt.get_cmap('tab10')(number % 10), alpha=.45, lw=.7)
-            fig.add_artist(connection)
-    ax = fig.add_subplot(grid[model_row + 4, :]); ax.axis('off')
-    fields = ['pair_score', 'path_cosine_mean', 'path_cosine_median', 'path_cosine_min', 'maximum_similarity',
-              'matrix_cosine_mean', 'off_path_cosine_mean', 'similarity_separation', 'path_length', 'region_count',
+    ax = fig.add_subplot(grid[6, :])
+    ax.axis('off')
+    fields = ['pair_score', 'path_cosine_mean', 'path_cosine_median', 'path_cosine_min',
+              'maximum_similarity', 'matrix_cosine_mean', 'off_path_cosine_mean',
+              'similarity_separation', 'path_length', 'region_count',
               'matched_windows_a', 'matched_windows_b', 'mask_coverage_a', 'mask_coverage_b']
-    text = '\n'.join(f'{k}: {metrics[k]:.5g}' if isinstance(metrics[k], float) else f'{k}: {metrics[k]}' for k in fields)
+    text = '\n'.join(f'{k}: {metrics[k]:.5g}' if isinstance(metrics[k], float) else f'{k}: {metrics[k]}'
+                     for k in fields)
     ax.text(0, 1, text, transform=ax.transAxes, va='top', family='monospace', fontsize=10)
     localization = {k: v for k, v in metrics.items() if k.startswith(('a_', 'b_', 'pair_mean_'))}
     spatial_text = '\n'.join(f'{k}: {v:.5g}' if isinstance(v, float) else f'{k}: {v}'
                              for k, v in localization.items() if not isinstance(v, str) or k.endswith('status'))
     ax.text(.5, 1, spatial_text, transform=ax.transAxes, va='top', family='monospace', fontsize=9)
+    if metrics.get('ground_truth_provenance'):
+        ax.text(.5, 0, 'GT provenance: ' + metrics['ground_truth_provenance'],
+                transform=ax.transAxes, va='bottom', fontsize=8, style='italic')
     scope = 'TRAIN (in-sample)' if session.split == 'train' else session.split.upper()
-    fig.suptitle(f'{scope} | {pair["sample_id"]} | {label} ({pair["label"]}) | {result["representation"]} | score={metrics["pair_score"]:.4f}', fontsize=13)
+    fig.suptitle(f'{scope} | {label} | {pair["sample_id"]} | {result["representation"]} | '
+                 f'score={metrics["pair_score"]:.4f}', fontsize=13)
     return fig
 
 
@@ -760,6 +989,12 @@ def save_pair_artifacts(session, result, directory):
             original = image.convert('RGB')
         original.save(directory / f'line_{name}_original.png')
         Image.fromarray(_overlay(original, result['masks'][side])).save(directory / f'line_{name}_overlay.png')
+        gt = result['ground_truth'][side] if result.get('ground_truth') else None
+        if gt is not None:
+            Image.fromarray((np.asarray(gt, bool) * 255).astype(np.uint8)).save(
+                directory / f'line_{name}_ground_truth_mask.png')
+            Image.fromarray(_overlay(original, gt, (0, 200, 80))).save(
+                directory / f'line_{name}_ground_truth_overlay.png')
         c = session.config
         prepared, _, _ = prepare_image(record['image'], (c.image_height, c.image_width), c.grayscale,
                                         c.crop, record.get('bbox'), False, c.binarize)

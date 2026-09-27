@@ -6,21 +6,41 @@ import torch
 from torch import nn
 from torchvision.models import ResNet18_Weights, resnet18
 
+SIMPLE_CNN_CHANNELS = (32, 64, 128, 256, 512)
+
+
+def simple_cnn_channels(num_layers):
+    """Channel layout for the configurable simple CNN, capped at 512 channels."""
+    if num_layers < 1:
+        raise ValueError(f'num_layers must be a positive integer, got {num_layers}')
+    return [SIMPLE_CNN_CHANNELS[min(index, len(SIMPLE_CNN_CHANNELS) - 1)]
+            for index in range(num_layers)]
+
 
 class CNNEncoder(nn.Module):
     def __init__(self, encoder_type='resnet18', embedding_dim=128, pretrained=True,
-                 input_channels=1, local_dropout=.10):
+                 input_channels=1, local_dropout=.10, num_layers=3):
         super().__init__()
         if input_channels not in (1, 3):
             raise ValueError('input_channels must be 1 or 3')
         self.encoder_type = encoder_type
         self.initialization = 'random'
+        self.num_layers = None
+        self.channels = None
         if encoder_type == 'simple':
-            self.backbone = nn.Sequential(
-                nn.Conv2d(input_channels, 32, 3, padding=1), nn.GELU(), nn.AdaptiveAvgPool2d(2),
-                nn.Conv2d(32, 64, 3, padding=1), nn.GELU(), nn.AdaptiveAvgPool2d(2),
-                nn.Conv2d(64, 128, 3, padding=1), nn.GELU(), nn.AdaptiveAvgPool2d(1), nn.Flatten())
-            features = 128
+            # num_layers applies only to the simple CNN; the final block always
+            # pools to 1x1 so the output is [N_windows, embedding_dim] at any depth.
+            self.num_layers = num_layers
+            self.channels = simple_cnn_channels(num_layers)
+            blocks = []
+            in_channels = input_channels
+            for index, out_channels in enumerate(self.channels):
+                blocks += [nn.Conv2d(in_channels, out_channels, 3, padding=1), nn.GELU(),
+                           nn.AdaptiveAvgPool2d(1 if index == num_layers - 1 else 2)]
+                in_channels = out_channels
+            blocks.append(nn.Flatten())
+            self.backbone = nn.Sequential(*blocks)
+            features = self.channels[-1]
         elif encoder_type == 'resnet18':
             self.backbone = resnet18(weights=None)
             if pretrained:

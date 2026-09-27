@@ -40,9 +40,9 @@ METRIC_KEYS = (
     'seconds', 'gpu_memory_mb',
 )
 CONFIG_HEADERS = (
-    'Trial ID', 'Status', 'Fusion', 'Dropout', 'Vector dimension', 'SIGReg ON/OFF',
-    'DTW gamma', 'Transformer layers', 'Transformer heads', 'Window size',
-    'Stride ratio', 'Actual stride pixels',
+    'Trial ID', 'Status', 'CNN type', 'CNN layers', 'Fusion', 'Dropout',
+    'Vector dimension', 'SIGReg ON/OFF', 'DTW gamma', 'Transformer layers',
+    'Transformer heads', 'Window size', 'Stride ratio', 'Actual stride pixels',
 )
 SUMMARY_HEADERS = (
     'First objective', 'Final objective', 'Best objective', 'Best epoch',
@@ -102,7 +102,11 @@ def _config_values(trial_id, status, config):
     stride = config.get('window_stride')
     width = config.get('window_width')
     fusion = 'gated_sum' if config.get('use_gated_fusion') else config.get('fusion_mode')
-    return (trial_id, status, fusion, config.get('local_dropout'),
+    # Legacy rows predate CNN tracking and simply show blanks.
+    cnn_type = config.get('cnn_type')
+    cnn_layers = (config.get('cnn_layers') if cnn_type == 'simple'
+                  else 'fixed' if cnn_type else None)
+    return (trial_id, status, cnn_type, cnn_layers, fusion, config.get('local_dropout'),
             config.get('embedding_dim'), 'ON' if config.get('sigreg_weight') else 'OFF',
             config.get('dtw_gamma'), config.get('transformer_layers'),
             config.get('transformer_heads'), width,
@@ -223,9 +227,10 @@ def _dashboard(sheet, ranked):
     best_config = None
     if best:
         cfg = _config_values(best['id'], best['status'], best['config'])
-        best_config = (f'Fusion={cfg[2]}; Dropout={cfg[3]}; Dim={cfg[4]}; '
-                       f'SIGReg={cfg[5]}; gamma={cfg[6]}; Layers={cfg[7]}; '
-                       f'Heads={cfg[8]}; Window={cfg[9]}; Stride={cfg[11]} px')
+        best_config = (f'CNN={cfg[2]}; CNN layers={cfg[3]}; Fusion={cfg[4]}; '
+                       f'Dropout={cfg[5]}; Dim={cfg[6]}; SIGReg={cfg[7]}; '
+                       f'gamma={cfg[8]}; Layers={cfg[9]}; Heads={cfg[10]}; '
+                       f'Window={cfg[11]}; Stride={cfg[13]} px')
     summary = [('Best trial', best['id'] if best else 'No completed trials'),
                ('Best configuration', best_config),
                ('Best final validation score', score[1] if score else None),
@@ -237,9 +242,9 @@ def _dashboard(sheet, ranked):
         sheet.cell(row, 2, value)
     sheet['A12'] = 'TOP 10 CONFIGURATIONS · FINAL VALIDATION'
     sheet['A12'].font = Font(bold=True, color='16324F', size=13)
-    headers = ('Rank', 'Trial ID', 'Fusion', 'Dropout', 'Vector dimension',
-               'SIGReg', 'DTW gamma', 'Layers', 'Heads', 'Window', 'Stride',
-               'Score', 'Metric', 'Improvement')
+    headers = ('Rank', 'Trial ID', 'CNN type', 'CNN layers', 'Fusion', 'Dropout',
+               'Vector dimension', 'SIGReg', 'DTW gamma', 'Layers', 'Heads',
+               'Window', 'Stride', 'Score', 'Metric', 'Improvement')
     for col, label in enumerate(headers, 1):
         cell = sheet.cell(13, col, label)
         cell.fill = PatternFill('solid', fgColor='16324F')
@@ -248,13 +253,13 @@ def _dashboard(sheet, ranked):
         cfg = _config_values(trial['id'], trial['status'], trial['config'])
         summary_values = _summary(trial['history'], None, None, None)
         row = (rank, cfg[0], cfg[2], cfg[3], cfg[4], cfg[5], cfg[6], cfg[7],
-               cfg[8], cfg[9], cfg[11], summary_values[1], summary_values[6],
-               summary_values[5])
+               cfg[8], cfg[9], cfg[10], cfg[11], cfg[13], summary_values[1],
+               summary_values[6], summary_values[5])
         for col, value in enumerate(row, 1):
             sheet.cell(rank + 13, col, value)
     sheet.column_dimensions['A'].width = 29
     sheet.column_dimensions['B'].width = 44
-    for col in range(3, 15):
+    for col in range(3, 17):
         sheet.column_dimensions[get_column_letter(col)].width = 17
     sheet['B4'].alignment = Alignment(wrap_text=True, vertical='top')
     sheet.row_dimensions[4].height = 72
@@ -263,7 +268,7 @@ def _dashboard(sheet, ranked):
         chart.title = 'Top 10 validation score'
         chart.y_axis.title = ('Lower is better' if score and score[6] == 'Total loss'
                               else 'Higher is better')
-        chart.add_data(Reference(sheet, min_col=12, min_row=13,
+        chart.add_data(Reference(sheet, min_col=14, min_row=13,
                                  max_row=13 + min(10, len(complete))), titles_from_data=True)
         chart.set_categories(Reference(sheet, min_col=2, min_row=14,
                                        max_row=13 + min(10, len(complete))))
@@ -327,9 +332,12 @@ def _read_existing(path):
                 fusion_mean=stats.get('fusion_gradient_norm'))
             trial['history'][epoch - 1]['validation' if data['Split'] == 'val' else 'train'] = stats
         for trial in trials.values():
-            if trial['history']:
+            if trial['history'] and 'Model parameter count' in trial_headers:
+                # Read by the file's own header position: legacy workbooks lack
+                # the CNN columns, so TRIAL_HEADERS positions would be off by 2.
+                column = trial_headers.index('Model parameter count')
                 trial['history'][-1]['model_parameter_count'] = next(
-                    (row[TRIAL_HEADERS.index('Model parameter count')]
+                    (row[column]
                      for row in workbook['Trials'].iter_rows(min_row=2, values_only=True)
                      if row[0] == trial['id']), None)
     workbook.close()
@@ -385,7 +393,9 @@ def save_trial(path, *, trial_id, status, config, history, checkpoint=None,
             f'{dimension}: {json.dumps([head for head in heads if dimension % head == 0])}'
             for dimension in dimensions) if heads else ''
         space_rows = [(key, json.dumps(value),
-                       head_note if key == 'transformer_heads' else 'Optuna search choices')
+                       head_note if key == 'transformer_heads' else
+                       'Simple-CNN depth only; fixed architecture for ResNet18'
+                       if key == 'cnn_layers' else 'Optuna search choices')
                       for key, value in (search_space or {}).items()]
         space_sheet = book.create_sheet('SearchSpace')
         _style_table(space_sheet, ('Parameter', 'Values', 'Notes'), space_rows)

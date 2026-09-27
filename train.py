@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from tqdm.auto import tqdm
 
 from dataloader import create_dataloaders, collate_samples
+from cnn_encoder import simple_cnn_channels
 from losses import compute_loss
 from model import AlignmentModel, validate_fusion_config
 from parameters import Config
@@ -35,7 +36,8 @@ def build_model(config, initialize=True):
                           input_channels=1 if config.grayscale else 3, local_dropout=config.local_dropout,
                           transformer_dropout=config.transformer_dropout, rtl=config.rtl,
                           fusion_mode=config.fusion_mode,
-                          use_gated_fusion=config.use_gated_fusion)
+                          use_gated_fusion=config.use_gated_fusion,
+                          cnn_layers=config.cnn_layers)
 
 
 def resolve_device(device='auto', local_rank=0):
@@ -313,7 +315,16 @@ def load_checkpoint(path,device='cpu'):
         raise ValueError('Incompatible legacy checkpoint: expected standalone simple-alignment-core format 1')
     config = Config(**saved['config'])
     model = build_model(config,initialize=False).to(device)
-    model.load_state_dict(saved['model'],strict=True)
+    state = dict(saved['model'])
+    # Checkpoints saved before the concat projection was named: migrate the old
+    # bare fusion Linear keys only when shapes match exactly (same tensors, new names).
+    if 'fusion.weight' in state and 'fusion.concat_projection.weight' not in state:
+        projection = model.fusion.concat_projection
+        if projection is None or tuple(state['fusion.weight'].shape) != tuple(projection.weight.shape):
+            raise ValueError('Checkpoint has legacy fusion.weight but no shape-matching concat projection')
+        state['fusion.concat_projection.weight'] = state.pop('fusion.weight')
+        state['fusion.concat_projection.bias'] = state.pop('fusion.bias')
+    model.load_state_dict(state,strict=True)
     model.cnn.initialization = saved['initialization']
     text = OrthogonalCharEmbedding(config.embedding_dim,config.text_vocab_size,config.text_embedding_seed).to(device)
     text.load_state_dict(saved['text_embedding'],strict=True)
@@ -345,7 +356,13 @@ def _print_dataset_summary(args, config, loaders):
     print(f'Image size: {config.image_height}x{config.image_width}', flush=True)
     print(f'Window width: {config.window_width}', flush=True)
     print(f'Window stride: {config.window_stride}', flush=True)
-    print(f'CNN: {config.cnn_type}', flush=True)
+    print(f'CNN type: {config.cnn_type}', flush=True)
+    if config.cnn_type == 'simple':
+        print(f'CNN layers: {config.cnn_layers}', flush=True)
+        print(f'CNN channels: {simple_cnn_channels(config.cnn_layers)}', flush=True)
+    else:
+        print(f'CNN layers: fixed {config.cnn_type} architecture', flush=True)
+    print(f'CNN output dimension: {config.embedding_dim}', flush=True)
     print(f'Transformer: {config.transformer_type}', flush=True)
     print(f'Embedding dim: {config.embedding_dim}', flush=True)
     print(f'SIGReg: {"ENABLED (weight=" + str(config.sigreg_weight) + ")" if config.sigreg_weight else "DISABLED"}', flush=True)

@@ -6,7 +6,8 @@ from optuna_tracker import initialize, save_trial
 
 
 def _config():
-    return dict(fusion_mode='concat', use_gated_fusion=0, local_dropout=.1,
+    return dict(cnn_type='simple', cnn_layers=4,
+                fusion_mode='concat', use_gated_fusion=0, local_dropout=.1,
                 embedding_dim=128, sigreg_weight=0., dtw_gamma=.05,
                 transformer_layers=5, transformer_heads=1,
                 window_width=32, window_stride=16, seed=42)
@@ -18,6 +19,74 @@ def _history(losses, f1=None):
                    fusion_mean=.3)), validation=dict(total=loss, positive_dtw=loss,
                    alignment_f1=f1, seconds=1.), model_parameter_count=123)
             for index, loss in enumerate(losses, 1)]
+
+
+def test_cnn_type_and_layers_are_recorded(tmp_path):
+    path = tmp_path / 'tracker.xlsx'
+    save_trial(path, trial_id=0, status='COMPLETE', config=_config(),
+               history=_history([1.]))
+    resnet = dict(_config(), cnn_type='resnet18', cnn_layers=3)
+    save_trial(path, trial_id=1, status='COMPLETE', config=resnet,
+               history=_history([2.]))
+    book = load_workbook(path, data_only=True)
+    for sheet in ('RankedResults', 'Trials'):
+        rows = list(book[sheet].iter_rows(values_only=True))
+        head = {value: index for index, value in enumerate(rows[0])}
+        assert 'CNN type' in head and 'CNN layers' in head
+        values = {row[head['Trial ID']]: (row[head['CNN type']], row[head['CNN layers']])
+                  for row in rows[1:]}
+        assert values[0] == ('simple', 4)
+        assert values[1] == ('resnet18', 'fixed')
+    labels = [cell.value for cell in book['Dashboard'][13]]
+    assert 'CNN type' in labels and 'CNN layers' in labels
+    top_row = [cell.value for cell in book['Dashboard'][14]]
+    assert top_row[labels.index('CNN type')] == 'simple'
+    assert top_row[labels.index('CNN layers')] == 4
+    book.close()
+
+
+def test_legacy_workbook_without_cnn_columns_still_loads(tmp_path):
+    from openpyxl import Workbook
+
+    from optuna_tracker import METRICS, SUMMARY_HEADERS
+
+    path = tmp_path / 'legacy.xlsx'
+    old_config_headers = ('Trial ID', 'Status', 'Fusion', 'Dropout', 'Vector dimension',
+                          'SIGReg ON/OFF', 'DTW gamma', 'Transformer layers',
+                          'Transformer heads', 'Window size', 'Stride ratio',
+                          'Actual stride pixels')
+    old_headers = old_config_headers + SUMMARY_HEADERS + ('Config JSON', 'Error',
+                                                          'Updated UTC')
+    book = Workbook()
+    trials_sheet = book.active
+    trials_sheet.title = 'Trials'
+    trials_sheet.append(old_headers)
+    legacy_config = _config()
+    del legacy_config['cnn_type'], legacy_config['cnn_layers']
+    values = {header: None for header in old_headers}
+    values.update({'Trial ID': 7, 'Status': 'COMPLETE', 'Model parameter count': 999,
+                   'Config JSON': json.dumps(legacy_config)})
+    trials_sheet.append(tuple(values[header] for header in old_headers))
+    epoch_sheet = book.create_sheet('EpochMetrics')
+    epoch_sheet.append(('Trial_ID', 'Epoch', 'Split') + METRICS)
+    for split in ('train', 'val'):
+        epoch_sheet.append((7, 1, split) + tuple(
+            1.0 if metric == 'Total loss' else .1 if metric == 'Epoch time (s)' else None
+            for metric in METRICS))
+    book.save(path)
+    book.close()
+
+    save_trial(path, trial_id='new:0', status='COMPLETE', config=_config(),
+               history=_history([1.]))
+    book = load_workbook(path, data_only=True)
+    rows = list(book['Trials'].iter_rows(values_only=True))
+    head = {value: index for index, value in enumerate(rows[0])}
+    old = next(row for row in rows[1:] if row[head['Trial ID']] == 7)
+    assert old[head['Model parameter count']] == 999  # read via legacy header position
+    assert old[head['CNN type']] is None and old[head['CNN layers']] is None
+    new = next(row for row in rows[1:] if row[head['Trial ID']] == 'new:0')
+    assert new[head['CNN type']] == 'simple' and new[head['CNN layers']] == 4
+    book.close()
 
 
 def test_tracker_saves_every_epoch_and_physically_sorts(tmp_path):

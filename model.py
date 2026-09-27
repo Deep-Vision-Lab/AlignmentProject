@@ -71,11 +71,12 @@ class AlignmentModel(nn.Module):
                  window_width=32, stride=16, pretrained_cnn=True, use_positional_encoding=False,
                  input_channels=1, local_dropout=.10, transformer_dropout=0., rtl=True,
                  fusion_mode='concat', use_gated_fusion=0, transformer_layers=0,
-                 transformer_heads=0):
+                 transformer_heads=0, cnn_layers=3):
         super().__init__()
         self.window_width, self.stride, self.rtl = window_width, stride, rtl
         self.fusion_mode, self.use_gated_fusion = validate_fusion_config(fusion_mode, use_gated_fusion)
-        self.cnn = CNNEncoder(cnn_type, embedding_dim, pretrained_cnn, input_channels, local_dropout)
+        self.cnn = CNNEncoder(cnn_type, embedding_dim, pretrained_cnn, input_channels,
+                              local_dropout, num_layers=cnn_layers)
         self.transformer = TransformerEncoder(transformer_type, embedding_dim,
                                                use_positional_encoding, transformer_dropout,
                                                transformer_layers, transformer_heads)

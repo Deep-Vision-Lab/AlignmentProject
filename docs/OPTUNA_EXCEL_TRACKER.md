@@ -11,18 +11,26 @@ python scripts/train/run_optuna.py \
 ```
 
 On the project SLURM cluster, submit the same arguments with
-`sbatch scripts/train/optuna.sbatch --dataset DataSet/ArabicDataset --n-trials 30 --epochs 20`.
+`sbatch --job-name=my_optuna_job scripts/train/optuna.sbatch --dataset DataSet/ArabicDataset --n-trials 30 --epochs 20`.
 The Optuna job uses one GPU and writes the Excel file to the shared checkout.
 
-The workbook is `results/optuna/optuna_alignment_experiment_tracker.xlsx`.
+Every Optuna job owns one result folder: `results/<job-name>/`. The job name
+is the explicit `--job-name` if given, otherwise `$SLURM_JOB_NAME` under
+SLURM, otherwise the study name for local runs (sanitized to
+`A-Z a-z 0-9 _ - .`). The workbook is
+`results/<job-name>/optuna_alignment_experiment_tracker.xlsx`.
 It exists before the first trial. After each trial finishes, the Optuna
 callback reads that trial's saved `history.json`, writes both train and
 validation rows for **every** completed epoch, updates `Trials`, physically
 sorts `RankedResults`, refreshes `Dashboard`, and atomically replaces the
 workbook. A failed trial retains all epochs that finished before its error.
 Optimization pruning is disabled; valid trials run all configured epochs.
-SQLite study state is stored in `results/optuna/study_no_pruning_v2.db` by
-default. Checkpoints and logs are separated by study under `results/optuna/`.
+SQLite study state is stored in `results/<job-name>/study.db` by default.
+Checkpoints live in `results/<job-name>/checkpoints/trial_NNNNN/` and logs in
+`results/<job-name>/logs/trial_NNNNN.log`; the sampled search space and job
+metadata are recorded in `results/<job-name>/search_space.json`. Explicit
+`--tracker`, `--checkpoint-root`, `--log-root`, and `--storage` arguments
+override these defaults.
 
 `RankedResults` orders only `COMPLETE` trials at the top. Final validation
 Alignment F1 takes precedence when available, then Mask IoU, then lowest
@@ -44,7 +52,7 @@ visual windows against that line's own transcript. GPU memory is the peak
 allocated memory during each split, in MiB.
 
 Use `--base-config config.json` to override fixed `Config` defaults and
-`--search-space choices.json` to provide categorical lists for the nine
+`--search-space choices.json` to provide categorical lists for the ten
 parameters shown in `SearchSpace`. `--max-batches` is for smoke runs only;
 zero uses full splits. A run can resume its Optuna study with the same
 `--study-name`, `--storage`, and workbook path; existing trial rows are

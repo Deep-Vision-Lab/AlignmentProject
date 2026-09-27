@@ -21,6 +21,7 @@ class Config:
     window_stride: int = 16
     cnn_type: str = 'resnet18'
     cnn_pretrained: bool = True
+    cnn_layers: int = 3  # simple-CNN depth only; ResNet18 stays fixed
     transformer_type: str = 'tiny'
     transformer_layers: int = 0  # 0 uses the preset depth.
     transformer_heads: int = 0  # 0 uses the preset head count.
