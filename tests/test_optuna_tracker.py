@@ -89,6 +89,38 @@ def test_legacy_workbook_without_cnn_columns_still_loads(tmp_path):
     book.close()
 
 
+def test_fixed_parameters_are_marked_not_searched(tmp_path):
+    from scripts.train.run_optuna import DEFAULT_SEARCH_SPACE, FIXED_SEARCH_PARAMETERS
+
+    path = tmp_path / 'tracker.xlsx'
+    initialize(path, DEFAULT_SEARCH_SPACE, fixed=FIXED_SEARCH_PARAMETERS)
+    save_trial(path, trial_id=0, status='COMPLETE', config=_config(),
+               history=_history([1.]))  # fixed values persist across later saves
+    book = load_workbook(path, data_only=True)
+    space = {row[0]: (row[1], row[2]) for row in
+             book['SearchSpace'].iter_rows(min_row=2, values_only=True)}
+    assert set(space) == set(DEFAULT_SEARCH_SPACE)
+    assert 'cnn_layers' in space and 'sigreg_weight' in space
+    for removed in ('dropout', 'dtw_gamma', 'stride_ratio'):
+        assert removed not in space  # not displayed as Optuna variables
+    fixed = dict(book['FixedParameters'].iter_rows(min_row=2, values_only=True))
+    assert fixed['local_dropout'] == 0.1
+    assert fixed['transformer_dropout'] == 0.1
+    assert fixed['dtw_gamma'] == 0.5
+    assert fixed['stride_ratio'] == 0.5
+    assert fixed['cnn_type'] == 'simple'
+    assert bool(fixed['cnn_pretrained']) is False
+    dashboard = book['Dashboard']
+    fixed_labels = {dashboard.cell(row, 1).value for row in range(36, 42)}
+    assert fixed_labels == {f'{key} (FIXED)' for key in FIXED_SEARCH_PARAMETERS}
+    fixed_row = {dashboard.cell(row, 1).value: dashboard.cell(row, 2).value
+                 for row in range(36, 42)}
+    assert fixed_row['dtw_gamma (FIXED)'] == 0.5
+    assert fixed_row['local_dropout (FIXED)'] == 0.1
+    assert fixed_row['stride_ratio (FIXED)'] == 0.5
+    book.close()
+
+
 def test_tracker_saves_every_epoch_and_physically_sorts(tmp_path):
     path = tmp_path / 'tracker.xlsx'
     initialize(path, {'fusion': ['concat', 'sum']})
@@ -99,7 +131,8 @@ def test_tracker_saves_every_epoch_and_physically_sorts(tmp_path):
     save_trial(path, trial_id=2, status='PRUNED', config=_config(),
                history=_history([.1]), search_space={'fusion': ['concat', 'sum']})
     book = load_workbook(path, data_only=True)
-    assert book.sheetnames == ['RankedResults', 'Trials', 'EpochMetrics', 'Dashboard', 'SearchSpace']
+    assert book.sheetnames == ['RankedResults', 'Trials', 'EpochMetrics', 'Dashboard',
+                               'SearchSpace', 'FixedParameters']
     rows = list(book['RankedResults'].iter_rows(values_only=True))
     head = {value: index for index, value in enumerate(rows[0])}
     assert [row[head['Trial ID']] for row in rows[1:]] == [1, 0, 2]

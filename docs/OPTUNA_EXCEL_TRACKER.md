@@ -52,16 +52,25 @@ visual windows against that line's own transcript. GPU memory is the peak
 allocated memory during each split, in MiB.
 
 Use `--base-config config.json` to override fixed `Config` defaults and
-`--search-space choices.json` to provide categorical lists for the ten
-parameters shown in `SearchSpace`. `--max-batches` is for smoke runs only;
+`--search-space choices.json` to provide categorical lists for the seven
+searched parameters shown in `SearchSpace` (fusion, vector dimension,
+transformer layers/heads, window size, CNN layers, SIGReg weight). Dropout
+(0.1), DTW gamma (0.5), stride ratio (0.5, i.e. 50% overlap), and the simple
+CNN (`cnn_type=simple`, `cnn_pretrained=False`) are fixed constants, recorded
+in the `FixedParameters` sheet and on the `Dashboard` marked `(FIXED)`.
+`--max-batches` is for smoke runs only;
 zero uses full splits. A run can resume its Optuna study with the same
 `--study-name`, `--storage`, and workbook path; existing trial rows are
 upserted by study-qualified trial ID.
 
-The corrected search samples vector dimensions `64`, `128`, and `256`.
-For each dimension, the valid head choices are `[1, 2]`; the requested
-candidate `3` is excluded before sampling because none of these dimensions
-is divisible by `3`. The old `alignment` study used the categorical head
-distribution `[1, 2, 3]` and **cannot safely resume** with the corrected
-distribution. The runner rejects that study before starting a trial. Use
-the new default study name and database shown above.
+The Optuna objective is `-validation positive_dtw` (maximize): total loss is
+not comparable across trials because SIGReg ON adds `0.3 * sigreg` to it, so
+ranking uses validation positive DTW only. The workbook still records total,
+DTW, and SIGReg losses for every epoch.
+
+The search samples vector dimensions `64`, `128`, and `256` with heads
+`[1, 2, 4]`; only dimension-divisible heads are offered per trial, so no
+invalid vector/head combination is ever launched. Old studies recorded with a
+different searched-parameter set (including the pre-`cnn_layers` layout and
+the dropout/DTW-gamma/stride search) **cannot safely resume**; the runner
+rejects them before starting a trial. Use a new `--study-name` and job name.

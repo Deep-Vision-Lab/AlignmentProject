@@ -215,7 +215,7 @@ def _style_table(sheet, headers, rows, color='16324F'):
                 cell.number_format = '0.0000'
 
 
-def _dashboard(sheet, ranked):
+def _dashboard(sheet, ranked, fixed=None):
     sheet.sheet_view.showGridLines = False
     sheet['A1'] = 'OPTUNA ALIGNMENT · VALIDATION LEADERBOARD'
     sheet['A1'].font = Font(size=18, bold=True, color='16324F')
@@ -239,6 +239,10 @@ def _dashboard(sheet, ranked):
                ('Failed', counts['FAILED'])]
     for row, (label, value) in enumerate(summary, 3):
         sheet.cell(row, 1, label).font = Font(bold=True, color='16324F')
+        sheet.cell(row, 2, value)
+    for row, (label, value) in enumerate((fixed or {}).items(), 36):
+        cell = sheet.cell(row, 1, f'{label} (FIXED)')
+        cell.font = Font(bold=True, color='7F6000')
         sheet.cell(row, 2, value)
     sheet['A12'] = 'TOP 10 CONFIGURATIONS · FINAL VALIDATION'
     sheet['A12'].font = Font(bold=True, color='16324F', size=13)
@@ -345,7 +349,7 @@ def _read_existing(path):
 
 
 def save_trial(path, *, trial_id, status, config, history, checkpoint=None,
-               log_path=None, error=None, search_space=None):
+               log_path=None, error=None, search_space=None, fixed=None):
     """Upsert one trial; write every epoch, rank, refresh dashboard, and fsync."""
     path = Path(path)
     with _locked(path):
@@ -380,7 +384,14 @@ def save_trial(path, *, trial_id, status, config, history, checkpoint=None,
                                            'val' if split == 'validation' else 'train') +
                                           metric_values(entry[split], split))
         _style_table(book.create_sheet('EpochMetrics'), EPOCH_HEADERS, epoch_rows)
-        _dashboard(book.create_sheet('Dashboard'), ranked)
+        if fixed is None and path.exists():
+            existing = load_workbook(path, read_only=True, data_only=True)
+            if 'FixedParameters' in existing:
+                fixed = {row[0]: row[1] for row in
+                         existing['FixedParameters'].iter_rows(min_row=2, values_only=True)
+                         if row[0]}
+            existing.close()
+        _dashboard(book.create_sheet('Dashboard'), ranked, fixed)
         if search_space is None and path.exists():
             existing = load_workbook(path, read_only=True, data_only=True)
             if 'SearchSpace' in existing:
@@ -402,6 +413,11 @@ def save_trial(path, *, trial_id, status, config, history, checkpoint=None,
         space_sheet.column_dimensions['A'].width = 28
         space_sheet.column_dimensions['B'].width = 46
         space_sheet.column_dimensions['C'].width = 68
+        fixed_sheet = book.create_sheet('FixedParameters')
+        _style_table(fixed_sheet, ('Parameter', 'FIXED value'),
+                     [(key, value) for key, value in (fixed or {}).items()])
+        fixed_sheet.column_dimensions['A'].width = 28
+        fixed_sheet.column_dimensions['B'].width = 30
         fd, temporary = tempfile.mkstemp(prefix='.optuna_tracker_', suffix='.xlsx', dir=path.parent)
         os.close(fd)
         try:
@@ -414,9 +430,9 @@ def save_trial(path, *, trial_id, status, config, history, checkpoint=None,
                 os.unlink(temporary)
 
 
-def initialize(path=DEFAULT_TRACKER, search_space=None):
-    """Create the five-sheet workbook before the first trial starts."""
+def initialize(path=DEFAULT_TRACKER, search_space=None, fixed=None):
+    """Create the tracker workbook before the first trial starts."""
     path = Path(path)
     if not path.exists():
         save_trial(path, trial_id=None, status='INITIALIZING', config={}, history=[],
-                   search_space=search_space)
+                   search_space=search_space, fixed=fixed)

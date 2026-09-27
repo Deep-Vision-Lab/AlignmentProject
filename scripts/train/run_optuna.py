@@ -20,22 +20,30 @@ sys.path.insert(0, str(ROOT))
 
 import optuna
 
-from optuna_tracker import initialize, ranking_score, save_trial
+from optuna_tracker import initialize, save_trial
 from parameters import Config
 from train import main as train_main
 
 
 DEFAULT_SEARCH_SPACE = {
     'fusion': ['concat', 'sum', 'gated_sum'],
-    'dropout': [0.0, 0.1, 0.3],
     'vector_dimension': [64, 128, 256],
-    'sigreg_weight': [0.0, 0.3],
-    'dtw_gamma': [0.02, 0.05, 0.1],
     'transformer_layers': [1, 3, 5],
     'transformer_heads': [1, 2, 4],
-    'cnn_layers': [1, 2, 3, 4],
     'window_size': [32, 64, 128],
-    'stride_ratio': [0.5, 0.75, 1.0],
+    'cnn_layers': [1, 2, 3, 4, 5],
+    'sigreg_weight': [0.0, 0.3],
+}
+
+# Architecture-search constants: identical for every trial so trials stay
+# comparable. Dropout/DTW gamma/stride ratio are NOT Optuna parameters.
+FIXED_SEARCH_PARAMETERS = {
+    'cnn_type': 'simple',
+    'cnn_pretrained': False,
+    'local_dropout': 0.1,
+    'transformer_dropout': 0.1,
+    'dtw_gamma': 0.5,
+    'stride_ratio': 0.5,
 }
 
 
@@ -69,10 +77,11 @@ def _resolve_job_name(args):
                               or args.study_name)
 
 
-def _suggest_config(trial, base, search_space):
+def _suggest_config(trial, base, search_space, fixed=None):
     required = set(DEFAULT_SEARCH_SPACE)
     if set(search_space) != required:
         raise ValueError(f'Search space needs exactly these keys: {sorted(required)}')
+    fixed = FIXED_SEARCH_PARAMETERS if fixed is None else fixed
     vector_dim = trial.suggest_categorical('vector_dimension', search_space['vector_dimension'])
     valid_heads = [head for head in search_space['transformer_heads']
                    if vector_dim % head == 0]
@@ -80,26 +89,31 @@ def _suggest_config(trial, base, search_space):
     choices = {'vector_dimension': vector_dim, 'transformer_heads': transformer_heads}
     # CNN depth is a real search dimension only for the simple CNN; ResNet18 depth
     # is fixed by the architecture, so it must never become a trial parameter there.
-    if base.get('cnn_type', 'simple') == 'simple':
+    if fixed.get('cnn_type', 'simple') == 'simple':
         choices['cnn_layers'] = trial.suggest_categorical('cnn_layers', search_space['cnn_layers'])
     choices.update({name: trial.suggest_categorical(name, values)
                     for name, values in search_space.items()
                     if name not in ('vector_dimension', 'transformer_heads', 'cnn_layers')})
     config = dict(base)
     fusion = choices['fusion']
-    config.update(fusion_mode='sum' if fusion == 'gated_sum' else fusion,
+    config.update(cnn_type=fixed['cnn_type'],
+                  cnn_pretrained=fixed['cnn_pretrained'],
+                  fusion_mode='sum' if fusion == 'gated_sum' else fusion,
                   use_gated_fusion=int(fusion == 'gated_sum'),
-                  local_dropout=choices['dropout'],
-                  transformer_dropout=choices['dropout'],
+                  local_dropout=fixed['local_dropout'],
+                  transformer_dropout=fixed['transformer_dropout'],
                   embedding_dim=choices['vector_dimension'],
                   sigreg_weight=choices['sigreg_weight'],
-                  dtw_gamma=choices['dtw_gamma'],
+                  dtw_gamma=fixed['dtw_gamma'],
                   transformer_layers=choices['transformer_layers'],
                   transformer_heads=choices['transformer_heads'],
                   window_width=choices['window_size'],
-                  window_stride=max(1, round(choices['window_size'] * choices['stride_ratio'])))
+                  window_stride=max(1, round(choices['window_size'] * fixed['stride_ratio'])))
     if 'cnn_layers' in choices:
         config['cnn_layers'] = choices['cnn_layers']
+    else:
+        # Non-simple CNN: depth stays at the architecture default, never sampled.
+        config['cnn_layers'] = base.get('cnn_layers', 3)
     return config
 
 
@@ -123,19 +137,18 @@ def _check_existing_study(study, valid_heads, search_cnn_layers):
     """Reject older categorical distributions before running or writing trials."""
     expected = tuple(next(iter(valid_heads.values())))
     for trial in study.get_trials(deepcopy=False):
+        searched = set(trial.distributions) - {'vector_dimension', 'transformer_heads'}
+        if trial.distributions and (('cnn_layers' in trial.distributions) != search_cnn_layers
+                                    or searched != set(DEFAULT_SEARCH_SPACE) - {'vector_dimension', 'transformer_heads'}):
+            raise RuntimeError(
+                f'Existing Optuna study {study.study_name!r} is incompatible with the new '
+                'architecture-only search space. '
+                'Use a new --study-name and --storage database.')
         distribution = trial.distributions.get('transformer_heads')
         if distribution is not None and tuple(distribution.choices) != expected:
             raise RuntimeError(
                 f'Study {study.study_name!r} has Transformer-head choices '
                 f'{tuple(distribution.choices)!r}; corrected search requires {expected!r}. '
-                'Use a new --study-name and --storage database.')
-        if trial.distributions and ('cnn_layers' in trial.distributions) != search_cnn_layers:
-            raise RuntimeError(
-                f'Study {study.study_name!r} was recorded '
-                f'{"without" if search_cnn_layers else "with"} a cnn_layers distribution, '
-                f'but this run searches {"with" if search_cnn_layers else "without"} it '
-                f'(cnn_type={"simple" if search_cnn_layers else "resnet18"}). Mixing search '
-                'dimensions inside one study silently distorts the sampler. '
                 'Use a new --study-name and --storage database.')
 
 
@@ -188,6 +201,8 @@ def main(argv=None):
     if unknown:
         parser.error(f'Unknown Config fields: {sorted(unknown)}')
     base.update(overrides)
+    base.update(FIXED_SEARCH_PARAMETERS)
+    base.pop('stride_ratio', None)  # fixed ratio constant, not a Config field
     base.update(epochs=args.epochs, seed=args.seed)
     job_name = _resolve_job_name(args)
     result_root = Path('results') / job_name
@@ -204,7 +219,8 @@ def main(argv=None):
         dict(job_name=job_name, study_name=args.study_name,
              slurm_job_name=os.environ.get('SLURM_JOB_NAME'),
              slurm_job_id=os.environ.get('SLURM_JOB_ID'),
-             cnn_type=base.get('cnn_type'), search_space=search_space), indent=2))
+             cnn_type=base.get('cnn_type'),
+             searched=search_space, fixed=FIXED_SEARCH_PARAMETERS), indent=2))
     print('=' * 60, flush=True)
     print('OPTUNA JOB', flush=True)
     print('=' * 60, flush=True)
@@ -222,7 +238,7 @@ def main(argv=None):
         sampler=optuna.samplers.TPESampler(seed=args.seed),
         pruner=optuna.pruners.NopPruner())
     _check_existing_study(study, valid_heads, base.get('cnn_type', 'simple') == 'simple')
-    initialize(args.tracker, search_space)
+    initialize(args.tracker, search_space, fixed=FIXED_SEARCH_PARAMETERS)
 
     def run_trial(trial):
         config = _suggest_config(trial, base, search_space)
@@ -236,32 +252,41 @@ def main(argv=None):
         with log_path.open('w') as log, redirect_stdout(_Tee(sys.stdout, log)), \
                 redirect_stderr(_Tee(sys.stderr, log)):
             fusion = 'gated_sum' if config['use_gated_fusion'] else config['fusion_mode']
-            print(f'Trial: {trial.number}', flush=True)
+            print('=' * 60, flush=True)
+            print(f'OPTUNA TRIAL {trial.number}', flush=True)
+            print('=' * 60, flush=True)
+            print('SEARCHED PARAMETERS', flush=True)
             print('', flush=True)
-            print(f'CNN type: {config["cnn_type"]}', flush=True)
-            print('CNN layers: '
-                  f'{config["cnn_layers"] if config["cnn_type"] == "simple" else "fixed"}',
-                  flush=True)
-            print('', flush=True)
-            print(f'Fusion: {fusion}', flush=True)
-            print(f'Dropout: {config["local_dropout"]}', flush=True)
-            print(f'Vector dimension: {config["embedding_dim"]}', flush=True)
-            print(f'SIGReg: {config["sigreg_weight"]}', flush=True)
-            print(f'DTW gamma: {config["dtw_gamma"]}', flush=True)
+            print(f'Fusion:             {fusion}', flush=True)
+            print(f'Vector dimension:   {config["embedding_dim"]}', flush=True)
             print(f'Transformer layers: {config["transformer_layers"]}', flush=True)
-            print(f'Transformer heads: {config["transformer_heads"]}', flush=True)
-            print(f'Window size: {config["window_width"]}', flush=True)
-            print(f'Stride ratio: {config["window_stride"] / config["window_width"]:.4g}',
-                  flush=True)
+            print(f'Transformer heads:  {config["transformer_heads"]}', flush=True)
+            print(f'Window size:        {config["window_width"]}', flush=True)
+            if config['cnn_type'] == 'simple':
+                print(f'CNN layers:         {config["cnn_layers"]}', flush=True)
+            print(f'SIGReg weight:      {config["sigreg_weight"]}', flush=True)
             print('', flush=True)
+            print('FIXED PARAMETERS', flush=True)
+            print('', flush=True)
+            print(f'CNN type:           {config["cnn_type"]}', flush=True)
+            print(f'CNN pretrained:     {config["cnn_pretrained"]}', flush=True)
+            if config['cnn_type'] != 'simple':
+                print('CNN layers:         fixed', flush=True)
+            print(f'Dropout:            {config["local_dropout"]}', flush=True)
+            print(f'DTW gamma:          {config["dtw_gamma"]}', flush=True)
+            print(f'Stride ratio:       {FIXED_SEARCH_PARAMETERS["stride_ratio"]}', flush=True)
+            print(f'Window stride:      {config["window_stride"]}', flush=True)
+            print('=' * 60, flush=True)
             try:
                 train_main(_config_args(config, args, run_name))
                 history = json.loads((output_dir / 'history.json').read_text())
-                score, metric = ranking_score(history[-1]['validation'])
-                if score is None:
-                    raise ValueError('Final validation has no ranking metric')
-                print(f'Final validation objective ({metric}): {score}', flush=True)
-                return score
+                # SIGReg ON adds weight * sigreg to total loss, so total loss cannot
+                # compare SIGReg ON/OFF trials; rank on validation positive DTW only.
+                dtw = history[-1]['validation'].get('positive_dtw')
+                if dtw is None:
+                    raise ValueError('Final validation has no positive_dtw metric')
+                print(f'Final validation objective (Positive DTW): {dtw}', flush=True)
+                return -dtw  # direction=maximize: lower DTW scores higher
             except Exception as exc:
                 trial.set_user_attr('error', f'{type(exc).__name__}: {exc}')
                 traceback.print_exc()
@@ -280,7 +305,8 @@ def main(argv=None):
                    config=frozen.user_attrs.get('config', base), history=history,
                    checkpoint=output_dir / 'checkpoint_latest.pt',
                    log_path=frozen.user_attrs.get('log_path'),
-                   error=frozen.user_attrs.get('error'), search_space=search_space)
+                   error=frozen.user_attrs.get('error'), search_space=search_space,
+                   fixed=FIXED_SEARCH_PARAMETERS)
         print(f'Excel saved after trial {frozen.number}: {args.tracker}', flush=True)
 
     study.optimize(run_trial, n_trials=args.n_trials, callbacks=[save_finished],

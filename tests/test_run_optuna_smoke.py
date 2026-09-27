@@ -51,19 +51,44 @@ class OptunaSmokeTest(unittest.TestCase):
                                     for head in trial.seen['transformer_heads']))
                 self.assertEqual(set(trial.seen), set(run_optuna.DEFAULT_SEARCH_SPACE))
 
+    def test_removed_parameters_are_never_sampled_and_fixed(self):
+        self.assertEqual(set(run_optuna.DEFAULT_SEARCH_SPACE),
+                         {'fusion', 'vector_dimension', 'transformer_layers',
+                          'transformer_heads', 'window_size', 'cnn_layers',
+                          'sigreg_weight'})
+        for removed in ('dropout', 'dtw_gamma', 'stride_ratio'):
+            self.assertNotIn(removed, run_optuna.DEFAULT_SEARCH_SPACE)
+        trial = _DepthTrial(3)
+        config = run_optuna._suggest_config(trial, {}, run_optuna.DEFAULT_SEARCH_SPACE)
+        for removed in ('dropout', 'dtw_gamma', 'stride_ratio'):
+            self.assertNotIn(removed, trial.seen)
+        # Fixed constants on every trial; stride is exactly half the window.
+        self.assertEqual(config['cnn_type'], 'simple')
+        self.assertFalse(config['cnn_pretrained'])
+        self.assertEqual(config['local_dropout'], 0.1)
+        self.assertEqual(config['transformer_dropout'], 0.1)
+        self.assertEqual(config['dtw_gamma'], 0.5)
+        self.assertEqual(config['window_stride'],
+                         round(config['window_width'] * 0.5))
+        self.assertEqual(config['sigreg_weight'], 0.0)  # choices[0] of [0.0, 0.3]
+
     def test_cnn_layers_sampled_only_for_simple_cnn(self):
         trial = _DepthTrial(4)
-        config = run_optuna._suggest_config(trial, {'cnn_type': 'simple'},
+        config = run_optuna._suggest_config(trial, {},
                                             run_optuna.DEFAULT_SEARCH_SPACE)
         self.assertEqual(trial.seen['cnn_layers'], (1, 2, 3, 4, 5))
         self.assertEqual(config['cnn_layers'], 4)
+        self.assertEqual(config['cnn_type'], 'simple')
 
         resnet_trial = _DepthTrial(4)
-        config = run_optuna._suggest_config(resnet_trial,
-                                            {'cnn_type': 'resnet18', 'cnn_layers': 3},
-                                            run_optuna.DEFAULT_SEARCH_SPACE)
+        config = run_optuna._suggest_config(resnet_trial, {},
+                                            run_optuna.DEFAULT_SEARCH_SPACE,
+                                            fixed=dict(run_optuna.FIXED_SEARCH_PARAMETERS,
+                                                       cnn_type='resnet18'))
         self.assertNotIn('cnn_layers', resnet_trial.seen)
-        self.assertEqual(config['cnn_layers'], 3)  # fixed; ResNet18 depth never changes
+        self.assertEqual(config['cnn_type'], 'resnet18')
+        from parameters import Config as _Config
+        self.assertEqual(config['cnn_layers'], _Config().cnn_layers)  # fixed default
 
     def test_every_simple_cnn_depth_builds_and_trains(self):
         from dataclasses import replace
@@ -76,7 +101,7 @@ class OptunaSmokeTest(unittest.TestCase):
         for depth in (1, 2, 3, 4, 5):
             with self.subTest(depth=depth):
                 trial = _DepthTrial(depth)
-                suggested = run_optuna._suggest_config(trial, {'cnn_type': 'simple'},
+                suggested = run_optuna._suggest_config(trial, {},
                                                        run_optuna.DEFAULT_SEARCH_SPACE)
                 self.assertEqual(suggested['cnn_layers'], depth)  # sampled -> Config path
                 config = replace(Config(**suggested), cnn_pretrained=False,
@@ -104,9 +129,9 @@ class OptunaSmokeTest(unittest.TestCase):
         from train import build_model
 
         trial = _DepthTrial(5)
-        suggested = run_optuna._suggest_config(trial,
-                                               {'cnn_type': 'resnet18', 'cnn_layers': 3},
-                                               run_optuna.DEFAULT_SEARCH_SPACE)
+        suggested = run_optuna._suggest_config(
+            trial, {}, run_optuna.DEFAULT_SEARCH_SPACE,
+            fixed=dict(run_optuna.FIXED_SEARCH_PARAMETERS, cnn_type='resnet18'))
         self.assertNotIn('cnn_layers', trial.seen)
         config = replace(Config(**suggested), cnn_pretrained=False,
                          image_height=128, image_width=64)
@@ -172,19 +197,32 @@ class OptunaSmokeTest(unittest.TestCase):
                 self.assertNotEqual(heads, 3)
                 self.assertEqual(tuple(trial.distributions['transformer_heads'].choices),
                                  (1, 2, 4))
-                # Default base config is resnet18: CNN depth stays fixed and is
-                # never sampled as a study parameter.
-                self.assertNotIn('cnn_layers', trial.params)
+                # Architecture search fixes the simple CNN; depth is sampled.
+                self.assertIn(trial.params['cnn_layers'], (1, 2, 3, 4, 5))
+                config = trial.user_attrs['config']
+                self.assertEqual(config['cnn_type'], 'simple')
+                self.assertFalse(config['cnn_pretrained'])
+                self.assertEqual(config['local_dropout'], 0.1)
+                self.assertEqual(config['dtw_gamma'], 0.5)
+                self.assertEqual(config['window_stride'],
+                                 round(config['window_width'] * 0.5))
                 self.assertFalse(trial.intermediate_values)
                 log_text = (logs / f'trial_{trial.number:05d}.log').read_text()
-                self.assertIn('CNN type: resnet18', log_text)
-                self.assertIn('CNN layers: fixed', log_text)
+                self.assertIn('SEARCHED PARAMETERS', log_text)
+                self.assertIn('FIXED PARAMETERS', log_text)
+                self.assertIn('CNN type:           simple', log_text)
+                self.assertIn('DTW gamma:          0.5', log_text)
+            # Objective is -validation positive DTW so SIGReg ON/OFF stay comparable.
+            complete_log = (logs / 'trial_00000.log').read_text()
+            self.assertIn('Final validation objective (Positive DTW)', complete_log)
+            self.assertEqual(study.trials[0].value, -1.0 / 3)
             self.assertIn('simulated real training error',
                           study.trials[1].user_attrs['error'])
 
             workbook = load_workbook(tracker, data_only=True)
             self.assertEqual(workbook.sheetnames,
-                ['RankedResults', 'Trials', 'EpochMetrics', 'Dashboard', 'SearchSpace'])
+                ['RankedResults', 'Trials', 'EpochMetrics', 'Dashboard', 'SearchSpace',
+                 'FixedParameters'])
             ranked = list(workbook['RankedResults'].iter_rows(values_only=True))
             self.assertEqual(ranked[1][0:3], (1, f'{study_name}:0', 'COMPLETE'))
             self.assertEqual(ranked[2][0:3], (None, f'{study_name}:1', 'FAILED'))
@@ -197,6 +235,23 @@ class OptunaSmokeTest(unittest.TestCase):
             self.assertEqual(workbook['Dashboard']['B7'].value, 1)
             self.assertEqual(workbook['Dashboard']['B8'].value, 0)
             self.assertEqual(workbook['Dashboard']['B9'].value, 1)
+            dashboard = workbook['Dashboard']
+            self.assertEqual(dashboard['B7'].value, 1)
+            self.assertEqual(dashboard['B8'].value, 0)
+            self.assertEqual(dashboard['B9'].value, 1)
+            dashboard_fixed = {dashboard.cell(row, 1).value
+                               for row in range(36, 42)}
+            self.assertIn('cnn_type (FIXED)', dashboard_fixed)
+            self.assertIn('dtw_gamma (FIXED)', dashboard_fixed)
+            fixed_rows = dict(workbook['FixedParameters'].iter_rows(min_row=2,
+                                                                    values_only=True))
+            self.assertEqual(fixed_rows['dtw_gamma'], 0.5)
+            self.assertEqual(fixed_rows['local_dropout'], 0.1)
+            self.assertEqual(fixed_rows['stride_ratio'], 0.5)
+            self.assertEqual(fixed_rows['cnn_type'], 'simple')
+            space = {row[0] for row in
+                     workbook['SearchSpace'].iter_rows(min_row=2, values_only=True)}
+            self.assertEqual(space, set(run_optuna.DEFAULT_SEARCH_SPACE))
             workbook.close()
             self.assertTrue(database.exists())
 
@@ -209,9 +264,6 @@ class OptunaSmokeTest(unittest.TestCase):
             checkpoints = root / 'checkpoints'
             logs = root / 'logs'
             study_name = 'simple_cnn_depth_smoke'
-            base_config = root / 'base.json'
-            base_config.write_text(json.dumps({'cnn_type': 'simple',
-                                               'cnn_pretrained': False}))
             seen_argv = {}
 
             def fake_training(argv):
@@ -230,7 +282,6 @@ class OptunaSmokeTest(unittest.TestCase):
                 (output / 'history.json').write_text(json.dumps(history))
 
             arguments = ['--dataset', str(root), '--n-trials', '3', '--epochs', '2',
-                         '--base-config', str(base_config),
                          '--tracker', str(tracker), '--checkpoint-root', str(checkpoints),
                          '--log-root', str(logs), '--storage', f'sqlite:///{database}',
                          '--study-name', study_name]
@@ -261,8 +312,8 @@ class OptunaSmokeTest(unittest.TestCase):
                 config = trial.user_attrs['config']
                 self.assertEqual(config['cnn_layers'], depth)  # and reaches Config
                 log_text = (logs / f'{run_name}.log').read_text()
-                self.assertIn('CNN type: simple', log_text)
-                self.assertIn(f'CNN layers: {depth}', log_text)
+                self.assertIn('CNN type:           simple', log_text)
+                self.assertIn(f'CNN layers:         {depth}', log_text)
                 row = next(row for row in trial_rows[1:]
                            if row[headers['Trial ID']] == f'{study_name}:{trial.number}')
                 self.assertEqual(row[headers['CNN type']], 'simple')
@@ -270,6 +321,7 @@ class OptunaSmokeTest(unittest.TestCase):
             space = {row[0]: row[1] for row in
                      workbook['SearchSpace'].iter_rows(min_row=2, values_only=True)}
             self.assertEqual(json.loads(space['cnn_layers']), [1, 2, 3, 4, 5])
+            self.assertEqual(set(space), set(run_optuna.DEFAULT_SEARCH_SPACE))
             workbook.close()
 
     def test_study_without_cnn_layers_distribution_is_rejected(self):
@@ -283,11 +335,8 @@ class OptunaSmokeTest(unittest.TestCase):
             legacy.optimize(lambda trial: float(
                 trial.suggest_categorical('vector_dimension', [64, 128, 256]) /
                 trial.suggest_categorical('transformer_heads', [1, 2, 4])), n_trials=1)
-            base_config = root / 'base.json'
-            base_config.write_text(json.dumps({'cnn_type': 'simple'}))
-            with self.assertRaisesRegex(RuntimeError, 'new --study-name and --storage'):
+            with self.assertRaisesRegex(RuntimeError, 'incompatible with the new'):
                 run_optuna.main(['--dataset', str(root), '--n-trials', '1',
-                    '--base-config', str(base_config),
                     '--tracker', str(root / 'tracker.xlsx'), '--storage', storage,
                     '--study-name', 'legacy_layers', '--checkpoint-root', str(root / 'weights'),
                     '--log-root', str(root / 'logs')])
@@ -351,9 +400,9 @@ class OptunaSmokeTest(unittest.TestCase):
             self.assertEqual(space['study_name'], 'alignment_optuna')
             self.assertEqual(space['job_name'], 'test_optuna_job')
             self.assertEqual(space['slurm_job_id'], '12345')
-            self.assertEqual(space['search_space']['cnn_layers'], [1, 2, 3, 4, 5])
-            self.assertEqual(set(space['search_space']),
-                             set(run_optuna.DEFAULT_SEARCH_SPACE))
+            self.assertEqual(space['searched'], run_optuna.DEFAULT_SEARCH_SPACE)
+            self.assertEqual(space['searched']['cnn_layers'], [1, 2, 3, 4, 5])
+            self.assertEqual(space['fixed'], run_optuna.FIXED_SEARCH_PARAMETERS)
             workbook = load_workbook(root / 'optuna_alignment_experiment_tracker.xlsx',
                                      read_only=True)
             self.assertIn('RankedResults', workbook.sheetnames)
