@@ -31,7 +31,7 @@ DEFAULT_SEARCH_SPACE = {
     'transformer_layers': [1, 3, 5],
     'transformer_heads': [1, 2, 4],
     'window_size': [32, 64, 128],
-    'cnn_layers': [1, 2, 3, 4, 5],
+    'cnn_layers': [1, 2, 3, 4],
     'sigreg_weight': [0.0, 0.3],
 }
 

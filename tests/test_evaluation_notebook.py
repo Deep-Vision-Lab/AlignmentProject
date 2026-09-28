@@ -206,3 +206,55 @@ def test_notebook_structure_and_python_cells():
     assert all(c['outputs'] == [] and c['execution_count'] is None for c in code)
     for i, cell in enumerate(code):
         compile(''.join(cell['source']), f'notebook-cell-{i}', 'exec')
+
+
+def test_window_recognition_uses_fused_full_alphabet_and_position_dtw(evaluation_fixture):
+    root, checkpoint = evaluation_fixture
+    session = EvaluationSession(checkpoint, root, device='cpu')
+    pair = next(p for p in session.pairs if p['target'] == 1)
+    side = pair['sides'][0]
+    Path(side['text']).write_text('مم', encoding='utf-8')
+    result = session.evaluate_pair(pair)
+    book = json.loads((Path(__file__).parents[1] / 'notebooks/model_evaluation.ipynb').read_text())
+    source = lambda index: ''.join(book['cells'][index]['source'])
+    namespace = dict(session=session, evaluations=[], TOP_K=5, np=np, pd=__import__('pandas'),
+                     torch=torch, Path=Path)
+    from text_embedding import ARABIC_LETTERS, clean_letters
+    from dtw import cosine_similarity_matrix, letter_cost_matrix, hard_dtw_path
+    from evaluate import source_interval
+    namespace.update(ARABIC_LETTERS=ARABIC_LETTERS, clean_letters=clean_letters,
+                     cosine_similarity_matrix=cosine_similarity_matrix,
+                     letter_cost_matrix=letter_cost_matrix, hard_dtw_path=hard_dtw_path,
+                     source_interval=source_interval)
+    exec(source(15), namespace)
+    exec(source(17), namespace)
+    diagnostic = namespace['recognize_line'](session, side, result['lines'][0], 5)
+    frame = diagnostic['frame']
+    assert len(frame) == len(result['lines'][0]['features']['fused'])
+    assert frame['physical_window_index'].tolist() == list(range(len(frame)))
+    assert frame['model_sequence_index'].tolist() == list(range(len(frame) - 1, -1, -1))
+    assert diagnostic['transcript_cosine'].shape == (len(frame), 2)
+    np.testing.assert_allclose(diagnostic['transcript_cosine'][:, 0],
+                               diagnostic['transcript_cosine'][:, 1])
+    assert all(set(positions) <= {0, 1} for positions in frame['dtw_all_text_positions'])
+    assert all(-1.00001 <= score <= 1.00001 for score in frame['top1_score'])
+    assert all(frame['top1_score'] >= frame['top2_score'])
+
+    # The complete alphabet score is independent of the transcript, even for
+    # characters absent from that transcript.
+    Path(side['text']).write_text('با', encoding='utf-8')
+    changed = namespace['recognize_line'](session, side, result['lines'][0], 5)
+    np.testing.assert_allclose(changed['alphabet_cosine'], diagnostic['alphabet_cosine'])
+    assert changed['frame']['cos_top1_letter'].tolist() == frame['cos_top1_letter'].tolist()
+
+    # Actual source-pixel character boxes make accuracy and position metrics
+    # available; one box can overlap several windows without inventing others.
+    first = frame.iloc[0]
+    side['character_boxes'] = [dict(text_position=0, character='ب',
+                                    x_start=first.source_x_start, x_end=first.source_x_end)]
+    annotated = namespace['recognize_line'](session, side, result['lines'][0], 5)
+    exec(source(25).split('metric_rows, category_rows =', 1)[0], namespace)
+    metrics, categories = namespace['recognition_metrics'](annotated)
+    assert metrics['gt_evaluated_windows'] >= 1
+    assert metrics['dtw_position_aware_accuracy'] is not None
+    assert sum(v['count'] for v in categories.values()) == metrics['gt_evaluated_windows']
