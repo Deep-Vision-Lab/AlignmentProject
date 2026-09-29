@@ -835,7 +835,7 @@ def _overlay(image, mask, color=(255, 70, 20), alpha=.4):
     return pixels.astype(np.uint8)
 
 
-def plot_pair_alignment(session, result):
+def plot_pair_alignment(session, result, show_gt=True):
     """Simplified full-line figure: originals, predicted and ground-truth
     masks/overlays, similarity heatmaps and the metrics panel.
 
@@ -856,11 +856,10 @@ def plot_pair_alignment(session, result):
     for side in range(2):
         with Image.open(pair['sides'][side]['image']) as image:
             originals.append(image.convert('RGB'))
-    fig = plt.figure(figsize=(19, 28))
+    fig = plt.figure(figsize=(19, 28) if show_gt else (19, 21))
     fig.subplots_adjust(left=.05, right=.95, top=.94, bottom=.03, hspace=1.05, wspace=.15)
-    grid = fig.add_gridspec(7, 2, height_ratios=[1, 1, 1, 1, 1, 2.4, 1.7])
+    grid = fig.add_gridspec(7, 2, height_ratios=[1, 1, 1, 1, 1, 2.4, 1.7]) if show_gt else fig.add_gridspec(5, 2, height_ratios=[1, 1, 1, 2.4, 1.7])
     for side, name in enumerate(('A', 'B')):
-        gt = result['ground_truth'][side]
         coverage = metrics[f'mask_coverage_{name.lower()}']
         rows = [
             (originals[side], False, f'Line {name} — original full line'),
@@ -868,20 +867,22 @@ def plot_pair_alignment(session, result):
              f'Predicted mask — line {name} (coverage {coverage:.1%})'),
             (_overlay(originals[side], result['masks'][side]), False,
              f'Predicted overlay — line {name} (orange on original)'),
-            (None if gt is None else np.asarray(gt, bool), True,
-             f'Ground-truth mask — line {name}' if gt is not None else
-             f'Ground-truth mask — line {name} (UNAVAILABLE)'),
-            (None if gt is None else _overlay(originals[side], gt, (0, 200, 80)), False,
-             f'Ground-truth overlay — line {name} (green on original)' if gt is not None else
-             f'Ground-truth overlay — line {name} (UNAVAILABLE)'),
         ]
+        if show_gt:
+            gt = result['ground_truth'][side]
+            rows += [
+                (None if gt is None else np.asarray(gt, bool), True,
+                 f'Ground-truth mask — line {name}' if gt is not None else
+                 f'Ground-truth mask — line {name} (UNAVAILABLE)'),
+                (None if gt is None else _overlay(originals[side], gt, (0, 200, 80)), False,
+                 f'Ground-truth overlay — line {name} (green on original)' if gt is not None else
+                 f'Ground-truth overlay — line {name} (UNAVAILABLE)'),
+            ]
+        # Omitting (not just blanking) GT rows here keeps the reduced grid aligned with the heatmap/metrics panels below.
         for row, (image, binary, title) in enumerate(rows):
             ax = fig.add_subplot(grid[row, side])
             if image is None:
-                ax.imshow(originals[side], alpha=.2, aspect='auto')
-                ax.text(.5, .5, 'GROUND TRUTH UNAVAILABLE', transform=ax.transAxes,
-                        ha='center', va='center', fontsize=13, color='darkred',
-                        bbox=dict(facecolor='white', alpha=.85, edgecolor='darkred'))
+                continue
             elif binary:
                 ax.imshow(np.asarray(image, dtype=float), cmap='gray', vmin=0, vmax=1, aspect='auto')
             else:
@@ -891,7 +892,7 @@ def plot_pair_alignment(session, result):
     order = 'RTL reading order' if session.config.rtl else 'LTR reading order'
     for side, (matrix, title) in enumerate(((result['cosine'], 'Raw cosine similarity'),
                                             (result['match']['rewards'], 'Alignment rewards (NOT cosine/probability)'))):
-        ax = fig.add_subplot(grid[5, side])
+        ax = fig.add_subplot(grid[5 if show_gt else 3, side])
         heat = ax.imshow(matrix, origin='lower', aspect='auto', cmap='coolwarm',
                          **({'vmin': -1, 'vmax': 1} if side == 0 else {}))
         for number, region in enumerate(result['match']['regions']):
@@ -903,7 +904,7 @@ def plot_pair_alignment(session, result):
             ax.text(.5, .95, 'NO ACCEPTED REGION', transform=ax.transAxes, ha='center', va='top',
                     bbox=dict(facecolor='white', alpha=.8))
         fig.colorbar(heat, ax=ax, shrink=.8)
-    ax = fig.add_subplot(grid[6, :])
+    ax = fig.add_subplot(grid[6 if show_gt else 4, :])
     ax.axis('off')
     fields = ['pair_score', 'path_cosine_mean', 'path_cosine_median', 'path_cosine_min',
               'maximum_similarity', 'matrix_cosine_mean', 'off_path_cosine_mean',
