@@ -480,6 +480,29 @@ def boxes_ground_truth(pair):
     return masks, f'page debug/bboxes.json LCS: {len(pairs)} matched units in {len(runs)} run(s)'
 
 
+def load_pair_ground_truth(pair, lines):
+    """Load pair-specific GT once, independently of matching and predictions."""
+    masks, provenance = [], []
+    fallback, detail = None, None
+    for side, line in enumerate(lines):
+        width, height = line['geometry']['source_size']
+        shape = (height, width)
+        gt = _load_annotation(pair['annotations'][side], shape)
+        if gt is not None:
+            source = pair['annotation_provenance']
+        else:
+            if fallback is None:
+                fallback, detail = boxes_ground_truth(pair)
+            gt = fallback[side]
+            source = ('built from page debug/bboxes.json subword LCS' if gt is not None
+                      else f'unavailable ({detail})')
+        if gt is not None and gt.shape != shape:
+            raise ValueError('Ground-truth/source geometry mismatch; resizing is forbidden')
+        masks.append(gt)
+        provenance.append(source)
+    return masks, ' | '.join(provenance)
+
+
 def attach_ground_truth(session, result):
     """Resolve GT masks strictly AFTER prediction and add localization metrics.
 
@@ -527,12 +550,15 @@ def _binary_metrics(pred, gt):
     return dict(iou=float(tp / union) if union else 1., precision=precision, recall=recall, f1=f1)
 
 
-def localization_metrics(mask, annotation, line, config, regions, side):
-    gt = _load_annotation(annotation, mask.shape)
+def localization_metrics(mask, annotation, line, config, regions, side, *, preloaded_gt=None):
+    gt = preloaded_gt if preloaded_gt is not None else _load_annotation(annotation, mask.shape)
     if gt is None:
         return dict(status='unavailable', reason='no pair-specific localization annotation'), None
+    if gt.shape != mask.shape:
+        raise ValueError('Ground-truth/source geometry mismatch; resizing is forbidden')
     # Reuse the public source-mask scorer when a file is supplied.
-    pixel = (score_mask(mask, annotation['mask']) if annotation.get('mask') else _binary_metrics(mask > 0, gt))
+    pixel = (score_mask(mask, annotation['mask']) if preloaded_gt is None and annotation.get('mask')
+             else _binary_metrics(mask > 0, gt))
     metrics = {k: pixel[k] for k in ('iou', 'precision', 'recall', 'f1')}
     metrics.update(status='available', dice=metrics['f1'])
     px, gx = np.flatnonzero((mask > 0).any(0)), np.flatnonzero(gt.any(0))
@@ -555,7 +581,7 @@ def localization_metrics(mask, annotation, line, config, regions, side):
     return metrics, gt
 
 
-def compute_pair_metrics(result, config):
+def compute_pair_metrics(result, config, *, preloaded_ground_truth=None):
     pair, cosine, match = result['pair'], result['cosine'], result['match']
     pairs = [tuple(p) for r in match['regions'] for p in r['pairs']]
     values = np.array([cosine[i, j] for i, j in pairs])
@@ -584,8 +610,14 @@ def compute_pair_metrics(result, config):
                    vertical_skipped_windows=sum(max(0, i-1) for i, j in deltas),
                    largest_anchor_jump=max((max(d) for d in deltas), default=0),
                    internal_discontinuities=sum(i > 1 or j > 1 for i, j in deltas),
-                   monotonic=all(i > 0 and j > 0 for i, j in deltas),
+                   monotonic=(all(i >= 0 and j >= 0 and (i > 0 or j > 0) for i, j in deltas)
+                              if result['settings'].get('alignment_mode') == 'local_repeat_dtw'
+                              else all(i > 0 and j > 0 for i, j in deltas)),
                    separation_between_regions=max(0, len(match['regions']) - 1))
+    if result['settings'].get('alignment_mode') == 'local_repeat_dtw':
+        metrics.update(horizontal_repeats=sum(r['horizontal_repeats'] for r in match['regions']),
+                       vertical_repeats=sum(r['vertical_repeats'] for r in match['regions']),
+                       true_gaps=sum(r['true_gaps'] for r in match['regions']))
     ground_truth = []
     for side, name in enumerate(('a', 'b')):
         line, mask = result['lines'][side], result['masks'][side]
@@ -598,7 +630,10 @@ def compute_pair_metrics(result, config):
                                                for p in r['supported_physical'][side]),
                                             max(source_interval(p, line['geometry'], config.window_width, config.window_stride)[1]
                                                for p in r['supported_physical'][side])] for r in match['regions']]
-        spatial, gt = localization_metrics(mask, pair['annotations'][side], line, config, match['regions'], side)
+        spatial, gt = localization_metrics(
+            mask, pair['annotations'][side] if preloaded_ground_truth is None else {},
+            line, config, match['regions'], side,
+            preloaded_gt=None if preloaded_ground_truth is None else preloaded_ground_truth[side])
         ground_truth.append(gt)
         metrics.update({f'{name}_{k}': v for k, v in spatial.items()})
     for metric in ('iou', 'dice'):

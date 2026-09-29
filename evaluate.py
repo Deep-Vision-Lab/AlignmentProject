@@ -125,6 +125,202 @@ def shared_regions(cosine, physical_a, physical_b, threshold=.6, contrast_margin
     return dict(regions=sorted(regions,key=lambda r:r['logical_ranges'][0][0]),rejected=rejected,rewards=rewards)
 
 
+def _local_repeat_path(cosine, rewards, allowed, repeat_penalty, max_consecutive_repeats,
+                       gap_open, gap_extend):
+    """Best local path with matched repeat states and separate affine skip states."""
+    n, m = rewards.shape
+    run = max_consecutive_repeats
+    diagonal, gap_a, gap_b = 0, 2 * run + 1, 2 * run + 2
+    states = gap_b + 1
+    scores = np.full((n, m, states), -np.inf, dtype=np.float64)
+    previous = np.full((n, m, states), -1, dtype=np.int16)
+    best_score, endpoint = 0., None
+    match_states = range(gap_a)
+    for i in range(n):
+        for j in range(m):
+            if not allowed[i, j]:
+                continue
+            reward = float(rewards[i, j])
+            # True gaps have no pair reward and never become matched support.
+            if i:
+                candidates = [(scores[i-1, j, state] - gap_open, state)
+                              for state in match_states]
+                candidates.append((scores[i-1, j, gap_a] - gap_extend, gap_a))
+                value, state = max(candidates, key=lambda item: item[0])
+                if value > 0:
+                    scores[i, j, gap_a], previous[i, j, gap_a] = value, state
+            if j:
+                candidates = [(scores[i, j-1, state] - gap_open, state)
+                              for state in match_states]
+                candidates.append((scores[i, j-1, gap_b] - gap_extend, gap_b))
+                value, state = max(candidates, key=lambda item: item[0])
+                if value > 0:
+                    scores[i, j, gap_b], previous[i, j, gap_b] = value, state
+            # A matched cell must itself beat the threshold/background baseline.
+            if reward <= 0:
+                continue
+            value, state = reward, -1  # local restart
+            if i and j:
+                predecessor = int(np.argmax(scores[i-1, j-1]))
+                candidate = float(scores[i-1, j-1, predecessor]) + reward
+                if candidate > value:
+                    value, state = candidate, predecessor
+            scores[i, j, diagonal], previous[i, j, diagonal] = value, state
+            # Repeat runs have an increasing incremental penalty. A repeat is
+            # admitted only when this pair's own evidence pays that penalty.
+            if j:
+                for length in range(1, run + 1):
+                    penalty = repeat_penalty * length
+                    if reward <= penalty:
+                        continue
+                    if length == 1:
+                        sources = [diagonal, *range(run + 1, gap_a), gap_a]
+                        predecessor = max(sources, key=lambda s: scores[i, j-1, s])
+                    else:
+                        predecessor = length - 1
+                    candidate = float(scores[i, j-1, predecessor]) + reward - penalty
+                    if candidate > 0:
+                        scores[i, j, length] = candidate
+                        previous[i, j, length] = predecessor
+            if i:
+                for length in range(1, run + 1):
+                    penalty = repeat_penalty * length
+                    if reward <= penalty:
+                        continue
+                    state_index = run + length
+                    if length == 1:
+                        sources = [diagonal, *range(1, run + 1), gap_b]
+                        predecessor = max(sources, key=lambda s: scores[i-1, j, s])
+                    else:
+                        predecessor = run + length - 1
+                    candidate = float(scores[i-1, j, predecessor]) + reward - penalty
+                    if candidate > 0:
+                        scores[i, j, state_index] = candidate
+                        previous[i, j, state_index] = predecessor
+            for state_index in match_states:
+                if scores[i, j, state_index] > best_score:
+                    best_score = float(scores[i, j, state_index])
+                    endpoint = (i, j, state_index)
+    if endpoint is None:
+        return [], 0.
+    path = []
+    i, j, state = endpoint
+    while state >= 0:
+        predecessor = int(previous[i, j, state])
+        if state == diagonal:
+            transition = 'diagonal'
+            step = dict(i=i, j=j, transition=transition,
+                        cosine=float(cosine[i, j]), reward=float(rewards[i, j]))
+            i, j = i - 1, j - 1
+        elif state <= run:
+            transition = 'horizontal_repeat'
+            step = dict(i=i, j=j, transition=transition,
+                        cosine=float(cosine[i, j]), reward=float(rewards[i, j]))
+            j -= 1
+        elif state <= 2 * run:
+            transition = 'vertical_repeat'
+            step = dict(i=i, j=j, transition=transition,
+                        cosine=float(cosine[i, j]), reward=float(rewards[i, j]))
+            i -= 1
+        elif state == gap_a:
+            step = dict(i=i, j=None, transition='gap_a', cosine=None, reward=None)
+            i -= 1
+        else:
+            step = dict(i=None, j=j, transition='gap_b', cosine=None, reward=None)
+            j -= 1
+        path.append(step)
+        state = predecessor
+    return path[::-1], best_score
+
+
+def _small_internal_fills(supported, skipped, max_gap):
+    filled = []
+    for left, right in zip(supported, supported[1:]):
+        missing = range(left + 1, right)
+        if len(missing) <= max_gap:
+            filled.extend(p for p in missing if p not in skipped)
+    return filled
+
+
+def local_repeat_regions(cosine, physical_a, physical_b, threshold=.6,
+                         contrast_margin=.05, score_mode='background', min_windows=5,
+                         max_gap=1, gap_open=.2, gap_extend=.05, max_candidates=128,
+                         repeat_penalty=.05, max_consecutive_repeats=3,
+                         min_distinct_windows_a=3, min_distinct_windows_b=3,
+                         min_matched_pairs=4):
+    """Greedy noncrossing local many-to-many alignment on image cosine scores.
+
+    Smith–Waterman remains in shared_regions. Repeats are matched cells, while
+    affine gap states skip a window and are excluded from mask support.
+    """
+    cosine = np.asarray(cosine, dtype=np.float64)
+    if cosine.ndim != 2 or not np.isfinite(cosine).all() or min(cosine.shape, default=0) == 0:
+        raise ValueError('Cosines must be a nonempty finite 2D matrix')
+    if score_mode not in {'background', 'raw'} or max_gap < 0 or max_candidates < 1:
+        raise ValueError('Invalid scoring/support settings')
+    if not (-1 <= threshold <= 1 and contrast_margin >= 0 and gap_open >= gap_extend >= 0):
+        raise ValueError('Invalid threshold, contrast or gap penalties')
+    if (repeat_penalty < 0 or max_consecutive_repeats < 1 or
+            min_distinct_windows_a < 1 or min_distinct_windows_b < 1 or min_matched_pairs < 1):
+        raise ValueError('Invalid repeat penalty, run limit or minimum support')
+    physical = [np.asarray(p, dtype=int) for p in (physical_a, physical_b)]
+    for count, indices in zip(cosine.shape, physical):
+        if (indices.shape != (count,) or len(set(indices.tolist())) != count or
+                (indices < 0).any() or
+                (count > 1 and not ((np.diff(indices) > 0).all() or (np.diff(indices) < 0).all()))):
+            raise ValueError('Physical identities must be unique and preserve sequence order')
+    baseline = threshold
+    if score_mode == 'background':
+        baseline = np.maximum(threshold, np.median(cosine, axis=1)[:, None] + contrast_margin)
+        baseline = np.maximum(baseline, np.median(cosine, axis=0)[None, :] + contrast_margin)
+    rewards = cosine - baseline
+    allowed = np.ones(cosine.shape, dtype=bool)
+    rows, cols = np.indices(cosine.shape)
+    regions, rejected = [], []
+    for _ in range(max_candidates):
+        path, score = _local_repeat_path(cosine, rewards, allowed, repeat_penalty,
+                                         max_consecutive_repeats, gap_open, gap_extend)
+        if not path:
+            break
+        matched = [step for step in path if step['i'] is not None and step['j'] is not None]
+        pairs = [(step['i'], step['j']) for step in matched]
+        ids = [sorted({int(physical[side][pair[side]]) for pair in pairs}) for side in (0, 1)]
+        counts = [len(side) for side in ids]
+        if (counts[0] < min_distinct_windows_a or counts[1] < min_distinct_windows_b or
+                len(pairs) < min_matched_pairs):
+            rejected.append(dict(reason='insufficient_repeat_support',
+                                 support=counts, matched_pairs=len(pairs)))
+            for i, j in pairs:
+                allowed[i, j] = False
+            continue
+        spans = [(min(pair[side] for pair in pairs), max(pair[side] for pair in pairs))
+                 for side in (0, 1)]
+        skipped = [set(), set()]
+        for step in path:
+            if step['transition'] == 'gap_a':
+                skipped[0].add(int(physical[0][step['i']]))
+            elif step['transition'] == 'gap_b':
+                skipped[1].add(int(physical[1][step['j']]))
+        filled = [_small_internal_fills(ids[side], skipped[side], max_gap) for side in (0, 1)]
+        repeats_h = sum(step['transition'] == 'horizontal_repeat' for step in path)
+        repeats_v = sum(step['transition'] == 'vertical_repeat' for step in path)
+        gaps = sum(step['transition'] in {'gap_a', 'gap_b'} for step in path)
+        regions.append(dict(pairs=pairs, path_steps=path,
+                            transition_types=[step['transition'] for step in matched],
+                            logical_ranges=spans, supported_physical=ids,
+                            filled_physical=filled, support=counts, score=score,
+                            matched_pairs=len(pairs), horizontal_repeats=repeats_h,
+                            vertical_repeats=repeats_v, true_gaps=gaps))
+        (a, b), (c, d) = spans
+        allowed &= ((rows < a) & (cols < c)) | ((rows > b) & (cols > d))
+    else:
+        rejected.append(dict(reason='candidate_limit_reached'))
+    if not regions and not rejected:
+        rejected.append(dict(reason='no_positive_local_alignment'))
+    return dict(regions=sorted(regions, key=lambda r: r['logical_ranges'][0][0]),
+                rejected=rejected, rewards=rewards)
+
+
 def source_interval(physical,geometry,window_width,stride):
     x0,_,x1,_=geometry['crop']
     return [max(x0,x0+physical*stride/geometry['scale_x']),
