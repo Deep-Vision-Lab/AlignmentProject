@@ -53,6 +53,7 @@ class TransformerEncoder(nn.Module):
         if token_valid is not None:
             if token_valid.shape != tokens.shape[:2] or not token_valid.any(dim=1).all():
                 raise ValueError('Each sequence needs at least one valid token')
+            tokens = tokens.masked_fill(~token_valid[..., None], 0.)
         if self.use_positional_encoding:
             position = torch.arange(tokens.shape[1], device=tokens.device, dtype=tokens.dtype)[:, None]
             frequency = torch.exp(torch.arange(0, self.dim, 2, device=tokens.device, dtype=tokens.dtype)

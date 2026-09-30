@@ -23,15 +23,14 @@ from tqdm.auto import tqdm
 
 from dataset import AlignmentDataset, file_hash, prepare_image
 from dtw import cosine_similarity_matrix, hard_dtw_path, letter_cost_matrix
-from evaluate import region_mask, score_mask, shared_regions, source_interval, smith_waterman_affine
+from evaluate import region_mask, score_mask, source_interval, match_features, MATCH_VERSION, MATCH_DEFAULTS, resolved_match_settings
 from train import build_loaders, load_checkpoint
 
 
 POSITIVE_LABELS = {'high_match', 'medium_match', 'low_match'}
 NEGATIVE_LABELS = {'no_shared_content'}
 REPRESENTATIONS = ('local', 'context', 'fused')
-DEFAULT_MATCH_SETTINGS = dict(threshold=.6, score_mode='background', contrast_margin=.05,
-                              min_windows=5, max_gap=1, gap_open=.2, gap_extend=.05)
+DEFAULT_MATCH_SETTINGS = dict(MATCH_DEFAULTS)
 
 
 def _side_key(side):
@@ -181,11 +180,18 @@ class EvaluationSession:
                                         intervals=detail.get('intervals_x'), source_size=detail.get('mask_size')))
             if key in by_images and by_images[key][0] != annotations:
                 raise ValueError(f'Conflicting alignment annotations for {key}')
-            by_images[key] = (annotations, meta.get('method', 'supplied alignment annotation'))
+            reviewed = meta.get('manually_verified_label')
+            if reviewed not in (None,'aligned','unaligned'):
+                raise ValueError('manually_verified_label must be aligned or unaligned')
+            by_images[key] = (annotations, meta.get('method', 'supplied alignment annotation'), reviewed)
         for pair in self.pairs:
             key = tuple(s['image'] for s in pair['sides'])
             if key in by_images:
-                pair['annotations'], pair['annotation_provenance'] = by_images[key]
+                pair['annotations'], pair['annotation_provenance'], reviewed = by_images[key]
+                pair['manually_verified'] = reviewed is not None
+                if reviewed is not None:
+                    pair['target'] = int(reviewed=='aligned')
+                    pair['label'] = 'manually_verified_'+reviewed
 
     def summary(self):
         c, saved = self.config, self.saved
@@ -198,6 +204,10 @@ class EvaluationSession:
                           Parameter_count=sum(p.numel() for p in self.model.parameters()), Device=str(self.device),
                           Crop=c.crop, Grayscale=c.grayscale, Binarize=c.binarize,
                           Split_manifest_SHA256=saved['split_manifest_sha256'])
+        checkpoint.update(Alignment_objective=c.alignment_objective, Cost_mode=c.dtw_cost_mode,
+                          Competition_temperature=c.competition_temperature, Position_prior=c.position_prior,
+                          Negative_weight=c.negative_dtw_weight,
+                          Evidence_prior=(self.saved.get('letter_evidence_prior') or {}).get('source','uniform fallback'))
         data = dict(Path=str(self.dataset_path), Dataset_type=self.view.dataset_type, Split=self.split,
                     Number_of_samples=len(self.view), Eligible_pairs=len(self.pairs),
                     Number_of_aligned_pairs=sum(p['target'] == 1 for p in self.pairs),
@@ -230,6 +240,7 @@ class EvaluationSession:
             if any(not torch.isfinite(v).all() for v in features.values()):
                 raise ValueError(f'NaN/Inf features: {side["image"]}')
             self.feature_cache[key] = dict(features=features, geometry=geometry,
+                token_valid=valid.cpu().numpy(), full_physical=output['physical_window_indices'][0].cpu().numpy(),
                 physical=output['physical_window_indices'][0][valid].cpu().numpy(),
                 logical=torch.arange(len(valid), device=valid.device)[valid].cpu().numpy())
         return self.feature_cache[key]
@@ -238,12 +249,13 @@ class EvaluationSession:
         if representation not in REPRESENTATIONS:
             raise ValueError(f'Unknown representation: {representation}')
         lines = [self.get_line_features(s) for s in pair['sides']]
-        cosine = cosine_similarity_matrix(*(r['features'][representation] for r in lines)).numpy()
-        match = shared_regions(cosine, *(r['physical'] for r in lines), **self.settings)
+        match = match_features(*(r['features'][representation] for r in lines), *(r['physical'] for r in lines),
+                               text_encoder=self.text_encoder, config=self.config, **self.settings)
+        cosine = match['cosine']
         masks = [region_mask(match['regions'], side, r['geometry'], self.config.window_width,
                              self.config.window_stride) for side, r in enumerate(lines)]
         return dict(pair=pair, representation=representation, lines=lines, cosine=cosine,
-                    match=match, masks=masks, settings=dict(self.settings), split=self.split)
+                    match=match, masks=masks, settings=match['settings'], split=self.split)
 
     def evaluate_pair(self, pair, representation='fused'):
         result = self.predict_pair(pair, representation)
@@ -251,8 +263,13 @@ class EvaluationSession:
         result['metrics'], result['ground_truth'] = compute_pair_metrics(result, self.config)
         return result
 
+    def matching_cache_key(self, pair, representation='fused'):
+        return (pair['sample_id'], representation, MATCH_VERSION, self.checkpoint_sha256,
+                json.dumps(resolved_match_settings(self.settings), sort_keys=True),
+                json.dumps(getattr(self.text_encoder,'letter_evidence_prior',None), sort_keys=True))
+
     def metrics(self, pair, representation='fused'):
-        key = (pair['sample_id'], representation, json.dumps(self.settings, sort_keys=True))
+        key = self.matching_cache_key(pair, representation)
         if key not in self.metric_cache:
             self.metric_cache[key] = self.evaluate_pair(pair, representation)['metrics']
         return self.metric_cache[key]
@@ -535,6 +552,22 @@ def localization_metrics(mask, annotation, line, config, regions, side):
     pixel = (score_mask(mask, annotation['mask']) if annotation.get('mask') else _binary_metrics(mask > 0, gt))
     metrics = {k: pixel[k] for k in ('iou', 'precision', 'recall', 'f1')}
     metrics.update(status='available', dice=metrics['f1'])
+    predicted, truth = _mask_intervals(mask), _mask_intervals(gt)
+    overlaps = []
+    for i,(a,b) in enumerate(predicted):
+        for j,(c,d) in enumerate(truth):
+            overlap = max(0,min(b,d)-max(a,c))
+            if overlap: overlaps.append((overlap/(max(b,d)-min(a,c)),i,j))
+    used_p,used_t,errors=set(),set(),[]
+    # Diagnostic region assignment: greedy descending interval IoU, not prediction.
+    for iou,i,j in sorted(overlaps,reverse=True):
+        if i in used_p or j in used_t: continue
+        used_p.add(i); used_t.add(j)
+        errors.append(dict(predicted=predicted[i],expected=truth[j],iou=iou,
+                           left=abs(predicted[i][0]-truth[j][0]),right=abs(predicted[i][1]-truth[j][1])))
+    metrics.update(extra_regions=len(predicted)-len(used_p),missed_regions=len(truth)-len(used_t),
+                   per_region_boundary_errors=errors,
+                   per_region_boundary_mean_px=np.mean([e[k] for e in errors for k in ('left','right')]).item() if errors else None)
     px, gx = np.flatnonzero((mask > 0).any(0)), np.flatnonzero(gt.any(0))
     if len(px) and len(gx):
         left, right = abs(int(px[0]) - int(gx[0])), abs(int(px[-1]) - int(gx[-1]))
@@ -567,11 +600,12 @@ def compute_pair_metrics(result, config):
                    split=result['split'], image_a=pair['sides'][0]['image'], image_b=pair['sides'][1]['image'],
                    annotation_provenance=pair['annotation_provenance'],
                    constructed_negative=pair['constructed_negative'], representation=result['representation'],
+                   manually_verified=pair.get('manually_verified',False),
                    # Existing accepted-region score includes rewards and affine gap costs.
                    pair_score=max((r['score'] for r in match['regions']), default=0.),
                    accepted_region_score_sum=sum(r['score'] for r in match['regions']),
-                   max_local_alignment_score=smith_waterman_affine(match['rewards'],
-                       result['settings']['gap_open'], result['settings']['gap_extend'])[1],
+                   max_local_alignment_score=match['maximum_local_score'],
+                   similarity_mode=result['settings']['similarity_mode'], decoder=result['settings']['decoder'],
                    path_length=len(pairs), region_count=len(match['regions']),
                    path_cosine_mean=float(values.mean()) if len(values) else None,
                    path_cosine_median=float(np.median(values)) if len(values) else None,
@@ -584,7 +618,8 @@ def compute_pair_metrics(result, config):
                    vertical_skipped_windows=sum(max(0, i-1) for i, j in deltas),
                    largest_anchor_jump=max((max(d) for d in deltas), default=0),
                    internal_discontinuities=sum(i > 1 or j > 1 for i, j in deltas),
-                   monotonic=all(i > 0 and j > 0 for i, j in deltas),
+                   monotonic=all(i >= 0 and j >= 0 and i+j>0 for i, j in deltas),
+                   repeat_matches=sum(i==0 or j==0 for i,j in deltas),
                    separation_between_regions=max(0, len(match['regions']) - 1))
     ground_truth = []
     for side, name in enumerate(('a', 'b')):
@@ -610,14 +645,14 @@ def compute_pair_metrics(result, config):
 def evaluate_population(session, representation='fused', max_pairs=0):
     if max_pairs < 0:
         raise ValueError('max_pairs must be >= 0')
-    pairs = session.pairs if max_pairs == 0 else random.Random(session.seed).sample(
-        session.pairs, min(max_pairs, len(session.pairs)))
+    unique = list({p['sample_id']: p for p in session.pairs}.values())
+    pairs = unique if max_pairs == 0 else random.Random(session.seed).sample(unique, min(max_pairs, len(unique)))
     rows, distributions = [], {k: [] for k in ('positive_path', 'negative_matrix', 'off_path')}
     # Matrices are small; retain distributions only, not source images/graphs.
     for pair in tqdm(pairs, desc=f'{session.split} pairs ({representation})'):
-        result = session.evaluate_pair(pair, representation)
+        result = attach_ground_truth(session, session.evaluate_pair(pair, representation))
         rows.append(result['metrics'])
-        key = (pair['sample_id'], representation, json.dumps(session.settings, sort_keys=True))
+        key = session.matching_cache_key(pair, representation)
         session.metric_cache[key] = rows[-1]
         c = result['cosine']
         path = [p for r in result['match']['regions'] for p in r['pairs']]
@@ -764,14 +799,26 @@ def aggregate_summary(population, retrieval=None, decision_threshold=None):
                     'path_length', 'mask_coverage_a', 'mask_coverage_b'):
             summary[f'{label}_{key}'] = _distribution([r[key] for r in values if r.get(key) is not None])
     summary['localization'] = {}
+    checked_negative=[r for r in negative if not r['constructed_negative']]
+    summary['manifest_negative_false_positive_rate']=(sum(r['region_count']>0 for r in checked_negative)/len(checked_negative)
+                                                      if checked_negative else None)
+    summary['manifest_negative_count']=len(checked_negative)
+    verified = [r for r in negative if r.get('manually_verified') and not r['constructed_negative']]
+    summary['verified_negative_count']=len(verified)
+    summary['verified_negative_false_positive_rate']=(sum(r['region_count']>0 for r in verified)/len(verified)
+                                                      if verified else None)
+    summary['verified_negative_coverage']=_distribution([r['mask_coverage_'+s] for r in verified for s in ('a','b')])
+    summary['annotation_caution']='Manifest negatives are not necessarily manually checked; bbox/LCS masks are automatically derived.'
+    summary['small_population_warning']=len(rows)<30
     for side in ('a', 'b'):
         for key in ('iou', 'dice', 'precision', 'recall', 'window_iou', 'window_f1',
-                    'left_boundary_error_px', 'right_boundary_error_px', 'normalized_boundary_error'):
-            values = [r[f'{side}_{key}'] for r in rows if f'{side}_{key}' in r]
+                    'left_boundary_error_px', 'right_boundary_error_px', 'normalized_boundary_error',
+                    'extra_regions','missed_regions','per_region_boundary_mean_px'):
+            values = [r[f'{side}_{key}'] for r in positive if r.get(f'{side}_{key}') is not None]
             if values:
                 summary['localization'][f'{side}_{key}'] = _distribution(values)
     for key in ('pair_mean_iou', 'pair_mean_dice'):
-        values = [r[key] for r in rows if key in r]
+        values = [r[key] for r in positive if key in r]
         if values:
             summary['localization'][key] = _distribution(values)
     if not summary['localization']:
@@ -861,7 +908,21 @@ def plot_pair_alignment(session, result):
                          **({'vmin': -1, 'vmax': 1} if side == 0 else {}))
         for number, region in enumerate(result['match']['regions']):
             a, b = zip(*region['pairs'])
-            ax.plot(b, a, '.-', color=plt.get_cmap('tab10')(number % 10), ms=4, lw=1)
+            ax.plot(b, a, '.', color=plt.get_cmap('tab10')(number % 10), ms=4)
+            if 'path' in region:
+                previous=None
+                pending_gap=False
+                for step in region['path']:
+                    if step['kind'].startswith('gap'):
+                        pending_gap=True
+                        continue
+                    current=(step['b'],step['a'])
+                    if previous is not None:
+                        color='gray' if pending_gap else 'orange' if step['delta']<=0 else 'blue' if step['kind'].startswith('repeat') else 'green'
+                        ax.plot([previous[0],current[0]],[previous[1],current[1]],
+                                '--' if pending_gap else '-',color=color,lw=1)
+                    previous=current;pending_gap=False
+            else: ax.plot(b,a,'-',lw=1)
         ax.set(xlabel=f'Line B window indices ({order})', ylabel=f'Line A window indices ({order})',
                title=f'{title}: {matrix.shape[0]}×{matrix.shape[1]}, {result["representation"]}')
         if not result['match']['regions']:
@@ -879,7 +940,8 @@ def plot_pair_alignment(session, result):
     ax.text(0, 1, text, transform=ax.transAxes, va='top', family='monospace', fontsize=10)
     localization = {k: v for k, v in metrics.items() if k.startswith(('a_', 'b_', 'pair_mean_'))}
     spatial_text = '\n'.join(f'{k}: {v:.5g}' if isinstance(v, float) else f'{k}: {v}'
-                             for k, v in localization.items() if not isinstance(v, str) or k.endswith('status'))
+                             for k, v in localization.items() if not isinstance(v, (list,dict))
+                             and (not isinstance(v, str) or k.endswith('status')))
     ax.text(.5, 1, spatial_text, transform=ax.transAxes, va='top', family='monospace', fontsize=9)
     if metrics.get('ground_truth_provenance'):
         ax.text(.5, 0, 'GT provenance: ' + metrics['ground_truth_provenance'],
@@ -887,6 +949,28 @@ def plot_pair_alignment(session, result):
     scope = 'TRAIN (in-sample)' if session.split == 'train' else session.split.upper()
     fig.suptitle(f'{scope} | {label} | {pair["sample_id"]} | {result["representation"]} | '
                  f'score={metrics["pair_score"]:.4f}', fontsize=13)
+    return fig
+
+
+def plot_candidate_crops(session, result, top_k=5):
+    """Diagnostic paired SOURCE crops; annotations/expected regions never affect decoding."""
+    import matplotlib.pyplot as plt
+    candidates=result['match'].get('candidates',result['match']['regions'])[:top_k]
+    if not candidates:
+        fig,ax=plt.subplots(); ax.text(.1,.5,'No positive candidate'); ax.axis('off'); return fig
+    fig,axes=plt.subplots(len(candidates),2,figsize=(16,3*len(candidates)),squeeze=False,constrained_layout=True)
+    for row,candidate in enumerate(candidates):
+        for side,ax in enumerate(axes[row]):
+            line=result['lines'][side]
+            intervals=[source_interval(p,line['geometry'],session.config.window_width,session.config.window_stride)
+                       for p in candidate['supported_physical'][side]]
+            left,right=math.floor(min(x[0] for x in intervals)),math.ceil(max(x[1] for x in intervals))
+            with Image.open(result['pair']['sides'][side]['image']) as image:
+                ax.imshow(image.crop((left,0,right,image.height)),aspect='auto',cmap='gray')
+            ax.set_title(f'{"AB"[side]} source x=[{left},{right}) | {candidate.get("reason","accepted")}\n'
+                f'score={candidate["score"]:.3f}, support={candidate["support"]}, '
+                f'evidence={candidate.get("matching_evidence",0):.3f}, repeat={candidate.get("repeat_penalties",0):.3f}, '
+                f'gap={candidate.get("gap_penalties",0):.3f}, weak={len(candidate.get("weak_spans",[]))}')
     return fig
 
 
@@ -953,7 +1037,9 @@ def save_results(session, population, summary, aligned, unaligned, root, diagnos
     metadata = dict(checkpoint=str(session.checkpoint), checkpoint_sha256=session.checkpoint_sha256,
                     epoch=session.saved['epoch'], config=asdict(session.config), split=session.split,
                     split_manifest_sha256=session.saved['split_manifest_sha256'], seed=session.seed,
-                    settings=session.settings, summary=summary, feature_diagnostics=diagnostics,
+                    settings=resolved_match_settings(session.settings), implementation_version=MATCH_VERSION,
+                    prior_metadata=getattr(session.text_encoder,'letter_evidence_prior',None),
+                    summary=summary, feature_diagnostics=diagnostics,
                     representations=sorted({r['representation'] for r in population['rows']}),
                     evaluated_pair_ids=population['selected_pair_ids'],
                     score_definition='maximum accepted region.score; zero if none; affine reward objective, length dependent',
@@ -962,7 +1048,7 @@ def save_results(session, population, summary, aligned, unaligned, root, diagnos
                         'Greedy Smith-Waterman region extraction is not globally optimal.',
                         'Thresholds are uncalibrated; never tune on test.',
                         'Background correction may suppress broad/repeated genuine matches.',
-                        'Source window widths differ after resize; one-to-one/gap matching cannot model all width variation.',
+                        'Bounded repeats approximate width variation; repeat evidence weighting/penalties are uncalibrated.',
                         'Region overlap does not establish character alignment accuracy.'])
     (output / 'metrics.json').write_text(json.dumps(metadata, indent=2, allow_nan=False))
     fields = sorted({k for row in population['rows'] for k in row})
@@ -982,7 +1068,14 @@ def save_pair_artifacts(session, result, directory):
     directory.mkdir(parents=True, exist_ok=False)
     np.save(directory / 'cosine.npy', result['cosine'])
     np.save(directory / 'alignment_rewards.npy', result['match']['rewards'])
+    if 'letter_evidence' in result['match']:
+        np.save(directory / 'letter_evidence.npy', result['match']['letter_evidence'])
+        for side, logp in enumerate(result['match']['log_probabilities']):
+            np.save(directory / f'letter_log_probs_{side}.npy', logp)
     for side, name in enumerate(('a', 'b')):
+        for key in ('physical','logical','token_valid','full_physical'):
+            np.save(directory / f'{name}_{key}.npy', result['lines'][side][key])
+        np.save(directory / f'{name}_features.npy',result['lines'][side]['features'][result['representation']].numpy())
         Image.fromarray(result['masks'][side]).save(directory / f'line_{name}_mask.png')
         record = result['pair']['sides'][side]
         with Image.open(record['image']) as image:
@@ -1016,4 +1109,9 @@ def save_pair_artifacts(session, result, directory):
         writer = csv.DictWriter(stream, fieldnames=fields); writer.writeheader(); writer.writerows(rows)
     (directory / 'pair_metrics.json').write_text(json.dumps(dict(metrics=result['metrics'],
         regions=result['match']['regions'], rejected=result['match']['rejected'],
+        candidates=result['match'].get('candidates',[]),
+        candidate_limit_reached=result['match'].get('candidate_limit_reached',False),
+        settings=result['settings'], implementation_version=MATCH_VERSION,
+        checkpoint=str(session.checkpoint), checkpoint_sha256=session.checkpoint_sha256,
+        prior_metadata=result['match'].get('prior_metadata'),
         geometry=[r['geometry'] for r in result['lines']]), indent=2, allow_nan=False))

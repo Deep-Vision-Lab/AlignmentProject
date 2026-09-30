@@ -37,6 +37,16 @@ class Config:
     positive_dtw_weight: float = 1.0
     negative_dtw_weight: float = 0.0
     negative_margin: float = .20
+    # Weight is the single enable switch: zero means no generation/alignment.
+    negative_count: int = 3
+    negative_operations: str = 'substitute,adjacent,blocks,words,shift,shuffle'
+    negative_severity: float = .35
+    negative_seed: int = 42
+    negative_warmup_epochs: int = 0
+    negative_curriculum_epochs: int = 5
+    alignment_objective: str = 'dtw'  # optional standalone CTC experiment
+    ctc_blank_logit: float = 0.
+    alphabet_inventory: str = ''  # empty preserves historical per-line alphabet extension
     sigreg_weight: float = 0.0
     sigreg_sketch_dim: int = 1024
     sigreg_num_knots: int = 17
@@ -55,3 +65,30 @@ class Config:
     num_workers: int = 4
     use_amp: bool = True
     seed: int = 42
+
+
+def validate_objective(config):
+    import math
+    if config.alignment_objective not in {'dtw', 'ctc'}:
+        raise ValueError('alignment_objective must be dtw or ctc')
+    if config.dtw_cost_mode not in {'full_alphabet_nll', 'cosine'}:
+        raise ValueError('Unknown dtw_cost_mode')
+    if any(not math.isfinite(v) or v < 0 for v in (config.negative_dtw_weight, config.negative_margin, config.position_prior)):
+        raise ValueError('Negative weight, margin and position prior must be finite and nonnegative')
+    if not math.isfinite(config.competition_temperature) or config.competition_temperature <= 0:
+        raise ValueError('competition_temperature must be positive')
+    if not math.isfinite(config.ctc_blank_logit):
+        raise ValueError('ctc_blank_logit must be finite')
+    if config.alphabet_inventory:
+        from text_embedding import clean_letters
+        if ''.join(clean_letters(config.alphabet_inventory)) != config.alphabet_inventory or len(set(config.alphabet_inventory)) != len(config.alphabet_inventory):
+            raise ValueError('alphabet_inventory must be unique normalized Arabic letters')
+    if config.negative_count < 1 or not 0 < config.negative_severity <= 1:
+        raise ValueError('negative_count >= 1 and negative_severity in (0,1] required')
+    if min(config.negative_warmup_epochs, config.negative_curriculum_epochs) < 0:
+        raise ValueError('Negative warmup/curriculum epochs must be nonnegative')
+    operations = set(config.negative_operations.split(','))
+    if not operations or not operations <= {'substitute', 'adjacent', 'blocks', 'words', 'shift', 'shuffle'}:
+        raise ValueError('Unknown/empty negative_operations')
+    if config.alignment_objective == 'ctc' and (config.position_prior != 0 or config.dtw_cost_mode != 'full_alphabet_nll'):
+        raise ValueError('CTC requires full_alphabet_nll and --position-prior 0 (no DTW prior)')

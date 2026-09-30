@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, fields
+from dataclasses import asdict, fields, replace
+from collections import Counter
 import hashlib
 import json
 import os
@@ -21,9 +22,9 @@ from dataloader import create_dataloaders, collate_samples
 from cnn_encoder import simple_cnn_channels
 from losses import compute_loss
 from model import AlignmentModel, validate_fusion_config
-from parameters import Config
+from parameters import Config, validate_objective
 from text_embedding import OrthogonalCharEmbedding
-from text_embedding import ARABIC_LETTERS, clean_letters
+from text_embedding import ARABIC_LETTERS, clean_letters, fit_letter_prior
 
 
 def build_model(config, initialize=True):
@@ -52,6 +53,7 @@ def resolve_device(device='auto', local_rank=0):
 
 def gradient_stats(model):
     """Return compact gradient diagnostics and fail on the first bad gradient."""
+    model = model.module if isinstance(model, DistributedDataParallel) else model
     total_sq = 0.0
     maximum = 0.0
     absolute_sum = 0.0
@@ -113,12 +115,15 @@ def _batch_postfix(stats, optimizer=None, gradients=None, device=None):
 
 
 def build_loaders(dataset, config, split_ids=None):
-    return create_dataloaders(dataset, config.dataset_type, config.train_ratio, config.val_ratio,
+    loaders = create_dataloaders(dataset, config.dataset_type, config.train_ratio, config.val_ratio,
                               config.test_ratio, config.split_mode, config.split_seed,
                               config.batch_size, config.num_workers, config.augmentation,
                               split_ids=split_ids, paired=config.paired,
                               image_size=(config.image_height,config.image_width),
                               grayscale=config.grayscale, crop=config.crop, binarize=config.binarize)
+    for loader in loaders[:2]:
+        loader.dataset.negative_config = config if config.negative_dtw_weight else None
+    return loaders
 
 
 def _batch_lines(batch, device):
@@ -168,13 +173,19 @@ def _embedding_diagnostics(output, texts, text_encoder):
 def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_batches=0,
                epoch=None, epochs=None, rank=0):
     training = optimizer is not None
+    validate_objective(config)
+    if hasattr(loader.dataset, 'set_epoch'):
+        loader.dataset.set_epoch((epoch or 1) if training else 0)
+    active_config = (replace(config, negative_dtw_weight=0.) if training and
+                     (epoch or 1) <= config.negative_warmup_epochs else config)
     model.train(training)
     text_encoder.eval()
     distributed = training and dist.is_available() and dist.is_initialized()
     # DTW is aggregated per LINE, including both sides, excluding empty text.
     # SIGReg is a token-weighted batch-population statistic, not a per-line loss.
-    totals = torch.zeros(8,dtype=torch.float32 if device.type == 'mps' else torch.float64,
+    totals = torch.zeros(13,dtype=torch.float32 if device.type == 'mps' else torch.float64,
                          device=device)
+    corruption, skip_reasons = Counter(), Counter()
     started = time.monotonic()
     gradient_batches = []
     diagnostics = []
@@ -189,17 +200,32 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
         if max_batches and index >= max_batches:
             break
         images,texts = _batch_lines(batch,device)
+        negative_texts = None
+        if active_config.negative_dtw_weight:
+            nested = batch.get('negative_texts')
+            if nested is None:
+                raise ValueError('Negative training requires a dataset view configured by build_loaders')
+            negative_texts = [sides[0] for sides in nested]
+            if torch.is_tensor(batch['image2']):
+                negative_texts += [sides[1] for sides in nested]
+        for sides in batch.get('negative_stats', []):
+            for info in sides:
+                corruption.update({k: info.get(k, 0) for k in ('requested','generated','shortfall','attempts')})
+                corruption.update({'rejected_'+k: v for k,v in info['rejections'].items()})
+                corruption.update({'operation_'+k: v for k,v in info['operations'].items()})
         if training:
             optimizer.zero_grad(set_to_none=True)
         with torch.set_grad_enabled(training):
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
                                 enabled=config.use_amp and device.type=='cuda'):
                 output = model(images)
-            loss,stats = compute_loss(output,texts,text_encoder,config,
+            loss,stats = compute_loss(output,texts,text_encoder,active_config, negative_texts=negative_texts,
                                      distributed_statistics=distributed,
                                      sketch_seed=None if training else config.seed)
             if not torch.isfinite(loss):
                 raise FloatingPointError('Nonfinite objective; no optimizer step taken')
+            if training and not stats['global_evaluated']:
+                raise ValueError(f'No feasible positive transcripts in the global batch; no step taken: {stats["skip_reasons"]}')
             if training:
                 loss.backward()
                 gradients = gradient_stats(model)
@@ -214,6 +240,10 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
             if gate_stats is not None:
                 gates.append(gate_stats)
         tokens = stats['valid_tokens']
+        skip_reasons.update(stats['skip_reasons'])
+        skip_reasons.update({'negative_'+k: v for k,v in stats['negative_skip_reasons'].items()})
+        if stats['skipped'] and rank == 0:
+            tqdm.write(f'Skipped {stats["skipped"]} lines: {stats["skip_reasons"]}')
         evaluated = stats['evaluated']
         batch_stats = dict(stats, mean_windows=(sum(t for t, _ in stats['lengths']) / evaluated
                                                  if evaluated else None),
@@ -223,15 +253,29 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
         totals += totals.new_tensor([stats['dtw_sum'],stats['evaluated'],stats['skipped'],
                                       (stats['sigreg'] or 0.)*tokens,tokens,
                                       sum(t for t,l in stats['lengths']),
-                                      sum(l for t,l in stats['lengths']),1])
+                                      sum(l for t,l in stats['lengths']),1,
+                                      stats['negative_sum'], stats['ranked_lines'], stats['ranking_candidates'],
+                                      stats['ranking_correct'], stats['ranking_margin_sum']])
     progress.close()
     if distributed:
         dist.all_reduce(totals)
-    dtw_sum,n,skipped,sig_sum,tokens,windows,letters,batches = totals.tolist()
+        details = [None] * dist.get_world_size()
+        dist.all_gather_object(details, (dict(corruption), dict(skip_reasons)))
+        corruption, skip_reasons = Counter(), Counter()
+        for c, s in details:
+            corruption.update(c); skip_reasons.update(s)
+    dtw_sum,n,skipped,sig_sum,tokens,windows,letters,batches,neg_sum,ranked,candidates,correct,margins = totals.tolist()
     positive = dtw_sum/n if n else None
     sigreg = sig_sum/tokens if tokens and config.sigreg_weight else None
-    total = None if positive is None else config.positive_dtw_weight*positive + config.sigreg_weight*(sigreg or 0.)
-    result = dict(total=total,positive_dtw=positive,negative_dtw=None,sigreg=sigreg,
+    negative = neg_sum/ranked if ranked else None
+    total = None if positive is None else (config.positive_dtw_weight*positive + config.sigreg_weight*(sigreg or 0.)
+                                           + active_config.negative_dtw_weight*(negative or 0.))
+    result = dict(total=total,positive_dtw=positive,negative_dtw=negative,sigreg=sigreg,
+                negative_training_enabled=bool(active_config.negative_dtw_weight),
+                negative_weight=active_config.negative_dtw_weight, ranked_lines=int(ranked),
+                ranking_candidates=int(candidates), ranking_accuracy=correct/candidates if candidates else None,
+                negative_minus_positive_cost=margins/candidates if candidates else None,
+                corruption=dict(corruption), skip_reasons=dict(skip_reasons), alignment_objective=config.alignment_objective,
                 weighted_sigreg=config.sigreg_weight*(sigreg or 0.),evaluated=int(n),skipped=int(skipped),
                 valid_tokens=int(tokens),batches=int(batches),mean_windows=windows/n if n else None,
                 mean_letters=letters/n if n else None,gamma=config.dtw_gamma,
@@ -276,6 +320,8 @@ def validate_one_epoch(model,text_encoder,loader,config,device,max_batches=0,epo
         raise ValueError('Coordinated rank-zero validation requires model.module')
     if loader.dataset.augment:
         raise ValueError('Validation must use an augmentation-free dataset view')
+    previous_evaluation_view = getattr(loader.dataset,'evaluation_view',False)
+    if hasattr(loader.dataset,'evaluation_view'): loader.dataset.evaluation_view=True
     device = torch.device(device)
     modes = [(module,module.training) for module in list(model.modules())+list(text_encoder.modules())]
     python_rng,numpy_rng = random.getstate(),np.random.get_state()
@@ -285,6 +331,7 @@ def validate_one_epoch(model,text_encoder,loader,config,device,max_batches=0,epo
             return _run_epoch(model,text_encoder,loader,config,device,max_batches=max_batches,
                               epoch=epoch,epochs=epochs,rank=rank)
     finally:
+        if hasattr(loader.dataset,'evaluation_view'): loader.dataset.evaluation_view=previous_evaluation_view
         for module,mode in modes:
             module.training = mode
         random.setstate(python_rng)
@@ -301,6 +348,7 @@ def save_checkpoint(path,model,optimizer,epoch,best_val,config,text_encoder,spli
                    config=asdict(config),split_ids=split_ids,
                    split_manifest_sha256=hashlib.sha256(json.dumps(split_ids,sort_keys=True).encode()).hexdigest(),
                    parameter_count=sum(p.numel() for p in raw.parameters()),
+                   letter_evidence_prior=getattr(text_encoder, 'letter_evidence_prior', None),
                    initialization=raw.cnn.initialization,**metadata)
     path = Path(path)
     temporary = path.with_suffix('.tmp')
@@ -310,7 +358,7 @@ def save_checkpoint(path,model,optimizer,epoch,best_val,config,text_encoder,spli
 
 def load_checkpoint(path,device='cpu'):
     """Strict new-format reconstruction. Legacy checkpoints are not migrated."""
-    saved = torch.load(path,map_location='cpu')
+    saved = torch.load(path,map_location='cpu',weights_only=False)  # trusted project checkpoints include RNG metadata
     if saved.get('format_version') != 1 or saved.get('architecture_family') != 'simple-alignment-core':
         raise ValueError('Incompatible legacy checkpoint: expected standalone simple-alignment-core format 1')
     config = Config(**saved['config'])
@@ -328,6 +376,7 @@ def load_checkpoint(path,device='cpu'):
     model.cnn.initialization = saved['initialization']
     text = OrthogonalCharEmbedding(config.embedding_dim,config.text_vocab_size,config.text_embedding_seed).to(device)
     text.load_state_dict(saved['text_embedding'],strict=True)
+    text.letter_evidence_prior = saved.get('letter_evidence_prior')
     if hashlib.sha256(json.dumps(saved['split_ids'],sort_keys=True).encode()).hexdigest() != saved['split_manifest_sha256']:
         raise ValueError('Checkpoint split identity is inconsistent')
     model.eval()
@@ -368,6 +417,11 @@ def _print_dataset_summary(args, config, loaders):
     print(f'SIGReg: {"ENABLED (weight=" + str(config.sigreg_weight) + ")" if config.sigreg_weight else "DISABLED"}', flush=True)
     print(f'Positive DTW weight: {config.positive_dtw_weight}', flush=True)
     print(f'Negative DTW weight: {config.negative_dtw_weight}', flush=True)
+    print('Negative transcripts: ' + ('ENABLED' if config.negative_dtw_weight else 'DISABLED'), flush=True)
+    print(f'Alignment objective: {config.alignment_objective}; cost mode: {config.dtw_cost_mode}; '
+          f'temperature: {config.competition_temperature}; gamma: {config.dtw_gamma}; '
+          f'position prior: {config.position_prior}; vertical/horizontal: '
+          f'{config.vertical_penalty}/{config.horizontal_penalty}', flush=True)
     print('=' * 60, flush=True)
 
 
@@ -435,6 +489,7 @@ def main(argv=None, epoch_callback=None):
     parser.add_argument('--device',default='auto')
     parser.add_argument('--max-batches',type=int,default=0,help='Explicit smoke cap on BOTH passes; 0=full splits')
     parser.add_argument('--resume',help='New-format checkpoint; config must match (epochs may increase)')
+    parser.add_argument('--finetune',help='Load weights and saved splits, fresh optimizer; explicitly allow changed loss settings')
     for field in fields(Config):
         kwargs = dict(default=field.default)
         if isinstance(field.default,bool): kwargs['action']=argparse.BooleanOptionalAction
@@ -444,8 +499,9 @@ def main(argv=None, epoch_callback=None):
     config = Config(**{f.name:getattr(args,f.name) for f in fields(Config)})
     config.fusion_mode, gated = validate_fusion_config(config.fusion_mode, config.use_gated_fusion)
     config.use_gated_fusion = int(gated)
-    if config.negative_dtw_weight:
-        raise ValueError('This CLI has no negative-transcript source; leave negative_dtw_weight=0')
+    validate_objective(config)
+    if args.resume and args.finetune:
+        raise ValueError('--resume and --finetune are mutually exclusive')
     if args.max_batches < 0 or Path(args.run_name).name != args.run_name:
         raise ValueError('Use a simple run name and nonnegative smoke cap')
     rank,world,local_rank = [int(os.environ.get(k,d)) for k,d in [('RANK','0'),('WORLD_SIZE','1'),('LOCAL_RANK','0')]]
@@ -468,13 +524,23 @@ def main(argv=None, epoch_callback=None):
     if rank==0: output_dir.mkdir(parents=True,exist_ok=bool(args.resume))
     if world>1: dist.barrier()
     start,best,saved = 0,float('inf'),None
-    if args.resume:
-        model,text,saved_config,saved = load_checkpoint(args.resume,device)
+    if args.resume or args.finetune:
+        model,text,saved_config,saved = load_checkpoint(args.resume or args.finetune,device)
         expected,actual = asdict(saved_config),asdict(config)
         expected.pop('epochs')
         actual.pop('epochs')
-        if expected != actual: raise ValueError('Resume configuration differs from checkpoint')
-        start,best = saved['epoch'],saved['best_val']
+        if args.resume:
+            if expected != actual:
+                raise ValueError('Resume configuration differs from checkpoint; use --finetune for changed losses')
+            start,best = saved['epoch'],saved['best_val']
+        else:
+            allowed = {f.name for f in fields(Config) if f.name.startswith(('negative_', 'sigreg_'))}
+            allowed |= {'alignment_objective','ctc_blank_logit','alphabet_inventory','position_prior',
+                        'positive_dtw_weight','dtw_gamma','vertical_penalty','horizontal_penalty',
+                        'competition_temperature','dtw_cost_mode','disable_horizontal_when_feasible'}
+            changed = {key for key in expected if expected[key] != actual[key]}
+            if changed - allowed:
+                raise ValueError(f'Fine-tuning may change losses only, not architecture/data: {sorted(changed-allowed)}')
     else:
         model = build_model(config).to(device)
         text = OrthogonalCharEmbedding(config.embedding_dim,config.text_vocab_size,config.text_embedding_seed).to(device)
@@ -485,6 +551,10 @@ def main(argv=None, epoch_callback=None):
         raise ValueError('Training and validation need nonempty group splits')
     split_ids = {name:[r['sample_id'] for r in loader.dataset.records]
                  for name,loader in zip(('train','val','test'),loaders)}
+    if not args.resume:
+        text.letter_evidence_prior = fit_letter_prior(train_loader.dataset.records, config.alphabet_inventory)
+        text.letter_evidence_prior['train_ids_sha256'] = hashlib.sha256(
+            json.dumps(split_ids['train'], sort_keys=True).encode()).hexdigest()
     sampler = None
     if world>1:
         sampler = DistributedSampler(train_loader.dataset,seed=config.seed,shuffle=True)
@@ -492,7 +562,18 @@ def main(argv=None, epoch_callback=None):
                                   num_workers=config.num_workers,collate_fn=collate_samples)
         model = DistributedDataParallel(model,device_ids=[device.index] if device.type=='cuda' else None)
     optimizer = torch.optim.Adam(model.parameters(),lr=config.learning_rate,weight_decay=config.weight_decay)
-    if saved: optimizer.load_state_dict(saved['optimizer'])
+    if args.resume:
+        optimizer.load_state_dict(saved['optimizer'])
+        states = saved.get('rng_states', [])
+        if len(states) == world:
+            state = states[rank]
+            random.setstate(state['python']); np.random.set_state(state['numpy'])
+            torch.set_rng_state(state['torch'])
+            if device.type == 'cuda': torch.cuda.set_rng_state(state['cuda'], device)
+            if train_loader.generator is not None and state['loader'] is not None:
+                train_loader.generator.set_state(state['loader'])
+        elif rank == 0:
+            print('WARNING: legacy checkpoint lacks matching per-rank RNG states; resume is not bit-exact.', flush=True)
     history_path = output_dir/'history.json'
     history = json.loads(history_path.read_text()) if args.resume and history_path.exists() else []
     if rank==0:
@@ -528,6 +609,12 @@ def main(argv=None, epoch_callback=None):
         previous_best = best
         improved = val_stats['total'] < best
         best = min(best,val_stats['total'])
+        rng = dict(python=random.getstate(), numpy=np.random.get_state(), torch=torch.get_rng_state(),
+                   cuda=torch.cuda.get_rng_state(device) if device.type == 'cuda' else None,
+                   loader=train_loader.generator.get_state() if train_loader.generator is not None else None)
+        rng_states = [None] * world
+        if world > 1: dist.all_gather_object(rng_states, rng)
+        else: rng_states[0] = rng
         if rank==0:
             entry = dict(epoch=epoch,train=train_stats,validation=val_stats,
                          gradients=train_stats.get('gradients', {}),
@@ -535,7 +622,14 @@ def main(argv=None, epoch_callback=None):
             history.append(entry)
             history_path.write_text(json.dumps(history,indent=2))
             kwargs = dict(selection_metric='validation.total',selection_population=val_stats['population'],
-                          dataset=str(Path(args.dataset).resolve()),max_batches=args.max_batches,metrics=entry)
+                          dataset=str(Path(args.dataset).resolve()),max_batches=args.max_batches,metrics=entry,
+                          rng_states=rng_states, run_mode='finetune' if args.finetune else 'resume' if args.resume else 'fresh',
+                          source_checkpoint=args.finetune or args.resume,
+                          source_config=saved['config'] if saved else None)
+            print('RANKING', json.dumps({phase: {k: stats[k] for k in ('negative_training_enabled',
+                  'negative_dtw','ranked_lines','ranking_candidates','ranking_accuracy',
+                  'negative_minus_positive_cost','corruption','skip_reasons')}
+                  for phase,stats in [('train',train_stats),('validation',val_stats)]}), flush=True)
             save_checkpoint(output_dir/'checkpoint_latest.pt',model,optimizer,epoch,best,config,text,split_ids,**kwargs)
             if improved: save_checkpoint(output_dir/'checkpoint_best.pt',model,optimizer,epoch,best,config,text,split_ids,**kwargs)
             _print_epoch_summary(epoch, config.epochs, train_stats, val_stats, entry['gradients'],

@@ -23,7 +23,7 @@ def test_one_epoch_checkpoint_reload_and_automatic_validation(tmp_path,capsys):
     assert saved['epoch']==1 and saved['metrics']['validation']['evaluated']==2
     assert model(torch.randn(2,1,32,64))['fused'].shape==(2,3,128)
     console=capsys.readouterr().out
-    assert 'Train loss:' in console and 'Validation loss:' in console
+    assert 'TRAIN' in console and 'VALIDATION' in console and 'total loss:' in console
     saved['config']['embedding_dim']=64
     torch.save(saved,tmp_path/'bad.pt')
     with pytest.raises(RuntimeError,match='size mismatch'):

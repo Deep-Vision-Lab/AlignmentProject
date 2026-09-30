@@ -13,7 +13,7 @@ def fixture():
     torch.manual_seed(3)
     raw = torch.randn(2,5,128,requires_grad=True)
     output = dict(fused=F.normalize(raw,dim=-1), fused_pre_l2=raw, token_valid=torch.ones(2,5,dtype=torch.bool))
-    config = Config(sigreg_sketch_dim=16, sigreg_min_samples=2)
+    config = Config(sigreg_weight=.2, sigreg_sketch_dim=16, sigreg_min_samples=2)
     return raw, output, OrthogonalCharEmbedding(vocab_size=4096), config
 
 

@@ -22,6 +22,24 @@ def clean_letters(text):
                     ((0x600,0x6ff),(0x750,0x77f),(0x8a0,0x8ff),(0xfb50,0xfdff),(0xfe70,0xfeff)))]
 
 
+def fit_letter_prior(records, inventory=''):
+    """Laplace-smoothed counts from TRAIN records only; no evaluation transcript lookup."""
+    from collections import Counter
+    from pathlib import Path
+    counts, seen = Counter(), set()
+    for record in records:
+        for side in record['sides']:
+            key = str(side['text'])
+            if key not in seen:
+                counts.update(clean_letters(Path(key).read_text(encoding='utf-8')))
+                seen.add(key)
+    vocabulary = list(dict.fromkeys(inventory or ARABIC_LETTERS + ''.join(sorted(counts))))
+    total = sum(counts[c] + 1 for c in vocabulary)
+    return dict(vocabulary=vocabulary, prior=[(counts[c]+1)/total for c in vocabulary],
+                source='training-only Laplace(add-one)', transcript_files=len(seen),
+                character_count=sum(counts.values()))
+
+
 class OrthogonalCharEmbedding(nn.Module):
     SPACE_TOKEN_IDX = 0
     PAD_TOKEN_IDX = 1

@@ -18,6 +18,89 @@ import numpy as np
 import torch
 from PIL import Image, ImageEnhance, ImageFilter
 from torch.utils.data import Dataset
+from text_embedding import ARABIC_LETTERS, clean_letters
+
+
+def generate_negative_transcripts(text, *, count=3, operations='substitute,adjacent,blocks,words,shift,shuffle',
+                                  severity=.35, seed=42, sample_id='', epoch=0, vocabulary=ARABIC_LETTERS,
+                                  equivalents=(), curriculum_epochs=0):
+    """Bounded sequence corruption; stable seed independent of workers/Python hash.
+
+    Compare after the loss's NFKC/Arabic filtering. Collapse equal-letter runs
+    for a conservative topology-equivalence rejection (DTW can stretch runs).
+    Early epochs use larger edits and prefer substitution; later epochs use the
+    configured mixture/severity. Validation uses epoch=0, no curriculum.
+    """
+    letters = clean_letters(text)
+    original = ''.join(letters)
+    ops = operations.split(',') if isinstance(operations, str) else list(operations)
+    if count < 1 or not 0 < severity <= 1 or not ops or not set(ops) <= {'substitute','adjacent','blocks','words','shift','shuffle'}:
+        raise ValueError('Invalid negative-generation settings')
+    vocab = list(dict.fromkeys(vocabulary))
+    if any(clean_letters(c) != [c] for c in vocab):
+        raise ValueError('Negative vocabulary must contain normalized supported Arabic letters')
+    def signature(value):
+        return ''.join(c for i, c in enumerate(value) if i == 0 or c != value[i-1])
+    forbidden = {signature(''.join(clean_letters(v))) for v in (text, *equivalents)}
+    stats = dict(requested=count, generated=0, shortfall=count, attempts=0, rejections={}, operations={})
+    if not letters or not set(letters) <= set(vocab):
+        stats['rejections']['empty_or_unsupported_positive'] = count
+        return [], stats
+    digest = hashlib.sha256(f'{seed}\0{sample_id}\0{epoch}'.encode()).digest()
+    rng = random.Random(int.from_bytes(digest[:8], 'big'))
+    progress = min(1., max(0, epoch-1) / max(1, curriculum_epochs)) if curriculum_epochs else 1.
+    strength = severity + (min(1., severity * 2) - severity) * (1-progress)
+    stats['severity'] = strength
+    negatives = []
+    for _ in range(max(12, 24 * count)):
+        if len(negatives) == count:
+            break
+        stats['attempts'] += 1
+        op = 'substitute' if 'substitute' in ops and rng.random() > progress else rng.choice(ops)
+        candidate = letters.copy()
+        edits = max(1, round(len(letters) * strength))
+        if op == 'substitute':
+            for i in rng.sample(range(len(candidate)), min(edits, len(candidate))):
+                choices = [c for c in vocab if c != candidate[i]]
+                if choices: candidate[i] = rng.choice(choices)
+        elif op == 'adjacent':
+            for _ in range(edits):
+                choices = [i for i in range(len(candidate)-1) if candidate[i] != candidate[i+1]]
+                if choices:
+                    i = rng.choice(choices)
+                    candidate[i], candidate[i+1] = candidate[i+1], candidate[i]
+        elif op == 'words':
+            words = [''.join(clean_letters(w)) for w in str(text).split()]
+            words = [w for w in words if w]
+            if len(words) >= 2:
+                a, b = rng.sample(range(len(words)), 2)
+                words[a], words[b] = words[b], words[a]
+                candidate = list(''.join(words))
+        elif len(candidate) >= 2:
+            size = min(len(candidate), 8, max(2, edits))
+            start = rng.randrange(len(candidate)-size+1)
+            segment = candidate[start:start+size]
+            if op == 'shuffle': rng.shuffle(segment)
+            elif op == 'shift':
+                offset = rng.randrange(1, len(segment))
+                segment = segment[offset:] + segment[:offset]
+            else:  # reorder two short adjacent blocks
+                cut = rng.randrange(1, len(segment))
+                segment = segment[cut:] + segment[:cut]
+            candidate[start:start+size] = segment
+        value = ''.join(candidate)
+        normalized = ''.join(clean_letters(value))
+        reason = ('empty_or_unsupported' if not value or value != normalized or not set(value) <= set(vocab)
+                  else 'identical' if value == original else 'duplicate' if value in negatives
+                  else 'equivalent_or_duration_only' if signature(value) in forbidden else None)
+        if reason:
+            stats['rejections'][reason] = stats['rejections'].get(reason, 0) + 1
+        else:
+            negatives.append(value)
+            stats['operations'][op] = stats['operations'].get(op, 0) + 1
+    stats['generated'] = len(negatives)
+    stats['shortfall'] = count - len(negatives)
+    return negatives, stats
 
 
 def file_hash(path):
@@ -152,6 +235,9 @@ class AlignmentDataset(Dataset):
         self.root = Path(root).expanduser().resolve()
         self.augment = bool(augment and split not in {'val', 'valid', 'test'})
         self.paired = bool(paired)
+        self.negative_config = None
+        self.negative_epoch = 0
+        self.evaluation_view = False
         self.image_size, self.grayscale, self.crop, self.binarize = image_size, grayscale, crop, binarize
         manifest = self.root if self.root.is_file() else self.root / 'dataset_manifest.jsonl'
         if self.root.is_file():
@@ -204,6 +290,7 @@ class AlignmentDataset(Dataset):
                 group = str(side.get('group_id') or side.get('page_id') or side.get('page_dir') or group)
             mask = side.get('alignment_mask_path') or side.get('mask')
             return dict(image=image, text=text, mask=resolve(mask) if mask else None,
+                        equivalent_transcripts=side.get('equivalent_transcripts', []),
                         group_id=group, bbox=side.get('bbox'))
 
         if dataset_type == 'synthetic':
@@ -279,6 +366,9 @@ class AlignmentDataset(Dataset):
     def __len__(self):
         return len(self.records)
 
+    def set_epoch(self, epoch):
+        self.negative_epoch = 0 if self.evaluation_view else int(epoch)
+
     def __getitem__(self, index):
         record = self.records[index]
         images, texts, geometries, masks = [], [], [], []
@@ -297,8 +387,25 @@ class AlignmentDataset(Dataset):
                         tuple(geometry['model_size']), Image.Resampling.NEAREST))
                 mask = torch.from_numpy((pixels >= 128).astype(np.float32))[None]
             masks.append(mask)
-        return dict(image=images[0], text=texts[0], image2=images[1] if len(images) == 2 else None,
+        result = dict(image=images[0], text=texts[0], image2=images[1] if len(images) == 2 else None,
                     text2=texts[1] if len(texts) == 2 else None, mask=masks[-1],
                     sample_id=record['sample_id'], group_id=record['group_id'], label=record['label'],
                     anchor_id=record['anchor_id'], geometry=geometries,
                     image_paths=[s['image'] for s in record['sides']])
+        c = self.negative_config
+        if c is not None and c.negative_dtw_weight > 0:
+            negatives, diagnostics = [], []
+            for i, (side, text) in enumerate(zip(record['sides'], texts)):
+                if not self.evaluation_view and self.negative_epoch <= c.negative_warmup_epochs:
+                    values, detail = [], dict(requested=0, generated=0, shortfall=0, attempts=0,
+                                             rejections={'warmup': 1}, operations={})
+                else:
+                    values, detail = generate_negative_transcripts(text, count=c.negative_count,
+                        operations=c.negative_operations, severity=c.negative_severity, seed=c.negative_seed,
+                        sample_id=f'{record["sample_id"]}:{i}', epoch=self.negative_epoch,
+                        vocabulary=c.alphabet_inventory or ARABIC_LETTERS,
+                        equivalents=side.get('equivalent_transcripts', []),
+                        curriculum_epochs=0 if self.evaluation_view else c.negative_curriculum_epochs)
+                negatives.append(values); diagnostics.append(detail)
+            result.update(negative_texts=negatives, negative_stats=diagnostics)
+        return result

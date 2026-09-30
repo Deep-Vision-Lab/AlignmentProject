@@ -14,7 +14,7 @@ from torch.nn import functional as F
 
 def cosine_similarity_matrix(visual, letters):
     if visual.ndim != 2 or letters.ndim != 2 or visual.shape[1] != letters.shape[1]:
-        raise ValueError('Expected compatible [T,D] and [L,D] vectors')
+        raise ValueError(f'Embedding dimensions must agree: got {tuple(visual.shape)} and {tuple(letters.shape)}; sequence lengths may differ')
     return F.normalize(visual.float(), dim=-1) @ F.normalize(letters.float(), dim=-1).T
 
 
@@ -24,6 +24,8 @@ def cosine_cost_matrix(visual, letters):
 
 def letter_cost_matrix(visual, letters, *, alphabet=None, letter_ids=None,
                        temperature=.10, mode='full_alphabet_nll'):
+    if visual.ndim != 2 or letters.ndim != 2 or visual.shape[1] != letters.shape[1]:
+        raise ValueError(f'Embedding dimensions must agree: visual {tuple(visual.shape)}, text {tuple(letters.shape)}')
     if mode == 'cosine':
         return cosine_cost_matrix(visual, letters)
     if mode != 'full_alphabet_nll' or alphabet is None or letter_ids is None:
@@ -35,6 +37,39 @@ def letter_cost_matrix(visual, letters, *, alphabet=None, letter_ids=None,
     if len(ids) != len(letters):
         raise ValueError('letter_ids must match transcript columns')
     return nll.index_select(1, ids)
+
+
+def alphabet_log_probabilities(visual, alphabet, temperature=.1, blank_logit=None):
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError('Alphabet temperature must be finite and positive')
+    logits = cosine_similarity_matrix(visual, alphabet) / max(1e-4, temperature)
+    if blank_logit is not None:
+        logits = torch.cat((logits, logits.new_full((len(logits), 1), blank_logit)), dim=1)
+    return F.log_softmax(logits, dim=-1)
+
+
+def letter_evidence_matrix(log_a, log_b, prior=None, acceptance_offset=0., prior_floor=1e-4):
+    """Rectangular log shared-letter likelihood ratio; never an alignment probability.
+
+    Inputs exclude any blank column WITHOUT renormalizing away blank mass.
+    Flooring then renormalizing bounds inverse-prior amplification. Chunking
+    bounds the [T_A,T_B,K] temporary while retaining all letter uncertainty.
+    """
+    if log_a.ndim != 2 or log_b.ndim != 2 or log_a.shape[1] != log_b.shape[1]:
+        raise ValueError('Alphabet dimensions/order must agree')
+    k = log_a.shape[1]
+    if not k or not 0 < prior_floor < 1/k:
+        raise ValueError('Require 0 < prior_floor < 1/alphabet_size')
+    # Validate/floor BEFORE float32 conversion (tiny positive priors may underflow).
+    pi = torch.full((k,), 1/k, dtype=torch.float64) if prior is None else torch.as_tensor(prior, device='cpu', dtype=torch.float64)
+    if pi.shape != (k,) or not torch.isfinite(pi).all() or (pi <= 0).any():
+        raise ValueError('Prior must be finite, positive, and match alphabet order')
+    pi = pi / pi.sum()
+    pi = pi.clamp_min(prior_floor); pi = (pi / pi.sum()).to(device=log_a.device,dtype=log_a.dtype)
+    if not len(log_a) or not len(log_b):
+        return log_a.new_empty((len(log_a),len(log_b)))
+    return torch.cat([torch.logsumexp(a[:, None, :] + log_b[None, :, :] - pi.log(), dim=-1)
+                      for a in log_a.split(64)], dim=0) - acceptance_offset
 
 
 def effective_costs(costs, position_prior=.15):

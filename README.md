@@ -47,10 +47,13 @@ for SIGReg. Other CNN/preset choices are explicit CLI options, not backend patch
 No-position attention has no explicit distance/order signal; DTW still uses
 ordered indices and its separate position prior.
 
-The default objective is `positive_DTW + 0.20 * SIGReg`. Negative margin weight is
-zero. The negative-loss function accepts explicit per-line negatives; the training
-CLI deliberately rejects a nonzero negative weight because it has no negative
-transcript source. No image–image loss is added.
+The current default objective is positive DTW only: SIGReg and negative margin
+weights are zero. Set `--negative-dtw-weight` above zero to generate corrupted
+complete transcripts for the SAME image and add a differentiable sequence-ranking
+margin. Zero disables both generation and alignment. No image–image loss is added.
+See [training/evaluation controls and measured diagnostics](docs/ALIGNMENT_IMPROVEMENTS.md)
+for reproducible negatives, the separate CTC experiment, checkpoint semantics,
+padding, exact SLURM commands, and notebook comparisons.
 
 DTW retains full-alphabet NLL before gathering transcript columns, temperature
 0.10, gamma 0.05, vertical penalty 0.05, horizontal penalty 0.30, position prior
@@ -154,14 +157,18 @@ calibration. Explicit images use the checkpoint's grayscale/resize/crop policy;
 `--crop-override none` records a deliberate full-source ablation. The evaluator
 loads the same standalone model strictly and runs eval/no-grad.
 
-Shared regions use local affine Smith–Waterman: both images may have unmatched
+Shared regions use local DP with bounded repeats and affine gaps: both images may have unmatched
 beginnings/ends. Default rewards are cosine minus the maximum of 0.6, row median
 +0.05, and column median +0.05. `--score-mode raw` uses cosine−threshold instead.
-Gap opening/extension defaults are 0.2/0.05. Five distinct positively matched
-windows on each side are required; `--min-windows 4` is an explicit alternative.
-At most one missing window between supported anchors is filled; `--max-gap 0`
+Gap opening/extension defaults are 0.2/0.05. Three distinct positively matched
+windows on each side are required; `--min-windows` makes this configurable.
+At most one weak matched window between supported anchors is filled; true skips
+are not filled. `--max-gap 0`
 requires strict consecutive support. Separate regions remain separate. Greedy
-extraction prevents crossing/reuse but is not globally optimal. Background
+selection prevents crossing/reuse but is not globally optimal. `--decoder affine`
+retains the former one-to-one cosine baseline. `--similarity-mode letter_evidence`
+selects the experimental alphabet-distribution score using the checkpoint codebook
+and training-only prior (explicit uniform fallback for old checkpoints). Background
 correction can suppress broad/repeated true matches; all settings are uncalibrated.
 
 Inspect `cosine_heatmap.png` (fixed −1…1 scale), `alignment_scores_heatmap.png`

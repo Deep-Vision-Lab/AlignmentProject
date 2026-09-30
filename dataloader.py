@@ -13,6 +13,10 @@ from dataset import AlignmentDataset
 
 
 def collate_samples(samples):
+    for key in ('image', 'image2'):
+        shapes = {tuple(s[key].shape) for s in samples if torch.is_tensor(s[key])}
+        if len(shapes) > 1:
+            raise ValueError('Variable image sizes require per-line processing; collation never silently pads images')
     return {key: torch.stack(values) if all(torch.is_tensor(v) for v in values) else values
             for key in samples[0] for values in [[s[key] for s in samples]]}
 
@@ -64,6 +68,7 @@ def create_dataloaders(root, dataset_type='auto', train_ratio=.8, val_ratio=.1,
         view = copy.copy(dataset)
         view.records = records[name]
         view.augment = bool(augment and name == 'train')
+        view.evaluation_view = name != 'train'
         loader = DataLoader(view, batch_size=batch_size, shuffle=name == 'train' and len(view) > 0,
                             num_workers=num_workers, collate_fn=collate_samples,
                             worker_init_fn=_seed_worker,

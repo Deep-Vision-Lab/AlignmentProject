@@ -84,15 +84,29 @@ class AlignmentModel(nn.Module):
                                        self.fusion_mode, self.use_gated_fusion)
         self.fusion_norm = nn.LayerNorm(embedding_dim)
 
-    def forward(self, images, token_valid=None):
+    def forward(self, images, token_valid=None, valid_widths=None):
         windows = extract_windows(images, self.window_width, self.stride)
         b, t, c, h, w = windows.shape
         # One projection/dropout draw; the SAME local tensor feeds both branches.
-        local = self.cnn(windows.reshape(b * t, c, h, w)).reshape(b, t, -1)
         valid = torch.ones((b, t), dtype=torch.bool, device=images.device) if token_valid is None else token_valid.bool().to(images.device)
         if valid.shape != (b, t):
             raise ValueError('token_valid must match physical [B,T] window grid')
+        if valid_widths is not None:
+            widths = torch.as_tensor(valid_widths, device=images.device)
+            if widths.shape != (b,) or (widths > images.shape[-1]).any() or (widths < self.window_width).any():
+                raise ValueError('valid_widths must give an unpadded width >= window_width for each line')
+            # Partial boundary windows are excluded, never filled with artificial pixels.
+            valid = valid & (torch.arange(t, device=images.device)[None] * self.stride + self.window_width <= widths[:, None])
+        if not valid.any(dim=1).all():
+            raise ValueError('Each line requires at least one fully valid physical window')
+        if valid.all():
+            local = self.cnn(windows.reshape(b * t, c, h, w)).reshape(b, t, -1)
+        else:
+            encoded = self.cnn(windows[valid])  # padding cannot affect CNN BatchNorm statistics
+            local = encoded.new_zeros(b, t, encoded.shape[-1])
+            local[valid] = encoded
         physical = torch.arange(t, device=images.device).expand(b, -1)
+        physical = physical.masked_fill(~valid, -1)
         if self.rtl:
             local, valid, physical = local.flip(1), valid.flip(1), physical.flip(1)
         context = self.transformer(local, valid)
@@ -101,4 +115,4 @@ class AlignmentModel(nn.Module):
         fused = F.normalize(pre_l2.float(), dim=-1)
         return dict(local=local, context=context, fused=fused, fused_pre_l2=pre_l2,
                     token_valid=valid, physical_window_indices=physical,
-                    fusion_gate=gate, fusion_gate_stats=_gate_stats(gate))
+                    fusion_gate=gate, fusion_gate_stats=_gate_stats(gate[valid] if gate is not None else None))
