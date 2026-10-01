@@ -2,7 +2,8 @@
 
 Preserved launcher defaults: gamma=.05, vertical=.05, horizontal=.30,
 absolute normalized-position prior=.15, alphabet temperature=.10. Horizontal
-moves cost 1e4 when T>=L; the final objective is divided by T+L, NOT path length.
+moves cost 1e4 when T>=L. Legacy normalizes free energy by T+L;
+aligned_mean reports occupancy-weighted mean cell NLL.
 These positions belong to DTW, independently of Transformer positional encoding.
 """
 from dataclasses import dataclass
@@ -86,11 +87,45 @@ def effective_costs(costs, position_prior=.15):
 
 
 def soft_dtw(costs, gamma=.05, vertical_penalty=.05, horizontal_penalty=.30,
-             position_prior=.15, disable_horizontal_when_feasible=True):
-    """Anti-diagonal recurrence: vectorized cells, differentiable predecessors."""
+             position_prior=.15, disable_horizontal_when_feasible=True,
+             normalization='legacy', return_occupancy=False):
+    """Soft path energy; aligned_mean uses d(total)/d(cell cost) as occupancy.
+
+    The derivative of the log-partition Soft-DTW total is the expected number
+    of visits to each cell. Its weighted NLL divided by expected visit count
+    is an average evidence cost, not the free energy (which includes entropy,
+    transition penalties and the position prior). Differentiation through the
+    occupancy is retained during training. Legacy keeps total/(T+L).
+    """
     if not math.isfinite(gamma) or gamma <= 0:
         raise ValueError('gamma must be finite and positive')
-    costs = effective_costs(costs.float(), position_prior)
+    if normalization not in {'legacy', 'aligned_mean'}:
+        raise ValueError('Unknown DTW normalization')
+    outer_grad = torch.is_grad_enabled()
+    with torch.enable_grad():
+        raw = costs.float()
+        if (normalization == 'aligned_mean' or return_occupancy) and not raw.requires_grad:
+            raw = raw.detach().requires_grad_(True)
+        total = _soft_dtw_total(raw, gamma, vertical_penalty, horizontal_penalty,
+                                position_prior, disable_horizontal_when_feasible)
+        occupancy = None
+        if normalization == 'aligned_mean' or return_occupancy:
+            occupancy = torch.autograd.grad(total, raw, create_graph=outer_grad,
+                                            retain_graph=outer_grad)[0]
+            if not torch.isfinite(occupancy).all() or occupancy.sum() <= 0:
+                raise FloatingPointError('Invalid Soft-DTW alignment occupancy')
+        value = ((occupancy * raw).sum() / occupancy.sum() if normalization == 'aligned_mean'
+                 else total / sum(raw.shape))
+    if not outer_grad:
+        value = value.detach()
+        if occupancy is not None:
+            occupancy = occupancy.detach()
+    return (value, occupancy) if return_occupancy else value
+
+
+def _soft_dtw_total(raw_costs, gamma, vertical_penalty, horizontal_penalty,
+                    position_prior, disable_horizontal_when_feasible):
+    costs = effective_costs(raw_costs, position_prior)
     t, l = costs.shape
     horizontal = 1e4 if disable_horizontal_when_feasible and t >= l else horizontal_penalty
     previous = previous2 = None
@@ -114,14 +149,14 @@ def soft_dtw(costs, gamma=.05, vertical_penalty=.05, horizontal_penalty=.30,
         current = costs[i, j] - max(gamma, 1e-5) * torch.logsumexp(-choices / max(gamma, 1e-5), dim=0)
         previous2, previous2_start = previous, previous_start
         previous, previous_start = current, start
-    return previous[0] / (t + l)
+    return previous[0]
 
 
 @dataclass
 class HardDTW:
     path: list[tuple[int, int]]
     total: float
-    normalized: float
+    normalized: float  # legacy total/(T+L), not the aligned_mean training energy
 
 
 def hard_dtw_path(costs, vertical_penalty=.05, horizontal_penalty=.30,

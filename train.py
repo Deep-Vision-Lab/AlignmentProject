@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import random
+import sys
 import time
 
 import numpy as np
@@ -100,10 +101,19 @@ def _format_value(value):
 
 
 def _batch_postfix(stats, optimizer=None, gradients=None, device=None):
-    values = dict(loss=_format_value(stats['total']), dtw=_format_value(stats['positive_dtw']),
-                  neg=_format_value(stats['negative_dtw']), sigreg=_format_value(stats['sigreg']),
+    values = dict(loss=_format_value(stats['total']), pos=_format_value(stats['positive_cost']),
+                  sigreg=_format_value(stats['sigreg']),
                   evaluated=stats['evaluated'], skipped=stats['skipped'],
                   windows=_format_value(stats.get('mean_windows')), letters=_format_value(stats.get('mean_letters')))
+    if stats.get('negative_training_enabled', stats.get('ranking_candidates', 0) > 0):
+        count = stats['ranking_candidates']
+        values.update(negCost=_format_value(stats['negative_cost_sum'] / count if count else None),
+                      hardNeg=_format_value(stats['hard_cost_sum'] / stats['hard_count'] if stats['hard_count'] else None),
+                      absNeg=_format_value(stats['absolute_negative_loss']),
+                      rank=_format_value(stats['ranking_loss']),
+                      targetOK=f'{100 * stats["target_success"] / count:.0f}%' if count else 'n/a')
+    elif stats.get('negative_warmup'):
+        values['negatives'] = 'warmup'
     if optimizer is not None:
         values['lr'] = f'{optimizer.param_groups[0]["lr"]:.2e}'
     if gradients:
@@ -183,9 +193,12 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
     distributed = training and dist.is_available() and dist.is_initialized()
     # DTW is aggregated per LINE, including both sides, excluding empty text.
     # SIGReg is a token-weighted batch-population statistic, not a per-line loss.
-    totals = torch.zeros(13,dtype=torch.float32 if device.type == 'mps' else torch.float64,
+    totals = torch.zeros(23,dtype=torch.float32 if device.type == 'mps' else torch.float64,
                          device=device)
     corruption, skip_reasons = Counter(), Counter()
+    negative_cost_min, negative_cost_max = float('inf'), float('-inf')
+    positive_cost_min, positive_cost_max = float('inf'), float('-inf')
+    hard_cost_min = float('inf')
     started = time.monotonic()
     gradient_batches = []
     diagnostics = []
@@ -200,19 +213,27 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
         if max_batches and index >= max_batches:
             break
         images,texts = _batch_lines(batch,device)
-        negative_texts = None
+        negative_texts = negative_metadata = None
         if active_config.negative_dtw_weight:
             nested = batch.get('negative_texts')
             if nested is None:
                 raise ValueError('Negative training requires a dataset view configured by build_loaders')
             negative_texts = [sides[0] for sides in nested]
+            meta_nested = batch.get('negative_metadata')
+            negative_metadata = [sides[0] for sides in meta_nested] if meta_nested is not None else None
             if torch.is_tensor(batch['image2']):
                 negative_texts += [sides[1] for sides in nested]
+                if negative_metadata is not None:
+                    negative_metadata += [sides[1] for sides in meta_nested]
         for sides in batch.get('negative_stats', []):
             for info in sides:
                 corruption.update({k: info.get(k, 0) for k in ('requested','generated','shortfall','attempts')})
                 corruption.update({'rejected_'+k: v for k,v in info['rejections'].items()})
                 corruption.update({'operation_'+k: v for k,v in info['operations'].items()})
+        for sides in batch.get('negative_metadata', []):
+            for entries in sides:
+                corruption['corruption_ratio_sum'] += sum(item['corruption_ratio'] for item in entries)
+                corruption['corruption_ratio_count'] += len(entries)
         if training:
             optimizer.zero_grad(set_to_none=True)
         with torch.set_grad_enabled(training):
@@ -220,12 +241,15 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                                 enabled=config.use_amp and device.type=='cuda'):
                 output = model(images)
             loss,stats = compute_loss(output,texts,text_encoder,active_config, negative_texts=negative_texts,
+                                     negative_metadata=negative_metadata,
                                      distributed_statistics=distributed,
                                      sketch_seed=None if training else config.seed)
             if not torch.isfinite(loss):
                 raise FloatingPointError('Nonfinite objective; no optimizer step taken')
             if training and not stats['global_evaluated']:
                 raise ValueError(f'No feasible positive transcripts in the global batch; no step taken: {stats["skip_reasons"]}')
+            if training and active_config.negative_dtw_weight and not stats['global_ranking_candidates']:
+                raise ValueError('Negative training is enabled, but this batch produced no valid negative alignments; no step taken')
             if training:
                 loss.backward()
                 gradients = gradient_stats(model)
@@ -248,39 +272,100 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
         batch_stats = dict(stats, mean_windows=(sum(t for t, _ in stats['lengths']) / evaluated
                                                  if evaluated else None),
                            mean_letters=(sum(l for _, l in stats['lengths']) / evaluated
-                                         if evaluated else None))
+                                         if evaluated else None),
+                           negative_training_enabled=bool(active_config.negative_dtw_weight),
+                           negative_warmup=bool(config.negative_dtw_weight and not active_config.negative_dtw_weight))
         progress.set_postfix(_batch_postfix(batch_stats, optimizer, gradients, device))
+        if stats['negative_cost_min'] is not None:
+            negative_cost_min = min(negative_cost_min, stats['negative_cost_min'])
+            negative_cost_max = max(negative_cost_max, stats['negative_cost_max'])
+        if stats['positive_cost_min'] is not None:
+            positive_cost_min = min(positive_cost_min, stats['positive_cost_min'])
+            positive_cost_max = max(positive_cost_max, stats['positive_cost_max'])
+        if stats['hard_cost_min'] is not None:
+            hard_cost_min = min(hard_cost_min, stats['hard_cost_min'])
         totals += totals.new_tensor([stats['dtw_sum'],stats['evaluated'],stats['skipped'],
                                       (stats['sigreg'] or 0.)*tokens,tokens,
                                       sum(t for t,l in stats['lengths']),
                                       sum(l for t,l in stats['lengths']),1,
-                                      stats['negative_sum'], stats['ranked_lines'], stats['ranking_candidates'],
-                                      stats['ranking_correct'], stats['ranking_margin_sum']])
+                                      stats['objective_sum'], stats['ranked_lines'], stats['ranking_candidates'],
+                                      stats['ranking_correct'], stats['ranking_margin_sum'],
+                                      stats['negative_cost_sum'], stats['margin_violations'],
+                                      stats['absolute_sum'], stats['ranking_sum'], stats['wrong_sum'],
+                                      stats['hard_cost_sum'], stats['hard_count'], stats['target_sum'],
+                                      stats['target_success'],
+                                      stats['positive_below_reference']])
     progress.close()
     if distributed:
         dist.all_reduce(totals)
         details = [None] * dist.get_world_size()
-        dist.all_gather_object(details, (dict(corruption), dict(skip_reasons)))
+        dist.all_gather_object(details, (dict(corruption), dict(skip_reasons),
+                                         negative_cost_min, negative_cost_max,
+                                         positive_cost_min, positive_cost_max, hard_cost_min))
         corruption, skip_reasons = Counter(), Counter()
-        for c, s in details:
+        negative_cost_min, negative_cost_max = float('inf'), float('-inf')
+        positive_cost_min, positive_cost_max, hard_cost_min = float('inf'), float('-inf'), float('inf')
+        for c, s, low, high, pos_low, pos_high, hard_low in details:
             corruption.update(c); skip_reasons.update(s)
-    dtw_sum,n,skipped,sig_sum,tokens,windows,letters,batches,neg_sum,ranked,candidates,correct,margins = totals.tolist()
+            negative_cost_min = min(negative_cost_min, low)
+            negative_cost_max = max(negative_cost_max, high)
+            positive_cost_min = min(positive_cost_min, pos_low)
+            positive_cost_max = max(positive_cost_max, pos_high)
+            hard_cost_min = min(hard_cost_min, hard_low)
+    (dtw_sum,n,skipped,sig_sum,tokens,windows,letters,batches,neg_sum,ranked,
+     candidates,correct,margins,negative_cost_sum,margin_violations,absolute_sum,
+     ranking_sum,wrong_sum,hard_cost_sum,hard_count,target_sum,target_success,
+     positive_below_reference) = totals.tolist()
     positive = dtw_sum/n if n else None
     sigreg = sig_sum/tokens if tokens and config.sigreg_weight else None
     negative = neg_sum/ranked if ranked else None
     total = None if positive is None else (config.positive_dtw_weight*positive + config.sigreg_weight*(sigreg or 0.)
-                                           + active_config.negative_dtw_weight*(negative or 0.))
-    result = dict(total=total,positive_dtw=positive,negative_dtw=negative,sigreg=sigreg,
+                                           + active_config.negative_dtw_weight*(negative or 0.)
+                                           + active_config.ranking_aux_weight*(ranking_sum/ranked if ranked else 0.)
+                                           + active_config.wrong_letter_unlikelihood_weight*(wrong_sum/ranked if ranked else 0.))
+    result = dict(total=total,total_loss=total,positive_dtw=positive,positive_cost=positive,
+                positive_cost_mean=positive,
+                positive_cost_min=positive_cost_min if n else None,
+                positive_cost_max=positive_cost_max if n else None,
+                negative_objective=negative,sigreg=sigreg,
+                negative_cost_mean=negative_cost_sum/candidates if candidates else None,
+                negative_cost_min=negative_cost_min if candidates else None,
+                negative_cost_max=negative_cost_max if candidates else None,
+                hard_negative_cost_mean=hard_cost_sum/hard_count if hard_count else None,
+                hard_negative_cost_min=hard_cost_min if hard_count else None,
+                negative_target_mean=target_sum/candidates if candidates else None,
+                negative_target_success_rate=target_success/candidates if candidates else None,
+                fraction_negative_above_target=target_success/candidates if candidates else None,
+                fraction_positive_below_reference=positive_below_reference/n if n else None,
+                absolute_negative_loss=absolute_sum/ranked if ranked else None,
+                ranking_loss=ranking_sum/ranked if ranked else None,
+                wrong_letter_loss=wrong_sum/ranked if ranked else None,
+                hard_negatives=int(margin_violations),
+                ranking_margin_violations=int(margin_violations),
+                hard_negative_count=int(hard_count),
                 negative_training_enabled=bool(active_config.negative_dtw_weight),
+                negative_loss_type=config.negative_loss_type,
+                dtw_normalization=config.dtw_normalization,
                 negative_weight=active_config.negative_dtw_weight, ranked_lines=int(ranked),
                 ranking_candidates=int(candidates), ranking_accuracy=correct/candidates if candidates else None,
+                negative_gap_mean=margins/candidates if candidates else None,
                 negative_minus_positive_cost=margins/candidates if candidates else None,
-                corruption=dict(corruption), skip_reasons=dict(skip_reasons), alignment_objective=config.alignment_objective,
+                corruption=dict(corruption),
+                mean_corruption_ratio=(corruption['corruption_ratio_sum'] / corruption['corruption_ratio_count']
+                                       if corruption['corruption_ratio_count'] else None),
+                generator_severity=config.negative_severity,
+                skip_reasons=dict(skip_reasons), alignment_objective=config.alignment_objective,
                 weighted_sigreg=config.sigreg_weight*(sigreg or 0.),evaluated=int(n),skipped=int(skipped),
                 valid_tokens=int(tokens),batches=int(batches),mean_windows=windows/n if n else None,
                 mean_letters=letters/n if n else None,gamma=config.dtw_gamma,
                 population='explicit-batch-subset' if max_batches else 'full-split',
                 seconds=time.monotonic()-started)
+    # Old machine-readable keys remain for ranking-mode consumers only. New
+    # progress and summaries always use the unambiguous objective/cost names.
+    if config.negative_loss_type == 'ranking':
+        result.update(negative_dtw=negative, negative_dtw_mean=result['negative_cost_mean'],
+                      negative_dtw_min=result['negative_cost_min'],
+                      negative_dtw_max=result['negative_cost_max'], negative_margin_loss=result['ranking_loss'])
     for key in diagnostics[0] if diagnostics else ():
         values = [value for batch in diagnostics for value in batch[key]]
         result[key] = sum(values) / len(values) if values else None
@@ -418,6 +503,20 @@ def _print_dataset_summary(args, config, loaders):
     print(f'Positive DTW weight: {config.positive_dtw_weight}', flush=True)
     print(f'Negative DTW weight: {config.negative_dtw_weight}', flush=True)
     print('Negative transcripts: ' + ('ENABLED' if config.negative_dtw_weight else 'DISABLED'), flush=True)
+    print(f'Negative count: {config.negative_count}', flush=True)
+    print(f'Negative margin: {config.negative_margin}', flush=True)
+    print(f'Negative severity: {config.negative_severity}', flush=True)
+    print(f'Negative operations: {config.negative_operations}', flush=True)
+    print(f'Negative warmup epochs: {config.negative_warmup_epochs}', flush=True)
+    print(f'Negative curriculum epochs: {config.negative_curriculum_epochs}', flush=True)
+    print(f'Negative seed: {config.negative_seed}', flush=True)
+    print(f'Negative loss type: {config.negative_loss_type}', flush=True)
+    print(f'Hard negative k: {config.hard_negative_k}', flush=True)
+    print(f'DTW normalization: {config.dtw_normalization}', flush=True)
+    print(f'Negative target min/max: {config.negative_target_min} / {config.negative_target_max}', flush=True)
+    print(f'Negative softness: {config.negative_softness}', flush=True)
+    print(f'Ranking auxiliary weight: {config.ranking_aux_weight}', flush=True)
+    print(f'Wrong-letter unlikelihood weight: {config.wrong_letter_unlikelihood_weight}', flush=True)
     print(f'Alignment objective: {config.alignment_objective}; cost mode: {config.dtw_cost_mode}; '
           f'temperature: {config.competition_temperature}; gamma: {config.dtw_gamma}; '
           f'position prior: {config.position_prior}; vertical/horizontal: '
@@ -446,12 +545,37 @@ def _print_epoch_summary(epoch, epochs, train_stats, val_stats, gradients, previ
                          latest_path, best_path):
     def value(item):
         return 'n/a' if item is None else f'{item:.4f}'
+    def objective_details(stats):
+        print(f'  positive cost min/max: {value(stats["positive_cost_min"])} / '
+              f'{value(stats["positive_cost_max"])}', flush=True)
+        print(f'  negative cost mean/min/max: {value(stats["negative_cost_mean"])} / '
+              f'{value(stats["negative_cost_min"])} / {value(stats["negative_cost_max"])}', flush=True)
+        print(f'  hard negative cost mean/min: {value(stats["hard_negative_cost_mean"])} / '
+              f'{value(stats["hard_negative_cost_min"])}', flush=True)
+        print(f'  target mean / fraction above: {value(stats["negative_target_mean"])} / '
+              f'{value(stats["fraction_negative_above_target"])}', flush=True)
+        print(f'  absolute negative loss: {value(stats["absolute_negative_loss"])}', flush=True)
+        print(f'  ranking loss/accuracy/gap: {value(stats["ranking_loss"])} / '
+              f'{value(stats["ranking_accuracy"])} / {value(stats["negative_gap_mean"])}', flush=True)
+        print(f'  positive below target-min reference: {value(stats["fraction_positive_below_reference"])}', flush=True)
+        c = stats['corruption']
+        print(f'  generation requested/generated/shortfall: '
+              f'{c.get("requested", 0)} / {c.get("generated", 0)} / {c.get("shortfall", 0)}', flush=True)
+        print(f'  corruption severity / observed ratio: {value(stats["generator_severity"])} / '
+              f'{value(stats["mean_corruption_ratio"])}', flush=True)
+        print('  operation counts: ' + ', '.join(
+            f'{op}={c.get("operation_" + op, 0)}' for op in
+            ('substitute', 'adjacent', 'blocks', 'words', 'shift', 'shuffle')), flush=True)
+        rejected = {key: amount for key, amount in c.items() if key.startswith('rejected_')}
+        if rejected:
+            print(f'  rejection reasons: {rejected}', flush=True)
     print('=' * 60, flush=True)
     print(f'EPOCH {epoch}/{epochs} SUMMARY', flush=True)
     print('', flush=True)
     print('TRAIN', flush=True)
     print(f'  total loss:        {value(train_stats["total"])}', flush=True)
     print(f'  positive DTW:      {value(train_stats["positive_dtw"])}', flush=True)
+    objective_details(train_stats)
     print(f'  SIGReg:            {value(train_stats["sigreg"]) if train_stats["sigreg"] is not None else "disabled"}', flush=True)
     print(f'  evaluated lines:   {train_stats["evaluated"]}', flush=True)
     print(f'  skipped lines:     {train_stats["skipped"]}', flush=True)
@@ -466,6 +590,7 @@ def _print_epoch_summary(epoch, epochs, train_stats, val_stats, gradients, previ
     print('VALIDATION', flush=True)
     print(f'  total loss:        {value(val_stats["total"])}', flush=True)
     print(f'  positive DTW:      {value(val_stats["positive_dtw"])}', flush=True)
+    objective_details(val_stats)
     print(f'  evaluated lines:   {val_stats["evaluated"]}', flush=True)
     print(f'  skipped lines:     {val_stats["skipped"]}', flush=True)
     print(f'  time:              {val_stats["seconds"]:.1f} s', flush=True)
@@ -495,8 +620,20 @@ def main(argv=None, epoch_callback=None):
         if isinstance(field.default,bool): kwargs['action']=argparse.BooleanOptionalAction
         else: kwargs['type']=type(field.default)
         parser.add_argument('--'+field.name.replace('_','-'),**kwargs)
-    args = parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(raw_argv)
     config = Config(**{f.name:getattr(args,f.name) for f in fields(Config)})
+    negative_controls = {'--negative-count', '--negative-margin', '--negative-severity',
+                         '--negative-operations', '--negative-seed', '--negative-warmup-epochs',
+                         '--negative-curriculum-epochs', '--negative-loss-type',
+                         '--negative-target-min', '--negative-target-max', '--negative-softness',
+                         '--hard-negative-k', '--ranking-aux-weight',
+                         '--wrong-letter-unlikelihood-weight'}
+    if (config.negative_dtw_weight == 0
+            and not any(arg.split('=', 1)[0] == '--negative-dtw-weight' for arg in raw_argv)
+            and any(arg.split('=', 1)[0] in negative_controls for arg in raw_argv)):
+        raise ValueError('Negative settings were supplied, but negative DTW weight is 0; '
+                         'pass --negative-dtw-weight > 0 or explicitly pass 0 for a no-negative control')
     config.fusion_mode, gated = validate_fusion_config(config.fusion_mode, config.use_gated_fusion)
     config.use_gated_fusion = int(gated)
     validate_objective(config)
@@ -537,7 +674,9 @@ def main(argv=None, epoch_callback=None):
             allowed = {f.name for f in fields(Config) if f.name.startswith(('negative_', 'sigreg_'))}
             allowed |= {'alignment_objective','ctc_blank_logit','alphabet_inventory','position_prior',
                         'positive_dtw_weight','dtw_gamma','vertical_penalty','horizontal_penalty',
-                        'competition_temperature','dtw_cost_mode','disable_horizontal_when_feasible'}
+                        'competition_temperature','dtw_cost_mode','disable_horizontal_when_feasible',
+                        'dtw_normalization','hard_negative_k','ranking_aux_weight',
+                        'wrong_letter_unlikelihood_weight'}
             changed = {key for key in expected if expected[key] != actual[key]}
             if changed - allowed:
                 raise ValueError(f'Fine-tuning may change losses only, not architecture/data: {sorted(changed-allowed)}')
@@ -626,9 +765,11 @@ def main(argv=None, epoch_callback=None):
                           rng_states=rng_states, run_mode='finetune' if args.finetune else 'resume' if args.resume else 'fresh',
                           source_checkpoint=args.finetune or args.resume,
                           source_config=saved['config'] if saved else None)
-            print('RANKING', json.dumps({phase: {k: stats[k] for k in ('negative_training_enabled',
-                  'negative_dtw','ranked_lines','ranking_candidates','ranking_accuracy',
-                  'negative_minus_positive_cost','corruption','skip_reasons')}
+            print('OBJECTIVE', json.dumps({phase: {k: stats[k] for k in ('negative_training_enabled',
+                  'negative_objective','ranked_lines','ranking_candidates','ranking_accuracy',
+                  'negative_gap_mean','negative_cost_mean','negative_cost_min',
+                  'negative_cost_max','hard_negative_cost_mean','absolute_negative_loss',
+                  'ranking_loss','negative_target_success_rate','corruption','skip_reasons')}
                   for phase,stats in [('train',train_stats),('validation',val_stats)]}), flush=True)
             save_checkpoint(output_dir/'checkpoint_latest.pt',model,optimizer,epoch,best,config,text,split_ids,**kwargs)
             if improved: save_checkpoint(output_dir/'checkpoint_best.pt',model,optimizer,epoch,best,config,text,split_ids,**kwargs)

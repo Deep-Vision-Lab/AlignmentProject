@@ -39,6 +39,17 @@ class Config:
     negative_margin: float = .20
     # Weight is the single enable switch: zero means no generation/alignment.
     negative_count: int = 3
+    hard_negative_k: int = 2  # lowest alignment energies among generated candidates
+    negative_loss_type: str = 'ranking'  # ranking=legacy; absolute=independent rejection
+    # Initial diagnostic values: 16 validation lines from the available
+    # 2026-10-01 checkpoint had median aligned positive NLL 1.08 and 64
+    # corrupted negatives had median NLL 1.69 (uniform 37-letter NLL = 3.61).
+    # Tune on validation only; these are not claimed optimal/calibrated.
+    negative_target_min: float = 1.5
+    negative_target_max: float = 2.5
+    negative_softness: float = .10  # NLL-scale softplus hinge smoothing
+    ranking_aux_weight: float = 0.0  # only with absolute; not multiplied by negative_dtw_weight
+    wrong_letter_unlikelihood_weight: float = 0.0  # substitution-only positive-occupancy auxiliary
     negative_operations: str = 'substitute,adjacent,blocks,words,shift,shuffle'
     negative_severity: float = .35
     negative_seed: int = 42
@@ -58,6 +69,7 @@ class Config:
     competition_temperature: float = .10
     disable_horizontal_when_feasible: bool = True
     dtw_cost_mode: str = 'full_alphabet_nll'
+    dtw_normalization: str = 'legacy'  # old total/(T+L); explicit aligned_mean for new runs
     batch_size: int = 32
     epochs: int = 20
     learning_rate: float = 2e-5
@@ -73,6 +85,30 @@ def validate_objective(config):
         raise ValueError('alignment_objective must be dtw or ctc')
     if config.dtw_cost_mode not in {'full_alphabet_nll', 'cosine'}:
         raise ValueError('Unknown dtw_cost_mode')
+    if config.dtw_normalization not in {'legacy', 'aligned_mean'}:
+        raise ValueError('dtw_normalization must be legacy or aligned_mean')
+    if config.negative_loss_type not in {'ranking', 'absolute'}:
+        raise ValueError('negative_loss_type must be ranking or absolute')
+    if not 1 <= config.hard_negative_k <= config.negative_count:
+        raise ValueError('Require 1 <= hard_negative_k <= negative_count')
+    if (not math.isfinite(config.negative_softness) or config.negative_softness <= 0
+            or not 0 <= config.negative_target_min <= config.negative_target_max
+            or not all(math.isfinite(x) for x in (config.negative_target_min, config.negative_target_max))):
+        raise ValueError('Negative targets must be finite and ordered; softness must be positive')
+    if any(not math.isfinite(x) or x < 0 for x in
+           (config.ranking_aux_weight, config.wrong_letter_unlikelihood_weight)):
+        raise ValueError('Auxiliary weights must be finite and nonnegative')
+    if config.negative_dtw_weight == 0 and (config.ranking_aux_weight or config.wrong_letter_unlikelihood_weight):
+        raise ValueError('Negative auxiliaries require negative_dtw_weight > 0')
+    if config.negative_loss_type == 'absolute' and (config.alignment_objective != 'dtw'
+                                                   or config.dtw_cost_mode != 'full_alphabet_nll'
+                                                   or config.dtw_normalization != 'aligned_mean'):
+        raise ValueError('Absolute negative loss requires DTW, full_alphabet_nll and aligned_mean normalization')
+    if config.negative_loss_type == 'ranking' and (config.ranking_aux_weight or config.wrong_letter_unlikelihood_weight):
+        raise ValueError('Auxiliary ranking/wrong-letter weights require absolute negative loss')
+    if config.wrong_letter_unlikelihood_weight and (config.negative_loss_type != 'absolute'
+                                                   or config.alignment_objective != 'dtw'):
+        raise ValueError('Wrong-letter unlikelihood requires absolute DTW negative loss')
     if any(not math.isfinite(v) or v < 0 for v in (config.negative_dtw_weight, config.negative_margin, config.position_prior)):
         raise ValueError('Negative weight, margin and position prior must be finite and nonnegative')
     if not math.isfinite(config.competition_temperature) or config.competition_temperature <= 0:

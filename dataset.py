@@ -22,8 +22,8 @@ from text_embedding import ARABIC_LETTERS, clean_letters
 
 
 def generate_negative_transcripts(text, *, count=3, operations='substitute,adjacent,blocks,words,shift,shuffle',
-                                  severity=.35, seed=42, sample_id='', epoch=0, vocabulary=ARABIC_LETTERS,
-                                  equivalents=(), curriculum_epochs=0):
+                                  severity=.35, seed=42, sample_id='', epoch=0, vocabulary=None,
+                                  equivalents=(), curriculum_epochs=0, return_metadata=False):
     """Bounded sequence corruption; stable seed independent of workers/Python hash.
 
     Compare after the loss's NFKC/Arabic filtering. Collapse equal-letter runs
@@ -36,7 +36,10 @@ def generate_negative_transcripts(text, *, count=3, operations='substitute,adjac
     ops = operations.split(',') if isinstance(operations, str) else list(operations)
     if count < 1 or not 0 < severity <= 1 or not ops or not set(ops) <= {'substitute','adjacent','blocks','words','shift','shuffle'}:
         raise ValueError('Invalid negative-generation settings')
-    vocab = list(dict.fromkeys(vocabulary))
+    # With no fixed inventory, mirror the DTW positive loss: base alphabet plus
+    # all normalized letters in this positive line. A configured inventory is
+    # strict, and still rejects genuinely unsupported positives/candidates.
+    vocab = list(dict.fromkeys(vocabulary if vocabulary is not None else ARABIC_LETTERS + original))
     if any(clean_letters(c) != [c] for c in vocab):
         raise ValueError('Negative vocabulary must contain normalized supported Arabic letters')
     def signature(value):
@@ -44,23 +47,25 @@ def generate_negative_transcripts(text, *, count=3, operations='substitute,adjac
     forbidden = {signature(''.join(clean_letters(v))) for v in (text, *equivalents)}
     stats = dict(requested=count, generated=0, shortfall=count, attempts=0, rejections={}, operations={})
     if not letters or not set(letters) <= set(vocab):
-        stats['rejections']['empty_or_unsupported_positive'] = count
-        return [], stats
+        stats['rejections']['empty_positive' if not letters else 'unsupported_positive'] = count
+        return ([], stats, []) if return_metadata else ([], stats)
     digest = hashlib.sha256(f'{seed}\0{sample_id}\0{epoch}'.encode()).digest()
     rng = random.Random(int.from_bytes(digest[:8], 'big'))
     progress = min(1., max(0, epoch-1) / max(1, curriculum_epochs)) if curriculum_epochs else 1.
     strength = severity + (min(1., severity * 2) - severity) * (1-progress)
     stats['severity'] = strength
-    negatives = []
+    negatives, metadata = [], []
     for _ in range(max(12, 24 * count)):
         if len(negatives) == count:
             break
         stats['attempts'] += 1
         op = 'substitute' if 'substitute' in ops and rng.random() > progress else rng.choice(ops)
         candidate = letters.copy()
+        changed_positions = None
         edits = max(1, round(len(letters) * strength))
         if op == 'substitute':
-            for i in rng.sample(range(len(candidate)), min(edits, len(candidate))):
+            changed_positions = sorted(rng.sample(range(len(candidate)), min(edits, len(candidate))))
+            for i in changed_positions:
                 choices = [c for c in vocab if c != candidate[i]]
                 if choices: candidate[i] = rng.choice(choices)
         elif op == 'adjacent':
@@ -97,10 +102,13 @@ def generate_negative_transcripts(text, *, count=3, operations='substitute,adjac
             stats['rejections'][reason] = stats['rejections'].get(reason, 0) + 1
         else:
             negatives.append(value)
+            metadata.append(dict(text=value, operation=op,
+                                 corruption_ratio=sum(a != b for a, b in zip(original, value)) / len(original),
+                                 changed_positions=changed_positions))
             stats['operations'][op] = stats['operations'].get(op, 0) + 1
     stats['generated'] = len(negatives)
     stats['shortfall'] = count - len(negatives)
-    return negatives, stats
+    return (negatives, stats, metadata) if return_metadata else (negatives, stats)
 
 
 def file_hash(path):
@@ -394,18 +402,20 @@ class AlignmentDataset(Dataset):
                     image_paths=[s['image'] for s in record['sides']])
         c = self.negative_config
         if c is not None and c.negative_dtw_weight > 0:
-            negatives, diagnostics = [], []
+            negatives, diagnostics, metadata = [], [], []
             for i, (side, text) in enumerate(zip(record['sides'], texts)):
                 if not self.evaluation_view and self.negative_epoch <= c.negative_warmup_epochs:
-                    values, detail = [], dict(requested=0, generated=0, shortfall=0, attempts=0,
-                                             rejections={'warmup': 1}, operations={})
+                    values, detail, entries = [], dict(requested=0, generated=0, shortfall=0, attempts=0,
+                                                        rejections={'warmup': 1}, operations={}), []
                 else:
-                    values, detail = generate_negative_transcripts(text, count=c.negative_count,
+                    values, detail, entries = generate_negative_transcripts(text, count=c.negative_count,
                         operations=c.negative_operations, severity=c.negative_severity, seed=c.negative_seed,
                         sample_id=f'{record["sample_id"]}:{i}', epoch=self.negative_epoch,
-                        vocabulary=c.alphabet_inventory or ARABIC_LETTERS,
+                        vocabulary=c.alphabet_inventory or None,
                         equivalents=side.get('equivalent_transcripts', []),
-                        curriculum_epochs=0 if self.evaluation_view else c.negative_curriculum_epochs)
-                negatives.append(values); diagnostics.append(detail)
-            result.update(negative_texts=negatives, negative_stats=diagnostics)
+                        curriculum_epochs=0 if self.evaluation_view else c.negative_curriculum_epochs,
+                        return_metadata=True)
+                negatives.append(values); diagnostics.append(detail); metadata.append(entries)
+            result.update(negative_texts=negatives, negative_stats=diagnostics,
+                          negative_metadata=metadata)
         return result
