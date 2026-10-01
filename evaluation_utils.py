@@ -497,6 +497,29 @@ def boxes_ground_truth(pair):
     return masks, f'page debug/bboxes.json LCS: {len(pairs)} matched units in {len(runs)} run(s)'
 
 
+def load_pair_ground_truth(pair, lines):
+    """Load pair-specific GT once, independently of matching and predictions."""
+    masks, provenance = [], []
+    fallback, detail = None, None
+    for side, line in enumerate(lines):
+        width, height = line['geometry']['source_size']
+        shape = (height, width)
+        gt = _load_annotation(pair['annotations'][side], shape)
+        if gt is not None:
+            source = pair['annotation_provenance']
+        else:
+            if fallback is None:
+                fallback, detail = boxes_ground_truth(pair)
+            gt = fallback[side]
+            source = ('built from page debug/bboxes.json subword LCS' if gt is not None
+                      else f'unavailable ({detail})')
+        if gt is not None and gt.shape != shape:
+            raise ValueError('Ground-truth/source geometry mismatch; resizing is forbidden')
+        masks.append(gt)
+        provenance.append(source)
+    return masks, ' | '.join(provenance)
+
+
 def attach_ground_truth(session, result):
     """Resolve GT masks strictly AFTER prediction and add localization metrics.
 
@@ -544,12 +567,15 @@ def _binary_metrics(pred, gt):
     return dict(iou=float(tp / union) if union else 1., precision=precision, recall=recall, f1=f1)
 
 
-def localization_metrics(mask, annotation, line, config, regions, side):
-    gt = _load_annotation(annotation, mask.shape)
+def localization_metrics(mask, annotation, line, config, regions, side, *, preloaded_gt=None):
+    gt = preloaded_gt if preloaded_gt is not None else _load_annotation(annotation, mask.shape)
     if gt is None:
         return dict(status='unavailable', reason='no pair-specific localization annotation'), None
+    if gt.shape != mask.shape:
+        raise ValueError('Ground-truth/source geometry mismatch; resizing is forbidden')
     # Reuse the public source-mask scorer when a file is supplied.
-    pixel = (score_mask(mask, annotation['mask']) if annotation.get('mask') else _binary_metrics(mask > 0, gt))
+    pixel = (score_mask(mask, annotation['mask']) if preloaded_gt is None and annotation.get('mask')
+             else _binary_metrics(mask > 0, gt))
     metrics = {k: pixel[k] for k in ('iou', 'precision', 'recall', 'f1')}
     metrics.update(status='available', dice=metrics['f1'])
     predicted, truth = _mask_intervals(mask), _mask_intervals(gt)
@@ -588,7 +614,7 @@ def localization_metrics(mask, annotation, line, config, regions, side):
     return metrics, gt
 
 
-def compute_pair_metrics(result, config):
+def compute_pair_metrics(result, config, *, preloaded_ground_truth=None):
     pair, cosine, match = result['pair'], result['cosine'], result['match']
     pairs = [tuple(p) for r in match['regions'] for p in r['pairs']]
     values = np.array([cosine[i, j] for i, j in pairs])
@@ -604,7 +630,8 @@ def compute_pair_metrics(result, config):
                    # Existing accepted-region score includes rewards and affine gap costs.
                    pair_score=max((r['score'] for r in match['regions']), default=0.),
                    accepted_region_score_sum=sum(r['score'] for r in match['regions']),
-                   max_local_alignment_score=match['maximum_local_score'],
+                   max_local_alignment_score=match.get(
+                       'maximum_local_score', max((r['score'] for r in match['regions']), default=0.)),
                    similarity_mode=result['settings']['similarity_mode'], decoder=result['settings']['decoder'],
                    path_length=len(pairs), region_count=len(match['regions']),
                    path_cosine_mean=float(values.mean()) if len(values) else None,
@@ -618,9 +645,15 @@ def compute_pair_metrics(result, config):
                    vertical_skipped_windows=sum(max(0, i-1) for i, j in deltas),
                    largest_anchor_jump=max((max(d) for d in deltas), default=0),
                    internal_discontinuities=sum(i > 1 or j > 1 for i, j in deltas),
-                   monotonic=all(i >= 0 and j >= 0 and i+j>0 for i, j in deltas),
-                   repeat_matches=sum(i==0 or j==0 for i,j in deltas),
+                   monotonic=(all(i >= 0 and j >= 0 and (i > 0 or j > 0) for i, j in deltas)
+                              if result['settings'].get('alignment_mode') == 'local_repeat_dtw'
+                              else all(i > 0 and j > 0 for i, j in deltas)),
+                   repeat_matches=sum(i == 0 or j == 0 for i, j in deltas),
                    separation_between_regions=max(0, len(match['regions']) - 1))
+    if result['settings'].get('alignment_mode') == 'local_repeat_dtw':
+        metrics.update(horizontal_repeats=sum(r['horizontal_repeats'] for r in match['regions']),
+                       vertical_repeats=sum(r['vertical_repeats'] for r in match['regions']),
+                       true_gaps=sum(r['true_gaps'] for r in match['regions']))
     ground_truth = []
     for side, name in enumerate(('a', 'b')):
         line, mask = result['lines'][side], result['masks'][side]
@@ -633,7 +666,10 @@ def compute_pair_metrics(result, config):
                                                for p in r['supported_physical'][side]),
                                             max(source_interval(p, line['geometry'], config.window_width, config.window_stride)[1]
                                                for p in r['supported_physical'][side])] for r in match['regions']]
-        spatial, gt = localization_metrics(mask, pair['annotations'][side], line, config, match['regions'], side)
+        spatial, gt = localization_metrics(
+            mask, pair['annotations'][side] if preloaded_ground_truth is None else {},
+            line, config, match['regions'], side,
+            preloaded_gt=None if preloaded_ground_truth is None else preloaded_ground_truth[side])
         ground_truth.append(gt)
         metrics.update({f'{name}_{k}': v for k, v in spatial.items()})
     for metric in ('iou', 'dice'):
@@ -847,7 +883,7 @@ def _overlay(image, mask, color=(255, 70, 20), alpha=.4):
     return pixels.astype(np.uint8)
 
 
-def plot_pair_alignment(session, result):
+def plot_pair_alignment(session, result, show_gt=True):
     """Simplified full-line figure: originals, predicted and ground-truth
     masks/overlays, similarity heatmaps and the metrics panel.
 
@@ -868,11 +904,10 @@ def plot_pair_alignment(session, result):
     for side in range(2):
         with Image.open(pair['sides'][side]['image']) as image:
             originals.append(image.convert('RGB'))
-    fig = plt.figure(figsize=(19, 28))
+    fig = plt.figure(figsize=(19, 28) if show_gt else (19, 21))
     fig.subplots_adjust(left=.05, right=.95, top=.94, bottom=.03, hspace=1.05, wspace=.15)
-    grid = fig.add_gridspec(7, 2, height_ratios=[1, 1, 1, 1, 1, 2.4, 1.7])
+    grid = fig.add_gridspec(7, 2, height_ratios=[1, 1, 1, 1, 1, 2.4, 1.7]) if show_gt else fig.add_gridspec(5, 2, height_ratios=[1, 1, 1, 2.4, 1.7])
     for side, name in enumerate(('A', 'B')):
-        gt = result['ground_truth'][side]
         coverage = metrics[f'mask_coverage_{name.lower()}']
         rows = [
             (originals[side], False, f'Line {name} — original full line'),
@@ -880,20 +915,22 @@ def plot_pair_alignment(session, result):
              f'Predicted mask — line {name} (coverage {coverage:.1%})'),
             (_overlay(originals[side], result['masks'][side]), False,
              f'Predicted overlay — line {name} (orange on original)'),
-            (None if gt is None else np.asarray(gt, bool), True,
-             f'Ground-truth mask — line {name}' if gt is not None else
-             f'Ground-truth mask — line {name} (UNAVAILABLE)'),
-            (None if gt is None else _overlay(originals[side], gt, (0, 200, 80)), False,
-             f'Ground-truth overlay — line {name} (green on original)' if gt is not None else
-             f'Ground-truth overlay — line {name} (UNAVAILABLE)'),
         ]
+        if show_gt:
+            gt = result['ground_truth'][side]
+            rows += [
+                (None if gt is None else np.asarray(gt, bool), True,
+                 f'Ground-truth mask — line {name}' if gt is not None else
+                 f'Ground-truth mask — line {name} (UNAVAILABLE)'),
+                (None if gt is None else _overlay(originals[side], gt, (0, 200, 80)), False,
+                 f'Ground-truth overlay — line {name} (green on original)' if gt is not None else
+                 f'Ground-truth overlay — line {name} (UNAVAILABLE)'),
+            ]
+        # Omitting (not just blanking) GT rows here keeps the reduced grid aligned with the heatmap/metrics panels below.
         for row, (image, binary, title) in enumerate(rows):
             ax = fig.add_subplot(grid[row, side])
             if image is None:
-                ax.imshow(originals[side], alpha=.2, aspect='auto')
-                ax.text(.5, .5, 'GROUND TRUTH UNAVAILABLE', transform=ax.transAxes,
-                        ha='center', va='center', fontsize=13, color='darkred',
-                        bbox=dict(facecolor='white', alpha=.85, edgecolor='darkred'))
+                continue
             elif binary:
                 ax.imshow(np.asarray(image, dtype=float), cmap='gray', vmin=0, vmax=1, aspect='auto')
             else:
@@ -903,7 +940,7 @@ def plot_pair_alignment(session, result):
     order = 'RTL reading order' if session.config.rtl else 'LTR reading order'
     for side, (matrix, title) in enumerate(((result['cosine'], 'Raw cosine similarity'),
                                             (result['match']['rewards'], 'Alignment rewards (NOT cosine/probability)'))):
-        ax = fig.add_subplot(grid[5, side])
+        ax = fig.add_subplot(grid[5 if show_gt else 3, side])
         heat = ax.imshow(matrix, origin='lower', aspect='auto', cmap='coolwarm',
                          **({'vmin': -1, 'vmax': 1} if side == 0 else {}))
         for number, region in enumerate(result['match']['regions']):
@@ -929,7 +966,7 @@ def plot_pair_alignment(session, result):
             ax.text(.5, .95, 'NO ACCEPTED REGION', transform=ax.transAxes, ha='center', va='top',
                     bbox=dict(facecolor='white', alpha=.8))
         fig.colorbar(heat, ax=ax, shrink=.8)
-    ax = fig.add_subplot(grid[6, :])
+    ax = fig.add_subplot(grid[6 if show_gt else 4, :])
     ax.axis('off')
     fields = ['pair_score', 'path_cosine_mean', 'path_cosine_median', 'path_cosine_min',
               'maximum_similarity', 'matrix_cosine_mean', 'off_path_cosine_mean',
