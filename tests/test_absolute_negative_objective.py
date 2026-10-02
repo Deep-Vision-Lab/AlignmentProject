@@ -1,12 +1,13 @@
 """Aligned-NLL normalization and absolute transcript rejection contracts."""
 from dataclasses import replace
+import math
 
 import pytest
 import torch
 
 from dataset import generate_negative_transcripts
 from dtw import soft_dtw
-from losses import absolute_rejection_loss, compute_loss
+from losses import absolute_rejection_loss, compute_loss, effective_alphabet, resolved_negative_targets
 from parameters import Config, validate_objective
 from text_embedding import OrthogonalCharEmbedding, clean_letters
 from test_dataset import make_synthetic
@@ -90,6 +91,40 @@ def test_hard_negative_selection_and_gradients():
     value.backward()
     assert energies.grad[1] < 0 and energies.grad[3] < 0
     assert energies.grad[0] == 0 and energies.grad[2] == 0
+
+
+def test_uniform_ratio_targets_match_actual_nll_competition():
+    text = OrthogonalCharEmbedding(8, 4096)
+    text.letter_evidence_prior = {'vocabulary': list('ابجدهوز')}
+    cfg = config(negative_target_mode='uniform_ratio',
+                 negative_target_min_ratio=.70, negative_target_max_ratio=1.)
+    k, uniform_nll, low, high = resolved_negative_targets(cfg, text)
+    assert k == len(effective_alphabet(cfg, text, list('اب')))
+    assert uniform_nll == pytest.approx(math.log(k))
+    assert low == pytest.approx(.7 * uniform_nll)
+    assert high == pytest.approx(uniform_nll)
+    # A fixed training inventory, not the current transcript, defines every NLL denominator.
+    assert effective_alphabet(cfg, text, list('اب')) == effective_alphabet(cfg, text, list('دز'))
+    with pytest.raises(ValueError, match='fitted training alphabet'):
+        resolved_negative_targets(cfg, OrthogonalCharEmbedding(8, 4096))
+    with pytest.raises(ValueError, match='Uniform-ratio targets'):
+        validate_objective(replace(cfg, negative_target_min_ratio=1.))
+    with pytest.raises(ValueError, match='Fixed targets'):
+        validate_objective(replace(cfg, negative_target_mode='fixed', negative_target_min=3.,
+                                   negative_target_max=2.))
+
+
+def test_uniform_ratio_rejection_gradient_weakens_above_target():
+    target = 3.
+    below = torch.tensor([2.], requires_grad=True)
+    high = torch.tensor([5.], requires_grad=True)
+    low_loss, _, _ = absolute_rejection_loss(below, [0.], target_min=target,
+                                              target_max=target, softness=.1, hard_k=1)
+    high_loss, _, _ = absolute_rejection_loss(high, [0.], target_min=target,
+                                               target_max=target, softness=.1, hard_k=1)
+    low_loss.backward(); high_loss.backward()
+    assert below.grad.item() < 0
+    assert abs(high.grad.item()) < abs(below.grad.item()) * 1e-5
 
 
 def test_optional_substitution_unlikelihood_uses_soft_positive_alignment():
@@ -200,6 +235,9 @@ def test_cpu_smoke_checkpoint_records_absolute_objective(tmp_path, capsys):
                    '--negative-dtw-weight', '0.5', '--negative-count', '4',
                    '--hard-negative-k', '2', '--negative-loss-type', 'absolute',
                    '--dtw-normalization', 'aligned_mean',
+                   '--negative-target-mode', 'uniform_ratio',
+                   '--negative-target-min-ratio', '0.70',
+                   '--negative-target-max-ratio', '1.00',
                    '--negative-curriculum-epochs', '0'])
     history = json.loads((output / 'history.json').read_text())
     assert history[0]['train']['absolute_negative_loss'] is not None
@@ -207,15 +245,23 @@ def test_cpu_smoke_checkpoint_records_absolute_objective(tmp_path, capsys):
     assert history[0]['validation']['negative_target_success_rate'] is not None
     _, _, loaded, saved = load_checkpoint(output / 'checkpoint_best.pt')
     assert loaded.negative_loss_type == 'absolute' and loaded.dtw_normalization == 'aligned_mean'
+    assert loaded.negative_dtw_weight == .5 and loaded.negative_target_mode == 'uniform_ratio'
     assert saved['config']['hard_negative_k'] == 2
+    assert saved['negative_target_reference']['effective_alphabet_size'] == len(saved['letter_evidence_prior']['vocabulary'])
+    assert saved['negative_target_reference']['resolved_max'] == pytest.approx(
+        saved['negative_target_reference']['uniform_nll'])
     legacy = dict(saved)
     legacy['config'] = {k: v for k, v in saved['config'].items() if k not in {
         'negative_loss_type', 'dtw_normalization', 'hard_negative_k',
         'negative_target_min', 'negative_target_max', 'negative_softness',
+        'negative_target_mode', 'negative_target_min_ratio', 'negative_target_max_ratio',
         'ranking_aux_weight', 'wrong_letter_unlikelihood_weight'}}
     old_path = tmp_path / 'old_config.pt'; torch.save(legacy, old_path)
     _, _, old_config, _ = load_checkpoint(old_path)
     assert old_config.negative_loss_type == 'ranking' and old_config.dtw_normalization == 'legacy'
     console = capsys.readouterr()
     assert 'Negative loss type: absolute' in console.out
+    assert 'Negative DTW weight: 0.5' in console.out
+    assert 'Negative target mode: uniform_ratio' in console.out
+    assert 'Effective alphabet size:' in console.out
     assert 'absNeg=' in console.err and 'negCost=' in console.err

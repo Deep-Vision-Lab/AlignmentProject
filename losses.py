@@ -1,4 +1,5 @@
-"""Positive letter-DTW, optional transcript margin, and pre-L2 ECF SIGReg."""
+"""Positive letter-DTW, optional transcript rejection, and pre-L2 ECF SIGReg."""
+import math
 import torch
 from collections import Counter
 import torch.distributed as dist
@@ -9,10 +10,46 @@ from dtw import letter_cost_matrix, soft_dtw, alphabet_log_probabilities
 from text_embedding import ARABIC_LETTERS, clean_letters
 
 
+def effective_alphabet(config, text_embedding, letters=()):
+    """The exact NLL competitors, including the training-only fixed inventory in ratio mode."""
+    if config.alphabet_inventory:
+        inventory = list(config.alphabet_inventory)
+    elif config.negative_target_mode == 'uniform_ratio':
+        prior = getattr(text_embedding, 'letter_evidence_prior', None)
+        if not isinstance(prior, dict) or not prior.get('vocabulary'):
+            raise ValueError('uniform_ratio requires the fitted training alphabet in text_embedding.letter_evidence_prior')
+        inventory = list(prior['vocabulary'])
+    else:
+        inventory = list(dict.fromkeys(ARABIC_LETTERS if config.alignment_objective == 'ctc'
+                                       else ARABIC_LETTERS + ''.join(letters)))
+    if len(inventory) < 2 or len(set(inventory)) != len(inventory):
+        raise ValueError('Effective alphabet must contain at least two unique letters')
+    return inventory
+
+
+def resolved_negative_targets(config, text_embedding):
+    """Return (effective K or None, uniform NLL or None, min, max)."""
+    if config.negative_target_mode == 'uniform_ratio':
+        k = len(effective_alphabet(config, text_embedding))
+        uniform_nll = math.log(k)
+        minimum = config.negative_target_min_ratio * uniform_nll
+        maximum = config.negative_target_max_ratio * uniform_nll
+    else:
+        # Fixed mode retains the old per-line alphabet extension, so a single
+        # K would falsely claim identical NLL competition for every sample.
+        k = uniform_nll = None
+        minimum, maximum = config.negative_target_min, config.negative_target_max
+        reference_k = len(config.alphabet_inventory or ARABIC_LETTERS)
+        if maximum > 1.5 * math.log(reference_k):
+            raise ValueError('Fixed negative target exceeds 1.5 × approximate uniform NLL; check scale')
+    if not 0 < minimum < maximum:
+        raise ValueError('Resolved negative targets require 0 < min < max')
+    return k, uniform_nll, minimum, maximum
+
+
 def _line_loss(visual, letters, text_embedding, config, *, return_occupancy=False,
                inventory_override=None):
-    inventory = list(dict.fromkeys(inventory_override or config.alphabet_inventory or
-                     (ARABIC_LETTERS if config.alignment_objective=='ctc' else ARABIC_LETTERS + ''.join(letters))))
+    inventory = list(inventory_override) if inventory_override is not None else effective_alphabet(config, text_embedding, letters)
     lookup = {c: i for i, c in enumerate(inventory)}
     if any(c not in lookup for c in letters):
         raise AlignmentInfeasible('unsupported_character')
@@ -67,11 +104,12 @@ def positive_dtw_loss(vectors, texts, text_embedding, config, token_valid=None, 
         alignments.append(occupancy)
         lengths.append((len(visual), len(letters)))
     loss = torch.stack(values).mean() if values else (vectors if token_valid is None else vectors[token_valid]).sum() * 0.
+    _, _, reference_min, _ = resolved_negative_targets(config, text_embedding)
     stats = dict(evaluated=len(values), skipped=len(texts)-len(values), skip_reasons=dict(reasons),
                  dtw_sum=sum(float(v.detach()) for v in values),
                  positive_cost_min=min((float(v.detach()) for v in values), default=None),
                  positive_cost_max=max((float(v.detach()) for v in values), default=None),
-                 positive_below_reference=sum(float(v.detach()) < config.negative_target_min for v in values),
+                 positive_below_reference=sum(float(v.detach()) < reference_min for v in values),
                  lengths=lengths)
     if return_alignments:
         return loss, stats, costs, alignments
@@ -154,6 +192,7 @@ def negative_sequence_objective(vectors, texts, negative_texts, text_embedding, 
     """
     if negative_texts is None or len(negative_texts) != len(texts):
         raise ValueError('Active negative loss requires explicit per-line negative transcripts')
+    _, _, target_min, target_max = resolved_negative_targets(config, text_embedding)
     zero = vectors[token_valid].sum() * 0 if token_valid is not None else vectors.sum() * 0
     line_losses, absolute_losses, ranking_losses, wrong_losses = [], [], [], []
     costs_seen, hard_seen, targets_seen = [], [], []
@@ -178,7 +217,7 @@ def negative_sequence_objective(vectors, texts, negative_texts, text_embedding, 
                 continue
             seen.add(candidate)
             try:
-                fixed_inventory = list(dict.fromkeys(config.alphabet_inventory or ARABIC_LETTERS + original))
+                fixed_inventory = effective_alphabet(config, text_embedding, original)
                 energy = (_line_loss(visual, list(candidate), text_embedding, config,
                                      inventory_override=fixed_inventory)
                           if config.negative_loss_type == 'absolute' else
@@ -191,7 +230,7 @@ def negative_sequence_objective(vectors, texts, negative_texts, text_embedding, 
                              sum(a != b for a, b in zip(original, candidate)) / max(len(original), len(candidate)))
             if not 0 <= ratio <= 1:
                 raise ValueError('Negative corruption_ratio must be within [0,1]')
-            target = config.negative_target_min + ratio * (config.negative_target_max - config.negative_target_min)
+            target = target_min + ratio * (target_max - target_min)
             candidates.append((energy, target, meta, candidate, ratio))
             costs_seen.append(float(energy.detach()))
             targets_seen.append(float(target))
@@ -208,17 +247,19 @@ def negative_sequence_objective(vectors, texts, negative_texts, text_embedding, 
         ranking_losses.append(hinge)
         absolute, selected, _ = absolute_rejection_loss(
             values, [item[4] for item in candidates],
-            target_min=config.negative_target_min, target_max=config.negative_target_max,
+            target_min=target_min, target_max=target_max,
             softness=config.negative_softness,
             hard_k=min(config.hard_negative_k, len(values)))
         hard_indices = selected.tolist()
         hard = [candidates[k] for k in hard_indices]
         hard_seen.extend(float(item[0].detach()) for item in hard)
+        stats['hard_target_success'] += sum(float((energy >= target).detach()) for energy, target, *_ in hard)
+        stats['hard_target_count'] += len(hard)
         absolute_losses.append(absolute)
         wrong = zero
         if config.wrong_letter_unlikelihood_weight:
             occupancy = positive_alignments[i]
-            inventory = list(dict.fromkeys(config.alphabet_inventory or ARABIC_LETTERS + original))
+            inventory = effective_alphabet(config, text_embedding, original)
             lookup = {c: k for k, c in enumerate(inventory)}
             logits = alphabet_log_probabilities(visual, text_embedding.encode(''.join(inventory)),
                                                 config.competition_temperature)
@@ -259,7 +300,12 @@ def negative_sequence_objective(vectors, texts, negative_texts, text_embedding, 
                   negative_cost_min=min(costs_seen, default=None),
                   negative_cost_max=max(costs_seen, default=None),
                   hard_cost_sum=sum(hard_seen), hard_cost_min=min(hard_seen, default=None),
+                  hard_cost_max=max(hard_seen, default=None),
                   hard_count=len(hard_seen), target_sum=sum(targets_seen),
+                  target_min=min(targets_seen, default=None),
+                  target_max=max(targets_seen, default=None),
+                  hard_target_success=stats['hard_target_success'],
+                  hard_target_count=stats['hard_target_count'],
                   negative_skip_reasons=dict(reasons), operations=dict(operations),
                   hard_negatives=stats['margin_violations'],
                   negative_sum=sum(float(x.detach()) for x in line_losses),
@@ -267,6 +313,130 @@ def negative_sequence_objective(vectors, texts, negative_texts, text_embedding, 
                   ranking_loss=float(ranking.detach()) if line_losses else None,
                   wrong_letter_loss=float(wrong.detach()) if line_losses else None)
     return objective, ranking, wrong, detail
+
+
+def typed_negative_objective(vectors, texts, negative_texts, negative_metadata,
+                             text_embedding, config, token_valid, positive_costs,
+                             positive_alignments=None):
+    """Three disjoint supervision channels; only strong identities get whole-line rejection."""
+    if negative_texts is None or negative_metadata is None or len(negative_texts) != len(texts):
+        raise ValueError('hybrid_typed requires per-line negatives and typed metadata')
+    _, _, target_min, target_max = resolved_negative_targets(config, text_embedding)
+    zero = vectors[token_valid].sum() * 0 if token_valid is not None else vectors.sum() * 0
+    terms = {name: [] for name in ('strong', 'wrong', 'order')}
+    stats = Counter()
+    strong_costs, strong_targets = [], []
+    strong_by_slot = [[], []]
+    for i, raw_text in enumerate(texts):
+        positive = positive_costs[i]
+        if positive is None:
+            continue
+        original = ''.join(clean_letters(raw_text))
+        visual = vectors[i] if token_valid is None else vectors[i][token_valid[i]]
+        if len(negative_texts[i]) != len(negative_metadata[i]):
+            raise ValueError('Typed negative text/metadata length mismatch')
+        inventory = effective_alphabet(config, text_embedding, original)
+        lookup = {char: index for index, char in enumerate(inventory)}
+        logp = None
+        strong_slot = 0
+        for candidate, meta in zip(negative_texts[i], negative_metadata[i]):
+            candidate = ''.join(clean_letters(candidate))
+            if candidate != meta.get('text') or not candidate or candidate == original:
+                raise ValueError('Typed negative metadata/text must match a distinct normalized transcript')
+            kind = meta.get('negative_type')
+            if kind == 'strong_global':
+                changed = sum(a != b for a, b in zip(original, candidate))
+                if len(candidate) != len(original) or changed / len(original) < .70:
+                    raise ValueError('Strong negative must change at least 70% of letter identities by position')
+                if config.strong_negative_weight == 0:
+                    continue
+                energy = _line_loss(visual, list(candidate), text_embedding, config,
+                                    inventory_override=inventory)
+                ratio = changed / len(original)
+                target = target_min + ratio * (target_max - target_min)
+                terms['strong'].append(config.negative_softness * F.softplus(
+                    (target - energy) / config.negative_softness))
+                strong_costs.append(float(energy.detach()))
+                if strong_slot < len(strong_by_slot):
+                    strong_by_slot[strong_slot].append(float(energy.detach()))
+                strong_slot += 1
+                strong_targets.append(float(target))
+                stats['strong_target_success'] += float((energy >= target).detach())
+                stats['strong_count'] += 1
+            elif kind == 'local_substitution':
+                changed = meta.get('changed_positions') or []
+                if (len(candidate) != len(original) or not changed or
+                        changed != sorted(set(changed)) or
+                        changed != [j for j, (a, b) in enumerate(zip(original, candidate)) if a != b] or
+                        meta.get('original_letters') != [original[j] for j in changed] or
+                        meta.get('replacement_letters') != [candidate[j] for j in changed]):
+                    raise ValueError('Local substitution metadata must identify exactly the changed normalized positions')
+                if config.wrong_letter_weight == 0:
+                    continue
+                occupancy = positive_alignments[i] if positive_alignments is not None else None
+                if occupancy is None:
+                    raise ValueError('Local wrong-letter loss requires positive soft alignment occupancy')
+                if logp is None:
+                    logp = alphabet_log_probabilities(visual, text_embedding.encode(''.join(inventory)),
+                                                       config.competition_temperature)
+                for j in changed:
+                    if candidate[j] not in lookup:
+                        raise AlignmentInfeasible('unsupported_replacement_letter')
+                    wrong_loss, wrong_probability, correct_probability = weighted_wrong_letter_unlikelihood(
+                        logp, occupancy[:, j], lookup[candidate[j]], lookup[original[j]])
+                    terms['wrong'].append(wrong_loss)
+                    stats['wrong_probability_sum'] += float(wrong_probability.detach())
+                    stats['correct_probability_sum'] += float(correct_probability.detach())
+                    stats['changed_positions_count'] += 1
+                stats['local_count'] += 1
+            elif kind == 'order_negative':
+                if Counter(candidate) != Counter(original):
+                    raise ValueError('Order negative must preserve normalized letter identities')
+                if config.order_negative_weight == 0:
+                    continue
+                energy = _line_loss(visual, list(candidate), text_embedding, config,
+                                    inventory_override=inventory)
+                terms['order'].append(order_rejection_loss(positive, energy, config.order_margin))
+                stats['order_cost_sum'] += float(energy.detach())
+                stats['order_gap_sum'] += float((energy - positive).detach())
+                stats['order_success'] += float((energy >= positive.detach() + config.order_margin).detach())
+                stats['order_count'] += 1
+            else:
+                raise ValueError(f'Unknown typed negative type: {kind}')
+    losses = {name: torch.stack(values).mean() if values else zero for name, values in terms.items()}
+    detail = dict(strong_sum=sum(float(value.detach()) for value in terms['strong']),
+                  strong_count=stats['strong_count'],
+                  strong_cost_sum=sum(strong_costs), strong_cost_min=min(strong_costs, default=None),
+                  strong_target_sum=sum(strong_targets), strong_target_success=stats['strong_target_success'],
+                  typed_wrong_sum=sum(float(value.detach()) for value in terms['wrong']),
+                  wrong_count=len(terms['wrong']), local_count=stats['local_count'],
+                  wrong_probability_sum=stats['wrong_probability_sum'],
+                  correct_probability_sum=stats['correct_probability_sum'],
+                  changed_positions_count=stats['changed_positions_count'],
+                  order_sum=sum(float(value.detach()) for value in terms['order']),
+                  order_count=stats['order_count'], order_cost_sum=stats['order_cost_sum'],
+                  order_gap_sum=stats['order_gap_sum'], order_success=stats['order_success'],
+                  strong_costs=strong_costs,
+                  strong_slot_1_sum=sum(strong_by_slot[0]), strong_slot_1_count=len(strong_by_slot[0]),
+                  strong_slot_2_sum=sum(strong_by_slot[1]), strong_slot_2_count=len(strong_by_slot[1]))
+    return losses, detail
+
+
+def weighted_wrong_letter_unlikelihood(logp, occupancy_column, wrong_index, correct_index):
+    """Use only the soft positive-DTW occupancy for one substituted transcript column."""
+    if not torch.isfinite(occupancy_column).all() or occupancy_column.sum() <= 0:
+        raise ValueError('Substituted letter has no finite positive-alignment support')
+    weights = occupancy_column / occupancy_column.sum().clamp_min(1e-8)
+    wrong_probability = logp[:, wrong_index].exp().clamp(max=1 - 1e-6)
+    correct_probability = logp[:, correct_index].exp()
+    return ((weights * -torch.log1p(-wrong_probability)).sum(),
+            (weights * wrong_probability).sum(),
+            (weights * correct_probability).sum())
+
+
+def order_rejection_loss(positive_energy, order_energy, margin):
+    """Detach the positive anchor: this term only raises a violating order cost."""
+    return F.relu(margin + positive_energy.detach() - order_energy)
 
 
 def sigreg_loss(embeddings, token_valid=None, *, sketch_dim=1024, num_knots=17,
@@ -316,7 +486,9 @@ def sigreg_loss(embeddings, token_valid=None, *, sketch_dim=1024, num_knots=17,
 def compute_loss(output, texts, text_embedding, config, *, negative_texts=None, negative_metadata=None,
                  distributed_statistics=False, sketch_seed=None):
     vectors, valid = output['fused'], output['token_valid']
-    if config.wrong_letter_unlikelihood_weight and config.negative_dtw_weight:
+    typed = config.negative_loss_type == 'hybrid_typed'
+    if ((config.wrong_letter_unlikelihood_weight and config.negative_dtw_weight)
+            or (typed and config.wrong_letter_weight)):
         positive, counts, costs, alignments = positive_dtw_loss(
             vectors, texts, text_embedding, config, valid, return_alignments=True)
     else:
@@ -331,14 +503,30 @@ def compute_loss(output, texts, text_embedding, config, *, negative_texts=None, 
         # DDP averages gradients: compensate for differing per-rank valid counts.
         positive_for_gradient = positive * counts['evaluated'] * dist.get_world_size() / count.clamp_min(1)
     negative = vectors[valid].sum() * 0.
+    typed_losses = {name: negative for name in ('strong', 'wrong', 'order')}
+    typed_stats = dict(strong_sum=0., strong_count=0, strong_cost_sum=0., strong_cost_min=None,
+                       strong_target_sum=0., strong_target_success=0., typed_wrong_sum=0.,
+                       wrong_count=0, local_count=0, wrong_probability_sum=0.,
+                       correct_probability_sum=0., changed_positions_count=0,
+                       order_sum=0., order_count=0, order_cost_sum=0., order_gap_sum=0.,
+                       order_success=0., strong_costs=[])
+    typed_stats.update(strong_slot_1_sum=0., strong_slot_1_count=0,
+                       strong_slot_2_sum=0., strong_slot_2_count=0)
     ranking = dict(objective_sum=0., absolute_sum=0., ranking_sum=0., wrong_sum=0.,
                    ranked_lines=0, ranking_candidates=0, ranking_correct=0,
                    ranking_margin_sum=0., negative_cost_sum=0., negative_cost_min=None,
                    negative_cost_max=None, hard_cost_sum=0., hard_cost_min=None, hard_count=0,
-                   target_sum=0., target_success=0., margin_violations=0.,
+                   hard_cost_max=None, target_sum=0., target_min=None, target_max=None,
+                   target_success=0., hard_target_success=0., hard_target_count=0,
+                   margin_violations=0.,
                    negative_skip_reasons={}, operations={}, absolute_negative_loss=None,
                    ranking_loss=None, wrong_letter_loss=None)
-    if config.negative_dtw_weight:
+    if typed and (config.strong_negative_weight or config.wrong_letter_weight or config.order_negative_weight):
+        typed_losses, typed_stats = typed_negative_objective(
+            vectors, texts, negative_texts, negative_metadata, text_embedding,
+            config, valid, costs, alignments)
+        ranking_aux = wrong_aux = negative
+    elif config.negative_dtw_weight:
         negative, ranking_aux, wrong_aux, ranking = negative_sequence_objective(
             vectors, texts, negative_texts, text_embedding, config, valid,
             positive_costs=costs, positive_alignments=alignments,
@@ -349,6 +537,18 @@ def compute_loss(output, texts, text_embedding, config, *, negative_texts=None, 
     ranking_for_gradient = ranking_aux
     wrong_for_gradient = wrong_aux
     global_ranking_candidates = ranking['ranking_candidates']
+    typed_for_gradient = dict(typed_losses)
+    if typed and distributed_statistics and dist.is_available() and dist.is_initialized():
+        local_counts = vectors.new_tensor([typed_stats['strong_count'], typed_stats['wrong_count'],
+                                           typed_stats['order_count']])
+        global_counts = local_counts.clone()
+        dist.all_reduce(global_counts)
+        for index, name in enumerate(('strong', 'wrong', 'order')):
+            typed_for_gradient[name] = (typed_losses[name] * local_counts[index] *
+                                        dist.get_world_size() / global_counts[index].clamp_min(1))
+        global_ranking_candidates = int(global_counts.sum().item())
+    elif typed:
+        global_ranking_candidates = sum(typed_stats[key] for key in ('strong_count', 'local_count', 'order_count'))
     if config.negative_dtw_weight and distributed_statistics and dist.is_available() and dist.is_initialized():
         counts_global = vectors.new_tensor([ranking['ranked_lines'], ranking['ranking_candidates']])
         dist.all_reduce(counts_global)
@@ -366,6 +566,9 @@ def compute_loss(output, texts, text_embedding, config, *, negative_texts=None, 
              + config.negative_dtw_weight * negative_for_gradient
              + config.ranking_aux_weight * ranking_for_gradient
              + config.wrong_letter_unlikelihood_weight * wrong_for_gradient
+             + config.strong_negative_weight * typed_for_gradient['strong']
+             + config.wrong_letter_weight * typed_for_gradient['wrong']
+             + config.order_negative_weight * typed_for_gradient['order']
              + config.sigreg_weight * sigreg)
     stats = dict(total=float(total.detach()), positive_dtw=float(positive.detach()) if counts['evaluated'] else None,
                  positive_cost=float(positive.detach()) if counts['evaluated'] else None,
@@ -375,5 +578,5 @@ def compute_loss(output, texts, text_embedding, config, *, negative_texts=None, 
                  sigreg=float(sigreg.detach()) if config.sigreg_weight else None,
                  weighted_sigreg=float(sigreg.detach()) * config.sigreg_weight,
                  valid_tokens=int(valid.sum()), global_evaluated=global_evaluated,
-                 global_ranking_candidates=global_ranking_candidates, **counts, **ranking)
+                 global_ranking_candidates=global_ranking_candidates, **counts, **ranking, **typed_stats)
     return total, stats

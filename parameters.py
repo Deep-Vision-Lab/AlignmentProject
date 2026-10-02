@@ -40,13 +40,25 @@ class Config:
     # Weight is the single enable switch: zero means no generation/alignment.
     negative_count: int = 3
     hard_negative_k: int = 2  # lowest alignment energies among generated candidates
-    negative_loss_type: str = 'ranking'  # ranking=legacy; absolute=independent rejection
+    negative_loss_type: str = 'ranking'  # ranking/absolute=legacy; hybrid_typed=type-specific supervision
+    strong_negative_count: int = 2
+    local_substitution_count: int = 1
+    order_negative_count: int = 1
+    strong_negative_weight: float = .5
+    wrong_letter_weight: float = .5
+    order_negative_weight: float = .25
+    strong_negative_severity: float = .75
+    local_substitution_severity: float = .30
+    order_margin: float = .20
     # Initial diagnostic values: 16 validation lines from the available
     # 2026-10-01 checkpoint had median aligned positive NLL 1.08 and 64
     # corrupted negatives had median NLL 1.69 (uniform 37-letter NLL = 3.61).
     # Tune on validation only; these are not claimed optimal/calibrated.
     negative_target_min: float = 1.5
     negative_target_max: float = 2.5
+    negative_target_mode: str = 'fixed'  # old checkpoints retain fixed thresholds
+    negative_target_min_ratio: float = .70
+    negative_target_max_ratio: float = 1.00
     negative_softness: float = .10  # NLL-scale softplus hinge smoothing
     ranking_aux_weight: float = 0.0  # only with absolute; not multiplied by negative_dtw_weight
     wrong_letter_unlikelihood_weight: float = 0.0  # substitution-only positive-occupancy auxiliary
@@ -87,14 +99,44 @@ def validate_objective(config):
         raise ValueError('Unknown dtw_cost_mode')
     if config.dtw_normalization not in {'legacy', 'aligned_mean'}:
         raise ValueError('dtw_normalization must be legacy or aligned_mean')
-    if config.negative_loss_type not in {'ranking', 'absolute'}:
-        raise ValueError('negative_loss_type must be ranking or absolute')
+    if config.negative_loss_type not in {'ranking', 'absolute', 'hybrid_typed'}:
+        raise ValueError('negative_loss_type must be ranking, absolute or hybrid_typed')
     if not 1 <= config.hard_negative_k <= config.negative_count:
         raise ValueError('Require 1 <= hard_negative_k <= negative_count')
-    if (not math.isfinite(config.negative_softness) or config.negative_softness <= 0
-            or not 0 <= config.negative_target_min <= config.negative_target_max
-            or not all(math.isfinite(x) for x in (config.negative_target_min, config.negative_target_max))):
-        raise ValueError('Negative targets must be finite and ordered; softness must be positive')
+    if config.negative_target_mode not in {'fixed', 'uniform_ratio'}:
+        raise ValueError('negative_target_mode must be fixed or uniform_ratio')
+    if config.negative_loss_type == 'hybrid_typed':
+        if config.negative_dtw_weight or config.ranking_aux_weight or config.wrong_letter_unlikelihood_weight:
+            raise ValueError('hybrid_typed uses its own component weights; set legacy negative weights to zero')
+        if sum((config.strong_negative_count, config.local_substitution_count,
+                config.order_negative_count)) != config.negative_count:
+            raise ValueError('Typed negative counts must sum to negative_count')
+        if any(v < 0 for v in (config.strong_negative_count, config.local_substitution_count,
+                               config.order_negative_count)):
+            raise ValueError('Typed negative counts must be nonnegative')
+        if (not all(math.isfinite(v) and v >= 0 for v in
+                    (config.strong_negative_weight, config.wrong_letter_weight,
+                     config.order_negative_weight, config.order_margin))):
+            raise ValueError('Typed weights and order margin must be finite and nonnegative')
+        if not .70 <= config.strong_negative_severity <= .90:
+            raise ValueError('strong_negative_severity must be in [0.70, 0.90]')
+        if not .20 <= config.local_substitution_severity <= .35:
+            raise ValueError('local_substitution_severity must be in [0.20, 0.35]')
+        if (config.alignment_objective != 'dtw' or config.dtw_cost_mode != 'full_alphabet_nll'
+                or config.dtw_normalization != 'aligned_mean' or config.negative_target_mode != 'uniform_ratio'):
+            raise ValueError('hybrid_typed requires aligned_mean full_alphabet_nll DTW and uniform_ratio targets')
+        if config.negative_curriculum_epochs:
+            raise ValueError('hybrid_typed requires negative_curriculum_epochs=0')
+    if not math.isfinite(config.negative_softness) or config.negative_softness <= 0:
+        raise ValueError('negative_softness must be finite and positive')
+    if config.negative_target_mode == 'fixed':
+        if (not all(math.isfinite(x) for x in (config.negative_target_min, config.negative_target_max))
+                or not 0 < config.negative_target_min < config.negative_target_max):
+            raise ValueError('Fixed targets require 0 < min < max')
+    elif (not all(math.isfinite(x) for x in
+                  (config.negative_target_min_ratio, config.negative_target_max_ratio))
+          or not 0 < config.negative_target_min_ratio < config.negative_target_max_ratio <= 1.5):
+        raise ValueError('Uniform-ratio targets require 0 < min_ratio < max_ratio <= 1.5')
     if any(not math.isfinite(x) or x < 0 for x in
            (config.ranking_aux_weight, config.wrong_letter_unlikelihood_weight)):
         raise ValueError('Auxiliary weights must be finite and nonnegative')
@@ -128,3 +170,9 @@ def validate_objective(config):
         raise ValueError('Unknown/empty negative_operations')
     if config.alignment_objective == 'ctc' and (config.position_prior != 0 or config.dtw_cost_mode != 'full_alphabet_nll'):
         raise ValueError('CTC requires full_alphabet_nll and --position-prior 0 (no DTW prior)')
+
+
+def negatives_enabled(config):
+    if config.negative_loss_type == 'hybrid_typed':
+        return bool(config.strong_negative_weight or config.wrong_letter_weight or config.order_negative_weight)
+    return bool(config.negative_dtw_weight)

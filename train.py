@@ -21,9 +21,9 @@ from tqdm.auto import tqdm
 
 from dataloader import create_dataloaders, collate_samples
 from cnn_encoder import simple_cnn_channels
-from losses import compute_loss
+from losses import compute_loss, resolved_negative_targets
 from model import AlignmentModel, validate_fusion_config
-from parameters import Config, validate_objective
+from parameters import Config, validate_objective, negatives_enabled
 from text_embedding import OrthogonalCharEmbedding
 from text_embedding import ARABIC_LETTERS, clean_letters, fit_letter_prior
 
@@ -105,13 +105,22 @@ def _batch_postfix(stats, optimizer=None, gradients=None, device=None):
                   sigreg=_format_value(stats['sigreg']),
                   evaluated=stats['evaluated'], skipped=stats['skipped'],
                   windows=_format_value(stats.get('mean_windows')), letters=_format_value(stats.get('mean_letters')))
-    if stats.get('negative_training_enabled', stats.get('ranking_candidates', 0) > 0):
+    if stats.get('negative_loss_type') == 'hybrid_typed':
+        values.update(sNeg=_format_value(stats['strong_cost_sum'] / stats['strong_count'] if stats['strong_count'] else None),
+                      sLoss=_format_value(stats['strong_sum'] / stats['strong_count'] if stats['strong_count'] else None),
+                      wrongP=_format_value(stats['wrong_probability_sum'] / stats['wrong_count'] if stats['wrong_count'] else None),
+                      wrongL=_format_value(stats['typed_wrong_sum'] / stats['wrong_count'] if stats['wrong_count'] else None),
+                      ordNeg=_format_value(stats['order_cost_sum'] / stats['order_count'] if stats['order_count'] else None),
+                      ordL=_format_value(stats['order_sum'] / stats['order_count'] if stats['order_count'] else None))
+    elif stats.get('negative_training_enabled', stats.get('ranking_candidates', 0) > 0):
         count = stats['ranking_candidates']
         values.update(negCost=_format_value(stats['negative_cost_sum'] / count if count else None),
                       hardNeg=_format_value(stats['hard_cost_sum'] / stats['hard_count'] if stats['hard_count'] else None),
+                      target=_format_value(stats['target_sum'] / count if count else None),
                       absNeg=_format_value(stats['absolute_negative_loss']),
-                      rank=_format_value(stats['ranking_loss']),
-                      targetOK=f'{100 * stats["target_success"] / count:.0f}%' if count else 'n/a')
+                      rank=_format_value(stats.get('ranking_loss')),
+                      targetOK=f'{100 * stats["hard_target_success"] / stats["hard_count"]:.0f}%'
+                      if stats['hard_count'] else 'n/a')
     elif stats.get('negative_warmup'):
         values['negatives'] = 'warmup'
     if optimizer is not None:
@@ -132,7 +141,7 @@ def build_loaders(dataset, config, split_ids=None):
                               image_size=(config.image_height,config.image_width),
                               grayscale=config.grayscale, crop=config.crop, binarize=config.binarize)
     for loader in loaders[:2]:
-        loader.dataset.negative_config = config if config.negative_dtw_weight else None
+        loader.dataset.negative_config = config if negatives_enabled(config) else None
     return loaders
 
 
@@ -186,19 +195,23 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
     validate_objective(config)
     if hasattr(loader.dataset, 'set_epoch'):
         loader.dataset.set_epoch((epoch or 1) if training else 0)
-    active_config = (replace(config, negative_dtw_weight=0.) if training and
-                     (epoch or 1) <= config.negative_warmup_epochs else config)
+    warmup = training and (epoch or 1) <= config.negative_warmup_epochs
+    active_config = (replace(config, negative_dtw_weight=0., strong_negative_weight=0.,
+                             wrong_letter_weight=0., order_negative_weight=0.) if warmup else config)
     model.train(training)
     text_encoder.eval()
     distributed = training and dist.is_available() and dist.is_initialized()
     # DTW is aggregated per LINE, including both sides, excluding empty text.
     # SIGReg is a token-weighted batch-population statistic, not a per-line loss.
-    totals = torch.zeros(23,dtype=torch.float32 if device.type == 'mps' else torch.float64,
+    totals = torch.zeros(25,dtype=torch.float32 if device.type == 'mps' else torch.float64,
                          device=device)
+    typed_totals = torch.zeros(20, dtype=totals.dtype, device=device)
     corruption, skip_reasons = Counter(), Counter()
     negative_cost_min, negative_cost_max = float('inf'), float('-inf')
     positive_cost_min, positive_cost_max = float('inf'), float('-inf')
-    hard_cost_min = float('inf')
+    hard_cost_min, hard_cost_max = float('inf'), float('-inf')
+    strong_cost_min = float('inf')
+    target_min_seen, target_max_seen = float('inf'), float('-inf')
     started = time.monotonic()
     gradient_batches = []
     diagnostics = []
@@ -214,7 +227,7 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
             break
         images,texts = _batch_lines(batch,device)
         negative_texts = negative_metadata = None
-        if active_config.negative_dtw_weight:
+        if negatives_enabled(active_config):
             nested = batch.get('negative_texts')
             if nested is None:
                 raise ValueError('Negative training requires a dataset view configured by build_loaders')
@@ -230,6 +243,9 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                 corruption.update({k: info.get(k, 0) for k in ('requested','generated','shortfall','attempts')})
                 corruption.update({'rejected_'+k: v for k,v in info['rejections'].items()})
                 corruption.update({'operation_'+k: v for k,v in info['operations'].items()})
+                for kind, row in info.get('by_type', {}).items():
+                    for key in ('requested', 'generated', 'shortfall'):
+                        corruption[f'{kind}_{key}'] += row[key]
         for sides in batch.get('negative_metadata', []):
             for entries in sides:
                 corruption['corruption_ratio_sum'] += sum(item['corruption_ratio'] for item in entries)
@@ -248,7 +264,7 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                 raise FloatingPointError('Nonfinite objective; no optimizer step taken')
             if training and not stats['global_evaluated']:
                 raise ValueError(f'No feasible positive transcripts in the global batch; no step taken: {stats["skip_reasons"]}')
-            if training and active_config.negative_dtw_weight and not stats['global_ranking_candidates']:
+            if training and negatives_enabled(active_config) and not stats['global_ranking_candidates'] and config.negative_loss_type != 'hybrid_typed':
                 raise ValueError('Negative training is enabled, but this batch produced no valid negative alignments; no step taken')
             if training:
                 loss.backward()
@@ -273,9 +289,27 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                                                  if evaluated else None),
                            mean_letters=(sum(l for _, l in stats['lengths']) / evaluated
                                          if evaluated else None),
-                           negative_training_enabled=bool(active_config.negative_dtw_weight),
-                           negative_warmup=bool(config.negative_dtw_weight and not active_config.negative_dtw_weight))
+                           negative_training_enabled=negatives_enabled(active_config),
+                           negative_warmup=bool(negatives_enabled(config) and not negatives_enabled(active_config)),
+                           negative_loss_type=config.negative_loss_type)
         progress.set_postfix(_batch_postfix(batch_stats, optimizer, gradients, device))
+        if index == 0 and epoch in (None, 1) and rank == 0 and active_config.negative_dtw_weight and stats['ranking_candidates']:
+            mean_target = stats['target_sum'] / stats['ranking_candidates']
+            if stats['positive_cost'] is not None and stats['positive_cost'] > mean_target:
+                tqdm.write(f'WARNING: initial mean positive cost {stats["positive_cost"]:.4f} '
+                           f'exceeds mean negative rejection target {mean_target:.4f}')
+            if stats['hard_count'] and stats['hard_target_success'] / stats['hard_count'] > .90:
+                tqdm.write('WARNING: initial hard-negative target success exceeds 90%; '
+                           'the rejection target may still be too easy')
+        if (index == 0 and epoch in (None, 1) and rank == 0 and
+                config.negative_loss_type == 'hybrid_typed' and stats['strong_count']):
+            mean_target = stats['strong_target_sum'] / stats['strong_count']
+            if stats['positive_cost'] is not None and stats['positive_cost'] > mean_target:
+                tqdm.write(f'WARNING: initial mean positive cost {stats["positive_cost"]:.4f} '
+                           f'exceeds mean strong-negative target {mean_target:.4f}')
+            if stats['strong_target_success'] / stats['strong_count'] > .90:
+                tqdm.write('WARNING: initial strong-negative target success exceeds 90%; '
+                           'the rejection target may be too easy')
         if stats['negative_cost_min'] is not None:
             negative_cost_min = min(negative_cost_min, stats['negative_cost_min'])
             negative_cost_max = max(negative_cost_max, stats['negative_cost_max'])
@@ -284,6 +318,12 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
             positive_cost_max = max(positive_cost_max, stats['positive_cost_max'])
         if stats['hard_cost_min'] is not None:
             hard_cost_min = min(hard_cost_min, stats['hard_cost_min'])
+            hard_cost_max = max(hard_cost_max, stats['hard_cost_max'])
+        if stats['strong_cost_min'] is not None:
+            strong_cost_min = min(strong_cost_min, stats['strong_cost_min'])
+        if stats['target_min'] is not None:
+            target_min_seen = min(target_min_seen, stats['target_min'])
+            target_max_seen = max(target_max_seen, stats['target_max'])
         totals += totals.new_tensor([stats['dtw_sum'],stats['evaluated'],stats['skipped'],
                                       (stats['sigreg'] or 0.)*tokens,tokens,
                                       sum(t for t,l in stats['lengths']),
@@ -294,35 +334,63 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                                       stats['absolute_sum'], stats['ranking_sum'], stats['wrong_sum'],
                                       stats['hard_cost_sum'], stats['hard_count'], stats['target_sum'],
                                       stats['target_success'],
-                                      stats['positive_below_reference']])
+                                      stats['positive_below_reference'],
+                                      stats['hard_target_success'], stats['hard_target_count']])
+        typed_totals += typed_totals.new_tensor([
+            stats['strong_sum'], stats['strong_count'], stats['strong_cost_sum'],
+            stats['strong_target_sum'], stats['strong_target_success'],
+            stats['typed_wrong_sum'], stats['wrong_count'], stats['local_count'],
+            stats['wrong_probability_sum'], stats['correct_probability_sum'],
+            stats['changed_positions_count'], stats['order_sum'], stats['order_count'],
+            stats['order_cost_sum'], stats['order_gap_sum'], stats['order_success'],
+            stats['strong_slot_1_sum'], stats['strong_slot_1_count'],
+            stats['strong_slot_2_sum'], stats['strong_slot_2_count']])
     progress.close()
     if distributed:
         dist.all_reduce(totals)
+        dist.all_reduce(typed_totals)
         details = [None] * dist.get_world_size()
         dist.all_gather_object(details, (dict(corruption), dict(skip_reasons),
                                          negative_cost_min, negative_cost_max,
-                                         positive_cost_min, positive_cost_max, hard_cost_min))
+                                         positive_cost_min, positive_cost_max,
+                                         hard_cost_min, hard_cost_max, target_min_seen, target_max_seen,
+                                         strong_cost_min))
         corruption, skip_reasons = Counter(), Counter()
         negative_cost_min, negative_cost_max = float('inf'), float('-inf')
-        positive_cost_min, positive_cost_max, hard_cost_min = float('inf'), float('-inf'), float('inf')
-        for c, s, low, high, pos_low, pos_high, hard_low in details:
+        positive_cost_min, positive_cost_max = float('inf'), float('-inf')
+        hard_cost_min, hard_cost_max = float('inf'), float('-inf')
+        target_min_seen, target_max_seen = float('inf'), float('-inf')
+        strong_cost_min = float('inf')
+        for c, s, low, high, pos_low, pos_high, hard_low, hard_high, target_low, target_high, strong_low in details:
             corruption.update(c); skip_reasons.update(s)
             negative_cost_min = min(negative_cost_min, low)
             negative_cost_max = max(negative_cost_max, high)
             positive_cost_min = min(positive_cost_min, pos_low)
             positive_cost_max = max(positive_cost_max, pos_high)
             hard_cost_min = min(hard_cost_min, hard_low)
+            hard_cost_max = max(hard_cost_max, hard_high)
+            target_min_seen = min(target_min_seen, target_low)
+            target_max_seen = max(target_max_seen, target_high)
+            strong_cost_min = min(strong_cost_min, strong_low)
     (dtw_sum,n,skipped,sig_sum,tokens,windows,letters,batches,neg_sum,ranked,
      candidates,correct,margins,negative_cost_sum,margin_violations,absolute_sum,
      ranking_sum,wrong_sum,hard_cost_sum,hard_count,target_sum,target_success,
-     positive_below_reference) = totals.tolist()
+     positive_below_reference,hard_target_success,hard_target_count) = totals.tolist()
+    (strong_sum,strong_count,strong_cost_sum,strong_target_sum,strong_target_success,
+     typed_wrong_sum,wrong_count,local_count,wrong_probability_sum,correct_probability_sum,
+     changed_positions_count,order_sum,order_count,order_cost_sum,order_gap_sum,
+     order_success,strong_slot_1_sum,strong_slot_1_count,strong_slot_2_sum,
+     strong_slot_2_count) = typed_totals.tolist()
     positive = dtw_sum/n if n else None
     sigreg = sig_sum/tokens if tokens and config.sigreg_weight else None
     negative = neg_sum/ranked if ranked else None
     total = None if positive is None else (config.positive_dtw_weight*positive + config.sigreg_weight*(sigreg or 0.)
                                            + active_config.negative_dtw_weight*(negative or 0.)
                                            + active_config.ranking_aux_weight*(ranking_sum/ranked if ranked else 0.)
-                                           + active_config.wrong_letter_unlikelihood_weight*(wrong_sum/ranked if ranked else 0.))
+                                           + active_config.wrong_letter_unlikelihood_weight*(wrong_sum/ranked if ranked else 0.)
+                                           + active_config.strong_negative_weight*(strong_sum/strong_count if strong_count else 0.)
+                                           + active_config.wrong_letter_weight*(typed_wrong_sum/wrong_count if wrong_count else 0.)
+                                           + active_config.order_negative_weight*(order_sum/order_count if order_count else 0.))
     result = dict(total=total,total_loss=total,positive_dtw=positive,positive_cost=positive,
                 positive_cost_mean=positive,
                 positive_cost_min=positive_cost_min if n else None,
@@ -333,8 +401,13 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                 negative_cost_max=negative_cost_max if candidates else None,
                 hard_negative_cost_mean=hard_cost_sum/hard_count if hard_count else None,
                 hard_negative_cost_min=hard_cost_min if hard_count else None,
+                hard_negative_cost_max=hard_cost_max if hard_count else None,
                 negative_target_mean=target_sum/candidates if candidates else None,
+                negative_target_min=target_min_seen if candidates else None,
+                negative_target_max=target_max_seen if candidates else None,
                 negative_target_success_rate=target_success/candidates if candidates else None,
+                hard_negative_target_success_rate=(hard_target_success/hard_target_count
+                                                   if hard_target_count else None),
                 fraction_negative_above_target=target_success/candidates if candidates else None,
                 fraction_positive_below_reference=positive_below_reference/n if n else None,
                 absolute_negative_loss=absolute_sum/ranked if ranked else None,
@@ -343,13 +416,15 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                 hard_negatives=int(margin_violations),
                 ranking_margin_violations=int(margin_violations),
                 hard_negative_count=int(hard_count),
-                negative_training_enabled=bool(active_config.negative_dtw_weight),
+                negative_training_enabled=negatives_enabled(active_config),
                 negative_loss_type=config.negative_loss_type,
                 dtw_normalization=config.dtw_normalization,
                 negative_weight=active_config.negative_dtw_weight, ranked_lines=int(ranked),
                 ranking_candidates=int(candidates), ranking_accuracy=correct/candidates if candidates else None,
                 negative_gap_mean=margins/candidates if candidates else None,
+                negative_minus_positive_mean=margins/candidates if candidates else None,
                 negative_minus_positive_cost=margins/candidates if candidates else None,
+                ranking_margin_loss=ranking_sum/ranked if ranked else None,
                 corruption=dict(corruption),
                 mean_corruption_ratio=(corruption['corruption_ratio_sum'] / corruption['corruption_ratio_count']
                                        if corruption['corruption_ratio_count'] else None),
@@ -360,6 +435,23 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                 mean_letters=letters/n if n else None,gamma=config.dtw_gamma,
                 population='explicit-batch-subset' if max_batches else 'full-split',
                 seconds=time.monotonic()-started)
+    result.update(strong_neg_cost_mean=strong_cost_sum/strong_count if strong_count else None,
+                  strong_neg_cost_min=strong_cost_min if strong_count else None,
+                  strong_neg_1_cost_mean=strong_slot_1_sum/strong_slot_1_count if strong_slot_1_count else None,
+                  strong_neg_2_cost_mean=strong_slot_2_sum/strong_slot_2_count if strong_slot_2_count else None,
+                  strong_neg_target_mean=strong_target_sum/strong_count if strong_count else None,
+                  strong_neg_target_success=strong_target_success/strong_count if strong_count else None,
+                  strong_neg_loss=strong_sum/strong_count if strong_count else None,
+                  local_wrong_letter_loss=typed_wrong_sum/wrong_count if wrong_count else None,
+                  wrong_letter_probability_mean=wrong_probability_sum/wrong_count if wrong_count else None,
+                  correct_letter_probability_same_positions=correct_probability_sum/wrong_count if wrong_count else None,
+                  changed_positions_count=int(changed_positions_count),
+                  order_negative_cost=order_cost_sum/order_count if order_count else None,
+                  positive_vs_order_gap=order_gap_sum/order_count if order_count else None,
+                  order_loss=order_sum/order_count if order_count else None,
+                  order_success_rate=order_success/order_count if order_count else None,
+                  strong_negative_evaluated=int(strong_count), local_substitution_evaluated=int(local_count),
+                  order_negative_evaluated=int(order_count))
     # Old machine-readable keys remain for ranking-mode consumers only. New
     # progress and summaries always use the unambiguous objective/cost names.
     if config.negative_loss_type == 'ranking':
@@ -469,7 +561,7 @@ def load_checkpoint(path,device='cpu'):
     return model,text,config,saved
 
 
-def _print_dataset_summary(args, config, loaders):
+def _print_dataset_summary(args, config, loaders, text_encoder):
     train_loader, val_loader, test_loader = loaders
     print('=' * 60, flush=True)
     print('DATASET', flush=True)
@@ -501,22 +593,42 @@ def _print_dataset_summary(args, config, loaders):
     print(f'Embedding dim: {config.embedding_dim}', flush=True)
     print(f'SIGReg: {"ENABLED (weight=" + str(config.sigreg_weight) + ")" if config.sigreg_weight else "DISABLED"}', flush=True)
     print(f'Positive DTW weight: {config.positive_dtw_weight}', flush=True)
-    print(f'Negative DTW weight: {config.negative_dtw_weight}', flush=True)
-    print('Negative transcripts: ' + ('ENABLED' if config.negative_dtw_weight else 'DISABLED'), flush=True)
+    print(f'Negative DTW weight: {config.negative_dtw_weight}' +
+          (' (legacy mode; unused by hybrid_typed)' if config.negative_loss_type == 'hybrid_typed' else ''), flush=True)
+    print('Negative transcripts: ' + ('ENABLED' if negatives_enabled(config) else 'DISABLED'), flush=True)
     print(f'Negative count: {config.negative_count}', flush=True)
-    print(f'Negative margin: {config.negative_margin}', flush=True)
-    print(f'Negative severity: {config.negative_severity}', flush=True)
-    print(f'Negative operations: {config.negative_operations}', flush=True)
+    if config.negative_loss_type != 'hybrid_typed':
+        print(f'Negative margin: {config.negative_margin}', flush=True)
+        print(f'Negative severity: {config.negative_severity}', flush=True)
+        print(f'Negative operations: {config.negative_operations}', flush=True)
     print(f'Negative warmup epochs: {config.negative_warmup_epochs}', flush=True)
     print(f'Negative curriculum epochs: {config.negative_curriculum_epochs}', flush=True)
     print(f'Negative seed: {config.negative_seed}', flush=True)
     print(f'Negative loss type: {config.negative_loss_type}', flush=True)
-    print(f'Hard negative k: {config.hard_negative_k}', flush=True)
+    if config.negative_loss_type == 'hybrid_typed':
+        print(f'Typed negatives: {config.strong_negative_count} strong + '
+              f'{config.local_substitution_count} local substitution + '
+              f'{config.order_negative_count} order', flush=True)
+        print(f'Typed weights (strong/wrong/order): {config.strong_negative_weight} / '
+              f'{config.wrong_letter_weight} / {config.order_negative_weight}', flush=True)
+        print(f'Typed severities (strong/local): {config.strong_negative_severity} / '
+              f'{config.local_substitution_severity}', flush=True)
+        print(f'Order margin: {config.order_margin}', flush=True)
+    if config.negative_loss_type != 'hybrid_typed':
+        print(f'Hard negative k: {config.hard_negative_k}', flush=True)
     print(f'DTW normalization: {config.dtw_normalization}', flush=True)
-    print(f'Negative target min/max: {config.negative_target_min} / {config.negative_target_max}', flush=True)
+    k, uniform_nll, target_min, target_max = resolved_negative_targets(config, text_encoder)
+    print(f'Effective alphabet size: {k if k is not None else "variable per line (fixed-target legacy mode)"}', flush=True)
+    print(f'Uniform-reference NLL: {uniform_nll if uniform_nll is not None else "variable per line"}', flush=True)
+    print(f'Negative target mode: {config.negative_target_mode}', flush=True)
+    print(f'Negative target min ratio: {config.negative_target_min_ratio}', flush=True)
+    print(f'Negative target max ratio: {config.negative_target_max_ratio}', flush=True)
+    print(f'Resolved target min: {target_min}', flush=True)
+    print(f'Resolved target max: {target_max}', flush=True)
     print(f'Negative softness: {config.negative_softness}', flush=True)
-    print(f'Ranking auxiliary weight: {config.ranking_aux_weight}', flush=True)
-    print(f'Wrong-letter unlikelihood weight: {config.wrong_letter_unlikelihood_weight}', flush=True)
+    if config.negative_loss_type != 'hybrid_typed':
+        print(f'Ranking auxiliary weight: {config.ranking_aux_weight}', flush=True)
+        print(f'Wrong-letter unlikelihood weight: {config.wrong_letter_unlikelihood_weight}', flush=True)
     print(f'Alignment objective: {config.alignment_objective}; cost mode: {config.dtw_cost_mode}; '
           f'temperature: {config.competition_temperature}; gamma: {config.dtw_gamma}; '
           f'position prior: {config.position_prior}; vertical/horizontal: '
@@ -546,17 +658,54 @@ def _print_epoch_summary(epoch, epochs, train_stats, val_stats, gradients, previ
     def value(item):
         return 'n/a' if item is None else f'{item:.4f}'
     def objective_details(stats):
+        if stats['negative_loss_type'] == 'hybrid_typed':
+            c = stats['corruption']
+            print('POSITIVE', flush=True)
+            print(f'  positive cost mean: {value(stats["positive_cost_mean"])}', flush=True)
+            print('STRONG NEGATIVES', flush=True)
+            print(f'  cost mean/min: {value(stats["strong_neg_cost_mean"])} / '
+                  f'{value(stats["strong_neg_cost_min"])}', flush=True)
+            print(f'  strong #1/#2 cost mean: {value(stats["strong_neg_1_cost_mean"])} / '
+                  f'{value(stats["strong_neg_2_cost_mean"])}', flush=True)
+            print(f'  target mean/success: {value(stats["strong_neg_target_mean"])} / '
+                  f'{value(stats["strong_neg_target_success"])}', flush=True)
+            print(f'  rejection loss: {value(stats["strong_neg_loss"])}', flush=True)
+            print('LOCAL SUBSTITUTION', flush=True)
+            print(f'  wrong-letter loss: {value(stats["local_wrong_letter_loss"])}', flush=True)
+            print(f'  wrong/correct probability at changed positions: '
+                  f'{value(stats["wrong_letter_probability_mean"])} / '
+                  f'{value(stats["correct_letter_probability_same_positions"])}', flush=True)
+            print(f'  changed positions: {stats["changed_positions_count"]}', flush=True)
+            print('ORDER NEGATIVE', flush=True)
+            print(f'  cost/gap/loss/success: {value(stats["order_negative_cost"])} / '
+                  f'{value(stats["positive_vs_order_gap"])} / {value(stats["order_loss"])} / '
+                  f'{value(stats["order_success_rate"])}', flush=True)
+            print('GENERATION', flush=True)
+            for kind in ('strong_global', 'local_substitution', 'order_negative'):
+                print(f'  {kind}: {c.get(kind + "_requested", 0)} requested / '
+                      f'{c.get(kind + "_generated", 0)} generated / '
+                      f'{c.get(kind + "_shortfall", 0)} shortfall', flush=True)
+            print(f'  rejection reasons: '
+                  f'{ {key: val for key, val in c.items() if key.startswith("rejected_")} }', flush=True)
+            print('TOTAL', flush=True)
+            print(f'  total loss: {value(stats["total_loss"])}', flush=True)
+            return
         print(f'  positive cost min/max: {value(stats["positive_cost_min"])} / '
               f'{value(stats["positive_cost_max"])}', flush=True)
         print(f'  negative cost mean/min/max: {value(stats["negative_cost_mean"])} / '
               f'{value(stats["negative_cost_min"])} / {value(stats["negative_cost_max"])}', flush=True)
-        print(f'  hard negative cost mean/min: {value(stats["hard_negative_cost_mean"])} / '
-              f'{value(stats["hard_negative_cost_min"])}', flush=True)
-        print(f'  target mean / fraction above: {value(stats["negative_target_mean"])} / '
+        print(f'  hard negative cost mean/min/max: {value(stats["hard_negative_cost_mean"])} / '
+              f'{value(stats["hard_negative_cost_min"])} / {value(stats["hard_negative_cost_max"])}', flush=True)
+        print(f'  target mean/min/max: {value(stats["negative_target_mean"])} / '
+              f'{value(stats["negative_target_min"])} / {value(stats["negative_target_max"])}', flush=True)
+        print(f'  fraction negatives above target: '
               f'{value(stats["fraction_negative_above_target"])}', flush=True)
+        print(f'  hard-negative target success: '
+              f'{value(stats["hard_negative_target_success_rate"])}', flush=True)
         print(f'  absolute negative loss: {value(stats["absolute_negative_loss"])}', flush=True)
-        print(f'  ranking loss/accuracy/gap: {value(stats["ranking_loss"])} / '
-              f'{value(stats["ranking_accuracy"])} / {value(stats["negative_gap_mean"])}', flush=True)
+        print(f'  ranking margin loss/accuracy/gap (diagnostic if aux=0): '
+              f'{value(stats["ranking_margin_loss"])} / {value(stats["ranking_accuracy"])} / '
+              f'{value(stats["negative_minus_positive_mean"])}', flush=True)
         print(f'  positive below target-min reference: {value(stats["fraction_positive_below_reference"])}', flush=True)
         c = stats['corruption']
         print(f'  generation requested/generated/shortfall: '
@@ -627,9 +776,16 @@ def main(argv=None, epoch_callback=None):
                          '--negative-operations', '--negative-seed', '--negative-warmup-epochs',
                          '--negative-curriculum-epochs', '--negative-loss-type',
                          '--negative-target-min', '--negative-target-max', '--negative-softness',
+                         '--negative-target-mode', '--negative-target-min-ratio',
+                         '--negative-target-max-ratio',
                          '--hard-negative-k', '--ranking-aux-weight',
-                         '--wrong-letter-unlikelihood-weight'}
+                         '--wrong-letter-unlikelihood-weight', '--strong-negative-count',
+                         '--local-substitution-count', '--order-negative-count',
+                         '--strong-negative-weight', '--wrong-letter-weight',
+                         '--order-negative-weight', '--strong-negative-severity',
+                         '--local-substitution-severity', '--order-margin'}
     if (config.negative_dtw_weight == 0
+            and config.negative_loss_type != 'hybrid_typed'
             and not any(arg.split('=', 1)[0] == '--negative-dtw-weight' for arg in raw_argv)
             and any(arg.split('=', 1)[0] in negative_controls for arg in raw_argv)):
         raise ValueError('Negative settings were supplied, but negative DTW weight is 0; '
@@ -694,6 +850,10 @@ def main(argv=None, epoch_callback=None):
         text.letter_evidence_prior = fit_letter_prior(train_loader.dataset.records, config.alphabet_inventory)
         text.letter_evidence_prior['train_ids_sha256'] = hashlib.sha256(
             json.dumps(split_ids['train'], sort_keys=True).encode()).hexdigest()
+    k, uniform_nll, target_min, target_max = resolved_negative_targets(config, text)
+    target_reference = dict(mode=config.negative_target_mode, effective_alphabet_size=k,
+                            uniform_nll=uniform_nll, resolved_min=target_min,
+                            resolved_max=target_max)
     sampler = None
     if world>1:
         sampler = DistributedSampler(train_loader.dataset,seed=config.seed,shuffle=True)
@@ -716,7 +876,7 @@ def main(argv=None, epoch_callback=None):
     history_path = output_dir/'history.json'
     history = json.loads(history_path.read_text()) if args.resume and history_path.exists() else []
     if rank==0:
-        _print_dataset_summary(args, config, loaders)
+        _print_dataset_summary(args, config, loaders, text)
         _print_runtime(device, world, rank, config)
         print('CONFIG',json.dumps(asdict(config),sort_keys=True),flush=True)
         print('SPLITS',{name:len(ids) for name,ids in split_ids.items()},flush=True)
@@ -764,13 +924,26 @@ def main(argv=None, epoch_callback=None):
                           dataset=str(Path(args.dataset).resolve()),max_batches=args.max_batches,metrics=entry,
                           rng_states=rng_states, run_mode='finetune' if args.finetune else 'resume' if args.resume else 'fresh',
                           source_checkpoint=args.finetune or args.resume,
-                          source_config=saved['config'] if saved else None)
-            print('OBJECTIVE', json.dumps({phase: {k: stats[k] for k in ('negative_training_enabled',
-                  'negative_objective','ranked_lines','ranking_candidates','ranking_accuracy',
-                  'negative_gap_mean','negative_cost_mean','negative_cost_min',
-                  'negative_cost_max','hard_negative_cost_mean','absolute_negative_loss',
-                  'ranking_loss','negative_target_success_rate','corruption','skip_reasons')}
-                  for phase,stats in [('train',train_stats),('validation',val_stats)]}), flush=True)
+                          source_config=saved['config'] if saved else None,
+                          negative_target_reference=target_reference)
+            objective_keys = (('positive_cost_mean', 'strong_neg_cost_mean', 'strong_neg_1_cost_mean',
+                               'strong_neg_2_cost_mean', 'strong_neg_target_mean',
+                               'strong_neg_target_success', 'strong_neg_loss',
+                               'local_wrong_letter_loss', 'wrong_letter_probability_mean',
+                               'correct_letter_probability_same_positions', 'changed_positions_count',
+                               'order_negative_cost', 'positive_vs_order_gap', 'order_loss',
+                               'order_success_rate', 'corruption', 'skip_reasons')
+                              if config.negative_loss_type == 'hybrid_typed' else
+                              ('negative_training_enabled', 'negative_objective', 'ranked_lines',
+                               'ranking_candidates', 'ranking_accuracy', 'negative_gap_mean',
+                               'negative_cost_mean', 'negative_cost_min', 'negative_cost_max',
+                               'hard_negative_cost_mean', 'hard_negative_cost_min',
+                               'hard_negative_cost_max', 'negative_target_mean', 'negative_target_min',
+                               'negative_target_max', 'absolute_negative_loss', 'ranking_margin_loss',
+                               'negative_target_success_rate', 'hard_negative_target_success_rate',
+                               'corruption', 'skip_reasons'))
+            print('OBJECTIVE', json.dumps({phase: {key: stats[key] for key in objective_keys}
+                  for phase, stats in [('train', train_stats), ('validation', val_stats)]}), flush=True)
             save_checkpoint(output_dir/'checkpoint_latest.pt',model,optimizer,epoch,best,config,text,split_ids,**kwargs)
             if improved: save_checkpoint(output_dir/'checkpoint_best.pt',model,optimizer,epoch,best,config,text,split_ids,**kwargs)
             _print_epoch_summary(epoch, config.epochs, train_stats, val_stats, entry['gradients'],

@@ -79,6 +79,38 @@ def test_cli_resolves_negative_controls_and_rejects_silent_disable(monkeypatch):
         main(['--dataset', 'unused', '--run-name', 'unused', '--negative-count', '4'])
 
 
+def test_offline_uniform_ratio_flags_reach_config_without_weight_override(tmp_path, monkeypatch):
+    fake_bin = tmp_path / 'bin'; fake_bin.mkdir()
+    sbatch = fake_bin / 'sbatch'
+    sbatch.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n')
+    sbatch.chmod(0o755)
+    flags = ['--positive-dtw-weight', '1.0', '--negative-dtw-weight', '0.5',
+             '--negative-count', '4', '--hard-negative-k', '2',
+             '--negative-loss-type', 'absolute', '--dtw-normalization', 'aligned_mean',
+             '--negative-target-mode', 'uniform_ratio',
+             '--negative-target-min-ratio', '0.70', '--negative-target-max-ratio', '1.00',
+             '--negative-severity', '0.35', '--negative-curriculum-epochs', '0',
+             '--negative-warmup-epochs', '0', '--ranking-aux-weight', '0.0',
+             '--wrong-letter-unlikelihood-weight', '0.0']
+    env = dict(os.environ, PATH=f'{fake_bin}:{os.environ["PATH"]}',
+               RUN_NAME='real_concat_nogate_absneg_v2', FUSION_MODE='concat', USE_GATED_FUSION='0')
+    submitted = subprocess.run(['bash', 'scripts/train/train.sh', 'real', *flags],
+        cwd=ROOT, env=env, text=True, capture_output=True, check=True).stdout.splitlines()
+    assert submitted[-len(flags):] == flags
+    assert (ROOT / 'scripts/train/train.sbatch').read_text().count('"$@"') == 1
+    def inspect(config):
+        assert config.positive_dtw_weight == 1.0
+        assert config.negative_dtw_weight == 0.5
+        assert config.negative_count == 4 and config.hard_negative_k == 2
+        assert config.negative_target_mode == 'uniform_ratio'
+        assert (config.negative_target_min_ratio, config.negative_target_max_ratio) == (.7, 1.)
+        assert config.negative_curriculum_epochs == config.negative_warmup_epochs == 0
+        raise RuntimeError('resolved correctly')
+    monkeypatch.setattr('train.validate_objective', inspect)
+    with pytest.raises(RuntimeError, match='resolved correctly'):
+        main(['--run-name', 'real_concat_nogate_absneg_v2', *submitted[submitted.index('--dataset'):]])
+
+
 def test_four_negatives_margin_and_padding_exclusion():
     positive = 'السَّلام عليكم ورحمة الله'
     negatives, details = generate_negative_transcripts(

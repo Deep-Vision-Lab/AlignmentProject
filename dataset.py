@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import random
 import re
+from collections import Counter
 import xml.etree.ElementTree as ET
 from functools import lru_cache
 from pathlib import Path
@@ -19,6 +21,7 @@ import torch
 from PIL import Image, ImageEnhance, ImageFilter
 from torch.utils.data import Dataset
 from text_embedding import ARABIC_LETTERS, clean_letters
+from parameters import negatives_enabled
 
 
 def generate_negative_transcripts(text, *, count=3, operations='substitute,adjacent,blocks,words,shift,shuffle',
@@ -109,6 +112,139 @@ def generate_negative_transcripts(text, *, count=3, operations='substitute,adjac
     stats['generated'] = len(negatives)
     stats['shortfall'] = count - len(negatives)
     return (negatives, stats, metadata) if return_metadata else (negatives, stats)
+
+
+def generate_typed_negative_transcripts(text, *, strong_count=2, local_count=1, order_count=1,
+                                        strong_severity=.75, local_severity=.30, seed=42,
+                                        sample_id='', epoch=0, vocabulary=None, equivalents=()):
+    """Identity-changing globals, position-labelled local edits, and identity-preserving order edits.
+
+    Short/repetitive lines can be infeasible; bounded retries report shortfalls
+    rather than fabricating a negative. The deterministic seed includes identity
+    and epoch, never Python's process-randomized hash or worker state.
+    """
+    original = ''.join(clean_letters(text))
+    requested = {'strong_global': strong_count, 'local_substitution': local_count,
+                 'order_negative': order_count}
+    if any(n < 0 for n in requested.values()):
+        raise ValueError('Typed negative counts must be nonnegative')
+    vocab = list(dict.fromkeys(vocabulary if vocabulary is not None else ARABIC_LETTERS + original))
+    if any(clean_letters(char) != [char] for char in vocab):
+        raise ValueError('Negative vocabulary must contain normalized Arabic letters only')
+    def signature(value):
+        return ''.join(char for index, char in enumerate(value) if index == 0 or char != value[index-1])
+    forbidden = {signature(''.join(clean_letters(value))) for value in (text, *equivalents)}
+    stats = dict(requested=sum(requested.values()), generated=0, shortfall=0, attempts=0,
+                 rejections={}, operations={}, by_type={name: dict(requested=n, generated=0, shortfall=n)
+                                                     for name, n in requested.items()})
+    if not original or not set(original) <= set(vocab):
+        reason = 'empty_positive' if not original else 'unsupported_positive'
+        stats['rejections'][reason] = stats['requested']
+        stats['shortfall'] = stats['requested']
+        return [], stats, []
+    rng = random.Random(int.from_bytes(hashlib.sha256(
+        f'{seed}\0{sample_id}\0{epoch}\0hybrid_typed'.encode()).digest()[:8], 'big'))
+    seen = {original}
+    negatives, metadata = [], []
+    def accept(candidate, kind, operation, changed=None, order_change=0.):
+        value = ''.join(candidate)
+        if not value or value != ''.join(clean_letters(value)) or not set(value) <= set(vocab):
+            reason = 'empty_or_unsupported'
+        elif value in seen:
+            reason = 'duplicate_or_identical'
+        elif signature(value) in forbidden:
+            reason = 'equivalent_or_duration_only'
+        elif kind == 'strong_global' and Counter(value) == Counter(original):
+            reason = 'strong_preserved_identity_inventory'
+        elif kind == 'order_negative' and Counter(value) != Counter(original):
+            reason = 'order_changed_identity'
+        else:
+            reason = None
+        if reason:
+            stats['rejections'][reason] = stats['rejections'].get(reason, 0) + 1
+            return False
+        seen.add(value)
+        changed = sorted(changed or [])
+        detail = dict(text=value, negative_type=kind, operation=operation,
+                      corruption_ratio=len(changed) / len(original),
+                      changed_positions=changed if kind == 'local_substitution' else None,
+                      original_letters=[original[i] for i in changed] if kind == 'local_substitution' else None,
+                      replacement_letters=[value[i] for i in changed] if kind == 'local_substitution' else None,
+                      order_change_ratio=order_change if kind == 'order_negative' else None)
+        negatives.append(value); metadata.append(detail)
+        stats['operations'][operation] = stats['operations'].get(operation, 0) + 1
+        stats['by_type'][kind]['generated'] += 1
+        return True
+
+    length = len(original)
+    strong_edits = min(length, max(math.ceil(.70 * length), round(strong_severity * length)))
+    for _ in range(max(12, strong_count * 32)):
+        if stats['by_type']['strong_global']['generated'] == strong_count:
+            break
+        stats['attempts'] += 1
+        operation = rng.choice(('strong_substitute', 'mixed_substitute', 'multi_block_substitute'))
+        if operation == 'strong_substitute':
+            positions = rng.sample(range(length), strong_edits)
+        elif operation == 'mixed_substitute':
+            span = min(length, max(1, strong_edits // 2))
+            start = rng.randrange(length - span + 1)
+            positions = list(range(start, start + span))
+            positions += rng.sample([i for i in range(length) if i not in positions], strong_edits - span)
+        else:
+            positions = set()
+            for _block in range(2 * length):
+                if len(positions) >= strong_edits:
+                    break
+                start = rng.randrange(length)
+                positions.update(range(start, min(length, start + max(1, strong_edits // 3))))
+            positions = list(positions)[:strong_edits]
+            if len(positions) < strong_edits:
+                positions += rng.sample([i for i in range(length) if i not in positions],
+                                        strong_edits - len(positions))
+        candidate = list(original)
+        fresh = [char for char in vocab if char not in original]
+        for pos in positions:
+            choices = fresh or [char for char in vocab if char != candidate[pos]]
+            if choices:
+                candidate[pos] = rng.choice(choices)
+        changed = [pos for pos in positions if candidate[pos] != original[pos]]
+        if len(changed) >= math.ceil(.70 * length):
+            accept(candidate, 'strong_global', operation, changed)
+
+    local_edits = min(length, max(1, round(local_severity * length)))
+    for _ in range(max(12, local_count * 32)):
+        if stats['by_type']['local_substitution']['generated'] == local_count:
+            break
+        stats['attempts'] += 1
+        positions = sorted(rng.sample(range(length), local_edits))
+        candidate = list(original)
+        for pos in positions:
+            choices = [char for char in vocab if char != original[pos]]
+            if choices:
+                candidate[pos] = rng.choice(choices)
+        changed = [pos for pos in positions if candidate[pos] != original[pos]]
+        if changed:
+            accept(candidate, 'local_substitution', 'local_substitute', changed)
+
+    order_ops = ('adjacent', 'blocks', 'words', 'shift', 'shuffle')
+    for attempt in range(max(12, order_count * 32)):
+        if stats['by_type']['order_negative']['generated'] == order_count:
+            break
+        stats['attempts'] += 1
+        operation = rng.choice(order_ops)
+        candidates, _ = generate_negative_transcripts(
+            text, count=1, operations=operation, severity=.35, seed=seed,
+            sample_id=f'{sample_id}:typed-order:{attempt}', epoch=epoch,
+            vocabulary=vocab, equivalents=equivalents)
+        if candidates:
+            candidate = candidates[0]
+            movement = sum(a != b for a, b in zip(original, candidate)) / length
+            accept(list(candidate), 'order_negative', operation, order_change=movement)
+    for kind, row in stats['by_type'].items():
+        row['shortfall'] = row['requested'] - row['generated']
+    stats['generated'] = len(negatives)
+    stats['shortfall'] = stats['requested'] - stats['generated']
+    return negatives, stats, metadata
 
 
 def file_hash(path):
@@ -401,20 +537,30 @@ class AlignmentDataset(Dataset):
                     anchor_id=record['anchor_id'], geometry=geometries,
                     image_paths=[s['image'] for s in record['sides']])
         c = self.negative_config
-        if c is not None and c.negative_dtw_weight > 0:
+        if c is not None and negatives_enabled(c):
             negatives, diagnostics, metadata = [], [], []
             for i, (side, text) in enumerate(zip(record['sides'], texts)):
                 if not self.evaluation_view and self.negative_epoch <= c.negative_warmup_epochs:
                     values, detail, entries = [], dict(requested=0, generated=0, shortfall=0, attempts=0,
                                                         rejections={'warmup': 1}, operations={}), []
                 else:
-                    values, detail, entries = generate_negative_transcripts(text, count=c.negative_count,
-                        operations=c.negative_operations, severity=c.negative_severity, seed=c.negative_seed,
-                        sample_id=f'{record["sample_id"]}:{i}', epoch=self.negative_epoch,
-                        vocabulary=c.alphabet_inventory or None,
-                        equivalents=side.get('equivalent_transcripts', []),
-                        curriculum_epochs=0 if self.evaluation_view else c.negative_curriculum_epochs,
-                        return_metadata=True)
+                    if c.negative_loss_type == 'hybrid_typed':
+                        values, detail, entries = generate_typed_negative_transcripts(
+                            text, strong_count=c.strong_negative_count,
+                            local_count=c.local_substitution_count, order_count=c.order_negative_count,
+                            strong_severity=c.strong_negative_severity,
+                            local_severity=c.local_substitution_severity, seed=c.negative_seed,
+                            sample_id=f'{record["sample_id"]}:{i}', epoch=self.negative_epoch,
+                            vocabulary=c.alphabet_inventory or None,
+                            equivalents=side.get('equivalent_transcripts', []))
+                    else:
+                        values, detail, entries = generate_negative_transcripts(text, count=c.negative_count,
+                            operations=c.negative_operations, severity=c.negative_severity, seed=c.negative_seed,
+                            sample_id=f'{record["sample_id"]}:{i}', epoch=self.negative_epoch,
+                            vocabulary=c.alphabet_inventory or None,
+                            equivalents=side.get('equivalent_transcripts', []),
+                            curriculum_epochs=0 if self.evaluation_view else c.negative_curriculum_epochs,
+                            return_metadata=True)
                 negatives.append(values); diagnostics.append(detail); metadata.append(entries)
             result.update(negative_texts=negatives, negative_stats=diagnostics,
                           negative_metadata=metadata)
