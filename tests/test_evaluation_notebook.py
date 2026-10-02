@@ -278,7 +278,7 @@ def test_cached_samples_threshold_sweeps_and_independent_slots(evaluation_fixtur
     from evaluation_utils import load_pair_ground_truth, compute_pair_metrics, shuffled_positive_pairs
 
     root, checkpoint = evaluation_fixture
-    session = EvaluationSession(checkpoint, root, device='cpu')
+    session = EvaluationSession(checkpoint, root, split='val', device='cpu')
     positives = [pair for pair in session.pairs if pair['target'] == 1]
     assert len(positives) == 2
     gt_path = tmp_path / 'gt.png'
@@ -299,7 +299,7 @@ def test_cached_samples_threshold_sweeps_and_independent_slots(evaluation_fixtur
         region_mask=region_mask,
         load_pair_ground_truth=load_pair_ground_truth,
         compute_pair_metrics=compute_pair_metrics,
-        plot_pair_alignment=lambda *_: plt.figure(),
+        plot_pair_alignment=lambda *_, **kwargs: plt.figure(),
         display=lambda value: shown.append(value), plt=plt,
     )
     exec(notebook_source('pool = shuffled_positive_pairs('), namespace)
@@ -316,7 +316,7 @@ def test_cached_samples_threshold_sweeps_and_independent_slots(evaluation_fixtur
     first_gt = sample_slots[1]['ground_truth']
     reference = session.evaluate_pair(sample_slots[1]['pair'])
     cached_reference = namespace['evaluate_cached_sample'](
-        1, session.settings['threshold'], alignment_mode='smith_waterman',
+        1, session.settings['threshold'],
         contrast_margin=session.settings['contrast_margin'])
     np.testing.assert_array_equal(cached_reference['masks'][0], reference['masks'][0])
     np.testing.assert_array_equal(cached_reference['masks'][1], reference['masks'][1])
@@ -366,7 +366,7 @@ def test_cached_samples_threshold_sweeps_and_independent_slots(evaluation_fixtur
     namespace['load_pair_ground_truth'] = load_pair_ground_truth
     monkeypatch.undo()
     namespace['show_random_sample'](1)
-    assert sample_slots[1]['pair']['sample_id'] != first_id
+    assert sample_slots[1]['pair']['sample_id'] == first_id  # exhausted pool never wraps
     assert sample_slots[2]['pair']['sample_id'] == second_id
     assert len(session.feature_cache) == before
     assert all(slot['pair'] in positives for slot in sample_slots.values())
@@ -379,5 +379,5 @@ def test_sample_count_controls_only_its_own_cells():
     for count in (1, 3, 5):
         called = []
         for source in sample_cells:
-            exec(source, dict(NUM_SAMPLES=count, show_random_sample=called.append))
+            exec(source, dict(N_POSITIVE_SAMPLES=count, show_random_sample=called.append))
         assert called == list(range(1, count + 1))

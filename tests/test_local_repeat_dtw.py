@@ -10,7 +10,8 @@ def run(matrix, **settings):
                                 score_mode='raw', threshold=.5,
                                 min_distinct_windows_a=3,
                                 min_distinct_windows_b=3,
-                                min_matched_pairs=4, **settings)
+                                min_matched_pairs=4, min_windows=3, normal_min_distinct_a=3,
+                                normal_min_distinct_b=3,normal_min_matched_pairs=4, **settings)
 
 
 def geometry(width):
@@ -51,7 +52,7 @@ def test_five_by_three_vertical_repeats_support_every_window():
     np.testing.assert_array_equal(region_mask([region], 1, geometry(30), 10, 10), 255)
 
 
-def test_true_gap_skips_unrelated_middle_without_masking_it():
+def test_true_gap_is_not_support_but_allows_one_window_fill():
     cosine = np.full((5, 4), .1)
     for pair in [(0, 0), (1, 1), (3, 2), (4, 3)]:
         cosine[pair] = .95
@@ -61,9 +62,9 @@ def test_true_gap_skips_unrelated_middle_without_masking_it():
     assert any(step['transition'] == 'gap_a' and step['i'] == 2
                for step in region['path_steps'])
     assert region['supported_physical'][0] == [0, 1, 3, 4]
-    assert 2 not in region['filled_physical'][0]
+    assert region['filled_physical'][0] == [2]
     mask = region_mask([region], 0, geometry(50), 10, 10)
-    assert not mask[:, 20:30].any()
+    assert mask[:, 20:30].all()
     assert mask[:, :20].all() and mask[:, 30:].all()
 
 
@@ -72,14 +73,15 @@ def test_isolated_similarity_does_not_pass_region_support():
     cosine[3, 4] = .99
     result = run(cosine)
     assert result['regions'] == []
-    assert any(item['reason'] == 'insufficient_repeat_support'
+    assert any(item['reason'] == 'insufficient_distinct_support'
                for item in result['rejected'])
 
 
 def test_repeat_limit_prevents_one_to_many_overmatching():
     cosine = np.full((1, 20), .95)
     result = local_repeat_regions(cosine, [0], np.arange(20), threshold=.5,
-                                  score_mode='raw', max_consecutive_repeats=2,
+                                  score_mode='raw', min_windows=1,normal_min_distinct_a=1,normal_min_distinct_b=1,
+                                  normal_min_matched_pairs=1,max_consecutive_repeats=2,
                                   min_distinct_windows_a=1,
                                   min_distinct_windows_b=1, min_matched_pairs=1)
     assert sum(region['matched_pairs'] for region in result['regions']) <= 3
@@ -92,7 +94,7 @@ def test_rtl_logical_path_projects_to_physical_source_pixels():
         cosine[pair] = .95
     result = local_repeat_regions(cosine, [2, 1, 0], [4, 3, 2, 1, 0],
                                   score_mode='raw', threshold=.5,
-                                  min_distinct_windows_a=3,
+                                  min_windows=3, min_distinct_windows_a=3,
                                   min_distinct_windows_b=3, min_matched_pairs=4)
     region = result['regions'][0]
     assert region['pairs'][0] == (0, 0)

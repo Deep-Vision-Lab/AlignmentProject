@@ -23,7 +23,7 @@ from tqdm.auto import tqdm
 
 from dataset import AlignmentDataset, file_hash, prepare_image
 from dtw import cosine_similarity_matrix, hard_dtw_path, letter_cost_matrix
-from evaluate import region_mask, score_mask, source_interval, match_features, MATCH_VERSION, MATCH_DEFAULTS, resolved_match_settings
+from evaluate import region_mask, score_mask, source_interval, match_features, MATCH_VERSION, MATCH_DEFAULTS, resolved_match_settings, plot_match_routes
 from train import build_loaders, load_checkpoint
 
 
@@ -55,8 +55,12 @@ def _distribution(values):
 def sample_random_pairs(records, n, aligned=True, seed=42):
     if n < 0:
         raise ValueError('n must be nonnegative')
-    choices = sorted((r for r in records if r['target'] == int(aligned)), key=lambda r: r['sample_id'])
-    return random.Random(seed).sample(choices, min(n, len(choices)))
+    unique={r['sample_id']:r for r in records if r['target']==int(aligned)}
+    choices=sorted(unique.values(),key=lambda r:r['sample_id'])
+    if n>len(choices):
+        name='positive' if aligned else 'negative'
+        print(f'Requested {n} unique {name} samples, but only {len(choices)} eligible unique samples are available.')
+    return random.Random(seed).sample(choices,min(n,len(choices)))
 
 
 def _constructed_negatives(pairs, line_records, n, seed):
@@ -249,18 +253,14 @@ class EvaluationSession:
         if representation not in REPRESENTATIONS:
             raise ValueError(f'Unknown representation: {representation}')
         lines = [self.get_line_features(s) for s in pair['sides']]
-        match = match_features(*(r['features'][representation] for r in lines), *(r['physical'] for r in lines),
-                               text_encoder=self.text_encoder, config=self.config, **self.settings)
-        cosine = match['cosine']
-        masks = [region_mask(match['regions'], side, r['geometry'], self.config.window_width,
-                             self.config.window_stride) for side, r in enumerate(lines)]
-        return dict(pair=pair, representation=representation, lines=lines, cosine=cosine,
-                    match=match, masks=masks, settings=match['settings'], split=self.split)
+        return predict_cached_pair(self, pair, lines, representation)
 
     def evaluate_pair(self, pair, representation='fused'):
         result = self.predict_pair(pair, representation)
         # Ground truth is read ONLY AFTER predictions and masks have been fixed.
-        result['metrics'], result['ground_truth'] = compute_pair_metrics(result, self.config)
+        gt,provenance=load_pair_ground_truth(pair,result['lines'])
+        result['metrics'], result['ground_truth'] = compute_pair_metrics(result,self.config,preloaded_ground_truth=gt)
+        result['metrics']['ground_truth_provenance']=provenance
         return result
 
     def matching_cache_key(self, pair, representation='fused'):
@@ -273,6 +273,51 @@ class EvaluationSession:
         if key not in self.metric_cache:
             self.metric_cache[key] = self.evaluate_pair(pair, representation)['metrics']
         return self.metric_cache[key]
+
+
+def predict_cached_pair(session, pair, lines, representation='fused', *, settings=None, cosine=None):
+    """One prediction flow for session and cached notebook samples; GT-free.
+
+    ``lines`` contains only model features, valid physical identities and image
+    geometry. Cosine can be reused without modifying it for plots or tuning.
+    """
+    match = match_features(*(r['features'][representation] for r in lines),
+        *(r['physical'] for r in lines), text_encoder=session.text_encoder,
+        config=session.config, precomputed_cosine=cosine,
+        **(session.settings if settings is None else settings))
+    masks = [region_mask(match['regions'], side, r['geometry'], session.config.window_width,
+                         session.config.window_stride) for side,r in enumerate(lines)]
+    return dict(pair=pair, representation=representation, lines=lines, cosine=match['cosine'],
+                match=match, masks=masks, settings=match['settings'], split=session.split)
+
+
+def print_candidate_diagnostics(result, max_rejected=5):
+    """Print route evidence and reasons for both accepted and rejected candidates."""
+    pair,match=result['pair'],result['match']
+    print(f"Sample: {pair['sample_id']} | label: {pair['label']}")
+    print('GT available:', [g is not None for g in result.get('ground_truth',[])])
+    print('Similarity matrix:', ' × '.join(map(str,result['cosine'].shape)))
+    print('Accepted regions:',len(match['regions']))
+    print('Evaluation category:',result.get('metrics',{}).get('evaluation_category','unavailable'))
+    fields=('candidate_id','candidate_type','status','score','score_per_match','matching_reward',
+        'gap_penalty','repeat_penalty','support_a','support_b','matched_pairs','required_support_a',
+        'required_support_b','required_matched_pairs','mean_cosine','median_cosine','min_cosine',
+        'mean_reward','median_reward','path_density','gap_fraction','horizontal_repeats','vertical_repeats',
+        'true_gaps','max_internal_gap','max_physical_discontinuity','repeat_fraction','mutual_anchor_count','mutual_anchor_fraction',
+        'strong_anchor_positions','first_strong_anchor_position','last_strong_anchor_position',
+        'mean_row_margin','median_row_margin','mean_column_margin','median_column_margin',
+        'mean_bidirectional_margin','median_bidirectional_margin','fraction_positive_bidirectional_margin',
+        'ambiguous','letter_evidence_mean','median_letter_evidence','minimum_letter_evidence',
+        'letter_evidence_positive_fraction','variant','trimmed_prefix','trimmed_suffix','extension_pairs',
+        'merged_from','dominated_by','accepted','reason')
+    groups=[('Region',match['regions']),('Rejected candidate',sorted(match['rejected'],
+            key=lambda c:c.get('score',0),reverse=True)[:max_rejected])]
+    for name,candidates in groups:
+        for number,candidate in enumerate(candidates):
+            print(f'{name} {number}:')
+            for field in fields:
+                print(f'  {field}: {candidate.get(field)}')
+    print('Candidate limit reached:',match.get('candidate_limit_reached',False))
 
 
 def _load_annotation(annotation, shape):
@@ -483,7 +528,7 @@ def boxes_ground_truth(pair):
     pairs = _lcs_pairs(*units)
     runs = _consecutive_runs(pairs)
     if not runs:
-        return [None, None], 'no matched subword run between the two line box transcripts'
+        return [np.zeros((h,w),bool) for w,h in sizes], 'complete page box transcripts: no matched subword run'
     masks = []
     for side, ((width, height), side_boxes) in enumerate(zip(sizes, boxes)):
         mask = np.zeros((height, width), dtype=bool)
@@ -520,42 +565,49 @@ def load_pair_ground_truth(pair, lines):
     return masks, ' | '.join(provenance)
 
 
-def attach_ground_truth(session, result):
-    """Resolve GT masks strictly AFTER prediction and add localization metrics.
-
-    Per line, dataset metadata wins (alignment mask image, then exact-size
-    aligned intervals). Otherwise full-height masks are built from page-level
-    debug/bboxes.json subword boxes via the dataset's text-LCS convention.
-    GT never enters prediction.
-    """
-    pair, metrics = result['pair'], result['metrics']
-    provenance, boxes, detail = [], None, ''
-    for side, name in enumerate(('a', 'b')):
-        if result['ground_truth'][side] is not None:
-            provenance.append(pair['annotation_provenance'])
-            continue
-        if boxes is None:
-            boxes, detail = boxes_ground_truth(pair)
-        gt = boxes[side]
-        if gt is None:
-            provenance.append(f'unavailable ({detail})')
-            continue
-        mask = np.asarray(result['masks'][side])
-        if gt.shape != mask.shape:
-            raise ValueError('Ground-truth/source geometry mismatch; resizing is forbidden')
-        spatial, _ = localization_metrics(mask, dict(intervals=_mask_intervals(gt),
-            source_size=[int(mask.shape[1]), int(mask.shape[0])]),
-            result['lines'][side], session.config, result['match']['regions'], side)
-        metrics.pop(f'{name}_reason', None)
-        metrics.update({f'{name}_{k}': v for k, v in spatial.items()})
-        result['ground_truth'][side] = gt
-        provenance.append('built from page debug/bboxes.json subword LCS')
-    for metric in ('iou', 'dice'):
-        values = [metrics.get(f'{s}_{metric}') for s in ('a', 'b')]
-        if all(v is not None for v in values):
-            metrics['pair_mean_' + metric] = (values[0] + values[1]) / 2
-    metrics['ground_truth_provenance'] = ' | '.join(provenance)
+def attach_ground_truth(session,result):
+    """Evaluation-only compatibility wrapper; prediction/masks already fixed."""
+    if result['metrics'].get('ground_truth_provenance') is not None:
+        return result
+    masks,provenance=load_pair_ground_truth(result['pair'],result['lines'])
+    result['metrics'],result['ground_truth']=compute_pair_metrics(result,session.config,preloaded_ground_truth=masks)
+    result['metrics']['ground_truth_provenance']=provenance
     return result
+
+
+def evaluation_category(pair,ground_truth):
+    """Post-prediction local-overlap classification, never a matcher input.
+
+    Nonempty localization GT wins over a negative manifest label. Complete empty
+    annotations certify no overlap. Transcript word overlap supplies a partial
+    category but cannot fabricate localization masks. A coarse negative label
+    alone is unknown; transcript absence alone is not proof of no substring.
+    """
+    available=[g is not None for g in ground_truth]
+    occupied=[bool(np.asarray(g,bool).any()) if g is not None else None for g in ground_truth]
+    if all(available) and occupied[0]!=occupied[1]:
+        return dict(evaluation_category='unknown',evaluation_category_reason='contradictory_side_annotations',shared_words=[])
+    if any(v is True for v in occupied):
+        category='positive' if pair.get('target')==1 else 'partial_overlap'
+        return dict(evaluation_category=category,evaluation_category_reason='nonempty_localization_ground_truth',shared_words=[])
+    if all(available):
+        category='unknown' if pair.get('target')==1 else 'true_no_overlap'
+        return dict(evaluation_category=category,evaluation_category_reason='complete_empty_localization_ground_truth',shared_words=[])
+    words=[]
+    for side in pair.get('sides',[]):
+        path=side.get('text')
+        if not path or not Path(path).is_file():words=[];break
+        text=Path(path).read_text(encoding='utf-8')
+        units={_normalized_unit(word) for word in text.split()}
+        words.append(units-{''})
+    shared=sorted(words[0]&words[1]) if len(words)==2 else []
+    if pair.get('target')==1:
+        return dict(evaluation_category='positive',evaluation_category_reason='known_manifest_positive_localization_unavailable',shared_words=shared)
+    if shared:
+        return dict(evaluation_category='partial_overlap',evaluation_category_reason='transcript_word_overlap_localization_unavailable',shared_words=shared)
+    if pair.get('manually_verified') and not pair.get('constructed_negative') and pair.get('target')==0:
+        return dict(evaluation_category='true_no_overlap',evaluation_category_reason='manually_verified_no_overlap',shared_words=[])
+    return dict(evaluation_category='unknown',evaluation_category_reason='negative_manifest_is_not_localization_ground_truth',shared_words=[])
 
 
 def _binary_metrics(pred, gt):
@@ -637,7 +689,8 @@ def compute_pair_metrics(result, config, *, preloaded_ground_truth=None):
                    path_cosine_mean=float(values.mean()) if len(values) else None,
                    path_cosine_median=float(np.median(values)) if len(values) else None,
                    path_cosine_min=float(values.min()) if len(values) else None,
-                   maximum_similarity=float(cosine.max()), matrix_cosine_mean=float(cosine.mean()),
+                   maximum_similarity=float(cosine.max()) if cosine.size else None,
+                   matrix_cosine_mean=float(cosine.mean()) if cosine.size else None,
                    off_path_cosine_mean=background,
                    similarity_separation=float(values.mean()) - background if len(values) and background is not None else None)
     deltas = [(b[0]-a[0], b[1]-a[1]) for r in match['regions'] for a, b in zip(r['pairs'], r['pairs'][1:])]
@@ -675,6 +728,7 @@ def compute_pair_metrics(result, config, *, preloaded_ground_truth=None):
     for metric in ('iou', 'dice'):
         if all(f'{s}_{metric}' in metrics for s in ('a', 'b')):
             metrics['pair_mean_' + metric] = (metrics['a_' + metric] + metrics['b_' + metric]) / 2
+    metrics.update(evaluation_category(pair,ground_truth))
     return metrics, ground_truth
 
 
@@ -835,16 +889,21 @@ def aggregate_summary(population, retrieval=None, decision_threshold=None):
                     'path_length', 'mask_coverage_a', 'mask_coverage_b'):
             summary[f'{label}_{key}'] = _distribution([r[key] for r in values if r.get(key) is not None])
     summary['localization'] = {}
-    checked_negative=[r for r in negative if not r['constructed_negative']]
-    summary['manifest_negative_false_positive_rate']=(sum(r['region_count']>0 for r in checked_negative)/len(checked_negative)
-                                                      if checked_negative else None)
-    summary['manifest_negative_count']=len(checked_negative)
-    verified = [r for r in negative if r.get('manually_verified') and not r['constructed_negative']]
-    summary['verified_negative_count']=len(verified)
-    summary['verified_negative_false_positive_rate']=(sum(r['region_count']>0 for r in verified)/len(verified)
-                                                      if verified else None)
-    summary['verified_negative_coverage']=_distribution([r['mask_coverage_'+s] for r in verified for s in ('a','b')])
-    summary['annotation_caution']='Manifest negatives are not necessarily manually checked; bbox/LCS masks are automatically derived.'
+    categories={name:[r for r in rows if r.get('evaluation_category','unknown')==name]
+                for name in ('positive','partial_overlap','true_no_overlap','unknown')}
+    summary['evaluation_category_counts']={k:len(v) for k,v in categories.items()}
+    true_negatives=categories['true_no_overlap']
+    summary['true_negative_false_positive_rate']=(sum(r['region_count']>0 for r in true_negatives)/len(true_negatives)
+                                                  if true_negatives else None)
+    for category,prefix in (('positive','positive'),('partial_overlap','partial_overlap')):
+        annotated=[r for r in categories[category] if all(r.get(f'{side}_status')=='available' for side in ('a','b'))]
+        summary[prefix+'_localized_pairs']=len(annotated)
+        for metric in ('recall','precision'):
+            values=[r[f'{side}_{metric}'] for r in annotated for side in ('a','b')]
+            summary[prefix+'_'+metric]=float(np.mean(values)) if values else None
+    summary['localization_average_definition']='macro mean over both sides of pairs with two available localization masks'
+    summary['manifest_negative_count']=sum(not r['constructed_negative'] for r in negative)
+    summary['annotation_caution']='Coarse negative labels alone are unknown; box/LCS annotations are automatically derived.'
     summary['small_population_warning']=len(rows)<30
     for side in ('a', 'b'):
         for key in ('iou', 'dice', 'precision', 'recall', 'window_iou', 'window_f1',
@@ -883,7 +942,7 @@ def _overlay(image, mask, color=(255, 70, 20), alpha=.4):
     return pixels.astype(np.uint8)
 
 
-def plot_pair_alignment(session, result, show_gt=True):
+def plot_pair_alignment(session, result, show_gt=False, max_rejected_paths=5):
     """Simplified full-line figure: originals, predicted and ground-truth
     masks/overlays, similarity heatmaps and the metrics panel.
 
@@ -897,16 +956,17 @@ def plot_pair_alignment(session, result, show_gt=True):
     elif pair['target'] == 1:
         label = 'RANDOMLY CHOSEN POSITIVE SAMPLE (true manifest pair)'
     elif pair['target'] == 0:
-        label = 'GROUND TRUTH LABEL: UNALIGNED'
+        label = 'MANIFEST LABEL: ' + pair['label']
     else:
         label = 'LABEL UNKNOWN'
+    label += ' | local evaluation: ' + metrics.get('evaluation_category','unknown')
     originals = []
     for side in range(2):
         with Image.open(pair['sides'][side]['image']) as image:
             originals.append(image.convert('RGB'))
-    fig = plt.figure(figsize=(19, 28) if show_gt else (19, 21))
-    fig.subplots_adjust(left=.05, right=.95, top=.94, bottom=.03, hspace=1.05, wspace=.15)
-    grid = fig.add_gridspec(7, 2, height_ratios=[1, 1, 1, 1, 1, 2.4, 1.7]) if show_gt else fig.add_gridspec(5, 2, height_ratios=[1, 1, 1, 2.4, 1.7])
+    fig = plt.figure(figsize=(19, 30) if show_gt else (19, 24))
+    fig.subplots_adjust(left=.05, right=.95, top=.94, bottom=.03, hspace=.65, wspace=.15)
+    grid = fig.add_gridspec(7, 2, height_ratios=[1, 1, 1, 1, 1, 2.4, 4]) if show_gt else fig.add_gridspec(5, 2, height_ratios=[1, 1, 1, 2.4, 4])
     for side, name in enumerate(('A', 'B')):
         coverage = metrics[f'mask_coverage_{name.lower()}']
         rows = [
@@ -943,23 +1003,7 @@ def plot_pair_alignment(session, result, show_gt=True):
         ax = fig.add_subplot(grid[5 if show_gt else 3, side])
         heat = ax.imshow(matrix, origin='lower', aspect='auto', cmap='coolwarm',
                          **({'vmin': -1, 'vmax': 1} if side == 0 else {}))
-        for number, region in enumerate(result['match']['regions']):
-            a, b = zip(*region['pairs'])
-            ax.plot(b, a, '.', color=plt.get_cmap('tab10')(number % 10), ms=4)
-            if 'path' in region:
-                previous=None
-                pending_gap=False
-                for step in region['path']:
-                    if step['kind'].startswith('gap'):
-                        pending_gap=True
-                        continue
-                    current=(step['b'],step['a'])
-                    if previous is not None:
-                        color='gray' if pending_gap else 'orange' if step['delta']<=0 else 'blue' if step['kind'].startswith('repeat') else 'green'
-                        ax.plot([previous[0],current[0]],[previous[1],current[1]],
-                                '--' if pending_gap else '-',color=color,lw=1)
-                    previous=current;pending_gap=False
-            else: ax.plot(b,a,'-',lw=1)
+        plot_match_routes(ax, result['match'], max_rejected_paths)
         ax.set(xlabel=f'Line B window indices ({order})', ylabel=f'Line A window indices ({order})',
                title=f'{title}: {matrix.shape[0]}×{matrix.shape[1]}, {result["representation"]}')
         if not result['match']['regions']:
@@ -981,7 +1025,8 @@ def plot_pair_alignment(session, result, show_gt=True):
                              and (not isinstance(v, str) or k.endswith('status')))
     ax.text(.5, 1, spatial_text, transform=ax.transAxes, va='top', family='monospace', fontsize=9)
     if metrics.get('ground_truth_provenance'):
-        ax.text(.5, 0, 'GT provenance: ' + metrics['ground_truth_provenance'],
+        import textwrap
+        ax.text(0, 0, textwrap.fill('GT provenance: ' + metrics['ground_truth_provenance'],150),
                 transform=ax.transAxes, va='bottom', fontsize=8, style='italic')
     scope = 'TRAIN (in-sample)' if session.split == 'train' else session.split.upper()
     fig.suptitle(f'{scope} | {label} | {pair["sample_id"]} | {result["representation"]} | '
@@ -1019,8 +1064,7 @@ def plot_representation_comparison(session, pair):
         result = session.predict_pair(pair, name)
         scores[name] = max((r['score'] for r in result['match']['regions']), default=0.)
         heat = ax.imshow(result['cosine'], origin='lower', aspect='auto', cmap='coolwarm', vmin=-1, vmax=1)
-        for r in result['match']['regions']:
-            a, b = zip(*r['pairs']); ax.plot(b, a, 'k.-', ms=3)
+        plot_match_routes(ax, result['match'])
         ax.set(title=f'{name.upper()} score={scores[name]:.4f}', xlabel='B logical windows', ylabel='A logical windows')
     fig.colorbar(heat, ax=axes, label='Raw cosine'); fig.suptitle(pair['sample_id'])
     return fig, scores

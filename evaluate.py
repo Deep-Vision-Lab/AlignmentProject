@@ -23,11 +23,18 @@ from dtw import cosine_similarity_matrix, alphabet_log_probabilities, letter_evi
 from text_embedding import ARABIC_LETTERS
 from train import build_loaders, load_checkpoint, validate_one_epoch
 
-MATCH_VERSION = 'local-stretch-1'
-MATCH_DEFAULTS = dict(similarity_mode='cosine', decoder='stretch', threshold=.6,
+from alignment_candidates import PATH_DEFAULTS, validate_path_options, decode_candidates
+
+MATCH_VERSION = 'local-path-quality-3'
+MATCH_DEFAULTS = dict(similarity_mode='cosine', decoder='local_repeat_dtw', threshold=.5,
     contrast_margin=.05, score_mode='background', min_windows=3, max_gap=1,
-    gap_open=.2, gap_extend=.05, max_candidates=128, repeat_penalty=.05,
-    max_stretch=3, acceptance_offset=.1, prior_floor=1e-4)
+    gap_open=.2, gap_extend=.05, max_candidates=512, repeat_penalty=.05,
+    max_stretch=3, acceptance_offset=.1, prior_floor=1e-4,
+    alignment_mode=None, max_consecutive_repeats=3,
+    min_distinct_windows_a=3, min_distinct_windows_b=3, min_matched_pairs=4,
+    use_strong_start_anchor=False, start_top_k=3, start_min_reward=None,
+    min_region_score=None, min_mean_reward=None, min_path_density=None,
+    max_repeat_fraction=None, min_secondary_score_ratio=None, **PATH_DEFAULTS)
 
 
 def resolved_match_settings(settings):
@@ -41,6 +48,16 @@ def resolved_match_settings(settings):
         raise ValueError('Cosine threshold must be in [-1,1] and contrast margin nonnegative')
     if result['acceptance_offset']<0:
         raise ValueError('acceptance_offset must be nonnegative')
+    modes = {'affine': 'smith_waterman', 'stretch': 'stretch', 'local_repeat_dtw': 'local_repeat_dtw'}
+    mode = result['alignment_mode'] or modes.get(result['decoder'])
+    if mode not in modes.values():
+        raise ValueError('Unknown alignment mode/decoder')
+    result.update(alignment_mode=mode, decoder={v:k for k,v in modes.items()}[mode])
+    candidate_mode=result['candidate_similarity_mode'] or result['similarity_mode']
+    if candidate_mode not in ('cosine','letter_evidence'):raise ValueError('Unknown candidate similarity mode')
+    result.update(candidate_similarity_mode=candidate_mode,similarity_mode=candidate_mode)
+    # Retired first-cell settings remain parseable for old saved configurations.
+    # They are diagnostic only; they never gate starts, trim or reject a route.
     return result
 
 
@@ -167,39 +184,59 @@ def decode_stretched_regions(rewards, physical_a, physical_b, *, min_windows=3, 
 
 
 def match_features(features_a, features_b, physical_a, physical_b, *, text_encoder=None,
-                   config=None, prior_metadata=None, **settings):
+                   config=None, prior_metadata=None, precomputed_cosine=None,
+                   token_valid_a=None, token_valid_b=None, **settings):
     """SINGLE image-only matcher dispatch, used by CLI, session, population and exports."""
     options = resolved_match_settings(settings)
-    cosine = cosine_similarity_matrix(features_a,features_b).detach().cpu().numpy()
+    # A caller may pass full model tokens; filter validity BEFORE cosine and mapping.
+    features, physical = [features_a, features_b], [physical_a, physical_b]
+    for side, valid in enumerate((token_valid_a, token_valid_b)):
+        if valid is not None:
+            valid = torch.as_tensor(valid, dtype=torch.bool, device=features[side].device)
+            if valid.shape != (len(features[side]),):
+                raise ValueError('token_valid must match feature length')
+            features[side] = features[side][valid]
+            physical[side] = np.asarray(physical[side])[valid.cpu().numpy()]
+        p = np.asarray(physical[side])
+        if p.shape != (len(features[side]),) or (len(p) and not np.issubdtype(p.dtype,np.integer)):
+            raise ValueError('Physical indices must be integer identities matching features')
+        if (p<0).any() or len(set(p.tolist()))!=len(p):
+            raise ValueError('Physical indices must be unique nonnegative valid windows')
+        if len(p)>1 and not ((np.diff(p)>0).all() or (np.diff(p)<0).all()):
+            raise ValueError('Physical indices must preserve reading order')
+        physical[side] = p.astype(int)
+        if features[side].ndim != 2 or len(features[side]) != len(physical[side]):
+            raise ValueError('Feature/physical dimensions must agree')
+        if not torch.isfinite(features[side]).all() or (features[side].norm(dim=1) == 0).any():
+            raise ValueError('Valid features must be finite nonzero vectors; remove padding with token_valid')
+    features_a, features_b = features
+    physical_a, physical_b = physical
+    cosine = (cosine_similarity_matrix(features_a,features_b).detach().cpu().numpy()
+              if precomputed_cosine is None else np.asarray(precomputed_cosine))
+    if cosine.shape != (len(features_a), len(features_b)) or not np.isfinite(cosine).all():
+        raise ValueError('Cosine dimensions must match valid windows')
     extra = {}
-    if options['similarity_mode']=='cosine':
-        if options['score_mode'] not in {'raw','background'}: raise ValueError('Unknown cosine score_mode')
-        baseline=options['threshold']
-        if options['score_mode']=='background' and cosine.size:
-            baseline=np.maximum(baseline,np.median(cosine,axis=1)[:,None]+options['contrast_margin'])
-            baseline=np.maximum(baseline,np.median(cosine,axis=0)[None,:]+options['contrast_margin'])
-        rewards=cosine-baseline
-    elif options['similarity_mode']=='letter_evidence':
-        if text_encoder is None or config is None: raise ValueError('Letter evidence requires checkpoint character vectors/config')
-        prior_metadata = prior_metadata or getattr(text_encoder,'letter_evidence_prior',None)
-        vocabulary = (prior_metadata['vocabulary'] if prior_metadata else
-                      list(dict.fromkeys(config.alphabet_inventory or ARABIC_LETTERS)))
-        if not vocabulary or len(set(vocabulary))!=len(vocabulary): raise ValueError('Invalid fixed vocabulary')
-        with torch.no_grad():
-            alphabet=text_encoder.encode(''.join(vocabulary)).to(features_a.device)
-            logp=[alphabet_log_probabilities(v,alphabet,config.competition_temperature,
-                    config.ctc_blank_logit if config.alignment_objective=='ctc' else None)
-                  for v in (features_a,features_b)]
-            # Do NOT renormalize after removing blank: retain uncertainty/no-emission mass.
-            logp=[v[:,:len(vocabulary)] for v in logp]
-            evidence=letter_evidence_matrix(*logp,prior=prior_metadata['prior'] if prior_metadata else None,
-                acceptance_offset=options['acceptance_offset'],prior_floor=options['prior_floor']).cpu().numpy()
-        rewards=evidence
-        extra=dict(letter_evidence=evidence,log_probabilities=[v.cpu().numpy() for v in logp],
-                   vocabulary=vocabulary, prior_metadata=prior_metadata or dict(source='explicit uniform fallback',
-                   vocabulary=vocabulary, prior=[1/len(vocabulary)]*len(vocabulary)))
-    else: raise ValueError('similarity_mode must be cosine or letter_evidence')
-    if options['decoder']=='affine':
+    baseline=options['threshold']
+    if options['score_mode']=='background' and cosine.size:
+        baseline=np.maximum(baseline,np.median(cosine,axis=1)[:,None]+options['contrast_margin'])
+        baseline=np.maximum(baseline,np.median(cosine,axis=0)[None,:]+options['contrast_margin'])
+    elif options['score_mode'] not in ('raw','background'):raise ValueError('Unknown cosine score mode')
+    rewards=cosine-baseline
+    if options['similarity_mode']=='letter_evidence' or options['verify_with_letter_evidence']:
+        extra=checkpoint_letter_evidence(features_a,features_b,text_encoder,config,prior_metadata,options)
+        if options['similarity_mode']=='letter_evidence':rewards=extra['letter_evidence']
+    if options['verify_with_letter_evidence'] and options['decoder']!='local_repeat_dtw':
+        raise ValueError('Two-stage verification requires local_repeat_dtw')
+    if options['decoder']=='local_repeat_dtw':
+        keys = ('threshold','contrast_margin','score_mode','min_windows','max_gap',
+                'gap_open','gap_extend','max_candidates','repeat_penalty','max_consecutive_repeats',
+                'min_distinct_windows_a','min_distinct_windows_b','min_matched_pairs',
+                'use_strong_start_anchor','start_top_k','start_min_reward','min_region_score',
+                'min_mean_reward','min_path_density','max_repeat_fraction','min_secondary_score_ratio')
+        match=local_repeat_regions(cosine,physical_a,physical_b,rewards=rewards,
+            letter_evidence=extra.get('letter_evidence'),
+            **{k:options[k] for k in (*keys,*PATH_DEFAULTS)})
+    elif options['decoder']=='affine':
         # Legacy implementation accepts a reward via raw mode / zero threshold.
         if options['similarity_mode']=='letter_evidence':
             raise ValueError('Letter evidence requires stretch decoder; affine baseline is cosine-only')
@@ -209,8 +246,29 @@ def match_features(features_a, features_b, physical_a, physical_b, *, text_encod
     elif options['decoder']=='stretch':
         match=decode_stretched_regions(rewards,physical_a,physical_b,**{k:options[k] for k in
             ('min_windows','max_gap','gap_open','gap_extend','repeat_penalty','max_stretch','max_candidates')})
-    else: raise ValueError('decoder must be affine or stretch')
+    else: raise ValueError('Unknown decoder')
     return dict(match, cosine=cosine, settings=options, implementation_version=MATCH_VERSION, **extra)
+
+
+def checkpoint_letter_evidence(features_a,features_b,text_encoder,config,prior_metadata,options):
+    """Fixed checkpoint alphabet, image distributions only; no transcript input."""
+    if text_encoder is None or config is None:
+        raise ValueError('Letter evidence requires checkpoint character vectors/config')
+    prior_metadata=prior_metadata or getattr(text_encoder,'letter_evidence_prior',None)
+    vocabulary=(prior_metadata['vocabulary'] if prior_metadata else
+                list(dict.fromkeys(config.alphabet_inventory or ARABIC_LETTERS)))
+    if not vocabulary or len(set(vocabulary))!=len(vocabulary):raise ValueError('Invalid fixed vocabulary')
+    with torch.no_grad():
+        alphabet=text_encoder.encode(''.join(vocabulary)).to(features_a.device)
+        logp=[alphabet_log_probabilities(v,alphabet,config.competition_temperature,
+            config.ctc_blank_logit if config.alignment_objective=='ctc' else None) for v in (features_a,features_b)]
+        # Preserve blank/uncertainty mass: do not renormalize remaining letters.
+        logp=[v[:,:len(vocabulary)] for v in logp]
+        evidence=letter_evidence_matrix(*logp,prior=prior_metadata['prior'] if prior_metadata else None,
+            acceptance_offset=options['acceptance_offset'],prior_floor=options['prior_floor']).cpu().numpy()
+    return dict(letter_evidence=evidence,log_probabilities=[v.cpu().numpy() for v in logp],
+        vocabulary=vocabulary,prior_metadata=prior_metadata or dict(source='explicit uniform fallback',
+        vocabulary=vocabulary,prior=[1/len(vocabulary)]*len(vocabulary)))
 
 
 def smith_waterman_affine(scores, gap_open=.2, gap_extend=.05):
@@ -316,7 +374,8 @@ def shared_regions(cosine, physical_a, physical_b, threshold=.6, contrast_margin
 
 
 def _local_repeat_path(cosine, rewards, allowed, repeat_penalty, max_consecutive_repeats,
-                       gap_open, gap_extend):
+                       gap_open, gap_extend, start_anchors=None, *,
+                       return_candidates=False, max_candidates=128):
     """Best local path with matched repeat states and separate affine skip states."""
     n, m = rewards.shape
     run = max_consecutive_repeats
@@ -325,6 +384,7 @@ def _local_repeat_path(cosine, rewards, allowed, repeat_penalty, max_consecutive
     scores = np.full((n, m, states), -np.inf, dtype=np.float64)
     previous = np.full((n, m, states), -1, dtype=np.int16)
     best_score, endpoint = 0., None
+    endpoints=[]
     match_states = range(gap_a)
     for i in range(n):
         for j in range(m):
@@ -334,14 +394,14 @@ def _local_repeat_path(cosine, rewards, allowed, repeat_penalty, max_consecutive
             # True gaps have no pair reward and never become matched support.
             if i:
                 candidates = [(scores[i-1, j, state] - gap_open, state)
-                              for state in match_states]
+                              for state in [*match_states, gap_b]]
                 candidates.append((scores[i-1, j, gap_a] - gap_extend, gap_a))
                 value, state = max(candidates, key=lambda item: item[0])
                 if value > 0:
                     scores[i, j, gap_a], previous[i, j, gap_a] = value, state
             if j:
                 candidates = [(scores[i, j-1, state] - gap_open, state)
-                              for state in match_states]
+                              for state in [*match_states, gap_a]]
                 candidates.append((scores[i, j-1, gap_b] - gap_extend, gap_b))
                 value, state = max(candidates, key=lambda item: item[0])
                 if value > 0:
@@ -349,13 +409,16 @@ def _local_repeat_path(cosine, rewards, allowed, repeat_penalty, max_consecutive
             # A matched cell must itself beat the threshold/background baseline.
             if reward <= 0:
                 continue
-            value, state = reward, -1  # local restart
+            # Deprecated start_anchors is ignored: reliability is assessed over
+            # each complete candidate, never used to forbid a local start.
+            value, state = reward, -1
             if i and j:
                 predecessor = int(np.argmax(scores[i-1, j-1]))
                 candidate = float(scores[i-1, j-1, predecessor]) + reward
                 if candidate > value:
                     value, state = candidate, predecessor
-            scores[i, j, diagonal], previous[i, j, diagonal] = value, state
+            if value > 0:
+                scores[i, j, diagonal], previous[i, j, diagonal] = value, state
             # Repeat runs have an increasing incremental penalty. A repeat is
             # admitted only when this pair's own evidence pays that penalty.
             if j:
@@ -388,39 +451,53 @@ def _local_repeat_path(cosine, rewards, allowed, repeat_penalty, max_consecutive
                         scores[i, j, state_index] = candidate
                         previous[i, j, state_index] = predecessor
             for state_index in match_states:
+                if return_candidates and scores[i,j,state_index]>0:
+                    endpoints.append((float(scores[i,j,state_index]),i,j,state_index))
                 if scores[i, j, state_index] > best_score:
                     best_score = float(scores[i, j, state_index])
                     endpoint = (i, j, state_index)
-    if endpoint is None:
-        return [], 0.
-    path = []
-    i, j, state = endpoint
-    while state >= 0:
-        predecessor = int(previous[i, j, state])
-        if state == diagonal:
-            transition = 'diagonal'
-            step = dict(i=i, j=j, transition=transition,
-                        cosine=float(cosine[i, j]), reward=float(rewards[i, j]))
-            i, j = i - 1, j - 1
-        elif state <= run:
-            transition = 'horizontal_repeat'
-            step = dict(i=i, j=j, transition=transition,
-                        cosine=float(cosine[i, j]), reward=float(rewards[i, j]))
-            j -= 1
-        elif state <= 2 * run:
-            transition = 'vertical_repeat'
-            step = dict(i=i, j=j, transition=transition,
-                        cosine=float(cosine[i, j]), reward=float(rewards[i, j]))
-            i -= 1
-        elif state == gap_a:
-            step = dict(i=i, j=None, transition='gap_a', cosine=None, reward=None)
-            i -= 1
-        else:
-            step = dict(i=None, j=j, transition='gap_b', cosine=None, reward=None)
-            j -= 1
-        path.append(step)
-        state = predecessor
-    return path[::-1], best_score
+    def traceback(end):
+        path = []
+        i, j, state = end
+        while state >= 0:
+            predecessor = int(previous[i, j, state])
+            if state == diagonal:
+                transition = 'diagonal'
+                step = dict(i=i, j=j, transition=transition,
+                            cosine=float(cosine[i, j]), reward=float(rewards[i, j]))
+                i, j = i - 1, j - 1
+            elif state <= run:
+                transition = 'horizontal_repeat'
+                step = dict(i=i, j=j, transition=transition,
+                            cosine=float(cosine[i, j]), reward=float(rewards[i, j]))
+                j -= 1
+            elif state <= 2 * run:
+                transition = 'vertical_repeat'
+                step = dict(i=i, j=j, transition=transition,
+                            cosine=float(cosine[i, j]), reward=float(rewards[i, j]))
+                i -= 1
+            elif state == gap_a:
+                step = dict(i=i, j=None, transition='gap_a', cosine=None, reward=None)
+                i -= 1
+            else:
+                step = dict(i=None, j=j, transition='gap_b', cosine=None, reward=None)
+                j -= 1
+            path.append(step)
+            state = predecessor
+        return path[::-1]
+    if not return_candidates:
+        return ([],0.) if endpoint is None else (traceback(endpoint),best_score)
+    raw=[];covered=[];limited=False
+    # Materialize competing maximal tracebacks from the unchanged DP. Exact
+    # contained prefixes are represented by trim variants, not repeated copies.
+    for score,i,j,state in sorted(endpoints,reverse=True):
+        path=traceback((i,j,state))
+        signature=frozenset((s['i'],s['j']) for s in path if s['i'] is not None and s['j'] is not None)
+        if any(signature<=previous for previous in covered):continue
+        if len(raw)>=max_candidates:limited=True;break
+        covered.append(signature)
+        raw.append(dict(path_steps=path,score=score))
+    return raw,best_score,limited
 
 
 def _small_internal_fills(supported, skipped, max_gap):
@@ -432,83 +509,141 @@ def _small_internal_fills(supported, skipped, max_gap):
     return filled
 
 
-def local_repeat_regions(cosine, physical_a, physical_b, threshold=.6,
+def mutual_top_k_anchors(rewards, top_k=3, min_reward=None):
+    """Image-only anchors anywhere in a path: mutual top K with stable ties.
+
+    Ranking includes all valid cells, including currently suppressed cells, so
+    removing a major route cannot promote a weak island into a strong anchor.
+    """
+    r = np.asarray(rewards)
+    if not isinstance(top_k,(int,np.integer)) or top_k < 1:
+        raise ValueError('anchor_top_k must be a positive integer')
+    rows, cols = np.zeros(r.shape, bool), np.zeros(r.shape, bool)
+    if r.size:
+        np.put_along_axis(rows, np.argsort(-r, axis=1, kind='stable')[:, :top_k], True, axis=1)
+        np.put_along_axis(cols, np.argsort(-r, axis=0, kind='stable')[:top_k, :], True, axis=0)
+    return rows & cols & (r > 0) & (True if min_reward is None else r >= min_reward)
+
+
+def local_repeat_regions(cosine, physical_a, physical_b, threshold=.5,
                          contrast_margin=.05, score_mode='background', min_windows=5,
-                         max_gap=1, gap_open=.2, gap_extend=.05, max_candidates=128,
+                         max_gap=1, gap_open=.2, gap_extend=.05, max_candidates=512,
                          repeat_penalty=.05, max_consecutive_repeats=3,
                          min_distinct_windows_a=3, min_distinct_windows_b=3,
-                         min_matched_pairs=4):
-    """Greedy noncrossing local many-to-many alignment on image cosine scores.
+                         min_matched_pairs=4, use_strong_start_anchor=False,
+                         start_top_k=3, start_min_reward=None, min_region_score=None,
+                         min_mean_reward=None, min_path_density=None,
+                         max_repeat_fraction=None, min_secondary_score_ratio=None,
+                         rewards=None, letter_evidence=None, **path_settings):
+    """Generate first, then judge whole physical routes; no first-cell gate.
 
-    Smith–Waterman remains in shared_regions. Repeats are matched cells, while
-    affine gap states skip a window and are excluded from mask support.
+    Legacy min_windows/distinct settings constrain the normal class. The optional
+    short class has independently stronger confidence requirements. First-start
+    settings are deprecated and have no prediction effect. All inputs are image
+    scores and valid physical identities; GT has no path into this function.
     """
-    cosine = np.asarray(cosine, dtype=np.float64)
-    if cosine.ndim != 2 or not np.isfinite(cosine).all() or min(cosine.shape, default=0) == 0:
-        raise ValueError('Cosines must be a nonempty finite 2D matrix')
-    if score_mode not in {'background', 'raw'} or max_gap < 0 or max_candidates < 1:
-        raise ValueError('Invalid scoring/support settings')
-    if not (-1 <= threshold <= 1 and contrast_margin >= 0 and gap_open >= gap_extend >= 0):
-        raise ValueError('Invalid threshold, contrast or gap penalties')
-    if (repeat_penalty < 0 or max_consecutive_repeats < 1 or
-            min_distinct_windows_a < 1 or min_distinct_windows_b < 1 or min_matched_pairs < 1):
-        raise ValueError('Invalid repeat penalty, run limit or minimum support')
-    physical = [np.asarray(p, dtype=int) for p in (physical_a, physical_b)]
-    for count, indices in zip(cosine.shape, physical):
-        if (indices.shape != (count,) or len(set(indices.tolist())) != count or
-                (indices < 0).any() or
-                (count > 1 and not ((np.diff(indices) > 0).all() or (np.diff(indices) < 0).all()))):
-            raise ValueError('Physical identities must be unique and preserve sequence order')
-    baseline = threshold
-    if score_mode == 'background':
-        baseline = np.maximum(threshold, np.median(cosine, axis=1)[:, None] + contrast_margin)
-        baseline = np.maximum(baseline, np.median(cosine, axis=0)[None, :] + contrast_margin)
-    rewards = cosine - baseline
-    allowed = np.ones(cosine.shape, dtype=bool)
-    rows, cols = np.indices(cosine.shape)
-    regions, rejected = [], []
-    for _ in range(max_candidates):
-        path, score = _local_repeat_path(cosine, rewards, allowed, repeat_penalty,
-                                         max_consecutive_repeats, gap_open, gap_extend)
-        if not path:
-            break
-        matched = [step for step in path if step['i'] is not None and step['j'] is not None]
-        pairs = [(step['i'], step['j']) for step in matched]
-        ids = [sorted({int(physical[side][pair[side]]) for pair in pairs}) for side in (0, 1)]
-        counts = [len(side) for side in ids]
-        if (counts[0] < min_distinct_windows_a or counts[1] < min_distinct_windows_b or
-                len(pairs) < min_matched_pairs):
-            rejected.append(dict(reason='insufficient_repeat_support',
-                                 support=counts, matched_pairs=len(pairs)))
-            for i, j in pairs:
-                allowed[i, j] = False
-            continue
-        spans = [(min(pair[side] for pair in pairs), max(pair[side] for pair in pairs))
-                 for side in (0, 1)]
-        skipped = [set(), set()]
+    unknown=set(path_settings)-set(PATH_DEFAULTS)
+    if unknown:raise ValueError(f'Unknown path settings: {sorted(unknown)}')
+    options=dict(PATH_DEFAULTS,**path_settings)
+    options.update(threshold=threshold,contrast_margin=contrast_margin,score_mode=score_mode,
+        min_windows=min_windows,max_gap=max_gap,gap_open=gap_open,gap_extend=gap_extend,
+        max_candidates=max_candidates,repeat_penalty=repeat_penalty,
+        max_consecutive_repeats=max_consecutive_repeats,min_distinct_windows_a=min_distinct_windows_a,
+        min_distinct_windows_b=min_distinct_windows_b,min_matched_pairs=min_matched_pairs,
+        min_region_score=min_region_score,min_mean_reward=min_mean_reward,min_path_density=min_path_density,
+        max_repeat_fraction=max_repeat_fraction,min_secondary_score_ratio=min_secondary_score_ratio)
+    validate_path_options(options)
+    cosine=np.asarray(cosine,dtype=float)
+    if cosine.ndim!=2 or not np.isfinite(cosine).all():raise ValueError('Cosines must be a finite 2D matrix')
+    physical=[]
+    for count,p in zip(cosine.shape,(physical_a,physical_b)):
+        p=np.asarray(p)
+        if p.shape!=(count,) or (len(p) and not np.issubdtype(p.dtype,np.integer)) or (p<0).any() or len(set(p.tolist()))!=count:
+            raise ValueError('Physical identities must be unique nonnegative valid integer windows')
+        if count>1 and not ((np.diff(p)>0).all() or (np.diff(p)<0).all()):raise ValueError('Physical identities must preserve sequence order')
+        physical.append(p.astype(int))
+    if rewards is None:
+        baseline=threshold
+        if score_mode=='background' and cosine.size:
+            baseline=np.maximum(threshold,np.median(cosine,axis=1)[:,None]+contrast_margin)
+            baseline=np.maximum(baseline,np.median(cosine,axis=0)[None,:]+contrast_margin)
+        rewards=cosine-baseline
+    rewards=np.asarray(rewards,dtype=float)
+    if rewards.shape!=cosine.shape or not np.isfinite(rewards).all():raise ValueError('Rewards must match finite cosine dimensions')
+    if letter_evidence is not None:
+        letter_evidence=np.asarray(letter_evidence,float)
+        if letter_evidence.shape!=cosine.shape or not np.isfinite(letter_evidence).all():raise ValueError('Letter evidence must match valid cosine dimensions')
+    elif options['verify_with_letter_evidence']:
+        raise ValueError('Verification requested without image-only letter evidence')
+    anchors=mutual_top_k_anchors(cosine,options['anchor_top_k']) & (rewards>0)
+    raw,best,limited=_local_repeat_path(cosine,rewards,np.ones(cosine.shape,bool),repeat_penalty,
+        max_consecutive_repeats,gap_open,gap_extend,return_candidates=True,max_candidates=max_candidates)
+    decoded=decode_candidates(raw,cosine,rewards,physical,anchors,options,letter_evidence)
+    return dict(decoded,maximum_local_score=best,candidate_limit_reached=limited,
+                raw_candidate_count=len(raw),deprecated_settings=['use_strong_start_anchor','start_top_k','start_min_reward'])
+
+
+def plot_match_routes(ax, match, max_rejected_paths=5):
+    """Overlay routes without changing either heatmap matrix.
+
+    Main = highest scoring accepted region (thick line); secondary = thinner.
+    Starts are triangles, ends squares, whole-path mutual anchors gold circles,
+    repeats purple edges, true physical gaps dashed gray edges, rejects dotted.
+    """
+    import matplotlib.pyplot as plt
+    anchors=match.get('strong_start_anchors')
+    if anchors is not None:
+        a,b=np.nonzero(anchors)
+        ax.scatter(b,a,s=18,facecolors='none',edgecolors='gold',linewidths=.6,label='Mutual anchors')
+    rejected=sorted((c for c in match.get('rejected',[]) if c.get('pairs')),
+                    key=lambda c:c.get('score',0),reverse=True)[:max_rejected_paths]
+    for number,c in enumerate(rejected):
+        a,b=zip(*c['pairs'])
+        ax.plot(b,a,':',color='gray',alpha=.5,lw=1)
+        ax.annotate(f'R{number}',(b[0],a[0]),fontsize=7,color='gray')
+    main=max(match['regions'],key=lambda c:c['score'],default=None)
+    for number,region in enumerate(match['regions']):
+        color=plt.get_cmap('tab10')(number%10)
+        width=2.5 if region is main else 1.2
+        pairs=region['pairs']; a,b=zip(*pairs)
+        ax.plot(b,a,'.',color=color,ms=4)
+        transitions=region.get('transition_types',[])
+        path=region.get('path_steps',[])
+        gap_between=set()
+        prev=None; pending=False
         for step in path:
-            if step['transition'] == 'gap_a':
-                skipped[0].add(int(physical[0][step['i']]))
-            elif step['transition'] == 'gap_b':
-                skipped[1].add(int(physical[1][step['j']]))
-        filled = [_small_internal_fills(ids[side], skipped[side], max_gap) for side in (0, 1)]
-        repeats_h = sum(step['transition'] == 'horizontal_repeat' for step in path)
-        repeats_v = sum(step['transition'] == 'vertical_repeat' for step in path)
-        gaps = sum(step['transition'] in {'gap_a', 'gap_b'} for step in path)
-        regions.append(dict(pairs=pairs, path_steps=path,
-                            transition_types=[step['transition'] for step in matched],
-                            logical_ranges=spans, supported_physical=ids,
-                            filled_physical=filled, support=counts, score=score,
-                            matched_pairs=len(pairs), horizontal_repeats=repeats_h,
-                            vertical_repeats=repeats_v, true_gaps=gaps))
-        (a, b), (c, d) = spans
-        allowed &= ((rows < a) & (cols < c)) | ((rows > b) & (cols > d))
-    else:
-        rejected.append(dict(reason='candidate_limit_reached'))
-    if not regions and not rejected:
-        rejected.append(dict(reason='no_positive_local_alignment'))
-    return dict(regions=sorted(regions, key=lambda r: r['logical_ranges'][0][0]),
-                rejected=rejected, rewards=rewards)
+            if step['transition'].startswith('gap'): pending=True; continue
+            current=(step['i'],step['j'])
+            if prev is not None and pending: gap_between.add((prev,current))
+            prev=current;pending=False
+        for k,(left,right) in enumerate(zip(pairs,pairs[1:]),1):
+            physical_pairs=region.get('physical_pairs',pairs)
+            physical_left,physical_right=physical_pairs[k-1:k+1]
+            gap=(left,right) in gap_between or max(abs(physical_right[0]-physical_left[0]),
+                                                abs(physical_right[1]-physical_left[1]))>1
+            repeat=(k<len(transitions) and 'repeat' in transitions[k]) or left[0]==right[0] or left[1]==right[1]
+            ax.plot([left[1],right[1]],[left[0],right[0]],'--' if gap else '-',
+                    color='gray' if gap else 'purple' if repeat else color,lw=width)
+        for key,marker,edge in (('extension_pairs','+','limegreen'),('trimmed_pairs','x','red')):
+            cells=region.get(key,[])
+            if cells:
+                ta,tb=zip(*cells);ax.scatter(tb,ta,marker=marker,s=45,color=edge,zorder=6)
+        ax.scatter([b[0]],[a[0]],marker='^',s=65,color=color,zorder=5)
+        ax.scatter([b[-1]],[a[-1]],marker='s',s=40,color=color,zorder=5)
+        ax.annotate(f'A{number} START'+(' (main)' if region is main else ''),(b[0],a[0]),
+                    xytext=(4,5),textcoords='offset points',fontsize=8,color=color)
+        ax.annotate(f'A{number} END',(b[-1],a[-1]),xytext=(4,-10),
+                    textcoords='offset points',fontsize=8,color=color)
+    # A compact legend explains edge/endpoint symbols even for empty predictions.
+    from matplotlib.lines import Line2D
+    handles=[Line2D([],[],color='purple',label='Repeat'),Line2D([],[],color='gray',ls='--',label='True gap'),
+             Line2D([],[],color='gray',ls=':',label='Rejected'),
+             Line2D([],[],color='gold',marker='o',mfc='none',ls='',label='Mutual anchors'),
+             Line2D([],[],color='black',marker='^',ls='',label='START'),
+             Line2D([],[],color='black',marker='s',ls='',label='END'),
+             Line2D([],[],color='limegreen',marker='+',ls='',label='Extension'),
+             Line2D([],[],color='red',marker='x',ls='',label='Trimmed')]
+    ax.legend(handles=handles,fontsize=6,loc='upper left',ncol=3)
 
 
 def source_interval(physical,geometry,window_width,stride):
@@ -553,7 +688,7 @@ def evaluate_loss(checkpoint,dataset,split='test',device='cpu',max_batches=0):
 
 
 def evaluate_pair(checkpoint,paths,output,device='cpu',representation='fused',crop_override=None,
-                  ground_truth=(None,None),selection=None,**settings):
+                  ground_truth=(None,None),selection=None,line_bboxes=(None,None),**settings):
     model,_text,config,saved=load_checkpoint(checkpoint,device)
     if representation not in {'local','context','fused'}: raise ValueError('Unknown representation')
     output=Path(output)
@@ -562,7 +697,7 @@ def evaluate_pair(checkpoint,paths,output,device='cpu',representation='fused',cr
     for side,path in enumerate(paths):
         # No transcript or alignment annotations enter this prediction path.
         image,tensor,geo=prepare_image(path,(config.image_height,config.image_width),config.grayscale,
-                                       crop_override or config.crop,binarize=config.binarize)
+                                       crop_override or config.crop,bbox=line_bboxes[side],binarize=config.binarize)
         with Image.open(path) as source: original=source.convert('RGB')
         originals.append(original)
         original.save(output/f'line_{"ab"[side]}_original.png')
@@ -592,8 +727,7 @@ def evaluate_pair(checkpoint,paths,output,device='cpu',representation='fused',cr
         fig,ax=plt.subplots(figsize=(9,7))
         heat=ax.imshow(matrix,origin='lower',aspect='auto',cmap='coolwarm',
                        **dict(vmin=-1,vmax=1) if name=='cosine' else {})
-        for region in match['regions']:
-            a,b=zip(*region['pairs']);ax.plot(b,a,'k.',markersize=3)
+        plot_match_routes(ax,match)
         order='RTL' if config.rtl else 'LTR'
         ax.set(xlabel=f'Line B logical windows ({order})',ylabel=f'Line A logical windows ({order})',
                title='Raw cosine similarity' if name=='cosine' else 'Alignment rewards (not cosine/probability)')
@@ -645,7 +779,8 @@ def main(argv=None):
     parser.add_argument('--representation',choices=['fused','local','context'],default='fused')
     parser.add_argument('--crop-override',choices=['none'],help='Explicit full-source preprocessing ablation')
     parser.add_argument('--gt-a');parser.add_argument('--gt-b')
-    parser.add_argument('--threshold',type=float,default=.6)
+    parser.add_argument('--bbox-a',nargs=4,type=float);parser.add_argument('--bbox-b',nargs=4,type=float)
+    parser.add_argument('--threshold',type=float,default=MATCH_DEFAULTS['threshold'])
     parser.add_argument('--score-mode',choices=['background','raw'],default='background')
     parser.add_argument('--contrast-margin',type=float,default=.05)
     parser.add_argument('--min-windows',type=int,default=3)
@@ -655,12 +790,27 @@ def main(argv=None):
     for key in ('similarity_mode','decoder','repeat_penalty','max_stretch','acceptance_offset','prior_floor','max_candidates'):
         value=MATCH_DEFAULTS[key]
         parser.add_argument('--'+key.replace('_','-'),type=type(value),default=value)
+    for key in ('alignment_mode','max_consecutive_repeats','min_distinct_windows_a',
+                'min_distinct_windows_b','min_matched_pairs','start_top_k','start_min_reward',
+                'min_region_score','min_mean_reward','min_path_density','max_repeat_fraction',
+                'min_secondary_score_ratio'):
+        value=MATCH_DEFAULTS[key]
+        kind=str if key=='alignment_mode' else int if isinstance(value,int) else float
+        parser.add_argument('--'+key.replace('_','-'),type=kind,default=value)
+    parser.add_argument('--use-strong-start-anchor',action=argparse.BooleanOptionalAction,default=False)
+    for key,value in PATH_DEFAULTS.items():
+        flag='--'+key.replace('_','-')
+        if isinstance(value,bool):parser.add_argument(flag,action=argparse.BooleanOptionalAction,default=value)
+        else:
+            kind=str if key=='candidate_similarity_mode' else int if ('normal_min_' in key or isinstance(value,int)) else float
+            parser.add_argument(flag,type=kind,default=value)
     args=parser.parse_args(argv)
     if args.mode=='loss':
         if not args.dataset: parser.error('loss mode requires --dataset')
         report=evaluate_loss(args.checkpoint,args.dataset,args.split,args.device,args.max_batches)
         print(json.dumps(report,indent=2));return report
     selection=None
+    line_bboxes=(args.bbox_a,args.bbox_b)
     if args.record_indices is not None:
         if not args.dataset or args.image_a or args.image_b: parser.error('Use saved record indices OR explicit images')
         _,_,config,saved=load_checkpoint(args.checkpoint,args.device)
@@ -668,6 +818,8 @@ def main(argv=None):
         if any(i<0 or i>=len(view) for i in args.record_indices): parser.error('Record index outside saved split')
         records=[view.records[i] for i in args.record_indices]
         paths=[r['sides'][0]['image'] for r in records]
+        line_bboxes=tuple(explicit if explicit is not None else record['sides'][0].get('bbox')
+                          for explicit,record in zip(line_bboxes,records))
         selection=dict(split=args.split,sample_ids=[r['sample_id'] for r in records],
                        split_manifest_sha256=saved['split_manifest_sha256'])
     else:
@@ -676,7 +828,7 @@ def main(argv=None):
     settings={k:getattr(args,k) for k in MATCH_DEFAULTS}
     output=args.output or str(Path('Results/simple_alignment')/uuid.uuid4().hex[:12])
     report=evaluate_pair(args.checkpoint,paths,output,args.device,args.representation,args.crop_override,
-                         (args.gt_a,args.gt_b),selection,**settings)
+                         (args.gt_a,args.gt_b),selection,line_bboxes=line_bboxes,**settings)
     print(f'Saved {len(report["regions"])} shared regions to {output}')
     return report
 
