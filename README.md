@@ -80,6 +80,12 @@ image/text **associations**; paired mode keeps both sides. Native own-side
 transcripts are authoritative; generic explicit filenames need not share stems.
 Copied-page annotations are retained and grouped together using source-page hashes.
 For paired real data, connected page components keep every related page in one split.
+`DataSet/ArabicData` is also `real`: it reads `BookA/lines.jsonl` and
+`BookB/lines.jsonl` as independent lines. Their source-pair/page links stay in
+one split; by default, each split selects equal numbers of A and B lines without
+replacement (`balance_books=False` disables this in `create_dataloaders`).
+The exported line images are used whole; subword bounding-box annotations are
+not applied as crops. A missing text file may use its manifest `raw_text`.
 Bridge V3 uses `dataset_manifest.jsonl` or `anchor_index.jsonl`; each item preserves
 its real/positive-synthetic images, transcripts, optional positive mask, and
 `anchor_id`. Negative bridge rows are outside this positive relationship view.
@@ -103,11 +109,22 @@ Run from the repository root in the activated PyTorch environment:
 ```bash
 python train.py --dataset DataSet/ArabicDataset --run-name experiment1
 
+python train.py --dataset DataSet/ArabicData --dataset-type real \
+  --run-name arabic_data_balanced
+
 torchrun --standalone --nproc_per_node=2 train.py \
   --dataset DataSet/ArabicDataset --run-name experiment2
 
 python train.py --dataset DataSet/Synthetic63 --dataset-type synthetic \
   --run-name synthetic_test
+```
+
+For the offline SLURM wrapper, keep the existing `real` default or select the
+new layout with:
+
+```bash
+DATASET_PATH="$PWD/DataSet/ArabicData" RUN_NAME=arabic_data_balanced \
+  bash scripts/train/train.sh real
 ```
 
 Pretrained ResNet18 loads **cached weights only**, from `Pretrained/torch/checkpoints`

@@ -29,7 +29,13 @@ def _seed_worker(_worker):
 
 def create_dataloaders(root, dataset_type='auto', train_ratio=.8, val_ratio=.1,
                        test_ratio=.1, split_mode='group', seed=42, batch_size=32,
-                       num_workers=4, augment=True, *, split_ids=None, **dataset_options):
+                       num_workers=4, augment=True, *, split_ids=None, balance_books=True,
+                       **dataset_options):
+    """Build group-safe splits; ArabicData takes equal A/B lines in each split.
+
+    Book balancing samples without replacement after splitting, so a line never
+    crosses splits and a saved checkpoint can replay the exact selected IDs.
+    """
     ratios = (train_ratio, val_ratio, test_ratio)
     if any(r < 0 or not math.isfinite(r) for r in ratios) or not math.isclose(sum(ratios), 1., abs_tol=1e-9):
         raise ValueError('Split ratios must be nonnegative and sum to 1')
@@ -43,7 +49,9 @@ def create_dataloaders(root, dataset_type='auto', train_ratio=.8, val_ratio=.1,
         if len(by_id) != len(dataset):
             raise ValueError('Duplicate sample IDs')
         flat = [i for name in names for i in split_ids[name]]
-        if len(flat) != len(set(flat)) or set(flat) != set(by_id):
+        selected = set(flat)
+        if (len(flat) != len(selected) or not selected <= set(by_id)
+                or (selected != set(by_id) and not (dataset.source_layout == 'book_lines' and balance_books))):
             raise ValueError('Saved split IDs disagree with dataset population')
         records = {name: [by_id[i] for i in split_ids[name]] for name in names}
     elif split_mode == 'predefined':
@@ -60,6 +68,16 @@ def create_dataloaders(root, dataset_type='auto', train_ratio=.8, val_ratio=.1,
         assigned = {g: name for name, gs in zip(names, (groups[:first], groups[first:second], groups[second:])) for g in gs}
         for r in dataset.records:
             records[assigned[r['group_id']]].append(r)
+    if dataset.source_layout == 'book_lines' and balance_books and split_ids is None:
+        # Balance each split separately, not only the overall population. This
+        # avoids a train/validation/test view dominated by either book.
+        for index, name in enumerate(names):
+            a = [r for r in records[name] if r['book_id'] == 'A']
+            b = [r for r in records[name] if r['book_id'] == 'B']
+            take = min(len(a), len(b))
+            rng = random.Random(seed + 1009 * index)
+            selected = {r['sample_id'] for side in (a, b) for r in rng.sample(side, take)}
+            records[name] = [r for r in records[name] if r['sample_id'] in selected]
     group_sets = [{r['group_id'] for r in records[name]} for name in names]
     if any(group_sets[i] & group_sets[j] for i in range(3) for j in range(i + 1, 3)):
         raise ValueError('Data contract failure: group leakage across saved/predefined splits')

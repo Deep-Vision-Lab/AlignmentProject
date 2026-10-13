@@ -20,7 +20,7 @@ import numpy as np
 import torch
 from PIL import Image, ImageEnhance, ImageFilter
 from torch.utils.data import Dataset
-from text_embedding import ARABIC_LETTERS, clean_letters
+from text_embedding import ARABIC_LETTERS, clean_letters, read_side_text
 from parameters import negatives_enabled
 
 
@@ -388,15 +388,21 @@ class AlignmentDataset(Dataset):
             self.root = self.root.parent
         if not manifest.exists() and (self.root / 'anchor_index.jsonl').exists():
             manifest = self.root / 'anchor_index.jsonl'
+        book_manifests = {book: self.root / f'Book{book}' / 'lines.jsonl' for book in ('A', 'B')}
+        self.source_layout = 'book_lines' if all(path.is_file() for path in book_manifests.values()) else None
         rows = []
         if manifest.exists():
             rows = [json.loads(s) for s in manifest.read_text(encoding='utf-8').splitlines() if s.strip()]
         if dataset_type == 'auto':
             dataset_type = ('real_synthetic' if rows and ('anchor_id' in rows[0] or rows[0].get('bridge'))
-                            else 'real' if rows else 'synthetic')
+                            else 'real' if rows or self.source_layout else 'synthetic')
         if dataset_type not in {'synthetic', 'real', 'real_synthetic'}:
             raise ValueError(f'Unknown dataset_type {dataset_type}')
         self.dataset_type = dataset_type
+        if self.source_layout and dataset_type != 'real':
+            raise ValueError('BookA/BookB line manifests require dataset_type=real')
+        if self.source_layout and paired:
+            raise ValueError('ArabicData contains independent book lines, not paired line records')
         self.records = []
         page_hashes = {}
 
@@ -437,7 +443,29 @@ class AlignmentDataset(Dataset):
                         equivalent_transcripts=side.get('equivalent_transcripts', []),
                         group_id=group, bbox=side.get('bbox'))
 
-        if dataset_type == 'synthetic':
+        if self.source_layout:
+            # ArabicData exports already-cropped physical lines. BoundingBoxes
+            # contain subword annotations (some unverified), not a safe line crop.
+            # Keep each whole exported image and the exact matching text file.
+            for book, book_manifest in book_manifests.items():
+                for row in (json.loads(s) for s in book_manifest.read_text(encoding='utf-8').splitlines() if s.strip()):
+                    if row.get('side') != book:
+                        raise ValueError(f'{book_manifest}: expected side {book}, got {row.get("side")}')
+                    line_id = str(row['line_id'])
+                    page = f'book:{book}:{row["writer_id"]}:{row["page_id"]}'
+                    try:
+                        text_path = resolve(row['text_path'])
+                    except FileNotFoundError:
+                        if not row.get('raw_text'):
+                            raise
+                        text_path = None
+                    side = dict(image=resolve(row['image_path']), text=text_path,
+                                raw_text=row.get('raw_text'), mask=None,
+                                equivalent_transcripts=[], group_id=page, bbox=None)
+                    self.records.append(dict(sides=[side], sample_id=f'Book{book}:{line_id}',
+                                             label=None, split=None, anchor_id='', book_id=book,
+                                             source_pairs=[str(o['pair_id']) for o in row.get('source_occurrences', [])]))
+        elif dataset_type == 'synthetic':
             for path in sorted((self.root / 'images').glob('img1_*.png')):
                 idx = path.stem.split('_', 1)[1]
                 sides = [side_record({'image': f'images/img{n}_{idx}.png',
@@ -469,7 +497,11 @@ class AlignmentDataset(Dataset):
             key = record['sample_id'] if len(record['sides']) == 2 else (first['image'], first['text'])
             if key in unique:
                 previous = unique[key]
-                if (Path(previous['sides'][0]['text']).read_bytes() != Path(first['text']).read_bytes()
+                previous_text = previous['sides'][0]
+                old_value = (Path(previous_text['text']).read_bytes() if previous_text['text']
+                             else previous_text['raw_text'].encode('utf-8'))
+                new_value = Path(first['text']).read_bytes() if first['text'] else first['raw_text'].encode('utf-8')
+                if (old_value != new_value
                         or previous['split'] != record['split']):
                     raise ValueError(f'Conflicting transcript/split for {key}')
                 continue
@@ -487,6 +519,10 @@ class AlignmentDataset(Dataset):
             groups = [s['group_id'] for s in record['sides']]
             for group in groups[1:]:
                 parent[find(group)] = find(groups[0])
+            # One exported page can occur in several source pairs. Linking all
+            # occurrences keeps both books and repeated pages in one split.
+            for pair_id in record.get('source_pairs', []):
+                parent[find('bookpair:' + pair_id)] = find(groups[0])
         for record in self.records:
             record['group_id'] = find(record['sides'][0]['group_id'])
         if split is not None:
@@ -520,7 +556,7 @@ class AlignmentDataset(Dataset):
             _, tensor, geometry = prepare_image(side['image'], self.image_size, self.grayscale,
                                                 self.crop, side['bbox'], self.augment, self.binarize)
             images.append(tensor)
-            texts.append(Path(side['text']).read_text(encoding='utf-8-sig').strip())
+            texts.append(read_side_text(side))
             geometries.append(geometry)
             mask = None
             if side['mask']:
@@ -534,7 +570,7 @@ class AlignmentDataset(Dataset):
         result = dict(image=images[0], text=texts[0], image2=images[1] if len(images) == 2 else None,
                     text2=texts[1] if len(texts) == 2 else None, mask=masks[-1],
                     sample_id=record['sample_id'], group_id=record['group_id'], label=record['label'],
-                    anchor_id=record['anchor_id'], geometry=geometries,
+                    anchor_id=record['anchor_id'], book_id=record.get('book_id'), geometry=geometries,
                     image_paths=[s['image'] for s in record['sides']])
         c = self.negative_config
         if c is not None and negatives_enabled(c):

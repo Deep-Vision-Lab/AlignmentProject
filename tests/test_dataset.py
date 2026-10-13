@@ -37,6 +37,30 @@ def make_manifest(root, bridge=False, anchor_index=False):
     return root
 
 
+def make_book_lines(root, pages=10):
+    """Small ArabicData layout with linked A/B pages and an uneven book size."""
+    for book, lines_per_page in (('A', 3), ('B', 2)):
+        side = root / f'Book{book}'
+        (side / 'images').mkdir(parents=True)
+        (side / 'texts').mkdir()
+        (side / 'BoundingBoxes').mkdir()
+        rows = []
+        for page in range(pages):
+            for line in range(lines_per_page):
+                line_id = f'{book}_{page:02d}_{line:02d}'
+                image = f'Book{book}/images/{line_id}.png'
+                text = f'Book{book}/texts/{line_id}.txt'
+                Image.new('L', (80, 32), 180).save(root / image)
+                if not (book == 'B' and page == 0 and line == 0):
+                    (root / text).write_text('سلام', encoding='utf-8')
+                rows.append(dict(side=book, writer_id=f'writer-{book}', page_id=f'page-{page}',
+                                 line_id=line_id, image_path=image, text_path=text, raw_text='سلام',
+                                 bounding_boxes_path=f'Book{book}/BoundingBoxes/{line_id}.json',
+                                 source_occurrences=[dict(pair_id=f'pair-{page}')]))
+        (side / 'lines.jsonl').write_text('\n'.join(json.dumps(row) for row in rows), encoding='utf-8')
+    return root
+
+
 def test_synthetic(tmp_path):
     root = make_synthetic(tmp_path / 'synthetic')
     ds = AlignmentDataset(root)
@@ -45,6 +69,23 @@ def test_synthetic(tmp_path):
     assert ds[0]['image2'] is None
     pair = AlignmentDataset(root, paired=True)
     assert len(pair) == 10 and pair[0]['image2'].shape == (1, 128, 1024)
+
+
+def test_arabic_data_book_lines(tmp_path):
+    root = make_book_lines(tmp_path / 'ArabicData')
+    ds = AlignmentDataset(root)
+    assert ds.dataset_type == 'real' and ds.source_layout == 'book_lines'
+    assert len(ds) == 50
+    assert {r['book_id'] for r in ds.records} == {'A', 'B'}
+    assert len({r['group_id'] for r in ds.records}) == 10
+    b = next(i for i, r in enumerate(ds.records) if r['sample_id'] == 'BookB:B_00_00')
+    sample = ds[b]
+    assert sample['text'] == 'سلام'  # Manifest fallback for the absent text file.
+    assert sample['book_id'] == 'B'
+    assert sample['image'].shape == (1, 128, 1024)
+    assert sample['geometry'][0]['crop'] == [0, 0, 80, 32]
+    with pytest.raises(ValueError, match='independent book lines'):
+        AlignmentDataset(root, paired=True)
 
 
 @pytest.mark.parametrize('anchor_index', [False, True])

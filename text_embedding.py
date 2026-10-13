@@ -5,6 +5,7 @@ encoder. Fixed LayerNorm followed by L2 reproduces the directions used by DTW.
 Space is index 0, padding index 1; neither is an unknown-character token.
 """
 import unicodedata
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -22,16 +23,26 @@ def clean_letters(text):
                     ((0x600,0x6ff),(0x750,0x77f),(0x8a0,0x8ff),(0xfb50,0xfdff),(0xfe70,0xfeff)))]
 
 
+def read_side_text(side):
+    """Read a line transcript, including an ArabicData manifest fallback."""
+    if side.get('text'):
+        return Path(side['text']).read_text(encoding='utf-8-sig').strip()
+    if side.get('raw_text') is not None:
+        return str(side['raw_text']).strip()
+    raise ValueError(f'Line has neither text file nor raw_text: {side.get("image")}')
+
+
 def fit_letter_prior(records, inventory=''):
     """Laplace-smoothed counts from TRAIN records only; no evaluation transcript lookup."""
     from collections import Counter
-    from pathlib import Path
     counts, seen = Counter(), set()
     for record in records:
         for side in record['sides']:
-            key = str(side['text'])
+            # A manifest-supplied transcript belongs to its own physical line,
+            # just as each ordinary text file does. Never try to open "None".
+            key = side['text'] if side.get('text') else ('manifest', side['image'])
             if key not in seen:
-                counts.update(clean_letters(Path(key).read_text(encoding='utf-8')))
+                counts.update(clean_letters(read_side_text(side)))
                 seen.add(key)
     vocabulary = list(dict.fromkeys(inventory or ARABIC_LETTERS + ''.join(sorted(counts))))
     total = sum(counts[c] + 1 for c in vocabulary)

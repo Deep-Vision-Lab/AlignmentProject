@@ -5,7 +5,7 @@ set -euo pipefail
 TYPE="${1:-}"
 case "$TYPE" in
     real)
-        DATASET="$PWD/DataSet/ArabicDataset"
+        DATASET="${DATASET_PATH:-$PWD/DataSet/ArabicDataset}"
         DATASET_TYPE="real"
         ;;
 
@@ -17,6 +17,7 @@ case "$TYPE" in
     *)
         echo "Usage:"
         echo "  RUN_NAME=name FUSION_MODE=sum USE_GATED_FUSION=1 bash scripts/train/train.sh real [train.py flags]"
+        echo "  DATASET_PATH=DataSet/ArabicData bash scripts/train/train.sh real [train.py flags]"
         echo "  bash scripts/train/train.sh synthetic [train.py flags]"
         exit 1
         ;;

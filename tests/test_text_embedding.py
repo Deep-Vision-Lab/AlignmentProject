@@ -1,6 +1,6 @@
 import torch
 
-from text_embedding import OrthogonalCharEmbedding, clean_letters
+from text_embedding import OrthogonalCharEmbedding, clean_letters, fit_letter_prior, read_side_text
 
 
 def test_frozen_deterministic_codebook():
@@ -25,3 +25,16 @@ def test_batch_shape_space_padding_and_cleaning():
     assert encoder.encode('').shape == (0,128)
     assert encoder.encode_batch([])[0].shape == (0,0,128)
     assert ''.join(clean_letters(' سَـلام 123! ﻻ')) == 'سلاملا'
+
+
+def test_prior_reads_arabic_data_manifest_text_fallback(tmp_path):
+    text = tmp_path / 'line.txt'
+    text.write_text('سلام', encoding='utf-8')
+    file_side = dict(image=str(tmp_path / 'a.png'), text=str(text))
+    inline_side = dict(image=str(tmp_path / 'b.png'), text=None, raw_text='باب')
+    records = [dict(sides=[file_side]), dict(sides=[inline_side])]
+    assert read_side_text(inline_side) == 'باب'
+    prior = fit_letter_prior(records)
+    assert prior['transcript_files'] == 2
+    assert prior['character_count'] == len(clean_letters('سلامباب'))
+    assert abs(sum(prior['prior']) - 1) < 1e-6

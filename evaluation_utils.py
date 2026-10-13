@@ -22,6 +22,7 @@ import torch
 from tqdm.auto import tqdm
 
 from dataset import AlignmentDataset, file_hash, prepare_image
+from text_embedding import read_side_text
 from dtw import cosine_similarity_matrix, hard_dtw_path, letter_cost_matrix
 from evaluate import region_mask, score_mask, source_interval, match_features, MATCH_VERSION, MATCH_DEFAULTS, resolved_match_settings, plot_match_routes
 from train import build_loaders, load_checkpoint
@@ -34,7 +35,8 @@ DEFAULT_MATCH_SETTINGS = dict(MATCH_DEFAULTS)
 
 
 def _side_key(side):
-    return (str(Path(side['image']).resolve()), str(Path(side['text']).resolve()),
+    return (str(Path(side['image']).resolve()),
+            str(Path(side['text']).resolve()) if side.get('text') else 'manifest:raw_text',
             tuple(side.get('bbox') or ()))
 
 
@@ -1092,7 +1094,7 @@ def text_dtw_diagnostic(session, side):
     from losses import positive_dtw_loss
     from text_embedding import ARABIC_LETTERS, clean_letters
     line = session.get_line_features(side)
-    letters = clean_letters(Path(side['text']).read_text(encoding='utf-8-sig'))
+    letters = clean_letters(read_side_text(side))
     if not letters:
         return dict(status='unavailable', reason='empty cleaned transcript')
     c = session.config
