@@ -502,6 +502,20 @@ def compute_loss(output, texts, text_embedding, config, *, negative_texts=None, 
         global_evaluated = int(count.item())
         # DDP averages gradients: compensate for differing per-rank valid counts.
         positive_for_gradient = positive * counts['evaluated'] * dist.get_world_size() / count.clamp_min(1)
+    local_positive = None
+    local_counts = None
+    local_for_gradient = vectors[valid].sum() * 0.
+    if config.local_positive_dtw_weight:
+        if 'local' not in output:
+            raise ValueError('local_positive_dtw_weight requires output["local"]')
+        local_positive, local_counts = positive_dtw_loss(
+            output['local'], texts, text_embedding, config, valid)
+        if local_counts['evaluated'] != counts['evaluated']:
+            raise ValueError('LOCAL and FUSED positive DTW evaluated different line counts')
+        local_for_gradient = local_positive
+        if distributed_statistics and dist.is_available() and dist.is_initialized():
+            local_for_gradient = (local_positive * local_counts['evaluated'] *
+                                  dist.get_world_size() / max(global_evaluated, 1))
     negative = vectors[valid].sum() * 0.
     typed_losses = {name: negative for name in ('strong', 'wrong', 'order')}
     typed_stats = dict(strong_sum=0., strong_count=0, strong_cost_sum=0., strong_cost_min=None,
@@ -539,12 +553,12 @@ def compute_loss(output, texts, text_embedding, config, *, negative_texts=None, 
     global_ranking_candidates = ranking['ranking_candidates']
     typed_for_gradient = dict(typed_losses)
     if typed and distributed_statistics and dist.is_available() and dist.is_initialized():
-        local_counts = vectors.new_tensor([typed_stats['strong_count'], typed_stats['wrong_count'],
-                                           typed_stats['order_count']])
-        global_counts = local_counts.clone()
+        typed_local_counts = vectors.new_tensor([typed_stats['strong_count'], typed_stats['wrong_count'],
+                                                 typed_stats['order_count']])
+        global_counts = typed_local_counts.clone()
         dist.all_reduce(global_counts)
         for index, name in enumerate(('strong', 'wrong', 'order')):
-            typed_for_gradient[name] = (typed_losses[name] * local_counts[index] *
+            typed_for_gradient[name] = (typed_losses[name] * typed_local_counts[index] *
                                         dist.get_world_size() / global_counts[index].clamp_min(1))
         global_ranking_candidates = int(global_counts.sum().item())
     elif typed:
@@ -563,6 +577,7 @@ def compute_loss(output, texts, text_embedding, config, *, negative_texts=None, 
                              num_knots=config.sigreg_num_knots, min_samples=config.sigreg_min_samples,
                              distributed_statistics=distributed_statistics, seed=sketch_seed)
     total = (config.positive_dtw_weight * positive_for_gradient
+             + config.local_positive_dtw_weight * local_for_gradient
              + config.negative_dtw_weight * negative_for_gradient
              + config.ranking_aux_weight * ranking_for_gradient
              + config.wrong_letter_unlikelihood_weight * wrong_for_gradient
@@ -571,6 +586,12 @@ def compute_loss(output, texts, text_embedding, config, *, negative_texts=None, 
              + config.order_negative_weight * typed_for_gradient['order']
              + config.sigreg_weight * sigreg)
     stats = dict(total=float(total.detach()), positive_dtw=float(positive.detach()) if counts['evaluated'] else None,
+                 fused_positive_dtw=float(positive.detach()) if counts['evaluated'] else None,
+                 local_positive_dtw=float(local_positive.detach()) if local_counts and local_counts['evaluated'] else None,
+                 weighted_local_positive_dtw=(config.local_positive_dtw_weight * float(local_positive.detach())
+                                              if local_counts and local_counts['evaluated'] else None),
+                 local_dtw_sum=local_counts['dtw_sum'] if local_counts else 0.,
+                 local_evaluated=local_counts['evaluated'] if local_counts else 0,
                  positive_cost=float(positive.detach()) if counts['evaluated'] else None,
                  negative_objective=float(negative.detach()) if config.negative_dtw_weight else None,
                  # Deprecated machine-readable alias for old downstream consumers only.

@@ -9,6 +9,7 @@ from dataclasses import asdict, replace
 import csv
 import hashlib
 import importlib
+from itertools import groupby
 import json
 import math
 from pathlib import Path
@@ -29,8 +30,9 @@ if not hasattr(_text_embedding, 'read_side_text'):
     importlib.reload(_text_embedding)
 
 from dataset import AlignmentDataset, file_hash, prepare_image
-from text_embedding import read_side_text
-from dtw import cosine_similarity_matrix, hard_dtw_path, letter_cost_matrix
+from text_embedding import read_side_text, clean_letters
+from dtw import cosine_similarity_matrix, hard_dtw_path, letter_cost_matrix, alphabet_log_probabilities
+from losses import effective_alphabet, positive_dtw_loss
 from evaluate import region_mask, score_mask, source_interval, match_features, MATCH_VERSION, MATCH_DEFAULTS, resolved_match_settings, plot_match_routes
 from train import build_loaders, load_checkpoint
 
@@ -59,6 +61,115 @@ def _distribution(values):
     return dict(count=len(values), mean=float(values.mean()), std=float(values.std()),
                 median=float(np.median(values)), q25=float(np.quantile(values, .25)),
                 q75=float(np.quantile(values, .75)))
+
+
+def letter_space_diagnostics(session, side):
+    """Checkpoint-exact alphabet posteriors and soft-alignment diagnostics.
+
+    The FUSED positive Soft-DTW occupancy is a common, soft reference for all
+    three representations. It is not a manually labelled window/letter map.
+    No new classifier is fitted and only valid windows enter any computation.
+    Legacy per-line alphabet extension is reported explicitly: its competitors
+    depend on the diagnostic transcript, unlike a fixed training inventory.
+    """
+    line = session.get_line_features(side)
+    text = read_side_text(side)
+    letters = clean_letters(text)
+    if not letters:
+        raise ValueError(f'No supported transcript letters for {side["image"]}')
+    config, encoder = session.config, session.text_encoder
+    alphabet = effective_alphabet(config, encoder, letters)
+    lookup = {letter: index for index, letter in enumerate(alphabet)}
+    if any(letter not in lookup for letter in letters):
+        raise ValueError('Transcript contains a letter absent from the checkpoint alphabet')
+    physical = np.asarray(line['physical'])
+    valid = np.asarray(line['token_valid'], dtype=bool)
+    if len(physical) != int(valid.sum()):
+        raise ValueError('Physical indices and valid-window count disagree')
+    with torch.no_grad():
+        alphabet_vectors = encoder.encode(''.join(alphabet))
+        fused = line['features']['fused'].to(session.device)
+        _, fused_stats, _, alignments = positive_dtw_loss(
+            fused[None], [text], encoder, config, return_alignments=True)
+        if fused_stats['evaluated'] != 1 or alignments[0] is None:
+            raise ValueError(f'Positive soft DTW is infeasible for {side["image"]}: {fused_stats["skip_reasons"]}')
+        occupancy = alignments[0].float()
+        if occupancy.shape != (len(physical), len(letters)):
+            raise ValueError('Positive occupancy must be [valid windows, cleaned letters]')
+        columns = torch.tensor([lookup[letter] for letter in letters], device=session.device)
+        results = {}
+        for name in REPRESENTATIONS:
+            features = line['features'][name].to(session.device)
+            if len(features) != len(physical):
+                raise ValueError(f'{name} includes invalid/padded windows')
+            logp = alphabet_log_probabilities(features, alphabet_vectors,
+                                               config.competition_temperature)
+            probabilities = logp.exp()
+            top = probabilities.topk(min(2, len(alphabet)), dim=1)
+            best = top.indices[:, 0]
+            second = top.indices[:, 1]
+            entropy = -(probabilities * logp).sum(dim=1)
+            margin = top.values[:, 0] - top.values[:, 1]
+            rows = [dict(physical_window_index=int(physical[i]),
+                         top1_letter=alphabet[int(best[i])], top1_probability=float(top.values[i, 0]),
+                         top2_letter=alphabet[int(second[i])], top2_probability=float(top.values[i, 1]),
+                         margin=float(margin[i]), entropy=float(entropy[i]))
+                    for i in range(len(physical))]
+            correct = probabilities[:, columns]
+            weights = occupancy / occupancy.sum(dim=0, keepdim=True).clamp_min(1e-8)
+            per_letter_probability = (weights * correct).sum(dim=0)
+            ranks = 1 + (probabilities[:, None, :] > correct[:, :, None]).sum(dim=2)
+            weighted_ranks = (weights * ranks).sum(dim=0)
+            top1 = (weights * (ranks == 1)).sum(dim=0)
+            top3 = (weights * (ranks <= 3)).sum(dim=0)
+            loss, stats = positive_dtw_loss(features[None], [text], encoder, config)
+            if stats['evaluated'] != 1:
+                raise ValueError(f'{name} DTW infeasible: {stats["skip_reasons"]}')
+            predicted = best.tolist()
+            runs = [len(list(group)) for _, group in groupby(predicted)]
+            histogram = {letter: predicted.count(index) for index, letter in enumerate(alphabet)
+                         if index in predicted}
+            results[name] = dict(probabilities=probabilities.cpu().numpy(), windows=rows,
+                                 predicted_letter_histogram=histogram,
+                                 most_common_letter_fraction=max(histogram.values(), default=0) / len(predicted),
+                                 longest_identical_top1_run=max(runs, default=0),
+                                 mean_correct_letter_probability=float(per_letter_probability.mean()),
+                                 median_correct_letter_probability=float(np.median(per_letter_probability.cpu().numpy())),
+                                 mean_correct_letter_rank=float(weighted_ranks.mean()),
+                                 top1_correct_fraction=float(top1.mean()),
+                                 top3_correct_fraction=float(top3.mean()),
+                                 mean_top1_top2_margin=float(margin.mean()),
+                                 mean_entropy=float(entropy.mean()),
+                                 positive_dtw_cost=float(loss))
+    prior = getattr(encoder, 'letter_evidence_prior', None)
+    fitted_prior = (prior['prior'] if isinstance(prior, dict)
+                    and list(prior.get('vocabulary', ())) == alphabet else None)
+    return dict(image=side['image'], physical_window_indices=physical,
+                transcript_letters=letters, alphabet=alphabet,
+                fitted_training_prior=fitted_prior, fused_soft_occupancy=occupancy.cpu().numpy(),
+                alphabet_mode=('fixed training inventory' if config.alphabet_inventory or
+                               config.negative_target_mode == 'uniform_ratio' else
+                               'legacy transcript-extended inventory'),
+                representations=results)
+
+
+def plot_letter_probability_heatmaps(diagnostics):
+    """Three actual P(letter|window) heatmaps; x is the physical window grid."""
+    import matplotlib.pyplot as plt
+    alphabet = diagnostics['alphabet']
+    physical = diagnostics['physical_window_indices']
+    fig, axes = plt.subplots(3, 1, figsize=(max(12, len(physical) * .22), 12),
+                             sharex=True, constrained_layout=True)
+    for ax, name in zip(axes, REPRESENTATIONS):
+        matrix = diagnostics['representations'][name]['probabilities']
+        image = ax.imshow(matrix.T, origin='lower', aspect='auto', vmin=0, vmax=1,
+                          interpolation='nearest')
+        ax.set(title=f'{name.upper()} — P(letter | valid window)', ylabel='Arabic letter',
+               yticks=np.arange(len(alphabet)), yticklabels=alphabet)
+    ticks = np.unique(np.linspace(0, len(physical) - 1, min(12, len(physical)), dtype=int))
+    axes[-1].set(xticks=ticks, xticklabels=physical[ticks], xlabel='Physical window index (RTL order as model sees it)')
+    fig.colorbar(image, ax=axes, label='Probability', shrink=.6)
+    return fig
 
 
 def sample_random_pairs(records, n, aligned=True, seed=42):

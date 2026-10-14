@@ -105,6 +105,9 @@ def _batch_postfix(stats, optimizer=None, gradients=None, device=None):
                   sigreg=_format_value(stats['sigreg']),
                   evaluated=stats['evaluated'], skipped=stats['skipped'],
                   windows=_format_value(stats.get('mean_windows')), letters=_format_value(stats.get('mean_letters')))
+    if stats.get('local_positive_dtw') is not None:
+        values.update(local=_format_value(stats['local_positive_dtw']),
+                      wLocal=_format_value(stats['weighted_local_positive_dtw']))
     if stats.get('negative_loss_type') == 'hybrid_typed':
         values.update(sNeg=_format_value(stats['strong_cost_sum'] / stats['strong_count'] if stats['strong_count'] else None),
                       sLoss=_format_value(stats['strong_sum'] / stats['strong_count'] if stats['strong_count'] else None),
@@ -203,7 +206,7 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
     distributed = training and dist.is_available() and dist.is_initialized()
     # DTW is aggregated per LINE, including both sides, excluding empty text.
     # SIGReg is a token-weighted batch-population statistic, not a per-line loss.
-    totals = torch.zeros(25,dtype=torch.float32 if device.type == 'mps' else torch.float64,
+    totals = torch.zeros(27,dtype=torch.float32 if device.type == 'mps' else torch.float64,
                          device=device)
     typed_totals = torch.zeros(20, dtype=totals.dtype, device=device)
     corruption, skip_reasons = Counter(), Counter()
@@ -335,7 +338,8 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                                       stats['hard_cost_sum'], stats['hard_count'], stats['target_sum'],
                                       stats['target_success'],
                                       stats['positive_below_reference'],
-                                      stats['hard_target_success'], stats['hard_target_count']])
+                                      stats['hard_target_success'], stats['hard_target_count'],
+                                      stats['local_dtw_sum'], stats['local_evaluated']])
         typed_totals += typed_totals.new_tensor([
             stats['strong_sum'], stats['strong_count'], stats['strong_cost_sum'],
             stats['strong_target_sum'], stats['strong_target_success'],
@@ -375,16 +379,20 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
     (dtw_sum,n,skipped,sig_sum,tokens,windows,letters,batches,neg_sum,ranked,
      candidates,correct,margins,negative_cost_sum,margin_violations,absolute_sum,
      ranking_sum,wrong_sum,hard_cost_sum,hard_count,target_sum,target_success,
-     positive_below_reference,hard_target_success,hard_target_count) = totals.tolist()
+     positive_below_reference,hard_target_success,hard_target_count,
+     local_dtw_sum,local_evaluated) = totals.tolist()
     (strong_sum,strong_count,strong_cost_sum,strong_target_sum,strong_target_success,
      typed_wrong_sum,wrong_count,local_count,wrong_probability_sum,correct_probability_sum,
      changed_positions_count,order_sum,order_count,order_cost_sum,order_gap_sum,
      order_success,strong_slot_1_sum,strong_slot_1_count,strong_slot_2_sum,
      strong_slot_2_count) = typed_totals.tolist()
     positive = dtw_sum/n if n else None
+    local_positive = local_dtw_sum/local_evaluated if local_evaluated else None
     sigreg = sig_sum/tokens if tokens and config.sigreg_weight else None
     negative = neg_sum/ranked if ranked else None
-    total = None if positive is None else (config.positive_dtw_weight*positive + config.sigreg_weight*(sigreg or 0.)
+    total = None if positive is None else (config.positive_dtw_weight*positive
+                                           + config.local_positive_dtw_weight*(local_positive or 0.)
+                                           + config.sigreg_weight*(sigreg or 0.)
                                            + active_config.negative_dtw_weight*(negative or 0.)
                                            + active_config.ranking_aux_weight*(ranking_sum/ranked if ranked else 0.)
                                            + active_config.wrong_letter_unlikelihood_weight*(wrong_sum/ranked if ranked else 0.)
@@ -392,6 +400,9 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                                            + active_config.wrong_letter_weight*(typed_wrong_sum/wrong_count if wrong_count else 0.)
                                            + active_config.order_negative_weight*(order_sum/order_count if order_count else 0.))
     result = dict(total=total,total_loss=total,positive_dtw=positive,positive_cost=positive,
+                fused_positive_dtw=positive, local_positive_dtw=local_positive,
+                weighted_local_positive_dtw=(config.local_positive_dtw_weight * local_positive
+                                             if local_positive is not None else None),
                 positive_cost_mean=positive,
                 positive_cost_min=positive_cost_min if n else None,
                 positive_cost_max=positive_cost_max if n else None,
@@ -593,6 +604,7 @@ def _print_dataset_summary(args, config, loaders, text_encoder):
     print(f'Embedding dim: {config.embedding_dim}', flush=True)
     print(f'SIGReg: {"ENABLED (weight=" + str(config.sigreg_weight) + ")" if config.sigreg_weight else "DISABLED"}', flush=True)
     print(f'Positive DTW weight: {config.positive_dtw_weight}', flush=True)
+    print(f'Local positive DTW weight: {config.local_positive_dtw_weight}', flush=True)
     print(f'Negative DTW weight: {config.negative_dtw_weight}' +
           (' (legacy mode; unused by hybrid_typed)' if config.negative_loss_type == 'hybrid_typed' else ''), flush=True)
     print('Negative transcripts: ' + ('ENABLED' if negatives_enabled(config) else 'DISABLED'), flush=True)
@@ -723,7 +735,9 @@ def _print_epoch_summary(epoch, epochs, train_stats, val_stats, gradients, previ
     print('', flush=True)
     print('TRAIN', flush=True)
     print(f'  total loss:        {value(train_stats["total"])}', flush=True)
-    print(f'  positive DTW:      {value(train_stats["positive_dtw"])}', flush=True)
+    print(f'  fused positive DTW: {value(train_stats["positive_dtw"])}', flush=True)
+    print(f'  local positive:    {value(train_stats["local_positive_dtw"])}', flush=True)
+    print(f'  weighted local:    {value(train_stats["weighted_local_positive_dtw"])}', flush=True)
     objective_details(train_stats)
     print(f'  SIGReg:            {value(train_stats["sigreg"]) if train_stats["sigreg"] is not None else "disabled"}', flush=True)
     print(f'  evaluated lines:   {train_stats["evaluated"]}', flush=True)
@@ -738,7 +752,9 @@ def _print_epoch_summary(epoch, epochs, train_stats, val_stats, gradients, previ
     print('', flush=True)
     print('VALIDATION', flush=True)
     print(f'  total loss:        {value(val_stats["total"])}', flush=True)
-    print(f'  positive DTW:      {value(val_stats["positive_dtw"])}', flush=True)
+    print(f'  fused positive DTW: {value(val_stats["positive_dtw"])}', flush=True)
+    print(f'  local positive:    {value(val_stats["local_positive_dtw"])}', flush=True)
+    print(f'  weighted local:    {value(val_stats["weighted_local_positive_dtw"])}', flush=True)
     objective_details(val_stats)
     print(f'  evaluated lines:   {val_stats["evaluated"]}', flush=True)
     print(f'  skipped lines:     {val_stats["skipped"]}', flush=True)
@@ -829,7 +845,11 @@ def main(argv=None, epoch_callback=None):
         else:
             allowed = {f.name for f in fields(Config) if f.name.startswith(('negative_', 'sigreg_'))}
             allowed |= {'alignment_objective','ctc_blank_logit','alphabet_inventory','position_prior',
-                        'positive_dtw_weight','dtw_gamma','vertical_penalty','horizontal_penalty',
+                        'positive_dtw_weight','local_positive_dtw_weight',
+                        'strong_negative_count','local_substitution_count','order_negative_count',
+                        'strong_negative_weight','wrong_letter_weight','order_negative_weight',
+                        'strong_negative_severity','local_substitution_severity','order_margin',
+                        'dtw_gamma','vertical_penalty','horizontal_penalty',
                         'competition_temperature','dtw_cost_mode','disable_horizontal_when_feasible',
                         'dtw_normalization','hard_negative_k','ranking_aux_weight',
                         'wrong_letter_unlikelihood_weight'}

@@ -35,6 +35,7 @@ class Config:
     text_embedding_seed: int = 1234
     text_vocab_size: int = 4096
     positive_dtw_weight: float = 1.0
+    local_positive_dtw_weight: float = 0.0  # optional direct CNN/local positive DTW; zero preserves old runs
     negative_dtw_weight: float = 0.0
     negative_margin: float = .20
     # Weight is the single enable switch: zero means no generation/alignment.
@@ -93,6 +94,8 @@ class Config:
 
 def validate_objective(config):
     import math
+    if not math.isfinite(config.local_positive_dtw_weight) or config.local_positive_dtw_weight < 0:
+        raise ValueError('local_positive_dtw_weight must be finite and nonnegative')
     if config.alignment_objective not in {'dtw', 'ctc'}:
         raise ValueError('alignment_objective must be dtw or ctc')
     if config.dtw_cost_mode not in {'full_alphabet_nll', 'cosine'}:
