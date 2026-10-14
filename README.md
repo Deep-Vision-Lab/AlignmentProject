@@ -86,6 +86,12 @@ one split; by default, each split selects equal numbers of A and B lines without
 replacement (`balance_books=False` disables this in `create_dataloaders`).
 The exported line images are used whole; subword bounding-box annotations are
 not applied as crops. A missing text file may use its manifest `raw_text`.
+The evaluation notebook uses `ArabicData/alignedPairs` for recorded A/B partners
+and `ArabicData/Unalignedlines` for independent lines without recorded partners.
+Folder copies are verified against indexed book lines in the saved checkpoint
+split. Supplied pair masks are used when present; verified pair-local boxes supply
+derived LCS diagnostics otherwise. Seeded unmatched A/B combinations are presumed
+negatives, bounded by the notebook's `NEGATIVE_POOL_SIZE`, not verified negative pairs.
 Bridge V3 uses `dataset_manifest.jsonl` or `anchor_index.jsonl`; each item preserves
 its real/positive-synthetic images, transcripts, optional positive mask, and
 `anchor_id`. Negative bridge rows are outside this positive relationship view.
@@ -155,6 +161,31 @@ best validation score, split IDs/hash, metrics and initialization provenance. Ol
 `.pth` checkpoints fail clearly rather than loading partially.
 
 ## Evaluation
+
+`notebooks/model_evaluation.ipynb` ends with Phase 1 representation diagnostics.
+Run the notebook's checkpoint setup, session, and matching-settings cells, then
+execute the Phase 1 cells in order; results appear inline, with no runner script.
+The notebook sets `EVALUATION_CROP="content"`, using `dataset.prepare_image()`
+to trim blank scan margins and outer page-frame strips before resizing and model
+inference. `dataloader.py` uses this same dataset preprocessing when its crop mode
+is `content`. Cropping uses image pixels; line panels and a before/after preview
+show the actual input region. All representations share it, while masks retain
+source coordinates. Use `EVALUATION_CROP="none"` for full images, then rebuild
+the session and sample caches after changing modes.
+The notebook uses only the matching folder `masksA`/`masksB` images as ground truth.
+A missing mask becomes a black mask under the requested no-alignment policy;
+there is no box/LCS or transcript-mask fallback. It reports per-line pixel accuracy,
+pixel-weighted aggregate accuracy, and per-pair alignment/no-alignment accuracy.
+It compares the same fixed mask-positive/mask-negative pairs across LOCAL, CONTEXT and
+FUSED, using the active matcher without tuning. Each Sample N group has a selection
+cell followed by three separate output cells: LOCAL, FUSED, then CONTEXT.
+Select the pair once; each output cell reuses that saved pair and shows only its
+representation. Rerunning an output cell keeps the pair unchanged.
+Fixed Phase 1 examples also have separate LOCAL, FUSED, and CONTEXT cells.
+The population is the existing saved-test alignedPairs/Unalignedlines comparison
+catalog, with a seeded cap of 300 pairs; set `PHASE1_MAX_POPULATION_PAIRS=0` for
+the full catalog. Ground-truth loading and accuracy calculations live in the notebook.
+Collapse and route warnings are screening diagnostics.
 
 ```bash
 python evaluate.py --checkpoint Weights/experiment1/checkpoint_best.pt \

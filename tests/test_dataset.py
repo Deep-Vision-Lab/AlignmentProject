@@ -5,7 +5,7 @@ import pytest
 import torch
 from PIL import Image
 
-from dataset import AlignmentDataset, prepare_image, xml_crop_bounds
+from dataset import AlignmentDataset, prepare_image, xml_crop_bounds, content_crop_bounds
 
 
 def make_synthetic(root, count=10):
@@ -122,6 +122,25 @@ def test_rgb_and_explicit_bbox(tmp_path):
     assert tensor.shape == (3, 128, 1024) and geo['crop'] == [10, 2, 90, 28]
     with pytest.raises(ValueError, match='outside source'):
         prepare_image(path, bbox=(-1, 0, 20, 30))
+
+
+def test_content_crop_removes_blank_margins_and_slanted_page_frame(tmp_path):
+    pixels = np.full((60, 180), 230, np.uint8)
+    pixels[20:45, 30:120] = 40
+    pixels[8, 145] = 100  # small isolated diacritic must remain
+    for y in range(60):
+        pixels[y, 4+y//10:6+y//10] = 130
+        pixels[y, 170+y//12:172+y//12] = 130
+    image = Image.fromarray(pixels)
+    assert content_crop_bounds(image) == (30, 8, 146, 45)
+    path = tmp_path / 'line.png'
+    image.save(path)
+    _, tensor, geometry = prepare_image(path, image_size=(32, 128), crop='content')
+    assert geometry['crop'] == [30, 8, 146, 45]
+    assert geometry['source_size'] == [180, 60]
+    assert geometry['scale_x'] == 128 / 116
+    assert tensor.shape == (1, 32, 128)
+    assert content_crop_bounds(Image.new('L', (180, 60), 230)) == (0, 0, 180, 60)
 
 
 def test_missing_mask_geometry_fails(tmp_path):

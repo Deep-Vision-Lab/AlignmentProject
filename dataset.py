@@ -1,7 +1,8 @@
 """One image/text dataset for synthetic pairs, Arabic manifests and Bridge V3.
 
 Native line crops reproduce the dataset builder's XML envelope and safety margin.
-No heuristic foreground crop, geometric augmentation, padding, or polarity change.
+Default preprocessing has no foreground crop, geometric augmentation, or padding.
+The opt-in content crop trims blank scan margins before resizing.
 Bridge items always retain the real/positive relationship (including its mask).
 """
 from __future__ import annotations
@@ -335,15 +336,79 @@ def scan_augment(image):
     return Image.fromarray(values.clip(0, 255).astype(np.uint8))
 
 
+def content_crop_bounds(image):
+    """Find writing bounds in source pixels, excluding outer page-frame strips.
+
+    This operates on image pixels alone, independently of XML, text, and masks.
+    Uniform images retain their extent. Small components are retained at low
+    resolutions so dots and diacritics are not treated as margin noise.
+    """
+    from scipy.ndimage import label, find_objects, sobel, maximum_filter1d
+
+    gray = np.asarray(image.convert('L'))
+    height, width = gray.shape
+    if int(gray.max()) - int(gray.min()) < 20:
+        return (0, 0, width, height)
+    histogram = np.bincount(gray.ravel(), minlength=256).astype(float)
+    counts = histogram.cumsum()
+    sums = (histogram * np.arange(256)).cumsum()
+    denominator = counts * (counts[-1] - counts)
+    variance = np.divide((sums[-1] * counts - sums * counts[-1]) ** 2,
+                         denominator, out=np.zeros(256), where=denominator > 0)
+    threshold = max(int(variance.argmax()), float(np.quantile(gray, .9)) - 90)
+    ink = gray <= threshold
+    # A page rule crosses almost the entire line height. Clear the strip from
+    # that rule to the image edge, including any decorative border outside it.
+    edge_width = max(2, round(width * .12))
+    vertical = np.flatnonzero(ink.sum(axis=0) >= .95 * height)
+    left = list(vertical[vertical < edge_width])
+    right = list(vertical[vertical >= width - edge_width])
+    # Scan borders can be slanted or lighter than ink. Detect their long edge
+    # segments as well, rather than requiring one dark column at every row.
+    edges = maximum_filter1d(np.abs(sobel(gray.astype(float), axis=1)) >= 30,
+                             size=3, axis=1)
+    columns = np.unique(np.concatenate((np.arange(min(edge_width, width)),
+                                       np.arange(max(0, width-edge_width), width))))
+    rows = np.arange(height)
+    for slope in np.linspace(-.15, .15, 31):
+        offsets = np.rint((rows-(height-1)/2) * slope).astype(int)
+        xs = columns[None, :] + offsets[:, None]
+        valid = (xs >= 0) & (xs < width)
+        votes = (edges[rows[:, None], np.clip(xs, 0, width-1)] & valid).sum(axis=0)
+        for column in columns[votes >= .9 * height]:
+            low, high = int(column+offsets.min()), int(column+offsets.max())
+            if high < edge_width: left.append(high + 1)
+            if low >= width-edge_width: right.append(low - 1)
+    if left: ink[:, :min(width, int(max(left)) + 1)] = False
+    if right: ink[:, max(0, int(min(right))):] = False
+    edge_height = max(1, round(height * .08))
+    horizontal = np.flatnonzero(ink.sum(axis=1) >= .95 * width)
+    top = horizontal[horizontal < edge_height]
+    bottom = horizontal[horizontal >= height - edge_height]
+    if len(top): ink[:int(top[-1]) + 1] = False
+    if len(bottom): ink[int(bottom[0]):] = False
+    components, _ = label(ink)
+    sizes = np.bincount(components.ravel())
+    minimum_area = max(1, round(height * height * .00015))
+    boxes = [slices for component, slices in enumerate(find_objects(components), 1)
+             if slices is not None and sizes[component] >= minimum_area]
+    if not boxes:
+        return (0, 0, width, height)
+    return (min(s[1].start for s in boxes), min(s[0].start for s in boxes),
+            max(s[1].stop for s in boxes), max(s[0].stop for s in boxes))
+
+
 def prepare_image(path, image_size=(128, 1024), grayscale=True, crop='auto',
                   bbox=None, augment=False, binarize=False):
     """Return prepared PIL, normalized tensor and invertible direct-resize geometry.
 
     auto: strict XML for native lines, explicit bbox if supplied, otherwise full
     source. xml requires native XML; none is an explicit full-source override.
+    content trims blank margins from the actual image (or explicit bbox) before
+    resizing, without reading annotation folders or adding artificial padding.
     """
-    if crop not in {'auto', 'xml', 'none'}:
-        raise ValueError('crop must be auto, xml or none')
+    if crop not in {'auto', 'xml', 'none', 'content'}:
+        raise ValueError('crop must be auto, xml, none or content')
     path = Path(path)
     with Image.open(path) as source:
         source_size = source.size
@@ -351,11 +416,15 @@ def prepare_image(path, image_size=(128, 1024), grayscale=True, crop='auto',
         if crop != 'none':
             if bbox is not None:
                 bounds = tuple(map(int, bbox))
-            elif crop == 'xml' or path.parent.name == 'linesImages':
+            elif crop == 'xml' or (crop == 'auto' and path.parent.name == 'linesImages'):
                 bounds = xml_crop_bounds(path, source_size)
         x0, y0, x1, y1 = bounds
         if not (0 <= x0 < x1 <= source.width and 0 <= y0 < y1 <= source.height):
             raise ValueError(f'Crop {bounds} outside source {source_size}: {path}')
+        if crop == 'content':
+            left, top, right, bottom = content_crop_bounds(source.crop(bounds))
+            bounds = (x0 + left, y0 + top, x0 + right, y0 + bottom)
+            x0, y0, x1, y1 = bounds
         image = source.crop(bounds).convert('L' if grayscale else 'RGB')
     if augment:
         image = scan_augment(image)

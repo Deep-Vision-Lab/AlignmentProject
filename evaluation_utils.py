@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 import csv
 import hashlib
+import importlib
 import json
 import math
 from pathlib import Path
@@ -20,6 +21,12 @@ import numpy as np
 from PIL import Image
 import torch
 from tqdm.auto import tqdm
+
+# Older notebook setup cells clear dataset but leave text_embedding cached.
+# Refresh its missing API before dataset imports the transcript reader.
+import text_embedding as _text_embedding
+if not hasattr(_text_embedding, 'read_side_text'):
+    importlib.reload(_text_embedding)
 
 from dataset import AlignmentDataset, file_hash, prepare_image
 from text_embedding import read_side_text
@@ -100,7 +107,11 @@ class EvaluationSession:
     """Load once; cache CPU feature tensors; retain the checkpoint's exact split."""
     def __init__(self, checkpoint, dataset, split='test', device='cuda', seed=42,
                  settings=None, construct_negatives=True, negative_count=None,
-                 annotation_manifest=None):
+                 annotation_manifest=None, pair_source='auto', crop_override=None):
+        if crop_override not in (None, 'auto', 'xml', 'none', 'content'):
+            raise ValueError('crop_override must be auto, xml, none, content or None')
+        if pair_source not in ('auto', 'dataset', 'folders'):
+            raise ValueError('pair_source must be auto, dataset or folders')
         if split not in ('train', 'val', 'test'):
             raise ValueError('split must be train, val, or test')
         self.checkpoint = Path(checkpoint).expanduser().resolve()
@@ -108,6 +119,9 @@ class EvaluationSession:
         self.device = torch.device('cpu' if str(device).startswith('cuda') and not torch.cuda.is_available()
                                    else ('cuda' if torch.cuda.is_available() else 'cpu') if device == 'auto' else device)
         self.model, self.text_encoder, self.config, self.saved = load_checkpoint(self.checkpoint, self.device)
+        self.crop_override = crop_override
+        if crop_override is not None:
+            self.config = replace(self.config, crop=crop_override)
         self.model.eval()
         self.text_encoder.eval()
         self.split, self.seed = split, seed
@@ -126,12 +140,26 @@ class EvaluationSession:
         self.allowed = {_side_key(s): dict(side=s, group_id=r['group_id'], pair_ids=set(),
                                            anchors={r['anchor_id']} if r['anchor_id'] else set())
                         for r in self.view.records for s in r['sides']}
+        for record in self.view.records:
+            for side in record['sides']:
+                self.allowed[_side_key(side)]['pair_ids'].update(record.get('source_pairs', []))
         # Pair view is a catalog only. Its generated groups/splits are NEVER used.
-        catalog = AlignmentDataset(self.dataset_path, self.view.dataset_type, paired=True,
-                                   image_size=self.view.image_size, grayscale=self.config.grayscale,
-                                   crop=self.config.crop, binarize=self.config.binarize)
         self.pairs, self.excluded_pairs, self.unknown_labels = [], 0, {}
-        for r in catalog.records:
+        self.pair_source = ('folders' if self.view.source_layout == 'book_lines' else 'dataset') if pair_source == 'auto' else pair_source
+        self.line_aliases, self.folder_summary = {}, {}
+        if self.pair_source == 'folders':
+            if self.view.source_layout != 'book_lines':
+                raise ValueError('ArabicData folder evaluation requires BookA/BookB indexes for saved split membership')
+            self.pairs, self.line_aliases, self.folder_summary = arabic_data_pairs(
+                self.dataset_path, self.view.records, negative_count if construct_negatives else 0, seed)
+            self.excluded_pairs = self.folder_summary['excluded_aligned_pairs']
+            catalog_records = []
+        else:
+            catalog = AlignmentDataset(self.dataset_path, self.view.dataset_type, paired=True,
+                                       image_size=self.view.image_size, grayscale=self.config.grayscale,
+                                       crop=self.config.crop, binarize=self.config.binarize)
+            catalog_records = catalog.records
+        for r in catalog_records:
             # Preserve known page-pair/anchor relationships even when the other
             # side of an individual manifest row lies outside this split.
             pair_group = (r['sample_id'] if self.view.dataset_type == 'synthetic'
@@ -154,8 +182,8 @@ class EvaluationSession:
                                    annotation_provenance='manifest alignment_mask_path (if present)'))
         if annotation_manifest:
             self._attach_annotations(annotation_manifest)
-        self.provided_negative_count = sum(p['target'] == 0 for p in self.pairs)
-        if construct_negatives and not self.provided_negative_count and split == 'test':
+        self.provided_negative_count = sum(p['target'] == 0 and not p['constructed_negative'] for p in self.pairs)
+        if self.pair_source == 'dataset' and construct_negatives and not self.provided_negative_count and split == 'test':
             n = negative_count if negative_count is not None else max(len(self.allowed), sum(p['target'] == 1 for p in self.pairs))
             if n < 0:
                 raise ValueError('negative_count must be nonnegative')
@@ -215,6 +243,7 @@ class EvaluationSession:
                           Negative_weight=c.negative_dtw_weight,
                           Evidence_prior=(self.saved.get('letter_evidence_prior') or {}).get('source','uniform fallback'))
         data = dict(Path=str(self.dataset_path), Dataset_type=self.view.dataset_type, Split=self.split,
+                    Pair_source=self.pair_source, Folder_catalog=self.folder_summary,
                     Number_of_samples=len(self.view), Eligible_pairs=len(self.pairs),
                     Number_of_aligned_pairs=sum(p['target'] == 1 for p in self.pairs),
                     Number_of_unaligned_pairs=sum(p['target'] == 0 for p in self.pairs),
@@ -227,13 +256,20 @@ class EvaluationSession:
             print('=' * 60 + '\n' + title + '\n' + '=' * 60)
             for name, value in values.items():
                 print(f'{name.replace("_", " ")}: {value}')
-        print('Line/XML crop boxes are NOT alignment ground truth. Pair labels are manifest labels, not character accuracy.')
+        if self.pair_source == 'folders':
+            print('alignedPairs contains recorded A/B partners, including partial overlap. '
+                  'Unalignedlines contains independent lines without recorded partners; sampled '
+                  'A/B combinations are presumed negatives. Missing masks use verified box-LCS '
+                  'diagnostics; review boxes do not supply localization truth.')
+        else:
+            print('Line/XML crop boxes are NOT alignment ground truth. Pair labels are manifest labels, not character accuracy.')
         return dict(checkpoint=checkpoint, dataset=data)
 
     def get_line_features(self, side):
-        if _side_key(side) not in self.allowed:
+        canonical = self.line_aliases.get(_side_key(side), _side_key(side))
+        if canonical not in self.allowed:
             raise ValueError(f'Line outside saved {self.split} membership: {side["image"]}')
-        key = _image_key(side)
+        key = _image_key(self.allowed[canonical]['side'])
         if key not in self.feature_cache:
             c = self.config
             _, tensor, geometry = prepare_image(side['image'], (c.image_height, c.image_width),
@@ -352,6 +388,309 @@ _ARABIC_DIACRITICS = re.compile('[\u0610-\u061a\u064b-\u065f\u0670\u06d6-\u06ed]
 _LINE_NUMBER = re.compile(r'(?:line[_\-\s]*)?0*(\d+)', re.IGNORECASE)
 
 
+def arabic_data_pairs(root, records, negative_count=None, seed=42):
+    """Load folder partners and sample independent unmatched lines in a saved split."""
+    root = Path(root)
+    members = {r['sample_id']: r for r in records}
+    aliases, hashes, pairs = {}, {}, []
+    stats = dict(aligned_pairs=0, excluded_aligned_pairs=0)
+    n = len(records) if negative_count is None else negative_count
+    if n < 0:
+        raise ValueError('negative_count must be nonnegative')
+
+    def digest(path):
+        if path not in hashes:
+            hashes[path] = file_hash(path)
+        return hashes[path]
+
+    def inventory(folder, side):
+        paths = [root / folder / (kind + side) for kind in ('images', 'texts', 'BoundingBoxes')]
+        for path in paths:
+            if not path.is_dir():
+                raise FileNotFoundError(path)
+        stems = [{p.stem for p in path.glob('*' + ext)}
+                 for path, ext in zip(paths, ('.png', '.txt', '.json'))]
+        if not stems[0] == stems[1] == stems[2]:
+            raise ValueError(f'Incomplete image/text/box inventory: {folder}, side {side}')
+        return sorted(stems[0])
+
+    def read_line(folder, side, stem):
+        path = root / folder
+        box = path / ('BoundingBoxes' + side) / (stem + '.json')
+        payload = json.loads(box.read_text(encoding='utf-8'))
+        member = members.get(f'Book{side}:' + payload['line_id'])
+        if member is None:
+            return None
+        canonical = member['sides'][0]
+        image = str((path / ('images' + side) / (stem + '.png')).resolve())
+        text = str((path / ('texts' + side) / (stem + '.txt')).resolve())
+        same_text = (digest(text) == digest(canonical['text']) if canonical.get('text') else
+                     Path(text).read_text(encoding='utf-8').strip() == canonical['raw_text'].strip())
+        if digest(image) != digest(canonical['image']) or not same_text:
+            raise ValueError(f'Folder copy differs from indexed book line: {folder}/{stem}, side {side}')
+        copied = dict(canonical, image=image, text=text, bounding_boxes=str(box.resolve()),
+                      bounding_boxes_status=payload.get('crop_status'))
+        aliases[_side_key(copied)] = _side_key(canonical)
+        return dict(side=copied, group_id=member['group_id'], source_pairs=set(member['source_pairs']))
+
+    labels = {}
+    manifest = root / 'metadata/dataset_manifest_full_pairs.jsonl'
+    if manifest.is_file():
+        for line in manifest.read_text(encoding='utf-8').splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            stem = f"{row['pair_id']}__A_line_{row['A']['line_idx']:03d}__B_line_{row['B']['line_idx']:03d}"
+            labels[stem] = row['label_type']
+    a_ids, b_ids = (inventory('alignedPairs', side) for side in 'AB')
+    if a_ids != b_ids:
+        raise ValueError('alignedPairs A/B filename stems disagree')
+    stats['aligned_pairs'] = len(a_ids)
+    for stem in a_ids:
+        lines = [read_line('alignedPairs', side, stem) for side in 'AB']
+        if any(line is None for line in lines):
+            stats['excluded_aligned_pairs'] += 1
+            continue
+        label = labels.get(stem, 'stored_aligned_pair')
+        if label in NEGATIVE_LABELS:
+            raise ValueError(f'Negative source label inside alignedPairs: {stem}')
+        annotations = []
+        for side in 'AB':
+            mask = root / 'alignedPairs' / ('masks' + side) / (stem + '.png')
+            annotations.append(dict(mask=str(mask.resolve()) if mask.is_file() else None))
+        pairs.append(dict(sample_id='alignedPairs:' + stem, sides=[line['side'] for line in lines],
+                          target=1, label=label, constructed_negative=False,
+                          group_ids=[line['group_id'] for line in lines], annotations=annotations,
+                          anchor_id='', annotation_provenance='alignedPairs supplied mask'))
+
+    unmatched = {}
+    for side in 'AB':
+        stems = inventory('Unalignedlines', side)
+        stats['unmatched_' + side] = len(stems)
+        unmatched[side] = [line for stem in stems if (line := read_line('Unalignedlines', side, stem)) is not None]
+        stats['eligible_unmatched_' + side] = len(unmatched[side])
+        for line in unmatched[side]:
+            line['words'] = {_normalized_unit(word) for word in Path(line['side']['text']).read_text(encoding='utf-8').split()} - {''}
+    rng, candidates, seen = random.Random(seed), [], 0
+    for a in unmatched['A']:
+        for b in unmatched['B']:
+            if (a['group_id'] == b['group_id'] or a['source_pairs'] & b['source_pairs']
+                    or a['words'] & b['words'] or digest(a['side']['image']) == digest(b['side']['image'])):
+                continue
+            seen += 1
+            if len(candidates) < n:
+                candidates.append((a, b))
+            elif n:
+                slot = rng.randrange(seen)
+                if slot < n:
+                    candidates[slot] = (a, b)
+    for a, b in candidates:
+        sides = [a['side'], b['side']]
+        identity = hashlib.sha256(json.dumps([_side_key(side) for side in sides]).encode()).hexdigest()[:20]
+        pairs.append(dict(sample_id='Unalignedlines:' + identity, sides=sides, target=0,
+                          label='unmatched_lines_presumed_negative', constructed_negative=True,
+                          group_ids=[a['group_id'], b['group_id']], annotations=[{}, {}],
+                          anchor_id='', annotation_provenance='verified subword-box LCS (derived), if available'))
+    stats.update(eligible_negative_combinations=seen, sampled_presumed_negatives=len(candidates),
+                 requested_presumed_negatives=n)
+    return pairs, aliases, stats
+
+
+def exported_line_boxes(side):
+    """Use only verified image-local boxes, preserving review flags and source pixels."""
+    payload = json.loads(Path(side['bounding_boxes']).read_text(encoding='utf-8'))
+    with Image.open(side['image']) as image:
+        size = list(image.size)
+    if payload['image_size'] != size:
+        raise ValueError('Exported bounding-box/source geometry mismatch')
+    if payload.get('crop_status') != 'VERIFIED_SOURCE_CROP_PIXELS':
+        return []
+    boxes = []
+    for row in payload.get('subwords', []):
+        if row.get('status') != 'VERIFIED_SOURCE_CROP_PIXELS' or row.get('line_bbox_xyxy') is None:
+            return []
+        x0, y0, x1, y1 = map(float, row['line_bbox_xyxy'])
+        if not (0 <= x0 < x1 <= size[0] and 0 <= y0 < y1 <= size[1]):
+            return []
+        if _normalized_unit(row.get('text')):
+            boxes.append((x0, x1, row['text']))
+    return sorted(boxes, key=lambda box: (-box[1], -box[0]))
+
+
+def recorded_negative_pairs(session):
+    """Replay existing ArabicData negative rows, never synthesize relationships.
+
+    Historical absolute paths are provenance only. Join recorded occurrences to
+    the saved split's book IDs and use current ArabicData images/transcripts.
+    Coarse no_shared_content labels remain unverified; boxes are derived GT.
+    """
+    manifest = session.dataset_path / 'metadata/dataset_manifest_full_pairs.jsonl'
+    report = dict(source=str(manifest), eligible=0, excluded=0, ambiguous=0)
+    if session.view.source_layout != 'book_lines' or not manifest.is_file():
+        report['reason'] = 'No copied negative-pair manifest for this layout'
+        return [], report
+    members = {r['sample_id']: r for r in session.view.records}
+    occurrences = {}
+    for book in 'AB':
+        index = session.dataset_path / f'Book{book}/lines.jsonl'
+        for row in map(json.loads, filter(str.strip, index.read_text(encoding='utf-8').splitlines())):
+            member = members.get(f'Book{book}:' + row['line_id'])
+            if member is None:
+                continue
+            side = dict(member['sides'][0])
+            box_path = session.dataset_path / row.get('bounding_boxes_path', '')
+            if box_path.is_file():
+                side.update(bounding_boxes=str(box_path.resolve()),
+                            bounding_boxes_status=row.get('bounding_boxes_status'))
+            for occurrence in row.get('source_occurrences', []):
+                if 'line_number' in occurrence:
+                    key = (occurrence['pair_id'], book, int(occurrence['line_number']))
+                    occurrences.setdefault(key, {})[_side_key(side)] = side
+    result, seen = [], set()
+    # Canonicalize folder copies to avoid contradictory positive/negative rows.
+    positive_keys = {tuple(session.line_aliases.get(_side_key(s), _side_key(s)) for s in p['sides'])
+                     for p in session.pairs if p['target'] == 1 and not p['constructed_negative']}
+    for row in map(json.loads, filter(str.strip, manifest.read_text(encoding='utf-8').splitlines())):
+        if row['label_type'] not in NEGATIVE_LABELS:
+            continue
+        choices = [occurrences.get((row['pair_id'], book, int(row[book]['line_idx'])), {}) for book in 'AB']
+        if not all(choices):
+            report['excluded'] += 1
+            continue
+        if any(len(choice) != 1 for choice in choices):
+            report['ambiguous'] += 1
+            continue
+        sides = [next(iter(choice.values())) for choice in choices]
+        key = tuple(_side_key(s) for s in sides)
+        if key in seen or key in positive_keys:
+            continue
+        seen.add(key)
+        stem = f"{row['pair_id']}__A_line_{row['A']['line_idx']:03d}__B_line_{row['B']['line_idx']:03d}"
+        result.append(dict(sample_id='recorded_negative:' + stem, sides=sides,
+                           target=0, label=row['label_type'], constructed_negative=False,
+                           group_ids=[session.allowed[k]['group_id'] for k in key], anchor_id='',
+                           annotations=[{}, {}], annotation_provenance='verified book subword-box LCS (derived)',
+                           label_source='copied existing no_shared_content manifest row'))
+    report['eligible'] = len(result)
+    return result, report
+
+
+def representation_diagnostics(result):
+    """Raw-matrix and accepted-route statistics; no GT, text or new decoding."""
+    cosine = np.asarray(result['cosine'])
+    if cosine.ndim != 2 or not cosine.size or not np.isfinite(cosine).all():
+        raise ValueError('Diagnostics require a nonempty finite raw cosine matrix')
+    stats = {f'matrix_{name}': float(fn(cosine)) for name, fn in
+             (('mean', np.mean), ('std', np.std), ('min', np.min), ('max', np.max), ('median', np.median))}
+    stats.update(row_max_mean=float(cosine.max(axis=1).mean()),
+                 column_max_mean=float(cosine.max(axis=0).mean()))
+    for name, axis in (('row', 1), ('column', 0)):
+        if cosine.shape[axis] < 2:
+            stats[f'mean_{name}_peak_margin'] = stats[f'median_{name}_peak_margin'] = None
+        else:
+            top = np.partition(cosine, -2, axis=axis)
+            margin = np.take(top, -1, axis=axis) - np.take(top, -2, axis=axis)
+            stats[f'mean_{name}_peak_margin'] = float(margin.mean())
+            stats[f'median_{name}_peak_margin'] = float(np.median(margin))
+    routes = result['match']['regions']
+    all_pairs = [tuple(p) for r in routes for p in r['pairs']]
+    off = np.ones(cosine.shape, bool)
+    for i, j in all_pairs:
+        off[i, j] = False
+    background = cosine[off]
+    off_mean = float(background.mean()) if background.size else None
+    stats['off_path_mean_cosine'] = off_mean
+    stats['off_path_median_cosine'] = float(np.median(background)) if background.size else None
+
+    def route_stats(pairs):
+        values = np.array([cosine[i, j] for i, j in pairs])
+        steps = [(b[0]-a[0], b[1]-a[1]) for a, b in zip(pairs, pairs[1:])]
+        horizontal = sum(i == 0 and j > 0 for i, j in steps)
+        vertical = sum(j == 0 and i > 0 for i, j in steps)
+        mean = float(values.mean()) if values.size else None
+        return dict(number_of_matched_pairs=len(pairs),
+                    path_mean_cosine=mean,
+                    path_median_cosine=float(np.median(values)) if values.size else None,
+                    path_min_cosine=float(values.min()) if values.size else None,
+                    off_path_mean_cosine=off_mean,
+                    off_path_median_cosine=stats['off_path_median_cosine'],
+                    path_contrast=mean-off_mean if mean is not None and off_mean is not None else None,
+                    horizontal_repeats=horizontal, vertical_repeats=vertical,
+                    diagonal_steps=sum(i == 1 and j == 1 for i, j in steps),
+                    transition_count=len(steps))
+    region_rows = [route_stats([tuple(p) for p in route['pairs']]) for route in routes]
+    stats.update(route_stats(all_pairs))
+    # Never count the transition between two disjoint regions as part of a route.
+    for name in ('horizontal_repeats', 'vertical_repeats', 'diagonal_steps', 'transition_count'):
+        stats[name] = sum(r[name] for r in region_rows)
+    stats['repeat_fraction'] = ((stats['horizontal_repeats'] + stats['vertical_repeats']) /
+                                stats['transition_count'] if stats['transition_count'] else 0.)
+    warnings = []
+    for side, name in enumerate(('a', 'b')):
+        physical = np.asarray(result['lines'][side]['physical'])
+        selected = {int(physical[p[side]]) for p in all_pairs}
+        stats['distinct_windows_' + name] = len(selected)
+        stats['window_coverage_' + name] = len(selected) / len(physical)
+        stats['physical_ranges_' + name] = []
+        for route, row in zip(routes, region_rows):
+            ids = [int(physical[p[side]]) for p in route['pairs']]
+            interval = [min(ids), max(ids)] if ids else None
+            stats['physical_ranges_' + name].append(interval)
+            row['physical_range_' + name] = interval
+            row['distinct_windows_' + name] = len(set(ids))
+            row['window_coverage_' + name] = len(set(ids)) / len(physical)
+            if len(ids) > 4 and len(set(ids)) == 1:
+                warnings.append(f'route repeatedly uses one {name.upper()} window')
+            if any(abs(a-b) > 2 for a, b in zip(ids, ids[1:])):
+                warnings.append(f'route jumps over physical {name.upper()} windows')
+        if stats['window_coverage_' + name] > .8 and (stats['path_contrast'] or 0) < .1:
+            warnings.append(f'near-whole-line {name.upper()} coverage with weak path contrast')
+    if stats['repeat_fraction'] > .5:
+        warnings.append('more than half of within-region transitions repeat a window')
+    for row in region_rows:
+        row['repeat_fraction'] = ((row['horizontal_repeats'] + row['vertical_repeats']) /
+                                  row['transition_count'] if row['transition_count'] else 0.)
+    stats.update(route_warnings=sorted(set(warnings)), region_diagnostics=region_rows)
+    return stats
+
+
+def indexing_sanity(result, config):
+    """Assert compact features, RTL identities, and source-pixel mask footprints."""
+    rows = []
+    for side, name in enumerate(('A', 'B')):
+        line = result['lines'][side]
+        valid, full = np.asarray(line['token_valid'], bool), np.asarray(line['full_physical'])
+        physical, logical = np.asarray(line['physical']), np.asarray(line['logical'])
+        assert valid.ndim == 1 and valid.shape == full.shape
+        assert np.array_equal(logical, np.flatnonzero(valid))
+        assert np.array_equal(physical, full[valid]) and (physical >= 0).all()
+        assert (full[~valid] == -1).all()
+        expected = np.arange(len(full))[::-1] if config.rtl else np.arange(len(full))
+        assert np.array_equal(full[valid], expected[valid]), 'RTL/physical identity mismatch'
+        for representation in REPRESENTATIONS:
+            assert line['features'][representation].shape[0] == valid.sum()
+        geometry = line['geometry']
+        assert result['masks'][side].shape == tuple(reversed(geometry['source_size']))
+        selected = {p for r in result['match']['regions'] for p in
+                    r['supported_physical'][side] + r['filled_physical'][side]}
+        assert selected <= set(physical.tolist()), 'Invalid/padded mask support'
+        for p in physical:
+            a, b = source_interval(int(p), geometry, config.window_width, config.window_stride)
+            x0, _, x1, _ = geometry['crop']
+            assert x0 <= a < b <= x1
+            expected_a = x0 + int(p)*config.window_stride/geometry['scale_x']
+            expected_b = min(x1, x0+(int(p)*config.window_stride+config.window_width)/geometry['scale_x'])
+            assert np.allclose([a, b], [expected_a, expected_b])
+        rebuilt = region_mask(result['match']['regions'], side, geometry, config.window_width, config.window_stride)
+        assert np.array_equal(rebuilt, result['masks'][side]), 'Mask/physical geometry mismatch'
+        rows.append(dict(line=name, total_windows=len(valid), valid_windows=int(valid.sum()),
+                         padded_windows=int((~valid).sum()),
+                         physical_range=[int(physical.min()), int(physical.max())],
+                         rtl=config.rtl, status='passed'))
+    assert result['cosine'].shape == tuple(row['valid_windows'] for row in rows)
+    return rows
+
+
 def annotation_ground_truth_available(annotation):
     """Usable GT from pair metadata: an existing mask image or exact-size intervals."""
     annotation = annotation or {}
@@ -362,6 +701,8 @@ def annotation_ground_truth_available(annotation):
 
 
 def _boxes_available(side):
+    if side.get('bounding_boxes'):
+        return bool(exported_line_boxes(side))
     return any((parent / 'debug' / 'bboxes.json').is_file() for parent in Path(side['image']).parents)
 
 
@@ -520,8 +861,12 @@ def boxes_ground_truth(pair):
         with Image.open(image) as source:
             sizes.append(source.size)           # (width, height)
     boxes, statuses = [], []
-    for (width, _), image in zip(sizes, images):
-        side_boxes, status = _page_line_boxes(image, width)
+    for side, (width, _), image in zip(pair['sides'], sizes, images):
+        if side.get('bounding_boxes'):
+            side_boxes = exported_line_boxes(side)
+            status = 'verified exported boxes (derived)' if side_boxes else 'exported boxes unavailable or need review'
+        else:
+            side_boxes, status = _page_line_boxes(image, width)
         boxes.append(side_boxes)
         statuses.append(status)
     if not all(boxes):
@@ -541,7 +886,8 @@ def boxes_ground_truth(pair):
             if x1 > x0:
                 mask[:, x0:x1] = True
         masks.append(mask)
-    return masks, f'page debug/bboxes.json LCS: {len(pairs)} matched units in {len(runs)} run(s)'
+    source = 'verified exported subword-box LCS (derived)' if all(s.get('bounding_boxes') for s in pair['sides']) else 'page debug/bboxes.json LCS'
+    return masks, f'{source}: {len(pairs)} matched units in {len(runs)} run(s)'
 
 
 def load_pair_ground_truth(pair, lines):
@@ -558,7 +904,7 @@ def load_pair_ground_truth(pair, lines):
             if fallback is None:
                 fallback, detail = boxes_ground_truth(pair)
             gt = fallback[side]
-            source = ('built from page debug/bboxes.json subword LCS' if gt is not None
+            source = (f'built from {detail}' if gt is not None
                       else f'unavailable ({detail})')
         if gt is not None and gt.shape != shape:
             raise ValueError('Ground-truth/source geometry mismatch; resizing is forbidden')
@@ -731,6 +1077,13 @@ def compute_pair_metrics(result, config, *, preloaded_ground_truth=None):
         if all(f'{s}_{metric}' in metrics for s in ('a', 'b')):
             metrics['pair_mean_' + metric] = (metrics['a_' + metric] + metrics['b_' + metric]) / 2
     metrics.update(evaluation_category(pair,ground_truth))
+    diagnostics = representation_diagnostics(result)
+    # Preserve the legacy decoder-comparison contract: repeat-state fields
+    # are unavailable for Smith-Waterman, even though route steps can be counted.
+    if result['settings'].get('alignment_mode') != 'local_repeat_dtw':
+        diagnostics.pop('horizontal_repeats')
+        diagnostics.pop('vertical_repeats')
+    metrics.update(diagnostics)
     return metrics, ground_truth
 
 
@@ -804,14 +1157,17 @@ def retrieval_metrics(session, representation='fused', negatives=20, max_queries
     if max_queries:
         queries = rng.sample(queries, min(max_queries, len(queries)))
     rows = []
+    def membership(key):
+        return session.allowed[session.line_aliases.get(key, key)]
+
     for a in tqdm(queries, desc='Test retrieval'):
         relevant = {_side_key(p['sides'][1]) for p in by_a[a]}
         line_a = by_a[a][0]['sides'][0]
         pool = [b for b in sorted(candidates) if b not in relevant and b != a and
                 ((a, b) in explicit_negatives or
-                 (session.allowed[a]['group_id'] != session.allowed[b]['group_id']
-                  and not session.allowed[a]['pair_ids'] & session.allowed[b]['pair_ids']
-                  and not session.allowed[a]['anchors'] & session.allowed[b]['anchors']))]
+                 (membership(a)['group_id'] != membership(b)['group_id']
+                  and not membership(a)['pair_ids'] & membership(b)['pair_ids']
+                  and not membership(a)['anchors'] & membership(b)['anchors']))]
         selected = rng.sample(pool, min(negatives, len(pool)))
         if not selected:
             continue
@@ -944,12 +1300,69 @@ def _overlay(image, mask, color=(255, 70, 20), alpha=.4):
     return pixels.astype(np.uint8)
 
 
-def plot_pair_alignment(session, result, show_gt=False, max_rejected_paths=5):
+def _window_tick_indices(count):
+    """Use the same readable round-number ticks on lines and heatmaps."""
+    from matplotlib.ticker import MaxNLocator
+    if count < 2:
+        return np.arange(count, dtype=int)
+    ticks = MaxNLocator(nbins=7, steps=[1, 2, 5, 10], integer=True).tick_values(0, count - 1)
+    ticks = ticks[(ticks >= 0) & (ticks < count)].astype(int)
+    return np.unique(np.r_[0, ticks])
+
+
+def set_line_window_axis(ax, line, window_width, window_stride, *, side='A', rtl=False):
+    """Label source pixels by their corresponding compact heatmap indices.
+
+    Window identity follows the filtered feature order used by the heatmap,
+    including RTL reversal and any excluded/padded windows. Image pixels and
+    mask geometry stay unchanged; ticks sit at source-space window centers.
+    """
+    intervals = [source_interval(int(p), line['geometry'], window_width, window_stride)
+                 for p in line['physical']]
+    centers = np.asarray([(start + end) / 2 for start, end in intervals])
+    indices = _window_tick_indices(len(centers))
+    ax.set_xticks(centers[indices], [str(index) for index in indices])
+    ax.set_xticks(centers, minor=True)
+    dimension = 'rows' if side.upper() == 'A' else 'columns'
+    order = 'RTL' if rtl else 'LTR'
+    ax.set_xlabel(f'Line {side.upper()} window index (heatmap {dimension}; {order})')
+    if len(centers):
+        ax.fmt_xdata = lambda x: f'window {int(np.abs(centers - x).argmin())}'
+    return ax
+
+
+def _show_input_crop(figure, result):
+    """Display source-image panels within the actual preprocessing crop."""
+    for ax in figure.axes:
+        title = ax.get_title().lower()
+        side = (0 if 'line a' in title or title.startswith('a:') else
+                1 if 'line b' in title or title.startswith('b:') else None)
+        if side is None or not ax.images:
+            continue
+        image = ax.images[0]
+        pixels = np.asarray(image.get_array())
+        geometry = result['lines'][side]['geometry']
+        if pixels.shape[:2] != tuple(reversed(geometry['source_size'])):
+            continue
+        x0, y0, x1, y1 = geometry['crop']
+        image.set_data(pixels[y0:y1, x0:x1])
+        image.set_extent((x0-.5, x1-.5, y1-.5, y0-.5))
+        ax.set_xlim(x0-.5, x1-.5)
+        ax.set_ylim(y1-.5, y0-.5)
+        ax.set_title(ax.get_title().replace('original full line', 'actual input crop'))
+    return figure
+
+
+def plot_pair_alignment(session, result, show_gt=False, max_rejected_paths=5, diagnostic=False,
+                        show_input_crop=False, show_window_indices=True):
     """Simplified full-line figure: originals, predicted and ground-truth
     masks/overlays, similarity heatmaps and the metrics panel.
 
     No model-input window grids, extracted-window strips or other
     split-window visualizations are shown.
+
+    With ``show_window_indices``, source-image x ticks use heatmap indices,
+    placed at the corresponding window centers without altering image geometry.
     """
     import matplotlib.pyplot as plt
     pair, metrics = result['pair'], result['metrics']
@@ -966,6 +1379,39 @@ def plot_pair_alignment(session, result, show_gt=False, max_rejected_paths=5):
     for side in range(2):
         with Image.open(pair['sides'][side]['image']) as image:
             originals.append(image.convert('RGB'))
+    if diagnostic:
+        fig = plt.figure(figsize=(18, 10 if show_gt else 8), constrained_layout=True)
+        grid = fig.add_gridspec(4 if show_gt else 3, 2, height_ratios=([4, 1, 1, 1] if show_gt else [4, 1, 1]))
+        ax = fig.add_subplot(grid[0, :])
+        heat = ax.imshow(result['cosine'], origin='lower', aspect='auto', cmap='coolwarm', vmin=-1, vmax=1)
+        plot_match_routes(ax, result['match'], max_rejected_paths)
+        ax.set(title=f'{result["representation"].upper()} — raw cosine and predicted route',
+               xlabel='B logical windows (reading order)', ylabel='A logical windows (reading order)')
+        if show_window_indices:
+            ax.set_xticks(_window_tick_indices(result['cosine'].shape[1]))
+            ax.set_yticks(_window_tick_indices(result['cosine'].shape[0]))
+        fig.colorbar(heat, ax=ax, label='Raw cosine')
+        for side, name in enumerate(('A', 'B')):
+            ax = fig.add_subplot(grid[1, side])
+            ax.imshow(result['masks'][side] > 0, cmap='gray', vmin=0, vmax=1, aspect='auto')
+            ax.set_title(f'{name}: predicted mask'); ax.set_yticks([])
+            ax = fig.add_subplot(grid[2, side])
+            ax.imshow(_overlay(originals[side], result['masks'][side]), aspect='auto')
+            ax.set_title(f'{name}: predicted source-image overlay'); ax.set_yticks([])
+            if show_gt:
+                ax = fig.add_subplot(grid[3, side]); gt = result['ground_truth'][side]
+                if gt is not None:
+                    ax.imshow(_overlay(originals[side], gt, (0, 200, 80)), aspect='auto')
+                ax.set_title(f'{name}: GT overlay (scoring only)' if gt is not None else f'{name}: GT unavailable')
+                ax.set_yticks([])
+        if show_window_indices:
+            for side, name in enumerate(('A', 'B')):
+                for ax in fig.axes:
+                    if ax.images and ax.get_title().startswith(f'{name}:'):
+                        set_line_window_axis(ax, result['lines'][side], session.config.window_width,
+                                             session.config.window_stride, side=name, rtl=session.config.rtl)
+        fig.suptitle(f'{pair["sample_id"]} | {result["representation"].upper()} | pair score={metrics["pair_score"]:.4f}')
+        return _show_input_crop(fig, result) if show_input_crop else fig
     fig = plt.figure(figsize=(19, 30) if show_gt else (19, 24))
     fig.subplots_adjust(left=.05, right=.95, top=.94, bottom=.03, hspace=.65, wspace=.15)
     grid = fig.add_gridspec(7, 2, height_ratios=[1, 1, 1, 1, 1, 2.4, 4]) if show_gt else fig.add_gridspec(5, 2, height_ratios=[1, 1, 1, 2.4, 4])
@@ -999,6 +1445,9 @@ def plot_pair_alignment(session, result, show_gt=False, max_rejected_paths=5):
                 ax.imshow(image, aspect='auto')
             ax.set_title(title)
             ax.set_yticks([])
+            if show_window_indices:
+                set_line_window_axis(ax, result['lines'][side], session.config.window_width,
+                                     session.config.window_stride, side=name, rtl=session.config.rtl)
     order = 'RTL reading order' if session.config.rtl else 'LTR reading order'
     for side, (matrix, title) in enumerate(((result['cosine'], 'Raw cosine similarity'),
                                             (result['match']['rewards'], 'Alignment rewards (NOT cosine/probability)'))):
@@ -1008,6 +1457,9 @@ def plot_pair_alignment(session, result, show_gt=False, max_rejected_paths=5):
         plot_match_routes(ax, result['match'], max_rejected_paths)
         ax.set(xlabel=f'Line B window indices ({order})', ylabel=f'Line A window indices ({order})',
                title=f'{title}: {matrix.shape[0]}×{matrix.shape[1]}, {result["representation"]}')
+        if show_window_indices:
+            ax.set_xticks(_window_tick_indices(matrix.shape[1]))
+            ax.set_yticks(_window_tick_indices(matrix.shape[0]))
         if not result['match']['regions']:
             ax.text(.5, .95, 'NO ACCEPTED REGION', transform=ax.transAxes, ha='center', va='top',
                     bbox=dict(facecolor='white', alpha=.8))
@@ -1033,7 +1485,7 @@ def plot_pair_alignment(session, result, show_gt=False, max_rejected_paths=5):
     scope = 'TRAIN (in-sample)' if session.split == 'train' else session.split.upper()
     fig.suptitle(f'{scope} | {label} | {pair["sample_id"]} | {result["representation"]} | '
                  f'score={metrics["pair_score"]:.4f}', fontsize=13)
-    return fig
+    return _show_input_crop(fig, result) if show_input_crop else fig
 
 
 def plot_candidate_crops(session, result, top_k=5):
@@ -1058,17 +1510,52 @@ def plot_candidate_crops(session, result, top_k=5):
     return fig
 
 
-def plot_representation_comparison(session, pair):
+def plot_representation_comparison(session, pair, *, results=None, show_masks=False,
+                                   max_rejected_paths=5, show_window_indices=True):
+    """Compare one pair across representations, optionally using cached results.
+
+    With show_masks, each column also shows A/B masks and source overlays.
+    """
     import matplotlib.pyplot as plt
-    fig, axes = plt.subplots(1, 3, figsize=(19, 5), constrained_layout=True)
+    fig, axes = plt.subplots(5 if show_masks else 1, 3,
+        figsize=(20, 11) if show_masks else (19, 5), squeeze=False,
+        gridspec_kw={'height_ratios': [4, 1, 1, 1, 1]} if show_masks else {},
+        constrained_layout=True)
+    originals = []
+    if show_masks:
+        for side in pair['sides']:
+            with Image.open(side['image']) as image:
+                originals.append(image.convert('RGB'))
     scores = {}
-    for name, ax in zip(REPRESENTATIONS, axes):
-        result = session.predict_pair(pair, name)
+    for column, name in enumerate(REPRESENTATIONS):
+        ax = axes[0, column]
+        result = session.predict_pair(pair, name) if results is None else results[name]
+        if result['pair']['sample_id'] != pair['sample_id'] or result['representation'] != name:
+            raise ValueError('Representation comparison requires the same pair in every column')
         scores[name] = max((r['score'] for r in result['match']['regions']), default=0.)
         heat = ax.imshow(result['cosine'], origin='lower', aspect='auto', cmap='coolwarm', vmin=-1, vmax=1)
-        plot_match_routes(ax, result['match'])
+        plot_match_routes(ax, result['match'], max_rejected_paths)
         ax.set(title=f'{name.upper()} score={scores[name]:.4f}', xlabel='B logical windows', ylabel='A logical windows')
-    fig.colorbar(heat, ax=axes, label='Raw cosine'); fig.suptitle(pair['sample_id'])
+        if show_window_indices:
+            ax.set_xticks(_window_tick_indices(result['cosine'].shape[1]))
+            ax.set_yticks(_window_tick_indices(result['cosine'].shape[0]))
+        if not result['match']['regions']:
+            ax.text(.5, .95, 'NO ACCEPTED REGION', transform=ax.transAxes, ha='center', va='top',
+                    bbox=dict(facecolor='white', alpha=.8))
+        if show_masks:
+            for side, label in enumerate(('A', 'B')):
+                mask_ax, overlay_ax = axes[1 + 2 * side, column], axes[2 + 2 * side, column]
+                mask_ax.imshow(np.asarray(result['masks'][side]) > 0,
+                               cmap='gray', vmin=0, vmax=1, aspect='auto')
+                mask_ax.set_title(f'{label}: predicted mask'); mask_ax.set_yticks([])
+                overlay_ax.imshow(_overlay(originals[side], result['masks'][side]), aspect='auto')
+                overlay_ax.set_title(f'{label}: predicted source-image overlay'); overlay_ax.set_yticks([])
+                if show_window_indices:
+                    for image_ax in (mask_ax, overlay_ax):
+                        set_line_window_axis(image_ax, result['lines'][side], session.config.window_width,
+                                             session.config.window_stride, side=label, rtl=session.config.rtl)
+    fig.colorbar(heat, ax=list(axes[0]), label='Raw cosine')
+    fig.suptitle(f'{pair["sample_id"]} — same pair: LOCAL / CONTEXT / FUSED')
     return fig, scores
 
 
