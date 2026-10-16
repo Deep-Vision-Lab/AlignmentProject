@@ -4,13 +4,44 @@ import torch
 from dataloader import create_dataloaders
 from parameters import Config
 from text_embedding import OrthogonalCharEmbedding
-from train import build_model, load_checkpoint, main, train_one_epoch, validate_one_epoch
+from train import build_model, load_checkpoint, main, save_checkpoint, train_one_epoch, validate_one_epoch
 from test_dataset import make_synthetic
 
 
 def tiny_config():
     return Config(cnn_type='simple',cnn_pretrained=False,image_height=32,image_width=64,
                   batch_size=3,num_workers=0,sigreg_sketch_dim=8,sigreg_min_samples=2)
+
+
+def test_checkpoint_with_retired_local_loss_weight_preserves_predictions(tmp_path):
+    config = tiny_config()
+    model = build_model(config).eval()
+    text = OrthogonalCharEmbedding(config.embedding_dim, config.text_vocab_size,
+                                  config.text_embedding_seed)
+    path = tmp_path / 'phase3.pt'
+    save_checkpoint(path, model, None, 1, 1., config, text,
+                    dict(train=[], val=[], test=[]))
+    saved = torch.load(path, map_location='cpu', weights_only=False)
+    saved['config']['local_positive_dtw_weight'] = .3
+    torch.save(saved, path)
+
+    restored, restored_text, restored_config, restored_saved = load_checkpoint(path)
+    assert restored_config == config
+    assert restored_saved['config']['local_positive_dtw_weight'] == .3
+    for key, tensor in model.state_dict().items():
+        torch.testing.assert_close(restored.state_dict()[key], tensor, rtol=0, atol=0)
+    for key, tensor in text.state_dict().items():
+        torch.testing.assert_close(restored_text.state_dict()[key], tensor, rtol=0, atol=0)
+    inputs = torch.randn(1, 1, 32, 64)
+    with torch.no_grad():
+        expected, actual = model(inputs), restored(inputs)
+    for representation in ('local', 'context', 'fused'):
+        torch.testing.assert_close(actual[representation], expected[representation], rtol=0, atol=0)
+
+    saved['config']['unexpected_architecture_option'] = True
+    torch.save(saved, path)
+    with pytest.raises(TypeError, match='unexpected_architecture_option'):
+        load_checkpoint(path)
 
 
 def test_one_epoch_checkpoint_reload_and_automatic_validation(tmp_path,capsys):

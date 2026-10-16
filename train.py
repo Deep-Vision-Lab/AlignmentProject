@@ -534,11 +534,16 @@ def save_checkpoint(path,model,optimizer,epoch,best_val,config,text_encoder,spli
 
 
 def load_checkpoint(path,device='cpu'):
-    """Strict new-format reconstruction. Legacy checkpoints are not migrated."""
+    """Reconstruct format-1 checkpoints with strict model-state validation."""
     saved = torch.load(path,map_location='cpu',weights_only=False)  # trusted project checkpoints include RNG metadata
     if saved.get('format_version') != 1 or saved.get('architecture_family') != 'simple-alignment-core':
         raise ValueError('Incompatible legacy checkpoint: expected standalone simple-alignment-core format 1')
-    config = Config(**saved['config'])
+    # Phase 3/4 checkpoints saved this now-retired local auxiliary loss weight.
+    # It affected training only; reconstruction uses the already-trained weights.
+    # Preserve saved['config'] for provenance and reject other unknown fields.
+    config_values = dict(saved['config'])
+    config_values.pop('local_positive_dtw_weight', None)
+    config = Config(**config_values)
     model = build_model(config,initialize=False).to(device)
     state = dict(saved['model'])
     # Checkpoints saved before the concat projection was named: migrate the old

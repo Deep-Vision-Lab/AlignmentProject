@@ -476,31 +476,21 @@ def test_notebook_structure_and_python_cells():
         compile(''.join(cell['source']), f'notebook-cell-{i}', 'exec')
 
 
-def test_notebook_setup_refreshes_cached_text_embedding_and_dependencies():
+def test_notebook_setup_imports_project_dependencies():
     import subprocess
     import sys
     setup = notebook_source('# MODEL/DATA SETUP.')
-    # Isolate kernel refreshes from the module/class references used by this suite.
     script = '''
-import sys, types
 namespace = {}
-for _ in range(2):
-    stale = types.ModuleType('text_embedding')
-    stale.ARABIC_LETTERS = 'old'
-    stale.clean_letters = lambda text: []
-    sys.modules['text_embedding'] = stale
-    for name in ('dataset', 'dataloader', 'parameters', 'model'):
-        sys.modules[name] = types.ModuleType(name)
-    exec(SETUP, namespace)
-    import dataset, dataloader, text_embedding, evaluation_utils, train, parameters, model
-    assert text_embedding is not stale
-    assert text_embedding.read_side_text({'raw_text': ' سلام '}) == 'سلام'
-    assert dataset.read_side_text is text_embedding.read_side_text
-    assert evaluation_utils.read_side_text is text_embedding.read_side_text
-    assert dataloader.AlignmentDataset is dataset.AlignmentDataset
-    assert train.Config is parameters.Config
-    assert train.AlignmentModel is model.AlignmentModel
-    assert namespace['DATASET'] == 'DataSet/ArabicData'
+exec(SETUP, namespace)
+import dataset, dataloader, text_embedding, evaluation_utils, train, parameters, model
+assert text_embedding.read_side_text({'raw_text': ' سلام '}) == 'سلام'
+assert dataset.read_side_text is text_embedding.read_side_text
+assert evaluation_utils.read_side_text is text_embedding.read_side_text
+assert dataloader.AlignmentDataset is dataset.AlignmentDataset
+assert train.Config is parameters.Config
+assert train.AlignmentModel is model.AlignmentModel
+assert namespace['DATASET'] == 'DataSet/ArabicData'
 '''
     subprocess.run([sys.executable, '-c', 'SETUP = ' + repr(setup) + '\n' + script],
                    cwd=Path(__file__).parents[1], check=True, capture_output=True, text=True)

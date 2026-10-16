@@ -162,6 +162,12 @@ best validation score, split IDs/hash, metrics and initialization provenance. Ol
 
 ## Evaluation
 
+For automatic evaluation-parameter tuning, run
+`python scripts/eval/tune_matching.py --n-trials 200`. It searches a frozen
+checkpoint's matcher on its saved validation split, maximizes mean mask IoU across
+A/B on mask-positive pairs, and saves resumable trials and ready-to-use best
+settings. See [the search ranges, objective, and commands](docs/matching_parameter_search.md).
+
 `notebooks/model_evaluation.ipynb` ends with Phase 1 representation diagnostics.
 Run the notebook's checkpoint setup, session, and matching-settings cells, then
 execute the Phase 1 cells in order; results appear inline, with no runner script.
