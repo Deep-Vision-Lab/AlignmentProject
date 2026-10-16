@@ -19,6 +19,35 @@ ROOT = Path(__file__).resolve().parents[1]
 OPERATIONS = 'substitute,adjacent,blocks,words,shift,shuffle'
 
 
+def test_existing_run_requires_explicit_resume_before_sbatch(tmp_path):
+    fake_bin = tmp_path / 'bin'
+    fake_bin.mkdir()
+    sbatch = fake_bin / 'sbatch'
+    sbatch.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n')
+    sbatch.chmod(0o755)
+    output_root = tmp_path / 'weights'
+    run_dir = output_root / 'existing_run'
+    run_dir.mkdir(parents=True)
+    checkpoint = run_dir / 'checkpoint_latest.pt'
+    checkpoint.write_bytes(b'checkpoint placeholder')
+    env = dict(os.environ, PATH=f'{fake_bin}:{os.environ["PATH"]}',
+               RUN_NAME='existing_run', FUSION_MODE='sum', USE_GATED_FUSION='0')
+    command = ['bash', str(ROOT / 'scripts/train/train.sh'), 'real',
+               '--output-root', str(output_root)]
+
+    rejected = subprocess.run(command, cwd=tmp_path, env=env, text=True, capture_output=True)
+    assert rejected.returncode == 2
+    assert 'Run directory already exists' in rejected.stderr
+    assert '--resume' in rejected.stderr
+    assert 'scripts/train/train.sbatch' not in rejected.stdout
+
+    submitted = subprocess.run([*command, '--resume', str(checkpoint)],
+                               cwd=tmp_path, env=env, text=True,
+                               capture_output=True, check=True)
+    assert f'Resume from   : {checkpoint}' in submitted.stdout
+    assert submitted.stdout.splitlines()[-2:] == ['--resume', str(checkpoint)]
+
+
 def test_offline_wrapper_forwards_all_negative_flags(tmp_path):
     fake_bin = tmp_path / 'bin'
     fake_bin.mkdir()

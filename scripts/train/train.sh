@@ -70,13 +70,47 @@ fi
 
 export FUSION_MODE USE_GATED_FUSION
 
+# Catch accidental reuse before allocating GPUs. Resuming must be explicit;
+# silently treating an existing directory as a resume could mix experiments.
+OUTPUT_ROOT=Weights
+RESUME_CHECKPOINT=
+arguments=("$@")
+for ((index=0; index<${#arguments[@]}; index++)); do
+    case "${arguments[index]}" in
+        --output-root)
+            OUTPUT_ROOT="${arguments[index+1]:-}"
+            ;;
+        --output-root=*)
+            OUTPUT_ROOT="${arguments[index]#*=}"
+            ;;
+        --resume)
+            RESUME_CHECKPOINT="${arguments[index+1]:-}"
+            ;;
+        --resume=*)
+            RESUME_CHECKPOINT="${arguments[index]#*=}"
+            ;;
+    esac
+done
+if [[ -d "$OUTPUT_ROOT/$RUN_NAME" && -z "$RESUME_CHECKPOINT" ]]; then
+    echo "Run directory already exists: $OUTPUT_ROOT/$RUN_NAME" >&2
+    echo "To continue it, pass --resume $OUTPUT_ROOT/$RUN_NAME/checkpoint_latest.pt; otherwise choose a new RUN_NAME." >&2
+    exit 2
+fi
+if [[ -n "$RESUME_CHECKPOINT" && ! -f "$RESUME_CHECKPOINT" ]]; then
+    echo "Resume checkpoint does not exist: $RESUME_CHECKPOINT" >&2
+    exit 2
+fi
+
 echo "========================================"
 echo "Training type : $TYPE"
 echo "Dataset       : $DATASET"
 echo "Run name      : $RUN_NAME"
-echo "Weights       : Weights/$RUN_NAME"
+echo "Weights       : $OUTPUT_ROOT/$RUN_NAME"
 echo "Fusion mode   : $FUSION_MODE"
 echo "Gated fusion  : $USE_GATED_FUSION"
+if [[ -n "$RESUME_CHECKPOINT" ]]; then
+    echo "Resume from   : $RESUME_CHECKPOINT"
+fi
 echo "========================================"
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
