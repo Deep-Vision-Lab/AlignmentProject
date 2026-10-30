@@ -687,10 +687,13 @@ def evaluate_loss(checkpoint,dataset,split='test',device='cpu',max_batches=0):
                 split_manifest_sha256=saved['split_manifest_sha256'])
 
 
-def evaluate_pair(checkpoint,paths,output,device='cpu',representation='fused',crop_override=None,
+def evaluate_pair(checkpoint,paths,output,device='cpu',representation=None,crop_override=None,
                   ground_truth=(None,None),selection=None,line_bboxes=(None,None),**settings):
     model,_text,config,saved=load_checkpoint(checkpoint,device)
+    representation = representation or ('context' if config.fusion_mode == 'context' else 'fused')
     if representation not in {'local','context','fused'}: raise ValueError('Unknown representation')
+    if config.fusion_mode == 'context' and representation == 'fused':
+        raise ValueError('CONTEXT-only checkpoint has no trained fusion head; use --representation context')
     output=Path(output)
     output.mkdir(parents=True,exist_ok=False)
     features,physical,geometry,originals,validity,full_physical=[],[],[],[],[],[]
@@ -776,7 +779,8 @@ def main(argv=None):
     parser.add_argument('--image-a');parser.add_argument('--image-b')
     parser.add_argument('--record-indices',nargs=2,type=int)
     parser.add_argument('--output')
-    parser.add_argument('--representation',choices=['fused','local','context'],default='fused')
+    parser.add_argument('--representation',choices=['fused','local','context'],default=None,
+                        help='Defaults to CONTEXT for context-only checkpoints, otherwise FUSED')
     parser.add_argument('--crop-override',choices=['none'],help='Explicit full-source preprocessing ablation')
     parser.add_argument('--gt-a');parser.add_argument('--gt-b')
     parser.add_argument('--bbox-a',nargs=4,type=float);parser.add_argument('--bbox-b',nargs=4,type=float)

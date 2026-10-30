@@ -15,13 +15,15 @@ def extract_windows(images, window_width=32, stride=16):
 
 
 def validate_fusion_config(fusion_mode='concat', use_gated_fusion=0):
-    if fusion_mode not in ('concat', 'sum'):
-        raise ValueError('fusion_mode must be concat or sum')
+    if fusion_mode not in ('concat', 'sum', 'context'):
+        raise ValueError('fusion_mode must be concat, sum or context')
     if use_gated_fusion not in (0, 1, False, True):
         raise ValueError('use_gated_fusion must be 0 or 1')
     gated = bool(use_gated_fusion)
     if fusion_mode == 'concat' and gated:
         raise ValueError('Invalid fusion configuration: concat + gate ON is unsupported')
+    if fusion_mode == 'context' and gated:
+        raise ValueError('Context-only mode bypasses fusion; gate must be OFF')
     return fusion_mode, gated
 
 
@@ -33,7 +35,10 @@ class SelectableFusion(nn.Module):
         self.context_projection = nn.Identity()
         self.concat_projection = None
         self.gate_mlp = None
-        if self.mode == 'concat':
+        if self.mode == 'context':
+            if context_dim != output_dim:
+                raise ValueError('Context-only mode requires matching Transformer/output dimensions')
+        elif self.mode == 'concat':
             self.concat_projection = nn.Linear(local_dim + context_dim, output_dim)
         else:
             if local_dim != output_dim:
@@ -48,6 +53,8 @@ class SelectableFusion(nn.Module):
                 )
 
     def forward(self, local, context):
+        if self.mode == 'context':
+            return context, None
         if self.mode == 'concat':
             return self.concat_projection(torch.cat((local, context), dim=-1)), None
         local_projected = self.local_projection(local)
@@ -80,9 +87,10 @@ class AlignmentModel(nn.Module):
         self.transformer = TransformerEncoder(transformer_type, embedding_dim,
                                                use_positional_encoding, transformer_dropout,
                                                transformer_layers, transformer_heads)
-        self.fusion = SelectableFusion(embedding_dim, self.transformer.dim, embedding_dim,
-                                       self.fusion_mode, self.use_gated_fusion)
-        self.fusion_norm = nn.LayerNorm(embedding_dim)
+        self.fusion = (None if self.fusion_mode == 'context' else
+                       SelectableFusion(embedding_dim, self.transformer.dim, embedding_dim,
+                                        self.fusion_mode, self.use_gated_fusion))
+        self.fusion_norm = nn.Identity() if self.fusion is None else nn.LayerNorm(embedding_dim)
 
     def forward(self, images, token_valid=None, valid_widths=None):
         windows = extract_windows(images, self.window_width, self.stride)
@@ -110,8 +118,13 @@ class AlignmentModel(nn.Module):
         if self.rtl:
             local, valid, physical = local.flip(1), valid.flip(1), physical.flip(1)
         context = self.transformer(local, valid)
-        fused, gate = self.fusion(local, context)
-        pre_l2 = self.fusion_norm(fused)
+        if self.fusion is None:
+            # The Transformer already ends with LayerNorm. No external local
+            # residual, projection, learned normalization or gate is active.
+            pre_l2, gate = context, None
+        else:
+            fused, gate = self.fusion(local, context)
+            pre_l2 = self.fusion_norm(fused)
         fused = F.normalize(pre_l2.float(), dim=-1)
         return dict(local=local, context=context, fused=fused, fused_pre_l2=pre_l2,
                     token_valid=valid, physical_window_indices=physical,

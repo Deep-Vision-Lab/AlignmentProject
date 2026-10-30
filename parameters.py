@@ -94,6 +94,8 @@ class Config:
 
 def validate_objective(config):
     import math
+    if config.fusion_mode == 'context' and config.local_positive_dtw_weight:
+        raise ValueError('Context-only mode requires local_positive_dtw_weight=0')
     if not math.isfinite(config.local_positive_dtw_weight) or config.local_positive_dtw_weight < 0:
         raise ValueError('local_positive_dtw_weight must be finite and nonnegative')
     if config.alignment_objective not in {'dtw', 'ctc'}:

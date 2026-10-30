@@ -511,7 +511,7 @@ def compute_loss(output, texts, text_embedding, config, *, negative_texts=None, 
         local_positive, local_counts = positive_dtw_loss(
             output['local'], texts, text_embedding, config, valid)
         if local_counts['evaluated'] != counts['evaluated']:
-            raise ValueError('LOCAL and FUSED positive DTW evaluated different line counts')
+            raise ValueError('LOCAL and main positive DTW evaluated different line counts')
         local_for_gradient = local_positive
         if distributed_statistics and dist.is_available() and dist.is_initialized():
             local_for_gradient = (local_positive * local_counts['evaluated'] *
@@ -586,7 +586,9 @@ def compute_loss(output, texts, text_embedding, config, *, negative_texts=None, 
              + config.order_negative_weight * typed_for_gradient['order']
              + config.sigreg_weight * sigreg)
     stats = dict(total=float(total.detach()), positive_dtw=float(positive.detach()) if counts['evaluated'] else None,
-                 fused_positive_dtw=float(positive.detach()) if counts['evaluated'] else None,
+                 fused_positive_dtw=(float(positive.detach()) if counts['evaluated'] and config.fusion_mode != 'context' else None),
+                 context_positive_dtw=(float(positive.detach()) if counts['evaluated'] and config.fusion_mode == 'context' else None),
+                 alignment_representation='context' if config.fusion_mode == 'context' else 'fused',
                  local_positive_dtw=float(local_positive.detach()) if local_counts and local_counts['evaluated'] else None,
                  weighted_local_positive_dtw=(config.local_positive_dtw_weight * float(local_positive.detach())
                                               if local_counts and local_counts['evaluated'] else None),

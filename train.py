@@ -400,7 +400,10 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                                            + active_config.wrong_letter_weight*(typed_wrong_sum/wrong_count if wrong_count else 0.)
                                            + active_config.order_negative_weight*(order_sum/order_count if order_count else 0.))
     result = dict(total=total,total_loss=total,positive_dtw=positive,positive_cost=positive,
-                fused_positive_dtw=positive, local_positive_dtw=local_positive,
+                alignment_representation='context' if config.fusion_mode == 'context' else 'fused',
+                fused_positive_dtw=positive if config.fusion_mode != 'context' else None,
+                context_positive_dtw=positive if config.fusion_mode == 'context' else None,
+                local_positive_dtw=local_positive,
                 weighted_local_positive_dtw=(config.local_positive_dtw_weight * local_positive
                                              if local_positive is not None else None),
                 positive_cost_mean=positive,
@@ -555,7 +558,7 @@ def load_checkpoint(path,device='cpu'):
     # Checkpoints saved before the concat projection was named: migrate the old
     # bare fusion Linear keys only when shapes match exactly (same tensors, new names).
     if 'fusion.weight' in state and 'fusion.concat_projection.weight' not in state:
-        projection = model.fusion.concat_projection
+        projection = model.fusion.concat_projection if model.fusion is not None else None
         if projection is None or tuple(state['fusion.weight'].shape) != tuple(projection.weight.shape):
             raise ValueError('Checkpoint has legacy fusion.weight but no shape-matching concat projection')
         state['fusion.concat_projection.weight'] = state.pop('fusion.weight')
@@ -602,6 +605,8 @@ def _print_dataset_summary(args, config, loaders, text_encoder):
     print(f'CNN output dimension: {config.embedding_dim}', flush=True)
     print(f'Transformer: {config.transformer_type}', flush=True)
     print(f'Embedding dim: {config.embedding_dim}', flush=True)
+    if config.fusion_mode == 'context':
+        print('Fusion vector source: CONTEXT (L2 normalized; local/context fusion bypassed)', flush=True)
     print(f'SIGReg: {"ENABLED (weight=" + str(config.sigreg_weight) + ")" if config.sigreg_weight else "DISABLED"}', flush=True)
     print(f'Positive DTW weight: {config.positive_dtw_weight}', flush=True)
     print(f'Local positive DTW weight: {config.local_positive_dtw_weight}', flush=True)
@@ -735,7 +740,8 @@ def _print_epoch_summary(epoch, epochs, train_stats, val_stats, gradients, previ
     print('', flush=True)
     print('TRAIN', flush=True)
     print(f'  total loss:        {value(train_stats["total"])}', flush=True)
-    print(f'  fused positive DTW: {value(train_stats["positive_dtw"])}', flush=True)
+    print(f'  {train_stats["alignment_representation"]} positive DTW: '
+          f'{value(train_stats["positive_dtw"])}', flush=True)
     print(f'  local positive:    {value(train_stats["local_positive_dtw"])}', flush=True)
     print(f'  weighted local:    {value(train_stats["weighted_local_positive_dtw"])}', flush=True)
     objective_details(train_stats)
@@ -752,7 +758,8 @@ def _print_epoch_summary(epoch, epochs, train_stats, val_stats, gradients, previ
     print('', flush=True)
     print('VALIDATION', flush=True)
     print(f'  total loss:        {value(val_stats["total"])}', flush=True)
-    print(f'  fused positive DTW: {value(val_stats["positive_dtw"])}', flush=True)
+    print(f'  {val_stats["alignment_representation"]} positive DTW: '
+          f'{value(val_stats["positive_dtw"])}', flush=True)
     print(f'  local positive:    {value(val_stats["local_positive_dtw"])}', flush=True)
     print(f'  weighted local:    {value(val_stats["weighted_local_positive_dtw"])}', flush=True)
     objective_details(val_stats)

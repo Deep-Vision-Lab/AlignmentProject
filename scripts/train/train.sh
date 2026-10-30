@@ -55,8 +55,8 @@ RUN_NAME="${RUN_NAME:-${TYPE}_$(date +%Y%m%d_%H%M%S)}"
 FUSION_MODE="${FUSION_MODE:-concat}"
 USE_GATED_FUSION="${USE_GATED_FUSION:-0}"
 
-if [[ "$FUSION_MODE" != concat && "$FUSION_MODE" != sum ]]; then
-    echo "FUSION_MODE must be concat or sum" >&2
+if [[ "$FUSION_MODE" != concat && "$FUSION_MODE" != sum && "$FUSION_MODE" != context ]]; then
+    echo "FUSION_MODE must be concat, sum or context" >&2
     exit 2
 fi
 if [[ "$USE_GATED_FUSION" != 0 && "$USE_GATED_FUSION" != 1 ]]; then
@@ -65,6 +65,10 @@ if [[ "$USE_GATED_FUSION" != 0 && "$USE_GATED_FUSION" != 1 ]]; then
 fi
 if [[ "$FUSION_MODE" == concat && "$USE_GATED_FUSION" == 1 ]]; then
     echo "concat + gated fusion is unsupported; use sum + gate or concat + no gate" >&2
+    exit 2
+fi
+if [[ "$FUSION_MODE" == context && "$USE_GATED_FUSION" == 1 ]]; then
+    echo "Context-only mode bypasses fusion; USE_GATED_FUSION must be 0" >&2
     exit 2
 fi
 
