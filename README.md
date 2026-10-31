@@ -198,22 +198,25 @@ The standalone quantitative mask evaluator also defaults to **ArabicData**, usin
 
 ```bash
 python scripts/eval/tune_masks.py prepare --dataset DataSet/ArabicData \
-  --data-policy folder_masks --pairs-per-split 500 --device cpu \
-  --output Results/Evaluation/arabic_data_500_pairs
+  --data-policy folder_masks --class-balance balanced --pairs-per-split 500 --device cpu \
+  --output Results/Evaluation/arabic_data_balanced
 ```
 
 This scores the baseline on the saved validation split. Aligned-pair GT comes
 from `masksA`/`masksB`; missing masks are black under the notebook policy.
-The default `--pairs-per-split 500` retains the 53 aligned validation positives
-and all 156 eligible Unalignedlines comparisons, then adds 291 existing
-`no_shared_content` records for **500 validation pairs per trial** (53 positive,
-447 negative). Supplemental records use images from the same two exported folders
-and the same saved validation membership. Their GT is pair-specific black under
-the existing coarse negative label, not the mask of a different aligned partner.
-All negative assumptions and label sources are explicit in the reports.
-`--pairs-per-split all` retains the earlier 209-pair original folder pool.
+The default `--class-balance balanced` uses exactly equal positive and negative
+counts without repeating pairs or moving lines across saved splits. With this
+checkpoint, each validation trial uses **53 positives + 53 negatives = 106 pairs**.
+The requested `--pairs-per-split 500` is an upper target: 250 + 250 requires at
+least 250 distinct aligned validation pairs, and only 53 currently exist.
+The final-test catalog can separately supply 88 + 88 balanced pairs (176 total).
+
+Use `--class-balance natural --pairs-per-split 500` to reproduce the older unequal
+53-positive/447-negative selection. In that mode, extra recorded negatives use
+pair-specific black GT under their coarse `no_shared_content` labels. All
+negative assumptions and label sources are explicit in the reports.
 Use `tune` with the same options for the validation-only search, or
-`bash scripts/eval/tune_masks.sh --data-policy folder_masks --job-name mask_optuna_500_pairs --resume` on BGU.
+`bash scripts/eval/tune_masks.sh --data-policy folder_masks --job-name mask_optuna_balanced --resume` on BGU.
 The strict reviewed-manifest workflow remains available with
 `--data-policy reviewed --split-manifest FILE`. See
 [quantitative mask evaluation](docs/quantitative_mask_evaluation.md) for outputs

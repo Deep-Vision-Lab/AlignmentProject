@@ -355,7 +355,9 @@ def parser():
     p.add_argument('--negative-count',type=negative_pair_count,default='all',metavar='all|N',
         help='Unalignedlines comparisons per saved split: all eligible by default, or a seeded cap N (folder policy only)')
     p.add_argument('--pairs-per-split',type=negative_pair_count,default=500,metavar='all|N',
-        help='Total folder pairs per saved split (default 500): retain positives and supplement with recorded no_shared_content pairs. all keeps the original folder-only pool')
+        help='Folder-pair target/upper limit per split (default 500); balanced mode uses equal classes without duplicating scarce positives')
+    p.add_argument('--class-balance',choices=('balanced','natural'),default='balanced',
+        help='balanced (default): equal positive/negative counts, limited by distinct available pairs; natural retains the original unequal class mix')
     p.add_argument('--notebook',type=Path,default=ROOT/'notebooks/model_evaluation.ipynb')
     p.add_argument('--output',type=Path,default=Path('Results/Evaluation/quantitative_masks'))
     p.add_argument('--cache-dir',type=Path)

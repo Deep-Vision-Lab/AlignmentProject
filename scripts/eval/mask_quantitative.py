@@ -32,7 +32,7 @@ from text_embedding import ARABIC_LETTERS
 from scripts.eval.tune_matching import write_json, write_csv
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = 'quantitative-mask-v3-recorded-folder-pairs'
+VERSION = 'quantitative-mask-v4-balanced-folder-pairs'
 METRICS = ('positive_iou', 'positive_dice', 'precision', 'recall',
            'negative_pair_fpr', 'negative_masked_area_fraction')
 
@@ -268,7 +268,7 @@ def data_policy(args):
     return policy
 
 
-def folder_comparisons(session, target, seed):
+def folder_comparisons(session, target, seed, class_balance='natural'):
     """Keep positives and supplement unmatched comparisons with recorded negatives.
 
     Supplemental rows must already have a no_shared_content label and both
@@ -276,13 +276,18 @@ def folder_comparisons(session, target, seed):
     is pair-specific; original aligned-partner masks cannot be reused here.
     """
     pairs = list(session.pairs)
-    report = dict(target=target, original_pairs=len(pairs), supplemental_negative_pairs=0)
-    if target == 'all':
+    report = dict(target=target, class_balance=class_balance,
+                  original_pairs=len(pairs), supplemental_negative_pairs=0)
+    if class_balance not in ('balanced','natural'):
+        raise ValueError('class_balance must be balanced or natural')
+    if target == 'all' and class_balance == 'natural':
         return pairs, report
     positives = [p for p in pairs if p['target'] == 1]
     negatives = [p for p in pairs if p['target'] == 0]
-    needed = target - len(positives)
-    if needed < 1:
+    if class_balance == 'balanced' and target != 'all' and (target < 2 or target % 2):
+        raise ValueError('Balanced --pairs-per-split must be all or a positive even number')
+    needed = target - len(positives) if class_balance == 'natural' else None
+    if class_balance == 'natural' and needed < 1:
         raise ValueError(f'--pairs-per-split must exceed the {len(positives)} aligned pairs in {session.split}; all positives are retained')
     def physical_key(pair):
         return tuple(session.line_aliases.get(_side_key(side),_side_key(side)) for side in pair['sides'])
@@ -309,10 +314,23 @@ def folder_comparisons(session, target, seed):
             annotation_provenance='Pair-specific black GT from existing coarse no_shared_content label; not manually reviewed'))
     report.update(recorded_catalog=replay_report,unmatched_negative_candidates=len(distinct_negatives),
                   supplemental_negative_candidates=len(supplemental))
+    rng = random.Random(seed)
+    if class_balance == 'balanced':
+        requested_per_class = len(positives) if target == 'all' else target//2
+        per_class = min(requested_per_class,len(positives),len(distinct_negatives)+len(supplemental))
+        if per_class < 1:
+            raise ValueError(f'{session.split} has no eligible balanced positive/negative sample')
+        report.update(requested_per_class=requested_per_class,
+            eligible_positive_pairs=len(positives),
+            eligible_negative_pairs=len(distinct_negatives)+len(supplemental),
+            balanced_shortfall_pairs=0 if target=='all' else target-2*per_class,
+            availability_note='Balanced count is limited by available distinct pairs; no duplication or split fallback')
+        if len(positives)>per_class:
+            positives=rng.sample(sorted(positives,key=lambda p:p['sample_id']),per_class)
+        needed=per_class
     if len(distinct_negatives)+len(supplemental) < needed:
         available = len(positives)+len(distinct_negatives)+len(supplemental)
         raise ValueError(f'{session.split} has only {available} distinct eligible folder pairs for target {target}; add reviewed data or lower --pairs-per-split. No pairs were duplicated or moved across splits.')
-    rng = random.Random(seed)
     if len(distinct_negatives) >= needed:
         chosen = rng.sample(sorted(distinct_negatives,key=lambda p:p['sample_id']),needed)
     else:
@@ -352,7 +370,7 @@ def build_cache(args, split):
         raise ValueError('Saved splits leak line images/page groups; see split_audit.json. No split was reorganized.')
     pixel_ids={image['path']:image['pixel_sha256'] for records in audit['records'].values() for row in records for image in row['images']}
     if folders:
-        pairs, pair_selection = folder_comparisons(session,args.pairs_per_split,args.seed)
+        pairs, pair_selection = folder_comparisons(session,args.pairs_per_split,args.seed,args.class_balance)
     else:
         pairs, pair_selection = explicit_pairs(session,args.split_manifest), dict(target='reviewed manifest/catalog')
     issues = []; selected = []; seen = set()
@@ -421,6 +439,7 @@ def build_cache(args, split):
                     folder_catalog=session.folder_summary,
                     pair_selection=pair_selection,
                     data_policy=policy,pair_source=session.pair_source,mask_source=mask_source,
+                    class_balance=args.class_balance if folders else 'manifest',
                     source_folders=['alignedPairs','Unalignedlines'] if folders else [],
                     presumed_negative_pairs=sum(p['record']['presumed_negative'] for p in selected),
                     missing_mask_count=sum(m.get('missing_as_black',False) for p in selected for m in p['record']['masks']),
@@ -428,11 +447,15 @@ def build_cache(args, split):
                     missing_mask_policy='black source-sized mask (notebook folder policy)' if folders else 'error, never presumed black',max_pairs=0)
     write_json(output/f'{split}_split_manifest.json',contract)
     if issues: raise ValueError(f'{len(issues)} inconsistent/unverified records; see {split}_split_manifest.json. No examples silently excluded.')
+    if folders and args.class_balance=='balanced' and counts['positive'] != counts['negative']:
+        raise ValueError('Folder-mask labels changed the selected class balance; inspect mask/label consistency in '+str(output/f'{split}_split_manifest.json'))
     if not counts['positive'] or not counts['negative']:
         if folders:
             raise ValueError(f'{split} needs both foreground alignedPairs and no-alignment folder comparisons; counts={dict(counts)}. See {split}_split_manifest.json. Saved splits were not changed.')
         raise ValueError(f'{split} needs positive AND verified negative pairs with explicit GT masks; counts={dict(counts)}. Supply --split-manifest with reviewed negatives. Random unmatched lines are not negatives.')
     print(f'{split}: {len(selected)} pairs ({counts["positive"]} positive, {counts["negative"]} negative); policy={policy}',flush=True)
+    if pair_selection.get('balanced_shortfall_pairs'):
+        print(f'Requested {args.pairs_per_split}; using {len(selected)} distinct balanced pairs because eligible positives/negatives are limited.',flush=True)
     source = source_identity()
     vocabulary=list(dict.fromkeys(session.config.alphabet_inventory or ARABIC_LETTERS))
     prior=getattr(session.text_encoder,'letter_evidence_prior',None) or dict(source='explicit uniform fallback',
@@ -442,6 +465,7 @@ def build_cache(args, split):
         data_policy=policy,pair_source=session.pair_source,mask_source=mask_source,
         negative_count=args.negative_count if folders else 0,folder_catalog=session.folder_summary,
         pairs_per_split=args.pairs_per_split if folders else 'reviewed',pair_selection=pair_selection,
+        class_balance=args.class_balance if folders else 'manifest',
         missing_mask_policy=contract['missing_mask_policy'],
         resize_gt=args.resize_gt,bootstrap_resamples=args.bootstrap,
         notebook_path=str(Path(args.notebook).resolve()),notebook_sha256=file_hash(args.notebook),

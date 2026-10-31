@@ -81,7 +81,7 @@ selects `folder_masks`. `--data-policy folder_masks` selects it explicitly:
   by default (`--negative-count all`), excluding related page/pair groups, identical
   images and shared transcript words. Use `--negative-count N` to request a
   reproducible capped subset (seed 42). Matching filenames are not treated as pairs.
-* The default `--pairs-per-split 500` keeps every aligned positive, preserves the
+* Optional `--class-balance natural --pairs-per-split 500` keeps every aligned positive, preserves the
   original unmatched comparisons, then samples enough existing
   `metadata/dataset_manifest_full_pairs.jsonl` records labeled `no_shared_content`
   to reach the fixed target. Both source lines must belong to the current saved
@@ -106,10 +106,21 @@ selects `folder_masks`. `--data-policy folder_masks` selects it explicitly:
   target and `presumed_negative`. Reports count those cases and label the FPR as
   including **presumed comparisons**, rather than verified-negative accuracy.
 
-`--pairs-per-split all` uses only the earlier original folder pool, without
-supplemental records. A numeric value applies separately to validation and final
-test, retaining every positive in each split. The sample target is part of run
-provenance and must remain fixed on resume.
+The default `--class-balance balanced` selects exactly the same number of
+positives and negatives without replacement. `--pairs-per-split 500` is a target
+of 250 per class, reduced to the available distinct examples when either class
+is smaller. The current saved validation split provides **53 + 53 = 106 pairs**,
+not 500; obtaining 250 genuine positives requires 197 more labeled validation
+pairs. The separate saved-test catalog supports **88 + 88 = 176 pairs**.
+The manifest records the requested target, actual class counts, and shortfall.
+Changing class balance or population requires a fresh output/study.
+
+In balanced mode, an integer target must be even; `all` chooses the largest
+available equal class counts. `--class-balance natural --pairs-per-split all`
+retains the earlier original folder-only pool without supplementary records.
+Natural mode with a numeric target retains every positive and supplements
+negatives to reach that target. All sample choices are fixed by seed and saved
+membership; neither mode duplicates scarce positives or reassigns test lines.
 
 `--data-policy reviewed` retains the original strict workflow: no constructed
 negatives, missing-mask fallback or inferred negative certification. Supplying
@@ -235,22 +246,22 @@ not replace the user's base environment. From the repository root:
 ```bash
 source .venv-mask-eval/bin/activate
 # Use the exported ArabicData folders; no reviewed manifest is needed.
-OUT=Results/Evaluation/quantitative_masks_500_pairs
+OUT=Results/Evaluation/quantitative_masks_balanced
 
 # 1. Build/reuse frozen validation outputs and score exact current baseline.
-python scripts/eval/tune_masks.py prepare --dataset DataSet/ArabicData --data-policy folder_masks --pairs-per-split 500 --output "$OUT" --device cpu
+python scripts/eval/tune_masks.py prepare --dataset DataSet/ArabicData --data-policy folder_masks --class-balance balanced --pairs-per-split 500 --output "$OUT" --device cpu
 
 # 2. Full validation-only search, resumable to 300/200 total trials.
-python scripts/eval/tune_masks.py tune --dataset DataSet/ArabicData --data-policy folder_masks --pairs-per-split 500 --output "$OUT" --device cpu --resume
+python scripts/eval/tune_masks.py tune --dataset DataSet/ArabicData --data-policy folder_masks --class-balance balanced --pairs-per-split 500 --output "$OUT" --device cpu --resume
 
 # 3. Freeze validation selection; score test baseline, selected and two ablations.
-python scripts/eval/tune_masks.py test --dataset DataSet/ArabicData --data-policy folder_masks --pairs-per-split 500 --output "$OUT" --device cpu
+python scripts/eval/tune_masks.py test --dataset DataSet/ArabicData --data-policy folder_masks --class-balance balanced --pairs-per-split 500 --output "$OUT" --device cpu
 
 # 4. Regenerate paper exports without inference or parameter selection.
 python scripts/eval/tune_masks.py export --output "$OUT"
 ```
 
-Pass `--checkpoint`, `--dataset`, `--data-policy`, `--negative-count`, `--pairs-per-split`, `--cache-dir`, `--seed`, `--bootstrap`,
+Pass `--checkpoint`, `--dataset`, `--data-policy`, `--negative-count`, `--pairs-per-split`, `--class-balance`, `--cache-dir`, `--seed`, `--bootstrap`,
 `--stage1-trials`, `--stage2-trials`, `--startup-trials`, `--max-negative-pair-fpr`,
 `--study-name`, `--storage`, `--timeout` as needed. Use the SAME preprocessing,
 device and provenance options for prepare/tune/test. `--resume` safely creates
@@ -260,9 +271,9 @@ HPC submission, matching the repository's GPU partition and Conda environment:
 
 ```bash
 bash scripts/eval/tune_masks.sh --dataset "$PWD/DataSet/ArabicData" \
-  --data-policy folder_masks --pairs-per-split 500 \
-  --job-name mask_optuna_500_pairs \
-  --output-dir "$PWD/Results/Evaluation/quantitative_masks_500_pairs_cuda" --resume
+  --data-policy folder_masks --class-balance balanced --pairs-per-split 500 \
+  --job-name mask_optuna_balanced \
+  --output-dir "$PWD/Results/Evaluation/quantitative_masks_balanced_cuda" --resume
 ```
 
 Do not use a CPU baseline directory for a CUDA study: device/outputs are part of
@@ -297,7 +308,7 @@ The current ArabicData folders provide **53 aligned validation pairs** and
 **88 aligned test pairs**. There are 156 eligible validation and 351 eligible test
 Unalignedlines combinations. The original folder-only pool has **209 validation
 pairs** (53 positive + 156 presumed negative) and **439 test pairs** (88 positive +
-351 presumed negative). With the new default target of 500, validation retains
+351 presumed negative). With the earlier unequal target of 500, validation retains
 its 53 positives and 156 original comparisons and adds **291 recorded negative
 pairs**, giving **53 positive + 447 negative = 500**. Every trial uses this same
 fixed validation sample. No training/test line moves into validation. More
@@ -323,11 +334,17 @@ The earlier original-pool all-comparisons run is saved separately under
 are in its `baseline/report.md`. Use a fresh output/study for the expanded population;
 resuming an earlier capped study is rejected by the provenance check.
 
-The 500-pair baseline and exact sample manifest are saved separately under
+The earlier unequal 500-pair baseline and exact sample manifest are saved under
 `Results/Evaluation/arabic_data_500_pairs_20261031/`. The manifest distinguishes
 156 unmatched comparisons from 291 supplemental recorded negatives. Use a fresh
 output/study when changing from 100/156 negatives to this 447-negative sample.
 The 500-pair run does not change the frozen checkpoint or matcher settings.
+
+The default is now strictly balanced. Its separate baseline and manifest are
+under `Results/Evaluation/arabic_data_balanced_20261031/`: 53 distinct positives
+and 53 distinct presumed negatives. The sample target remains 500, but the
+manifest explicitly records a 394-pair availability shortfall. No positive is
+repeated and no training/test example enters the validation set.
 Its completed baseline has positive IoU **0.714124**, Dice **0.789096**, and
 presumed-negative FPR **0.697987** (312/447). By negative source this is 116/156
 original unmatched comparisons and 196/291 supplemental recorded pairs. The lower
@@ -344,7 +361,7 @@ all four methods, and CSV/LaTeX export. Nine completed records were feasible;
 selection respected the .05 FPR requirement. The fixture checkpoint hash was
 unchanged. These are synthetic engineering checks, not manuscript accuracy.
 
-Current folder-mode verification: **31 quantitative/batch tests pass**, including
+Current folder-mode verification: **32 quantitative/batch tests pass**, including
 both folder sources, saved membership, missing-mask provenance, one-sided-mask
 rejection, deterministic comparisons and manifest-free batch submission.
 

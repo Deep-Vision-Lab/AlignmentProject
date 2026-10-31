@@ -34,13 +34,16 @@ seeded cross-book comparisons from `Unalignedlines`, restricted to the checkpoin
 saved validation membership. Missing masks are black under the notebook policy;
 these comparison negatives are explicitly marked presumed in results. The current
 exports supply 53 validation positives and 156 original unmatched comparisons.
-The default `--pairs-per-split 500` adds 291 existing `no_shared_content` records
-whose two lines have exported copies in the same saved validation split. Every
-trial therefore evaluates **53 positives + 447 negatives = 500 pairs**. Physical
-pairs are deduplicated and fixed with seed 42. Supplemental negatives receive
-pair-specific black GT from their recorded coarse label, never an unrelated
-aligned-partner mask. These labels remain explicitly presumed, not reviewed.
-`--pairs-per-split all` restores the earlier original folder-only pool.
+The default `--class-balance balanced` selects **53 positives + 53 negatives =
+106 validation pairs per trial**. The 500-pair target is an upper limit: 250 +
+250 cannot be formed from only 53 eligible positive pairs. Counts are reduced
+equally, without repeating positives or changing saved membership. The separate
+final-test catalog supports 88 + 88 balanced pairs.
+
+`--class-balance natural --pairs-per-split 500` restores the previous unequal
+53-positive/447-negative configuration. Its supplemental negatives use existing
+coarse `no_shared_content` labels and pair-specific black GT. Both policies
+retain all source/label provenance; negative labels remain explicitly presumed.
 See
 [quantitative_mask_evaluation.md](quantitative_mask_evaluation.md) for the contract.
 
@@ -55,12 +58,12 @@ dataset processing occurs in the submission shell. These commands work in Bash
 or Zsh; keep the shell variables for monitoring and resume:
 
 ```bash
-JOB_NAME=mask_optuna_500_pairs
+JOB_NAME=mask_optuna_balanced
 OUT="$PWD/Results/Evaluation/$JOB_NAME"
 SUBMIT=(bash scripts/eval/tune_masks.sh
   --checkpoint "$PWD/Weights/phase4_typed_local03_sum_nogate/checkpoint_best.pt"
   --dataset "$PWD/DataSet/ArabicData"
-  --data-policy folder_masks --pairs-per-split 500
+  --data-policy folder_masks --class-balance balanced --pairs-per-split 500
   --job-name "$JOB_NAME" --output-dir "$OUT"
   --seed 42 --stage1-trials 300 --stage2-trials 200)
 
@@ -122,7 +125,7 @@ before timeout; TERM/INT/USR1 preserve status/results. SIGKILL can prevent the
 last CSV update, but the completed journal records remain available for resume.
 Do not manually remove locks while a job may still be alive.
 
-Use a new output/job name when changing an earlier pool to the 500-pair target; its
+Use a new output/job name when changing the earlier unequal pool to balanced sampling; its
 selected pair list and source fingerprints differ.
 
 Dataset/GT hashes, checkpoint identity, preprocessing, evaluator/notebook source,
@@ -165,7 +168,7 @@ srun --partition=rtx4090 --gpus=rtx_4090:1 --cpus-per-task=8 --mem=48G --time=04
     export WANDB_MODE=offline PYTHONUNBUFFERED=1
     exec python -u scripts/eval/tune_masks.py test "$@"' bash \
   --checkpoint "$PWD/Weights/phase4_typed_local03_sum_nogate/checkpoint_best.pt" \
-  --dataset "$PWD/DataSet/ArabicData" --data-policy folder_masks --pairs-per-split 500 \
+  --dataset "$PWD/DataSet/ArabicData" --data-policy folder_masks --class-balance balanced --pairs-per-split 500 \
   --output "$OUT" --device cuda --threads 8 --seed 42
 
 # Regenerate CSV/LaTeX tables from saved final-test results, without inference.
@@ -174,9 +177,8 @@ conda run -n manucripts_align python scripts/eval/tune_masks.py export --output 
 
 Add your site's account/QoS flags to `srun` if required. Match any nondefault
 seed, preprocessing, cache directory and bootstrap options from tuning.
-Folder mode applies the same fixed target to saved-test members, preserving all
-test positives and supplementing original Unalignedlines comparisons with recorded
-negative pairs. No test labels influence Optuna selection.
+Folder mode applies the same class-balance policy to saved-test members. The
+current balanced test catalog has 88 positive and 88 negative pairs. No test labels influence Optuna selection.
 For reviewed mode, pass the same reviewed manifest and data policy used in tuning,
 with positive and negative test entries belonging to the saved test membership.
 

@@ -239,6 +239,7 @@ def test_reviewed_policy_never_constructs_unaligned_folder_negatives(arabic_fold
 def test_all_comparisons_are_default_and_numeric_caps_remain_available(arabic_folder_fixture,tmp_path):
     assert tuning.parser().parse_args(['prepare']).negative_count=='all'
     assert tuning.parser().parse_args(['prepare']).pairs_per_split==500
+    assert tuning.parser().parse_args(['prepare']).class_balance=='balanced'
     args=folder_arguments(arabic_folder_fixture,tmp_path/'all-pairs')
     args.negative_count=tuning.negative_pair_count('all')
     session,prepared,provenance=q.build_cache(args,'val')
@@ -255,8 +256,30 @@ def test_all_comparisons_are_default_and_numeric_caps_remain_available(arabic_fo
     assert len(capped_ids)==1 and capped_ids<=full_ids
 
 
+def test_balanced_sampling_keeps_equal_classes_without_repeating_positives(arabic_folder_fixture,tmp_path):
+    args=folder_arguments(arabic_folder_fixture,tmp_path/'balanced')
+    args.pairs_per_split=500
+    session,prepared,provenance=q.build_cache(args,'val')
+    assert len(prepared)==4
+    assert sum(p['record']['target']==1 for p in prepared)==2
+    assert sum(p['record']['target']==0 for p in prepared)==2
+    assert provenance['class_balance']=='balanced'
+    assert provenance['pair_selection']['balanced_shortfall_pairs']==496
+    ids=[p['record']['sample_id'] for p in prepared]
+    assert len(ids)==len(set(ids))
+    assert [p['record']['sample_id'] for p in q.build_cache(args,'val')[1]]==ids
+    args.output=tmp_path/'balanced-small'
+    args.pairs_per_split=2
+    small=q.build_cache(args,'val')[1]
+    assert len(small)==2 and {p['record']['target'] for p in small}=={0,1}
+    args.pairs_per_split=5
+    with pytest.raises(ValueError,match='positive even number'):
+        q.build_cache(args,'val')
+
+
 def test_larger_fixed_set_uses_recorded_negatives_and_pair_specific_black_gt(arabic_folder_fixture,tmp_path):
     args=folder_arguments(arabic_folder_fixture,tmp_path/'expanded')
+    args.class_balance='natural'
     root,_=arabic_folder_fixture
     for book in 'AB':
         index=root/f'Book{book}/lines.jsonl'

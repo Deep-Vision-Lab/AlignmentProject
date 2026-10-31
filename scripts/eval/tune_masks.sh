@@ -9,6 +9,7 @@ split_manifest=""
 data_policy=auto
 negative_count=all
 pairs_per_split=500
+class_balance=balanced
 job_name="mask_optuna"
 output_dir=""
 cache_dir=""
@@ -36,7 +37,8 @@ Usage: bash scripts/eval/tune_masks.sh [options]
   --dataset DIR           Default: DataSet/ArabicData
   --data-policy POLICY   auto (default): ArabicData folders, or reviewed when a manifest is supplied
   --negative-count all|N All eligible Unalignedlines comparisons (default), or seeded cap N
-  --pairs-per-split all|N Total pairs per saved split, default 500; all keeps the original pool
+  --pairs-per-split all|N Target/upper limit per split, default 500; no repeated samples
+  --class-balance MODE   balanced (default): 50/50, limited by availability; natural: unequal mix
   --split-manifest FILE   Optional reviewed validation/test pair manifest
   --job-name NAME         Default: mask_optuna
   --output-dir DIR        Default: Results/Evaluation/<job-name> (durable project storage)
@@ -64,6 +66,7 @@ while [[ $# -gt 0 ]]; do
     --data-policy) need_value "$@"; data_policy="$2"; shift 2 ;;
     --negative-count) need_value "$@"; negative_count="$2"; shift 2 ;;
     --pairs-per-split) need_value "$@"; pairs_per_split="$2"; shift 2 ;;
+    --class-balance) need_value "$@"; class_balance="$2"; shift 2 ;;
     --job-name) need_value "$@"; job_name="$2"; shift 2 ;;
     --output-dir) need_value "$@"; output_dir="$2"; shift 2 ;;
     --cache-dir) need_value "$@"; cache_dir="$2"; shift 2 ;;
@@ -102,6 +105,9 @@ done
 [[ "$cpus" -gt 0 && "$gpus" -le 1 ]] || { echo 'Use positive CPUs and at most one GPU for this one-worker evaluator' >&2; exit 2; }
 [[ "$data_policy" == auto || "$data_policy" == folder_masks || "$data_policy" == reviewed ]] || {
   echo 'Use --data-policy auto, folder_masks, or reviewed' >&2; exit 2;
+}
+[[ "$class_balance" == balanced || "$class_balance" == natural ]] || {
+  echo 'Use --class-balance balanced or natural' >&2; exit 2;
 }
 [[ -f "$checkpoint" && -d "$dataset" ]] || { echo 'Checkpoint and dataset directory must exist. No job submitted.' >&2; exit 2; }
 if [[ -n "$split_manifest" ]]; then
@@ -144,7 +150,7 @@ fi
 [[ -z "$account" ]] || submit+=("--account=$account")
 [[ -z "$qos" ]] || submit+=("--qos=$qos")
 submit+=("$ROOT/scripts/eval/tune_masks.sbatch" --checkpoint "$checkpoint" --dataset "$dataset"
-  --data-policy "$data_policy" --negative-count "$negative_count" --pairs-per-split "$pairs_per_split"
+  --data-policy "$data_policy" --negative-count "$negative_count" --pairs-per-split "$pairs_per_split" --class-balance "$class_balance"
   --output "$output_dir" --cache-dir "$cache_dir"
   --storage "journal://$journal_file" --study-name "$study_name" --seed "$seed"
   --stage1-trials "$stage1" --stage2-trials "$stage2" --startup-trials 40 --threads "$cpus" --device "$device"

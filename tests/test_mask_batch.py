@@ -66,6 +66,7 @@ def test_defaults_and_dry_run_do_not_start_a_search(tmp_path,project_output):
     assert '--seed 42' in result.stdout and '--startup-trials 40' in result.stdout
     assert '--negative-count all' in result.stdout
     assert '--pairs-per-split 500' in result.stdout
+    assert '--class-balance balanced' in result.stdout
     assert '--gpus=rtx_4090:1' in result.stdout
     assert '--account=' not in result.stdout and '--qos=' not in result.stdout
     assert 'mask_batch.py' not in result.stdout  # sbatch invokes the guarded script.
