@@ -409,7 +409,7 @@ def test_smoke_sqlite_resume_and_selection_lock(evaluation_fixture,tmp_path):
     output=tmp_path/'smoke';args=arguments(root,checkpoint,output,'tune')
     command=['tune','--dataset',str(root),'--checkpoint',str(checkpoint),'--output',str(output),
         '--device','cpu','--crop','checkpoint','--pair-source','dataset','--bootstrap','20',
-        '--stage1-trials','2','--stage2-trials','3']
+        '--max-negative-pair-fpr','1','--stage1-trials','2','--stage2-trials','3']
     studies=tuning.main(command)
     assert [len(s.trials) for _,s in studies]==[2,3]
     assert json.loads((output/'selected.json').read_text())['status']=='SELECTED_FEASIBLE'

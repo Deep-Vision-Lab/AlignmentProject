@@ -95,6 +95,30 @@ def test_arabic_folder_submission_does_not_require_a_review_manifest(tmp_path,pr
     assert '--negative-count all' in all_pairs.stdout
 
 
+def test_worker_preflight_accepts_folder_policy_without_review_manifest(tmp_path, project_output, monkeypatch):
+    """The allocated-node worker must accept what the submission wrapper accepts."""
+    checkpoint=tmp_path/'checkpoint.pt';checkpoint.write_text('mock checkpoint')
+    dataset=tmp_path/'ArabicData'
+    for name in ('alignedPairs','Unalignedlines'):(dataset/name).mkdir(parents=True)
+    monkeypatch.setattr('train.load_checkpoint',lambda path,device:(None,None,None,{'split_ids':{'train':['a'],'val':['b'],'test':['c']}}))
+    args=SimpleNamespace(checkpoint=str(checkpoint),dataset=str(dataset),split_manifest=None,
+        data_policy='folder_masks',pair_source='auto',negative_count='all',device='cpu',
+        storage='journal://'+str(project_output/'optuna.journal'),output=project_output)
+    result=batch.preflight(args,require_cuda=False)
+    assert result['data_policy']=='folder_masks'
+    assert result['negative_label_status']=='presumed, not manually reviewed'
+    assert result['packages']['optuna']==optuna.__version__
+    args.data_policy='reviewed'
+    with pytest.raises(ValueError,match='requires --split-manifest'):
+        batch.preflight(args,require_cuda=False)
+    args.data_policy='folder_masks';args.device='cuda'
+    monkeypatch.delenv('CUBLAS_WORKSPACE_CONFIG',raising=False)
+    with pytest.raises(RuntimeError,match='CUBLAS_WORKSPACE_CONFIG'):
+        batch.preflight(args,require_cuda=False)
+    monkeypatch.setenv('CUBLAS_WORKSPACE_CONFIG',':16:8')
+    assert batch.preflight(args,require_cuda=False)['cublas_workspace_config']==':16:8'
+
+
 def test_both_worker_entrypoints_refuse_login_node():
     env={k:v for k,v in os.environ.items() if not k.startswith('SLURM')}
     for command in [['bash','scripts/eval/tune_masks.sbatch'],[sys.executable,'scripts/eval/mask_batch.py']]:
@@ -107,14 +131,15 @@ def test_batch_activates_conda_preserves_gpu_and_forwards_exit(tmp_path):
     executable(fake/'conda','#!/usr/bin/env bash\nprintf "%s\\n" "$FAKE_CONDA_BASE"\n')
     (profile/'conda.sh').write_text('conda() { export CONDA_DEFAULT_ENV="$2"; export CUDA_VISIBLE_DEVICES=99; }\n')
     captured=tmp_path/'worker-args';environment=tmp_path/'worker-env'
-    executable(fake/'python','#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$CAPTURE"\nprintf "%s\\n" "$CONDA_DEFAULT_ENV" "$CUDA_VISIBLE_DEVICES" "$PYTHONUNBUFFERED" "$HF_HUB_OFFLINE" > "$ENV_CAPTURE"\nexit 7\n')
+    executable(fake/'python','#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$CAPTURE"\nprintf "%s\\n" "$CONDA_DEFAULT_ENV" "$CUDA_VISIBLE_DEVICES" "$PYTHONUNBUFFERED" "$HF_HUB_OFFLINE" "$CUBLAS_WORKSPACE_CONFIG" > "$ENV_CAPTURE"\nexit 7\n')
     env=dict(os.environ,PATH=str(fake)+':'+os.environ['PATH'],FAKE_CONDA_BASE=str(conda_root),
         CAPTURE=str(captured),ENV_CAPTURE=str(environment),CUDA_VISIBLE_DEVICES='2',SLURM_JOB_ID='1234',
         SLURMD_NODENAME='mock-node',SLURM_SUBMIT_DIR=str(ROOT),MASK_CONDA_ENV='manucripts_align')
+    env.pop('CUBLAS_WORKSPACE_CONFIG',None)
     result=subprocess.run(['bash','scripts/eval/tune_masks.sbatch','--stage1-trials','2'],cwd=ROOT,env=env,capture_output=True,text=True)
     assert result.returncode==7
     assert captured.read_text().splitlines()==['-u','scripts/eval/mask_batch.py','--stage1-trials','2']
-    assert environment.read_text().splitlines()==['manucripts_align','2','1','1']
+    assert environment.read_text().splitlines()==['manucripts_align','2','1','1',':4096:8']
 
 
 def test_temporary_paths_and_extra_gpus_are_rejected(tmp_path,project_output,monkeypatch):

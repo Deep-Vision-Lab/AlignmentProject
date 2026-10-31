@@ -17,8 +17,9 @@ Default resources: 8 CPUs, 48G RAM, one GPU, three days. Override with `--cpus`,
 and does not benefit from requesting multiple GPUs.
 
 Prepare dependencies in `manucripts_align` before submitting, including the
-repository's PyTorch/torchvision dependencies and **Optuna 4.9.x** (verified here
-with 4.9.0). The worker checks constrained TPE, crash-recoverable journal locks,
+repository's PyTorch/torchvision dependencies and **Optuna 4.x or 5.x** (the
+worker checks the required APIs rather than rejecting a compatible major version).
+The worker checks constrained TPE, crash-recoverable journal locks,
 CUDA and strict checkpoint reconstruction before cache generation. Checkpoint
 loading uses `build_model(..., initialize=False)` and loads its complete saved
 state; it does not fetch pretrained weights. All inputs must already be local
@@ -26,6 +27,10 @@ to the HPC project storage. The job never installs packages, downloads model
 assets, asks questions, or connects to an interactive authentication service.
 Hugging Face offline flags, `PIP_NO_INDEX`, offline W&B and unbuffered Python are
 set before the worker starts. Missing dependencies/assets cause a clear failure.
+The batch launcher also exports `CUBLAS_WORKSPACE_CONFIG=:4096:8` **before starting
+Python**, as required by the evaluator's deterministic CUDA setting. An explicitly
+supplied `:16:8` is also accepted; other values fail before inference. The
+preflight log prints the resolved value. Do not set it after PyTorch has started.
 
 The real checkpoint currently present is
 `Weights/phase4_typed_local03_sum_nogate/checkpoint_best.pt`; dataset root is
@@ -47,8 +52,10 @@ retain all source/label provenance; negative labels remain explicitly presumed.
 See
 [quantitative_mask_evaluation.md](quantitative_mask_evaluation.md) for the contract.
 
-A reviewed manifest is optional. Use `--data-policy reviewed --split-manifest FILE`
-for the strict explicit-label/mask workflow. Both modes prohibit split fallback
+A reviewed manifest is optional for `--data-policy folder_masks`; its negatives
+are **presumed**, not verified. Use `--data-policy reviewed --split-manifest FILE`
+for the strict explicit-label/mask workflow. The batch worker accepts either
+policy consistently with the submission launcher. Both modes prohibit split fallback
 and training/test contamination of validation. Final test is separate.
 
 ## Submit, monitor, resume and cancel

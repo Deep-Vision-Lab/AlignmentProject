@@ -56,7 +56,7 @@ def admission_lock(output):
     """Brief NFS-safe mutex; a killed admission can be reclaimed after 60s."""
     from optuna.storages.journal import JournalFileSymlinkLock
     if 'grace_period' not in inspect.signature(JournalFileSymlinkLock).parameters:
-        raise RuntimeError('Crash-recoverable journal locks are unavailable; prepare Optuna 4.9.x in manucripts_align before submitting')
+        raise RuntimeError('Crash-recoverable journal locks are unavailable; install compatible Optuna 4.x or 5.x in manucripts_align before submitting')
     target=Path(output)/'.batch_admission'
     with target.open('ab'):pass
     guard=JournalFileSymlinkLock(str(target),grace_period=60)
@@ -112,15 +112,26 @@ def preflight(args,require_cuda=True):
     import torch
     from train import load_checkpoint
     from scripts.eval.tune_masks import storage_spec
-    if not args.split_manifest:raise ValueError('Provide --split-manifest with reviewed validation pairs and explicit GT masks')
-    for path in (Path(args.checkpoint),Path(args.split_manifest)):
+    from scripts.eval.mask_quantitative import data_policy
+    workspace=os.environ.get('CUBLAS_WORKSPACE_CONFIG')
+    if args.device.startswith('cuda') and workspace not in (':4096:8',':16:8'):
+        raise RuntimeError('Deterministic CUDA evaluation requires CUBLAS_WORKSPACE_CONFIG=:4096:8 '
+                           'or :16:8 before Python starts; submit through scripts/eval/tune_masks.sh')
+    policy=data_policy(args)
+    if policy=='reviewed' and not args.split_manifest:
+        raise ValueError('Reviewed evaluation requires --split-manifest with verified pairs and explicit GT masks')
+    if policy=='folder_masks':
+        for folder in ('alignedPairs','Unalignedlines'):
+            if not (Path(args.dataset)/folder).is_dir():
+                raise FileNotFoundError(f'Folder-mask evaluation requires {args.dataset}/{folder}')
+    for path in (Path(args.checkpoint), *([Path(args.split_manifest)] if args.split_manifest else [])):
         if not path.is_file():raise FileNotFoundError(path)
     if not Path(args.dataset).is_dir():raise FileNotFoundError(args.dataset)
     if not storage_spec(args).startswith('journal://'):raise ValueError('The BGU worker requires journal:///durable/project/path; SQLite is not used on shared storage')
     if 'constraints_func' not in inspect.signature(optuna.samplers.TPESampler).parameters:raise RuntimeError('Optuna constrained TPE support is missing')
-    major=int(optuna.__version__.split('.')[0])
-    if major!=4:raise RuntimeError('Use the repository requirement optuna>=4,<5; found '+optuna.__version__)
     from optuna.storages.journal import JournalFileBackend, JournalFileSymlinkLock  # noqa: F401
+    if 'grace_period' not in inspect.signature(JournalFileSymlinkLock).parameters:
+        raise RuntimeError('Installed Optuna lacks crash-recoverable journal symlink locks')
     if require_cuda and args.device.startswith('cuda') and not torch.cuda.is_available():
         raise RuntimeError('CUDA is unavailable in the allocated node; refusing a silent CPU fallback')
     # Strict reconstruction requires only the self-contained trained checkpoint.
@@ -132,7 +143,9 @@ def preflight(args,require_cuda=True):
         checkpoint=str(Path(args.checkpoint).resolve()),model_assets='self-contained checkpoint, strict state load passed; no downloads',
         cuda_available=torch.cuda.is_available(),visible_gpus=torch.cuda.device_count(),
         packages={name:importlib.metadata.version(name) for name in ('torch','torchvision','numpy','scipy','optuna','pillow')},
-        worker_count=1,pruning=False,device=args.device,storage_backend='JournalStorage / JournalFileSymlinkLock')
+        worker_count=1,pruning=False,device=args.device,storage_backend='JournalStorage / JournalFileSymlinkLock',
+        data_policy=policy,negative_label_status=('presumed, not manually reviewed' if policy=='folder_masks' else 'verified manifest'),
+        cublas_workspace_config=workspace)
     return result
 
 
