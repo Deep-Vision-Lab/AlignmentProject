@@ -221,8 +221,8 @@ class EvaluationSession:
                  annotation_manifest=None, pair_source='auto', crop_override=None):
         if crop_override not in (None, 'auto', 'xml', 'none', 'content'):
             raise ValueError('crop_override must be auto, xml, none, content or None')
-        if pair_source not in ('auto', 'dataset', 'folders'):
-            raise ValueError('pair_source must be auto, dataset or folders')
+        if pair_source not in ('auto', 'dataset', 'folders', 'external'):
+            raise ValueError('pair_source must be auto, dataset, folders or external')
         if split not in ('train', 'val', 'test'):
             raise ValueError('split must be train, val, or test')
         self.checkpoint = Path(checkpoint).expanduser().resolve()
@@ -258,7 +258,11 @@ class EvaluationSession:
         self.pairs, self.excluded_pairs, self.unknown_labels = [], 0, {}
         self.pair_source = ('folders' if self.view.source_layout == 'book_lines' else 'dataset') if pair_source == 'auto' else pair_source
         self.line_aliases, self.folder_summary = {}, {}
-        if self.pair_source == 'folders':
+        if self.pair_source == 'external':
+            # A separately verified pair manifest supplies labels/masks; saved
+            # split membership and feature preprocessing still come from here.
+            catalog_records = []
+        elif self.pair_source == 'folders':
             if self.view.source_layout != 'book_lines':
                 raise ValueError('ArabicData folder evaluation requires BookA/BookB indexes for saved split membership')
             self.pairs, self.line_aliases, self.folder_summary = arabic_data_pairs(
