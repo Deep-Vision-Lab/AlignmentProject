@@ -1,5 +1,10 @@
 # Frozen-checkpoint quantitative mask evaluation
 
+The default dataset is **DataSet/ArabicData**. With `--data-policy auto` and no
+review manifest, quantitative evaluation reads **alignedPairs** and
+**Unalignedlines** directly, following the notebook folder-mask policy. No pair
+manifest is required for this mode.
+
 Run from **AlignmentProject**, branch `refactor/simple-alignment-core`. This is
 separate from the annotation website and from training Optuna. No training,
 model, loss, matcher, notebook, existing split, or existing tuner is changed.
@@ -48,8 +53,9 @@ Source inspection establishes:
   its configuration "Optuna best trial 135" and "initial, uncalibrated" in
   different cells; neither proves held-out performance.
 * The notebook enables split fallback, samples presumed unmatched negatives,
-  and treats missing mask files as black. This strict workflow does **none**
-  of these. They would invalidate the requested quantitative experiment.
+  and treats missing mask files as black. Folder evaluation adopts the seeded
+  comparisons and missing-mask policy, but never split fallback. Reviewed mode
+  instead requires explicit negative labels and mask files.
 
 Every trial saves the complete requested settings, production-resolved settings,
 derived alias/gap limits, active/inactive diagnostics, actual metrics and errors.
@@ -65,14 +71,55 @@ different paths), and available page/group IDs are audited across ALL saved
 splits. Image/page leakage aborts. Manuscripts may legitimately span page-level
 splits under the existing policy; that limitation is reported, not hidden.
 
-Without `--split-manifest`, the evaluator uses supplied, known positive/negative
-pair labels from the production catalog, with negative construction disabled.
-Missing files, one-sided foreground, negative foreground and positive empty GT
-are errors, not silently excluded records. A provided `no_shared_content` label
-is treated as the dataset's verified negative label. Random Unalignedlines A/B
-combinations are never certified as negative by this code.
+With `--data-policy auto`, an ArabicData root containing both export folders
+selects `folder_masks`. `--data-policy folder_masks` selects it explicitly:
 
-If reviewed pairs are not in the current catalog, supply an explicit JSON list:
+* `alignedPairs/imagesA` and `imagesB` are joined by their full filename stem.
+  Their existing `masksA`/`masksB` files supply full-source GT for those partners.
+* `Unalignedlines/imagesA` and `imagesB` are independent inventories. The existing
+  production sampler includes **all eligible** cross-book comparisons per split
+  by default (`--negative-count all`), excluding related page/pair groups, identical
+  images and shared transcript words. Use `--negative-count N` to request a
+  reproducible capped subset (seed 42). Matching filenames are not treated as pairs.
+* The default `--pairs-per-split 500` keeps every aligned positive, preserves the
+  original unmatched comparisons, then samples enough existing
+  `metadata/dataset_manifest_full_pairs.jsonl` records labeled `no_shared_content`
+  to reach the fixed target. Both source lines must belong to the current saved
+  split and have copies in alignedPairs/Unalignedlines. Original book indexes
+  only resolve identities; inference uses the exported image/text copies.
+  Physical A/B identities are deduplicated, including duplicate metadata rows,
+  copied paths and known positives. Seed 42 fixes supplemental selection.
+* Supplemental negatives receive **pair-specific black GT from their recorded
+  coarse label**. An aligned line's mask describes its original partner, so it
+  is never reused for a supplemental pairing. These records remain presumed
+  negatives rather than manually reviewed pairs. Each record saves its original
+  label source, both actual source folders and `label_as_black` provenance.
+  Insufficient distinct candidates cause an explicit error rather than repeated
+  samples, split changes or invented labels.
+* Missing masks become source-sized black masks, matching the notebook policy.
+  Original-pool masks must agree on foreground presence; one-sided foreground and size
+  mismatches remain explicit errors. Masks are never derived from transcripts.
+* BookA/BookB indexes verify copied files and checkpoint membership only. Actual
+  inference images come from the two export folders. Other splits are excluded;
+  no source line is silently moved into validation or test.
+* Every pair records `source_folder`, mask paths, missing-mask fallback, original
+  target and `presumed_negative`. Reports count those cases and label the FPR as
+  including **presumed comparisons**, rather than verified-negative accuracy.
+
+`--pairs-per-split all` uses only the earlier original folder pool, without
+supplemental records. A numeric value applies separately to validation and final
+test, retaining every positive in each split. The sample target is part of run
+provenance and must remain fixed on resume.
+
+`--data-policy reviewed` retains the original strict workflow: no constructed
+negatives, missing-mask fallback or inferred negative certification. Supplying
+`--split-manifest` with `auto` also selects reviewed mode. Supplied known negative
+labels require explicit empty masks. The same source/split leakage checks apply
+to both modes.
+
+For separately reviewed pairs, supply an explicit JSON list with
+`--data-policy reviewed --split-manifest /actual/path/to/pairs.json`:
+
 
 ```json
 {
@@ -187,24 +234,23 @@ not replace the user's base environment. From the repository root:
 
 ```bash
 source .venv-mask-eval/bin/activate
-# Set this to your reviewed pair list; val and test membership must match checkpoint.
-PAIRS=/absolute/path/to/reviewed_pairs.json
-OUT=Results/Evaluation/quantitative_masks
+# Use the exported ArabicData folders; no reviewed manifest is needed.
+OUT=Results/Evaluation/quantitative_masks_500_pairs
 
 # 1. Build/reuse frozen validation outputs and score exact current baseline.
-python scripts/eval/tune_masks.py prepare --split-manifest "$PAIRS" --output "$OUT" --device cpu
+python scripts/eval/tune_masks.py prepare --dataset DataSet/ArabicData --data-policy folder_masks --pairs-per-split 500 --output "$OUT" --device cpu
 
 # 2. Full validation-only search, resumable to 300/200 total trials.
-python scripts/eval/tune_masks.py tune --split-manifest "$PAIRS" --output "$OUT" --device cpu --resume
+python scripts/eval/tune_masks.py tune --dataset DataSet/ArabicData --data-policy folder_masks --pairs-per-split 500 --output "$OUT" --device cpu --resume
 
 # 3. Freeze validation selection; score test baseline, selected and two ablations.
-python scripts/eval/tune_masks.py test --split-manifest "$PAIRS" --output "$OUT" --device cpu
+python scripts/eval/tune_masks.py test --dataset DataSet/ArabicData --data-policy folder_masks --pairs-per-split 500 --output "$OUT" --device cpu
 
 # 4. Regenerate paper exports without inference or parameter selection.
 python scripts/eval/tune_masks.py export --output "$OUT"
 ```
 
-Pass `--checkpoint`, `--dataset`, `--cache-dir`, `--seed`, `--bootstrap`,
+Pass `--checkpoint`, `--dataset`, `--data-policy`, `--negative-count`, `--pairs-per-split`, `--cache-dir`, `--seed`, `--bootstrap`,
 `--stage1-trials`, `--stage2-trials`, `--startup-trials`, `--max-negative-pair-fpr`,
 `--study-name`, `--storage`, `--timeout` as needed. Use the SAME preprocessing,
 device and provenance options for prepare/tune/test. `--resume` safely creates
@@ -213,9 +259,10 @@ a fresh study when none exists; it never increases totals beyond requested targe
 HPC submission, matching the repository's GPU partition and Conda environment:
 
 ```bash
-: "${SPLIT_MANIFEST:?Set this to your actual reviewed pair manifest}"
-bash scripts/eval/tune_masks.sh --split-manifest "$SPLIT_MANIFEST" \
-  --output-dir "$PWD/Results/Evaluation/quantitative_masks_cuda" --resume
+bash scripts/eval/tune_masks.sh --dataset "$PWD/DataSet/ArabicData" \
+  --data-policy folder_masks --pairs-per-split 500 \
+  --job-name mask_optuna_500_pairs \
+  --output-dir "$PWD/Results/Evaluation/quantitative_masks_500_pairs_cuda" --resume
 ```
 
 Do not use a CPU baseline directory for a CUDA study: device/outputs are part of
@@ -244,15 +291,50 @@ cache reuse, current-notebook predictor parity, leakage rejection and final
 test/LaTeX export on explicitly synthetic frozen-checkpoint fixtures. They do
 not certify synthetic fixture labels as real manuscript negatives.
 
-The supplied default trained checkpoint/data was audited separately. Its saved
-splits contain 924 training, 112 validation and 166 test lines, with no decoded
-image or known page-group leakage. The current exported catalog provides **zero
-eligible validation pairs** for this checkpoint. Training fallback and fabricated
-negatives are deliberately prohibited. Supply reviewed positive/negative pairs
-with GT masks in the saved validation split before the real 500-trial run.
-The exact failed preflight and split membership are retained under
-`Results/Evaluation/quantitative_masks_real_audit/`. No real full search or real
-final test is claimed.
+The supplied default checkpoint's saved splits contain 924 training, 112
+validation and 166 test lines, with no decoded-image or known page-group leakage.
+The current ArabicData folders provide **53 aligned validation pairs** and
+**88 aligned test pairs**. There are 156 eligible validation and 351 eligible test
+Unalignedlines combinations. The original folder-only pool has **209 validation
+pairs** (53 positive + 156 presumed negative) and **439 test pairs** (88 positive +
+351 presumed negative). With the new default target of 500, validation retains
+its 53 positives and 156 original comparisons and adds **291 recorded negative
+pairs**, giving **53 positive + 447 negative = 500**. Every trial uses this same
+fixed validation sample. No training/test line moves into validation. More
+positive pairs still require additional labeled validation data.
+These comparisons have no mask files and are explicitly presumed negatives under
+the notebook's black-mask policy. The full export contains 770 aligned pairs with
+both masks; only saved-split members enter each quantitative run.
+
+The earlier capped validation baseline and exact manifests are saved under
+`Results/Evaluation/arabic_data_folder_masks_20261031/`: positive IoU **0.714124**,
+Dice **0.789096**, presumed-negative pair FPR **0.73** (73/100). Confidence
+intervals are unavailable because available dependency links form one component
+per class. The candidate limit was reached on 146/153 pairs; no limit or matcher
+setting was changed. See `baseline/report.md` for the complete interpretation. Historical strict-mode
+preflight artifacts under `quantitative_masks_real_audit/` used a different
+label contract and do not describe folder-mode availability. No real full
+500-trial search or real final test is claimed.
+
+The earlier original-pool all-comparisons run is saved separately under
+`Results/Evaluation/arabic_data_all_pairs_20261031/`. Its manifest records all
+209 validation pairs. The expanded baseline gives IoU **0.714124**, Dice
+**0.789096**, and presumed-negative FPR **0.743590** (116/156). Full details
+are in its `baseline/report.md`. Use a fresh output/study for the expanded population;
+resuming an earlier capped study is rejected by the provenance check.
+
+The 500-pair baseline and exact sample manifest are saved separately under
+`Results/Evaluation/arabic_data_500_pairs_20261031/`. The manifest distinguishes
+156 unmatched comparisons from 291 supplemental recorded negatives. Use a fresh
+output/study when changing from 100/156 negatives to this 447-negative sample.
+The 500-pair run does not change the frozen checkpoint or matcher settings.
+Its completed baseline has positive IoU **0.714124**, Dice **0.789096**, and
+presumed-negative FPR **0.697987** (312/447). By negative source this is 116/156
+original unmatched comparisons and 196/291 supplemental recorded pairs. The lower
+aggregate FPR than the earlier original-pool run reflects the added comparison
+population, not a matcher improvement. All 500 physical pairings are distinct;
+they reuse 106 source images. The report includes all 1,000 line scores and
+source/label provenance.
 
 Saved earlier standalone engineering smoke (source fingerprint predates the BGU
 batch additions; do not resume it with changed source):
@@ -262,8 +344,12 @@ all four methods, and CSV/LaTeX export. Nine completed records were feasible;
 selection respected the .05 FPR requirement. The fixture checkpoint hash was
 unchanged. These are synthetic engineering checks, not manuscript accuracy.
 
-Verification: all **15 new tests pass**. The broader evaluation regression run
-has **72 passes and 4 failures** in unchanged notebook tests:
+Current folder-mode verification: **31 quantitative/batch tests pass**, including
+both folder sources, saved membership, missing-mask provenance, one-sided-mask
+rejection, deterministic comparisons and manifest-free batch submission.
+
+The earlier broader evaluation regression run recorded **72 passes and 4
+failures** in unchanged notebook tests:
 
 * `test_notebook_session_population_predictions_identical_and_gt_independent`
   assumes `current_match_settings` is in the assignment cell; it now lives in

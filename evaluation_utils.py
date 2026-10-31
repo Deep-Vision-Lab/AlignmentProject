@@ -389,13 +389,17 @@ _LINE_NUMBER = re.compile(r'(?:line[_\-\s]*)?0*(\d+)', re.IGNORECASE)
 
 
 def arabic_data_pairs(root, records, negative_count=None, seed=42):
-    """Load folder partners and sample independent unmatched lines in a saved split."""
+    """Load folder partners and unmatched comparisons in a saved split.
+
+    ``negative_count='all'`` retains every eligible comparison; an integer
+    applies the existing seeded reservoir cap. None keeps the line-count cap.
+    """
     root = Path(root)
     members = {r['sample_id']: r for r in records}
     aliases, hashes, pairs = {}, {}, []
     stats = dict(aligned_pairs=0, excluded_aligned_pairs=0)
-    n = len(records) if negative_count is None else negative_count
-    if n < 0:
+    n = None if negative_count == 'all' else len(records) if negative_count is None else negative_count
+    if n is not None and n < 0:
         raise ValueError('negative_count must be nonnegative')
 
     def digest(path):
@@ -478,7 +482,7 @@ def arabic_data_pairs(root, records, negative_count=None, seed=42):
                     or a['words'] & b['words'] or digest(a['side']['image']) == digest(b['side']['image'])):
                 continue
             seen += 1
-            if len(candidates) < n:
+            if n is None or len(candidates) < n:
                 candidates.append((a, b))
             elif n:
                 slot = rng.randrange(seen)
@@ -492,7 +496,7 @@ def arabic_data_pairs(root, records, negative_count=None, seed=42):
                           group_ids=[a['group_id'], b['group_id']], annotations=[{}, {}],
                           anchor_id='', annotation_provenance='verified subword-box LCS (derived), if available'))
     stats.update(eligible_negative_combinations=seen, sampled_presumed_negatives=len(candidates),
-                 requested_presumed_negatives=n)
+                 requested_presumed_negatives='all' if n is None else n)
     return pairs, aliases, stats
 
 

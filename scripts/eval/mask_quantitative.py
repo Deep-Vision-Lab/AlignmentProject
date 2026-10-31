@@ -1,7 +1,8 @@
-"""Strict mask scoring and frozen-output caching around the notebook predictor.
+"""Mask scoring and frozen-output caching around the notebook predictor.
 
 Inference receives image features/geometry only. Supplied labels and mask files
-are a separate scoring contract; missing masks never become negative labels.
+are a separate scoring contract. ArabicData folder evaluation records the
+notebook's missing-mask/black policy and keeps presumed negatives explicit.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import importlib.metadata
 import json
 import math
 from pathlib import Path
+import random
 import subprocess
 import time
 
@@ -25,12 +27,12 @@ from scipy.stats import beta
 from dataset import file_hash
 from dtw import cosine_similarity_matrix
 from evaluate import resolved_match_settings, MATCH_VERSION
-from evaluation_utils import EvaluationSession, predict_cached_pair, _side_key
+from evaluation_utils import EvaluationSession, predict_cached_pair, recorded_negative_pairs, _side_key
 from text_embedding import ARABIC_LETTERS
 from scripts.eval.tune_matching import write_json, write_csv
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = 'quantitative-mask-v1'
+VERSION = 'quantitative-mask-v3-recorded-folder-pairs'
 METRICS = ('positive_iou', 'positive_dice', 'precision', 'recall',
            'negative_pair_fpr', 'negative_masked_area_fraction')
 
@@ -250,10 +252,85 @@ def explicit_pairs(session, manifest):
     return pairs
 
 
+def data_policy(args):
+    """Use ArabicData's exported folders unless reviewed pairs are supplied."""
+    policy = args.data_policy
+    if policy == 'auto':
+        folders = all((Path(args.dataset)/name).is_dir() for name in ('alignedPairs', 'Unalignedlines'))
+        policy = 'folder_masks' if folders and not args.split_manifest and args.pair_source != 'dataset' else 'reviewed'
+    if policy == 'folder_masks':
+        if args.split_manifest:
+            raise ValueError('Use --data-policy reviewed with --split-manifest')
+        if args.pair_source == 'dataset':
+            raise ValueError('Folder-mask evaluation requires --pair-source folders or auto')
+        if args.negative_count != 'all' and args.negative_count < 1:
+            raise ValueError('Folder-mask evaluation requires --negative-count all or an integer >= 1')
+    return policy
+
+
+def folder_comparisons(session, target, seed):
+    """Keep positives and supplement unmatched comparisons with recorded negatives.
+
+    Supplemental rows must already have a no_shared_content label and both
+    source lines in this saved split and its exported folders. Their empty GT
+    is pair-specific; original aligned-partner masks cannot be reused here.
+    """
+    pairs = list(session.pairs)
+    report = dict(target=target, original_pairs=len(pairs), supplemental_negative_pairs=0)
+    if target == 'all':
+        return pairs, report
+    positives = [p for p in pairs if p['target'] == 1]
+    negatives = [p for p in pairs if p['target'] == 0]
+    needed = target - len(positives)
+    if needed < 1:
+        raise ValueError(f'--pairs-per-split must exceed the {len(positives)} aligned pairs in {session.split}; all positives are retained')
+    def physical_key(pair):
+        return tuple(session.line_aliases.get(_side_key(side),_side_key(side)) for side in pair['sides'])
+    # Alias original book lines to actual exported images, not historical paths.
+    exported = {}
+    for copied, canonical in sorted(session.line_aliases.items()):
+        side = dict(session.allowed[canonical]['side'],image=copied[0],text=copied[1])
+        exported.setdefault(canonical,side)
+    recorded, replay_report = recorded_negative_pairs(session)
+    seen = {physical_key(pair) for pair in positives}
+    distinct_negatives = []
+    for pair in negatives:
+        key = physical_key(pair)
+        if key not in seen:
+            seen.add(key); distinct_negatives.append(pair)
+    supplemental = []
+    for pair in recorded:
+        key = physical_key(pair)
+        if key in seen or not all(k in exported for k in key):
+            continue
+        seen.add(key)
+        supplemental.append(dict(pair,sides=[dict(exported[k]) for k in key],
+            recorded_negative_black=True,
+            annotation_provenance='Pair-specific black GT from existing coarse no_shared_content label; not manually reviewed'))
+    report.update(recorded_catalog=replay_report,unmatched_negative_candidates=len(distinct_negatives),
+                  supplemental_negative_candidates=len(supplemental))
+    if len(distinct_negatives)+len(supplemental) < needed:
+        available = len(positives)+len(distinct_negatives)+len(supplemental)
+        raise ValueError(f'{session.split} has only {available} distinct eligible folder pairs for target {target}; add reviewed data or lower --pairs-per-split. No pairs were duplicated or moved across splits.')
+    rng = random.Random(seed)
+    if len(distinct_negatives) >= needed:
+        chosen = rng.sample(sorted(distinct_negatives,key=lambda p:p['sample_id']),needed)
+    else:
+        chosen = distinct_negatives + rng.sample(sorted(supplemental,key=lambda p:p['sample_id']),needed-len(distinct_negatives))
+    result = positives + chosen
+    report.update(selected_pairs=len(result),positive_pairs=len(positives),negative_pairs=len(chosen),
+        supplemental_negative_pairs=sum(bool(p.get('recorded_negative_black')) for p in chosen),
+        seed=seed,negative_label_policy='Presumed comparisons and coarse recorded no_shared_content labels; not manually reviewed')
+    return result, report
+
+
 def build_cache(args, split):
     """GT files are loaded separately; cached NPZ files contain no labels/masks."""
     from train import resolve_device
-    if args.split_manifest and args.mask_source!='manifest':raise ValueError('Explicit pair manifests require --mask-source manifest')
+    policy = data_policy(args)
+    folders = policy == 'folder_masks'
+    mask_source = 'folders' if folders else args.mask_source
+    if args.split_manifest and mask_source!='manifest':raise ValueError('Explicit pair manifests require --mask-source manifest')
     torch.manual_seed(args.seed); np.random.seed(args.seed)
     torch.set_num_threads(args.threads); torch.use_deterministic_algorithms(True)
     output = Path(args.output); output.mkdir(parents=True,exist_ok=True)
@@ -262,7 +339,8 @@ def build_cache(args, split):
     checkpoint_before=file_hash(args.checkpoint)
     try:
         session = EvaluationSession(args.checkpoint,args.dataset,split=split,device=str(resolve_device(args.device)),
-            seed=args.seed,pair_source=args.pair_source,construct_negatives=False,negative_count=0,
+            seed=args.seed,pair_source='folders' if folders else args.pair_source,
+            construct_negatives=folders,negative_count=args.negative_count if folders else 0,
             crop_override=None if args.crop=='checkpoint' else args.crop)
     except Exception as exc:
         write_json(output/'split_audit.json',dict(status='FAILED_SESSION_CONTRACT',error=str(exc)))
@@ -273,21 +351,36 @@ def build_cache(args, split):
     if audit['image_leakage'] or audit['page_group_leakage']:
         raise ValueError('Saved splits leak line images/page groups; see split_audit.json. No split was reorganized.')
     pixel_ids={image['path']:image['pixel_sha256'] for records in audit['records'].values() for row in records for image in row['images']}
-    pairs = explicit_pairs(session,args.split_manifest)
+    if folders:
+        pairs, pair_selection = folder_comparisons(session,args.pairs_per_split,args.seed)
+    else:
+        pairs, pair_selection = explicit_pairs(session,args.split_manifest), dict(target='reviewed manifest/catalog')
     issues = []; selected = []; seen = set()
     for pair in sorted(pairs,key=lambda p:p['sample_id']):
         if pair['sample_id'] in seen: issues.append(dict(sample_id=pair['sample_id'],reason='duplicate pair ID')); continue
         seen.add(pair['sample_id'])
-        if pair.get('constructed_negative') or pair.get('target') not in (0,1):
+        presumed = bool(pair.get('constructed_negative') or pair.get('recorded_negative_black'))
+        if (presumed and not folders) or pair.get('target') not in (0,1):
             issues.append(dict(sample_id=pair['sample_id'],reason='unverified or unknown pair label')); continue
         masks = []; provenance = []
         for i,side in enumerate(pair['sides']):
             path = pair['annotations'][i].get('mask')
-            if args.mask_source=='folders':
+            if mask_source=='folders':
                 image = Path(side['image']); path = image.parent.parent/('masks'+'AB'[i])/(image.stem+'.png')
             path = Path(path) if path else None
             with Image.open(side['image']) as image: size = image.size
+            if folders and pair.get('recorded_negative_black'):
+                masks.append(np.zeros((size[1],size[0]),dtype=bool))
+                provenance.append(dict(path=None,sha256=None,original_size=None,source_size=list(size),
+                    resized_nearest=False,label_as_black=True,
+                    label_source=pair['label_source']))
+                continue
             if path is None or not path.is_file():
+                if folders:
+                    masks.append(np.zeros((size[1], size[0]), dtype=bool))
+                    provenance.append(dict(path=str(path.resolve()),sha256=None,original_size=None,
+                        source_size=list(size),resized_nearest=False,missing_as_black=True))
+                    continue
                 issues.append(dict(sample_id=pair['sample_id'],side='AB'[i],reason='missing GT mask',path=str(path))); break
             with Image.open(path) as image:
                 original_size = image.size
@@ -300,13 +393,24 @@ def build_cache(args, split):
                                    source_size=list(size),resized_nearest=original_size!=size))
         if len(masks)!=2: continue
         expected = bool(pair['target'])
+        if folders:
+            foreground = [bool(mask.any()) for mask in masks]
+            if foreground[0] != foreground[1]:
+                issues.append(dict(sample_id=pair['sample_id'],reason='one-sided folder-mask foreground',foreground=foreground)); continue
+            expected = all(foreground)
         if any(bool(mask.any()) != expected for mask in masks):
             issues.append(dict(sample_id=pair['sample_id'],reason='label/GT inconsistency',target=pair['target'],foreground=[bool(m.any()) for m in masks])); continue
         groups = ['page:'+str(s['group_id']) for s in pair['sides'] if s.get('group_id')]
         groups += ['image:'+pixel_ids[session.line_aliases.get(_side_key(s),_side_key(s))[0]] for s in pair['sides']]
-        record = dict(sample_id=pair['sample_id'],split=split,target=pair['target'],category='positive' if expected else 'negative',
+        record = dict(sample_id=pair['sample_id'],split=split,target=int(expected),category='positive' if expected else 'negative',
             label=pair.get('label'),images=[dict(image=s['image'],sha256=file_hash(s['image']),bbox=s.get('bbox'),group_id=s.get('group_id')) for s in pair['sides']],
-            masks=provenance,dependency_keys=groups)
+            masks=provenance,dependency_keys=groups,data_policy=policy,
+            source_folder='+'.join(sorted({Path(s['image']).parent.parent.name for s in pair['sides']})) if folders else None,
+            source_folders=[Path(s['image']).parent.parent.name for s in pair['sides']] if folders else [],
+            negative_basis='recorded_no_shared_content' if pair.get('recorded_negative_black') else 'unmatched_comparison' if presumed else None,
+            label_source=pair.get('label_source'),
+            presumed_negative=bool(not expected and (presumed or any(m.get('missing_as_black') for m in provenance))),
+            original_target=pair['target'])
         inference_sides=[{k:s[k] for k in ('image','text','raw_text','bbox','group_id') if k in s} for s in pair['sides']]
         selected.append(dict(inference=dict(sample_id=pair['sample_id'],sides=inference_sides),truth=tuple(masks),record=record))
     counts = Counter(item['record']['category'] for item in selected)
@@ -315,18 +419,31 @@ def build_cache(args, split):
     contract = dict(split=split,counts={k:counts[k] for k in ('positive','negative')},inconsistent_records=issues,records=[p['record'] for p in selected],
                     eligible_catalog_pairs=len(pairs),saved_split_lines=session.split_sizes,
                     folder_catalog=session.folder_summary,
-                    missing_mask_policy='error, never presumed black',max_pairs=0)
+                    pair_selection=pair_selection,
+                    data_policy=policy,pair_source=session.pair_source,mask_source=mask_source,
+                    source_folders=['alignedPairs','Unalignedlines'] if folders else [],
+                    presumed_negative_pairs=sum(p['record']['presumed_negative'] for p in selected),
+                    missing_mask_count=sum(m.get('missing_as_black',False) for p in selected for m in p['record']['masks']),
+                    label_as_black_count=sum(m.get('label_as_black',False) for p in selected for m in p['record']['masks']),
+                    missing_mask_policy='black source-sized mask (notebook folder policy)' if folders else 'error, never presumed black',max_pairs=0)
     write_json(output/f'{split}_split_manifest.json',contract)
     if issues: raise ValueError(f'{len(issues)} inconsistent/unverified records; see {split}_split_manifest.json. No examples silently excluded.')
     if not counts['positive'] or not counts['negative']:
+        if folders:
+            raise ValueError(f'{split} needs both foreground alignedPairs and no-alignment folder comparisons; counts={dict(counts)}. See {split}_split_manifest.json. Saved splits were not changed.')
         raise ValueError(f'{split} needs positive AND verified negative pairs with explicit GT masks; counts={dict(counts)}. Supply --split-manifest with reviewed negatives. Random unmatched lines are not negatives.')
+    print(f'{split}: {len(selected)} pairs ({counts["positive"]} positive, {counts["negative"]} negative); policy={policy}',flush=True)
     source = source_identity()
     vocabulary=list(dict.fromkeys(session.config.alphabet_inventory or ARABIC_LETTERS))
     prior=getattr(session.text_encoder,'letter_evidence_prior',None) or dict(source='explicit uniform fallback',
         vocabulary=vocabulary,prior=[1/len(vocabulary)]*len(vocabulary))
     provenance = dict(version=VERSION,matcher_version=MATCH_VERSION,checkpoint=str(session.checkpoint),checkpoint_sha256=session.checkpoint_sha256,dataset=str(session.dataset_path),
         config=asdict(session.config),representation=args.representation,split=split,seed=args.seed,device=str(session.device),
-        mask_source=args.mask_source,resize_gt=args.resize_gt,bootstrap_resamples=args.bootstrap,
+        data_policy=policy,pair_source=session.pair_source,mask_source=mask_source,
+        negative_count=args.negative_count if folders else 0,folder_catalog=session.folder_summary,
+        pairs_per_split=args.pairs_per_split if folders else 'reviewed',pair_selection=pair_selection,
+        missing_mask_policy=contract['missing_mask_policy'],
+        resize_gt=args.resize_gt,bootstrap_resamples=args.bootstrap,
         notebook_path=str(Path(args.notebook).resolve()),notebook_sha256=file_hash(args.notebook),
         inference_mode='eval/no_grad, frozen model and character vectors, augmentation=False',
         letter_evidence_prior=prior,
@@ -369,6 +486,8 @@ def build_cache(args, split):
         cache_index.append(dict(sample_id=record['sample_id'],key=key,npz=str(path.resolve()),
             valid_physical=[l['physical'].tolist() for l in lines],
             padded_tokens=[int((~l['token_valid'].astype(bool)).sum()) for l in lines],geometry=[l['geometry'] for l in lines]))
+        if len(cache_index)%50==0 or len(cache_index)==len(selected):
+            print(f'Frozen features: {len(cache_index)}/{len(selected)} pairs',flush=True)
     provenance['cache_seconds'] = time.monotonic()-start
     if file_hash(session.checkpoint)!=checkpoint_before:raise ValueError('Checkpoint changed during feature extraction; use a frozen checkpoint copy')
     write_json(output/f'{split}_provenance.json',provenance)
@@ -390,9 +509,15 @@ def evaluate(session, prepared, representation, requested, output=None, bootstra
             region = region_counts(mask,truth) if score['full_height'] else dict(tp=0,fp=0,fn=0,matches=[])
             score.update(region_tp=region['tp'],region_fp=region['fp'],region_fn=region['fn'])
             scores.append(score)
-            line_rows.append(dict(sample_id=record['sample_id'],side='AB'[i],category=category,**score))
+            line_rows.append(dict(sample_id=record['sample_id'],side='AB'[i],category=category,
+                image=record['images'][i]['image'],
+                source_folder=record.get('source_folders',[None,None])[i] if record.get('source_folders') else None,
+                presumed_negative=record.get('presumed_negative',False),**score))
         candidates = prediction['match']['candidates']; regions = prediction['match']['regions']
         row = dict(sample_id=record['sample_id'],category=category,bootstrap_group=record['bootstrap_group'],
+            data_policy=record.get('data_policy','reviewed'),source_folder=record.get('source_folder'),
+            presumed_negative=record.get('presumed_negative',False),
+            negative_basis=record.get('negative_basis'),
             **{name:float(np.mean([s[key] for s in scores])) for name,key in
                [('positive_iou','iou'),('positive_dice','dice'),('precision','precision'),('recall','recall')]},
             negative_false_positive=any(s['predicted_pixels']>0 for s in scores),
@@ -410,7 +535,18 @@ def evaluate(session, prepared, representation, requested, output=None, bootstra
             merged_candidates=sum(bool(c.get('merged_from')) for c in candidates),
             merge_outcomes=dict(Counter(c['reason'] for c in candidates if c['reason'].startswith('merged_into_'))),
             distributions=distributions))
+        if len(rows)%50==0 or len(rows)==len(prepared):
+            print(f'Scored {len(rows)}/{len(prepared)} pairs',flush=True)
     summary = aggregate(rows)
+    presumed = sum(r['presumed_negative'] for r in rows)
+    summary.update(data_policy=prepared[0]['record'].get('data_policy','reviewed'),
+        source_folder_counts=dict(Counter(r['source_folder'] for r in rows if r['source_folder'])),
+        negative_basis_counts=dict(Counter(r['negative_basis'] for r in rows if r['negative_basis'])),
+        presumed_negative_pairs=presumed,
+        missing_mask_count=sum(m.get('missing_as_black',False) for item in prepared for m in item['record']['masks']),
+        label_as_black_count=sum(m.get('label_as_black',False) for item in prepared for m in item['record']['masks']),
+        negative_pair_fpr_interpretation=('Includes presumed unmatched comparisons and, when selected, coarse no_shared_content records with pair-specific black masks; not verified-negative accuracy.'
+            if presumed else 'Supplied negative labels with explicit empty masks.'))
     summary['diagnostics'] = dict(candidate_limit_hits=sum(r['candidate_limit_hit'] for r in rows),
         accepted_normal=sum(d['accepted_normal'] for d in diagnostics),accepted_short=sum(d['accepted_short'] for d in diagnostics),
         rejection_reasons=dict(sum((Counter(d['rejections']) for d in diagnostics),Counter())))

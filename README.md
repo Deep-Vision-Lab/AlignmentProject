@@ -193,6 +193,32 @@ catalog, with a seeded cap of 300 pairs; set `PHASE1_MAX_POPULATION_PAIRS=0` for
 the full catalog. Ground-truth loading and accuracy calculations live in the notebook.
 Collapse and route warnings are screening diagnostics.
 
+The standalone quantitative mask evaluator also defaults to **ArabicData**, using
+**alignedPairs** and **Unalignedlines** without requiring a reviewed pair manifest:
+
+```bash
+python scripts/eval/tune_masks.py prepare --dataset DataSet/ArabicData \
+  --data-policy folder_masks --pairs-per-split 500 --device cpu \
+  --output Results/Evaluation/arabic_data_500_pairs
+```
+
+This scores the baseline on the saved validation split. Aligned-pair GT comes
+from `masksA`/`masksB`; missing masks are black under the notebook policy.
+The default `--pairs-per-split 500` retains the 53 aligned validation positives
+and all 156 eligible Unalignedlines comparisons, then adds 291 existing
+`no_shared_content` records for **500 validation pairs per trial** (53 positive,
+447 negative). Supplemental records use images from the same two exported folders
+and the same saved validation membership. Their GT is pair-specific black under
+the existing coarse negative label, not the mask of a different aligned partner.
+All negative assumptions and label sources are explicit in the reports.
+`--pairs-per-split all` retains the earlier 209-pair original folder pool.
+Use `tune` with the same options for the validation-only search, or
+`bash scripts/eval/tune_masks.sh --data-policy folder_masks --job-name mask_optuna_500_pairs --resume` on BGU.
+The strict reviewed-manifest workflow remains available with
+`--data-policy reviewed --split-manifest FILE`. See
+[quantitative mask evaluation](docs/quantitative_mask_evaluation.md) for outputs
+and the separate frozen final-test step.
+
 ```bash
 python evaluate.py --checkpoint Weights/experiment1/checkpoint_best.pt \
   --dataset DataSet/ArabicDataset --split test

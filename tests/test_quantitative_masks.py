@@ -13,7 +13,7 @@ from scripts.eval import mask_quantitative as q
 from scripts.eval import tune_masks as tuning
 from evaluation_utils import predict_cached_pair
 from evaluate import region_mask
-from test_evaluation_notebook import evaluation_fixture
+from test_evaluation_notebook import evaluation_fixture, arabic_folder_fixture
 
 
 def span(intervals, width=20, height=3):
@@ -181,6 +181,160 @@ def configure_fixture(root):
 def arguments(root, checkpoint, output, command='prepare'):
     return tuning.parser().parse_args([command,'--dataset',str(root),'--checkpoint',str(checkpoint),
         '--output',str(output),'--device','cpu','--crop','checkpoint','--pair-source','dataset','--bootstrap','20'])
+
+
+def folder_arguments(fixture, output):
+    root, checkpoint = fixture
+    for side in 'AB':
+        directory = root/'alignedPairs'/('masks'+side)
+        directory.mkdir(exist_ok=True)
+        for image in (root/'alignedPairs'/('images'+side)).glob('*.png'):
+            Image.fromarray((span([(20,50)],80,32)*255).astype(np.uint8)).save(directory/image.name)
+    return tuning.parser().parse_args(['prepare','--dataset',str(root),'--checkpoint',str(checkpoint),
+        '--output',str(output),'--device','cpu','--negative-count','2','--pairs-per-split','all','--bootstrap','20'])
+
+
+def test_arabic_folder_default_uses_both_exports_and_marks_presumed_negatives(arabic_folder_fixture,tmp_path):
+    args = folder_arguments(arabic_folder_fixture,tmp_path/'folders')
+    session, prepared, provenance = q.build_cache(args,'val')
+    assert provenance['data_policy']=='folder_masks'
+    assert provenance['pair_source']==provenance['mask_source']=='folders'
+    assert len(prepared)==4 and {p['record']['target'] for p in prepared}=={0,1}
+    for item in prepared:
+        record = item['record']
+        expected = 'alignedPairs' if record['target'] else 'Unalignedlines'
+        assert record['source_folder']==expected
+        assert all('/'+expected+'/' in s['image'] for s in item['inference']['sides'])
+        assert record['presumed_negative']==(not record['target'])
+        assert all(mask.any()==bool(record['target']) for mask in item['truth'])
+        assert set(item['inference'])=={'sample_id','sides'}
+    manifest=json.loads((args.output/'val_split_manifest.json').read_text())
+    assert manifest['source_folders']==['alignedPairs','Unalignedlines']
+    assert manifest['presumed_negative_pairs']==2 and manifest['missing_mask_count']==4
+    assert manifest['counts']=={'positive':2,'negative':2}
+    assert not json.loads((args.output/'split_audit.json').read_text())['image_leakage']
+    summary,_=q.evaluate(session,prepared,'fused',provenance['baseline_settings'],args.output/'baseline')
+    assert summary['source_folder_counts']=={'alignedPairs':2,'Unalignedlines':2}
+    assert summary['presumed_negative_pairs']==2
+    assert 'not verified-negative' in summary['negative_pair_fpr_interpretation']
+    # Saved split membership excludes train/test folder copies, and the seed
+    # chooses the same comparisons on a repeated cache load.
+    ids=[p['record']['sample_id'] for p in prepared]
+    again=q.build_cache(args,'val')[1]
+    assert [p['record']['sample_id'] for p in again]==ids
+    assert all('_02_' in s['image'] or '_03_' in s['image'] or '/alignedPairs/' in s['image']
+               for p in again for s in p['inference']['sides'])
+
+
+def test_reviewed_policy_never_constructs_unaligned_folder_negatives(arabic_folder_fixture,tmp_path):
+    args=folder_arguments(arabic_folder_fixture,tmp_path/'reviewed')
+    args.data_policy='reviewed'
+    with pytest.raises(ValueError,match='positive AND verified negative'):
+        q.build_cache(args,'val')
+    contract=json.loads((args.output/'val_split_manifest.json').read_text())
+    assert contract['counts']=={'positive':2,'negative':0}
+    assert contract['missing_mask_count']==0 and contract['presumed_negative_pairs']==0
+
+
+def test_all_comparisons_are_default_and_numeric_caps_remain_available(arabic_folder_fixture,tmp_path):
+    assert tuning.parser().parse_args(['prepare']).negative_count=='all'
+    assert tuning.parser().parse_args(['prepare']).pairs_per_split==500
+    args=folder_arguments(arabic_folder_fixture,tmp_path/'all-pairs')
+    args.negative_count=tuning.negative_pair_count('all')
+    session,prepared,provenance=q.build_cache(args,'val')
+    catalog=session.folder_summary
+    assert catalog['sampled_presumed_negatives']==catalog['eligible_negative_combinations']==2
+    assert catalog['requested_presumed_negatives']=='all'
+    assert provenance['negative_count']=='all'
+    full_ids={p['record']['sample_id'] for p in prepared if p['record']['target']==0}
+    assert len(full_ids)==2
+    args.negative_count=tuning.negative_pair_count('1')
+    args.output=tmp_path/'capped-pairs'
+    capped=q.build_cache(args,'val')[1]
+    capped_ids={p['record']['sample_id'] for p in capped if p['record']['target']==0}
+    assert len(capped_ids)==1 and capped_ids<=full_ids
+
+
+def test_larger_fixed_set_uses_recorded_negatives_and_pair_specific_black_gt(arabic_folder_fixture,tmp_path):
+    args=folder_arguments(arabic_folder_fixture,tmp_path/'expanded')
+    root,_=arabic_folder_fixture
+    for book in 'AB':
+        index=root/f'Book{book}/lines.jsonl'
+        rows=[json.loads(line) for line in index.read_text().splitlines()]
+        for row in rows:
+            for occurrence in row['source_occurrences']:
+                occurrence['line_number']=int(row['line_id'].split('_')[-1])+1
+        index.write_text('\n'.join(json.dumps(row) for row in rows))
+    records=[dict(pair_id=f'pair-{page}',label_type='no_shared_content',
+                  A=dict(line_idx=1),B=dict(line_idx=2)) for page in (0,2,3)]
+    # Duplicate records and a contradictory original positive must not become
+    # additional negative examples. Page 0 remains outside saved validation.
+    records.extend([records[1],dict(pair_id='pair-2',label_type='no_shared_content',
+                                  A=dict(line_idx=1),B=dict(line_idx=1))])
+    (root/'metadata').mkdir()
+    (root/'metadata/dataset_manifest_full_pairs.jsonl').write_text('\n'.join(json.dumps(row) for row in records))
+    args.pairs_per_split=5
+    session,prepared,provenance=q.build_cache(args,'val')
+    assert len(prepared)==5
+    assert provenance['pair_selection']['positive_pairs']==2
+    assert provenance['pair_selection']['negative_pairs']==3
+    assert provenance['pair_selection']['supplemental_negative_candidates']==2
+    added=[p for p in prepared if p['record']['negative_basis']=='recorded_no_shared_content']
+    assert len(added)==1 and not any(mask.any() for mask in added[0]['truth'])
+    assert added[0]['record']['presumed_negative']
+    assert all(m.get('label_as_black') for m in added[0]['record']['masks'])
+    assert all(m['path'] is None for m in added[0]['record']['masks'])
+    assert 'alignedPairs' in added[0]['record']['source_folders']
+    assert all(side.get('bbox') is None for side in added[0]['inference']['sides'])
+    # Exercise these remapped inputs without relying on a previously cached
+    # feature for the original partner; an empty alias tuple is not a crop.
+    session.feature_cache.clear()
+    for side in added[0]['inference']['sides']:
+        assert session.get_line_features(side)['features']['fused'].numel()>0
+    # The aligned line still has its original nonempty mask for its true partner.
+    for side in added[0]['inference']['sides']:
+        image=Path(side['image'])
+        if image.parent.parent.name=='alignedPairs':
+            path=image.parent.parent/'masksA'/image.name
+            assert np.asarray(Image.open(path)).any()
+    from evaluation_utils import _side_key
+    keys=[tuple(session.line_aliases.get(_side_key(s),_side_key(s)) for s in p['inference']['sides']) for p in prepared]
+    assert len(keys)==len(set(keys))==5
+    again=q.build_cache(args,'val')[1]
+    assert [p['record']['sample_id'] for p in again]==[p['record']['sample_id'] for p in prepared]
+    args.pairs_per_split=500
+    with pytest.raises(ValueError,match='only 6 distinct eligible folder pairs'):
+        q.build_cache(args,'val')
+
+
+def test_folder_one_sided_ground_truth_is_an_explicit_error(arabic_folder_fixture,tmp_path):
+    args=folder_arguments(arabic_folder_fixture,tmp_path/'bad-masks')
+    root,_=arabic_folder_fixture
+    (root/'alignedPairs/masksB/pair_000002__A_line_001__B_line_001.png').unlink()
+    with pytest.raises(ValueError,match='inconsistent/unverified'):
+        q.build_cache(args,'val')
+    issues=json.loads((args.output/'val_split_manifest.json').read_text())['inconsistent_records']
+    assert any(i['reason']=='one-sided folder-mask foreground' for i in issues)
+
+
+def test_folder_tuning_and_frozen_test_exports_retain_assumption_labels(arabic_folder_fixture,tmp_path):
+    output=tmp_path/'folder-study'
+    args=folder_arguments(arabic_folder_fixture,output)
+    command=['tune','--dataset',args.dataset,'--checkpoint',args.checkpoint,
+        '--output',str(output),'--device','cpu','--negative-count','2',
+        '--pairs-per-split','all','--bootstrap','20','--stage1-trials','1','--stage2-trials','1']
+    studies=tuning.main(command)
+    assert all(sum(t.state==optuna.trial.TrialState.COMPLETE for t in study.trials)==1
+               for _,study in studies)
+    selection=json.loads((output/'selected.json').read_text())
+    assert selection['run_manifest']['data_policy']=='folder_masks'
+    test_command=command.copy();test_command[0]='test'
+    tuning.main(test_command)
+    reports=json.loads((output/'test/methods.json').read_text())
+    assert len(reports)==4 and all(r['metrics']['presumed_negative_pairs']==2 for r in reports)
+    assert 'Presumed-negative pair FPR' in (output/'paper_table.tex').read_text()
+    assert 'presumed_negative_pairs' in (output/'paper_table.csv').read_text()
+    assert json.loads((output/'test_split_manifest.json').read_text())['counts']=={'positive':2,'negative':2}
 
 
 def test_exact_notebook_prediction_parity_cache_and_gt_separation(evaluation_fixture,tmp_path):

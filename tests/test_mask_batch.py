@@ -64,6 +64,8 @@ def test_defaults_and_dry_run_do_not_start_a_search(tmp_path,project_output):
         '--output-dir',str(project_output),'--dry-run'],cwd=ROOT,capture_output=True,text=True,check=True)
     assert '--stage1-trials 300' in result.stdout and '--stage2-trials 200' in result.stdout
     assert '--seed 42' in result.stdout and '--startup-trials 40' in result.stdout
+    assert '--negative-count all' in result.stdout
+    assert '--pairs-per-split 500' in result.stdout
     assert '--gpus=rtx_4090:1' in result.stdout
     assert '--account=' not in result.stdout and '--qos=' not in result.stdout
     assert 'mask_batch.py' not in result.stdout  # sbatch invokes the guarded script.
@@ -74,6 +76,22 @@ def test_defaults_and_dry_run_do_not_start_a_search(tmp_path,project_output):
         '--output-dir',str(project_output),'--gpus','0','--dry-run'],
         cwd=ROOT,capture_output=True,text=True,check=True)
     assert '--gpus=0' in cpu.stdout and '--device cpu' in cpu.stdout
+
+
+def test_arabic_folder_submission_does_not_require_a_review_manifest(tmp_path,project_output):
+    checkpoint=tmp_path/'checkpoint.pt';checkpoint.write_text('existence check only')
+    dataset=tmp_path/'ArabicData'
+    for name in ('alignedPairs','Unalignedlines'):(dataset/name).mkdir(parents=True)
+    result=subprocess.run(['bash','scripts/eval/tune_masks.sh','--checkpoint',str(checkpoint),
+        '--dataset',str(dataset),'--output-dir',str(project_output),'--negative-count','75','--dry-run'],
+        cwd=ROOT,capture_output=True,text=True,check=True)
+    assert '--data-policy auto' in result.stdout and '--negative-count 75' in result.stdout
+    assert '--split-manifest' not in result.stdout
+    assert not (project_output/'optuna.journal').exists()
+    all_pairs=subprocess.run(['bash','scripts/eval/tune_masks.sh','--checkpoint',str(checkpoint),
+        '--dataset',str(dataset),'--output-dir',str(project_output),'--dry-run'],
+        cwd=ROOT,capture_output=True,text=True,check=True)
+    assert '--negative-count all' in all_pairs.stdout
 
 
 def test_both_worker_entrypoints_refuse_login_node():

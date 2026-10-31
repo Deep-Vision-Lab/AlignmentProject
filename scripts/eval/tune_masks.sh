@@ -6,6 +6,9 @@ cd "$ROOT"
 checkpoint="Weights/phase4_typed_local03_sum_nogate/checkpoint_best.pt"
 dataset="DataSet/ArabicData"
 split_manifest=""
+data_policy=auto
+negative_count=all
+pairs_per_split=500
 job_name="mask_optuna"
 output_dir=""
 cache_dir=""
@@ -28,10 +31,13 @@ resume=0
 dry_run=0
 usage() {
   cat <<'HELP'
-Usage: bash scripts/eval/tune_masks.sh --split-manifest FILE [options]
+Usage: bash scripts/eval/tune_masks.sh [options]
   --checkpoint FILE       Default: Weights/phase4_typed_local03_sum_nogate/checkpoint_best.pt
   --dataset DIR           Default: DataSet/ArabicData
-  --split-manifest FILE   Required reviewed validation/test pair manifest (no presumed negatives)
+  --data-policy POLICY   auto (default): ArabicData folders, or reviewed when a manifest is supplied
+  --negative-count all|N All eligible Unalignedlines comparisons (default), or seeded cap N
+  --pairs-per-split all|N Total pairs per saved split, default 500; all keeps the original pool
+  --split-manifest FILE   Optional reviewed validation/test pair manifest
   --job-name NAME         Default: mask_optuna
   --output-dir DIR        Default: Results/Evaluation/<job-name> (durable project storage)
   --cache-dir DIR         Default: <output-dir>/cache
@@ -55,6 +61,9 @@ while [[ $# -gt 0 ]]; do
     --checkpoint) need_value "$@"; checkpoint="$2"; shift 2 ;;
     --dataset) need_value "$@"; dataset="$2"; shift 2 ;;
     --split-manifest) need_value "$@"; split_manifest="$2"; shift 2 ;;
+    --data-policy) need_value "$@"; data_policy="$2"; shift 2 ;;
+    --negative-count) need_value "$@"; negative_count="$2"; shift 2 ;;
+    --pairs-per-split) need_value "$@"; pairs_per_split="$2"; shift 2 ;;
     --job-name) need_value "$@"; job_name="$2"; shift 2 ;;
     --output-dir) need_value "$@"; output_dir="$2"; shift 2 ;;
     --cache-dir) need_value "$@"; cache_dir="$2"; shift 2 ;;
@@ -84,14 +93,30 @@ done
 for value in "$seed" "$stage1" "$stage2" "$cpus" "$gpus"; do
   [[ "$value" =~ ^[0-9]+$ ]] || { echo 'Seeds, budgets and resource counts must be nonnegative integers' >&2; exit 2; }
 done
-[[ "$cpus" -gt 0 && "$gpus" -le 1 ]] || { echo 'Use positive CPUs and at most one GPU for this one-worker evaluator' >&2; exit 2; }
-[[ -f "$checkpoint" && -d "$dataset" && -n "$split_manifest" && -f "$split_manifest" ]] || {
-  echo 'Checkpoint, dataset directory, and a real reviewed --split-manifest file must exist. No job submitted.' >&2; exit 2;
+[[ "$negative_count" == all || "$negative_count" =~ ^[0-9]+$ ]] || {
+  echo 'Use --negative-count all or a nonnegative integer' >&2; exit 2;
 }
+[[ "$pairs_per_split" == all || "$pairs_per_split" =~ ^[0-9]+$ ]] || {
+  echo 'Use --pairs-per-split all or a nonnegative integer' >&2; exit 2;
+}
+[[ "$cpus" -gt 0 && "$gpus" -le 1 ]] || { echo 'Use positive CPUs and at most one GPU for this one-worker evaluator' >&2; exit 2; }
+[[ "$data_policy" == auto || "$data_policy" == folder_masks || "$data_policy" == reviewed ]] || {
+  echo 'Use --data-policy auto, folder_masks, or reviewed' >&2; exit 2;
+}
+[[ -f "$checkpoint" && -d "$dataset" ]] || { echo 'Checkpoint and dataset directory must exist. No job submitted.' >&2; exit 2; }
+if [[ -n "$split_manifest" ]]; then
+  [[ -f "$split_manifest" && "$data_policy" != folder_masks ]] || {
+    echo 'A reviewed --split-manifest file must exist and requires auto/reviewed policy. No job submitted.' >&2; exit 2;
+  }
+else
+  [[ "$data_policy" != reviewed && ( "$negative_count" == all || "$negative_count" -gt 0 ) && -d "$dataset/alignedPairs" && -d "$dataset/Unalignedlines" ]] || {
+    echo 'Folder evaluation needs alignedPairs, Unalignedlines and --negative-count all or a positive count; otherwise supply a reviewed --split-manifest. No job submitted.' >&2; exit 2;
+  }
+fi
 absolute_file() { printf '%s/%s' "$(cd "$(dirname "$1")" && pwd -P)" "$(basename "$1")"; }
 checkpoint="$(absolute_file "$checkpoint")"
 dataset="$(cd "$dataset" && pwd -P)"
-split_manifest="$(absolute_file "$split_manifest")"
+[[ -z "$split_manifest" ]] || split_manifest="$(absolute_file "$split_manifest")"
 output_dir="${output_dir:-$ROOT/Results/Evaluation/$job_name}"
 [[ "$output_dir" == /* ]] || output_dir="$ROOT/$output_dir"
 cache_dir="${cache_dir:-$output_dir/cache}"
@@ -119,10 +144,12 @@ fi
 [[ -z "$account" ]] || submit+=("--account=$account")
 [[ -z "$qos" ]] || submit+=("--qos=$qos")
 submit+=("$ROOT/scripts/eval/tune_masks.sbatch" --checkpoint "$checkpoint" --dataset "$dataset"
-  --split-manifest "$split_manifest" --output "$output_dir" --cache-dir "$cache_dir"
+  --data-policy "$data_policy" --negative-count "$negative_count" --pairs-per-split "$pairs_per_split"
+  --output "$output_dir" --cache-dir "$cache_dir"
   --storage "journal://$journal_file" --study-name "$study_name" --seed "$seed"
   --stage1-trials "$stage1" --stage2-trials "$stage2" --startup-trials 40 --threads "$cpus" --device "$device"
   --max-negative-pair-fpr "$fpr_limit" --fail-fast)
+[[ -z "$split_manifest" ]] || submit+=(--split-manifest "$split_manifest")
 [[ "$resume" -eq 0 ]] || submit+=(--resume)
 export MASK_CONDA_ENV="$conda_env" MASK_OUTPUT_DIR="$output_dir"
 if [[ "$dry_run" -eq 1 ]]; then printf '%q ' "${submit[@]}"; printf '\n'; exit 0; fi

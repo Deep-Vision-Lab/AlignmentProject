@@ -303,10 +303,14 @@ def export_paper(output):
     path = output/'test/methods.json'
     if not path.exists(): raise ValueError('Final-test results are absent; no paper table was produced')
     reports = json.loads(path.read_text()); rows = []; regions = []
-    labels = ['Positive IoU','Positive Dice','Precision','Recall','Negative-pair FPR','Negative masked-area fraction']
+    presumed = any(report['metrics'].get('presumed_negative_pairs',0) for report in reports)
+    labels = ['Positive IoU','Positive Dice','Precision','Recall',
+              'Presumed-negative pair FPR' if presumed else 'Negative-pair FPR','Negative masked-area fraction']
     latex = ['\\begin{tabular}{lrrrrrr}','Method & '+' & '.join(labels)+' \\\\','\\hline']
     for report in reports:
         m = report['metrics']; row = dict(Method=report['method'],positive_pairs=m['positive_pairs'],negative_pairs=m['negative_pairs'],
+            data_policy=m.get('data_policy','reviewed'),presumed_negative_pairs=m.get('presumed_negative_pairs',0),
+            negative_pair_fpr_interpretation=m.get('negative_pair_fpr_interpretation'),
             identical_to=report['identical_to'],ablation_without_retuning=report['ablation_without_retuning'])
         cells = []
         for key,label in zip(METRICS,labels):
@@ -328,12 +332,30 @@ def export_paper(output):
     write_csv(output/'aggregate_results.csv',rows)
 
 
+def negative_pair_count(value):
+    if value == 'all':
+        return value
+    try:
+        count = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError('Use all or a nonnegative integer') from exc
+    if count < 0:
+        raise argparse.ArgumentTypeError('Use all or a nonnegative integer')
+    return count
+
+
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('command',choices=('prepare','tune','test','export'))
     p.add_argument('--checkpoint',default='Weights/phase4_typed_local03_sum_nogate/checkpoint_best.pt')
     p.add_argument('--dataset',default='DataSet/ArabicData')
     p.add_argument('--split-manifest',help='Reviewed JSON pair list, schema in docs/quantitative_mask_evaluation.md')
+    p.add_argument('--data-policy',choices=('auto','folder_masks','reviewed'),default='auto',
+        help='auto uses alignedPairs/Unalignedlines folder masks for ArabicData, or reviewed labels when a manifest is supplied')
+    p.add_argument('--negative-count',type=negative_pair_count,default='all',metavar='all|N',
+        help='Unalignedlines comparisons per saved split: all eligible by default, or a seeded cap N (folder policy only)')
+    p.add_argument('--pairs-per-split',type=negative_pair_count,default=500,metavar='all|N',
+        help='Total folder pairs per saved split (default 500): retain positives and supplement with recorded no_shared_content pairs. all keeps the original folder-only pool')
     p.add_argument('--notebook',type=Path,default=ROOT/'notebooks/model_evaluation.ipynb')
     p.add_argument('--output',type=Path,default=Path('Results/Evaluation/quantitative_masks'))
     p.add_argument('--cache-dir',type=Path)
