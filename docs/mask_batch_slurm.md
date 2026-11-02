@@ -158,6 +158,32 @@ Outputs include:
 * `logs/<job-name>_<job-id>.out/.err`, `batch_status.json` and durable
   `batch_attempts/` metadata (scheduler resources, owner, recovery, errors).
 
+## CPU-only continuation of the existing CUDA-cached study
+
+The original GPU job generated 106 frozen validation feature files. Its Optuna
+trials use those arrays on CPU, so a GPU remains idle for most of a resumed job.
+For `Results/Evaluation/mask_optuna_balanced`, use the dedicated CPU launcher:
+
+```bash
+# Optional bounded check: no Optuna trials are added.
+bash scripts/eval/tune_masks_cpu.sh --verify-only --job-name mask_cpu_verify --time 01:00:00
+
+# Finish the original 300 + 200 completed-trial budgets on CPU.
+bash scripts/eval/tune_masks_cpu.sh --job-name mask_optuna_cpu
+```
+
+The launcher requests four CPUs, 24 GB, no GPU, the seven-day-limit `cpu`
+partition, and five days by default. The worker checks all original cache
+checksums, creates CPU-keyed aliases containing the identical frozen arrays,
+reconstructs the validation contract without running the CNN/Transformer,
+then replays baseline and representative completed trials before adding any
+trial. A mismatch aborts. The original journal and run manifest retain their
+identity; `cpu_migration_backup/` and `cpu_migration.json` record the transition.
+The search still uses constrained TPE, `NopPruner`, every validation pair for
+every trial and the original 300/200 **completed** budgets. Interruptions can
+be resumed with the same CPU command; incomplete interrupted trials do not
+count toward the budgets. No test pair is used for tuning.
+
 ## Explicit final test and paper export
 
 Never run final test during model selection. After both stages finish, this

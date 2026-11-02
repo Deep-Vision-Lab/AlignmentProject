@@ -345,6 +345,45 @@ under `Results/Evaluation/arabic_data_balanced_20261031/`: 53 distinct positives
 and 53 distinct presumed negatives. The sample target remains 500, but the
 manifest explicitly records a 394-pair availability shortfall. No positive is
 repeated and no training/test example enters the validation set.
+
+### Validation + test quantitative report
+
+Keep Optuna selection on validation. Once both tuning stages finish, run the
+existing `test` command on a GPU compute node with the same checkpoint,
+dataset, split policy, sampling settings and output directory as tuning:
+
+```bash
+CUBLAS_WORKSPACE_CONFIG=:4096:8 python -m scripts.eval.tune_masks test \
+  --checkpoint Weights/phase4_typed_local03_sum_nogate/checkpoint_best.pt \
+  --dataset DataSet/ArabicData --data-policy folder_masks \
+  --negative-count all --pairs-per-split 500 --class-balance balanced \
+  --output Results/Evaluation/mask_optuna_balanced --device cuda \
+  --threads 8 --representation fused --seed 42 --bootstrap 2000
+```
+
+The saved `test/methods.json` contains the independent test scores. Then pool
+the already scored validation and test pairs for a descriptive report:
+
+```bash
+python -m scripts.eval.combined_mask_report \
+  --output Results/Evaluation/mask_optuna_balanced
+```
+
+This writes `combined_validation_test/metrics.json`, `summary.csv`, `per_pair.csv`
+and `per_line.csv` for the current baseline and the frozen Optuna selection.
+Each method has separate validation, test and combined metrics. The combined
+row is **not** an independent test estimate: its validation pairs were used to
+select settings. The report requires the frozen final-test selection and checks
+that saved pair IDs and labels match the two split manifests. It does not run
+model inference, optimize parameters, or change either split.
+
+For the current checkpoint and balanced `--pairs-per-split 500` policy, the
+available split populations are 53 positive/53 presumed-negative validation
+pairs and 88 positive/88 presumed-negative test pairs. The combined descriptive
+population is therefore 141 positive and 141 presumed-negative pairs, subject
+to the final test mask-contract checks. Folder-derived negatives remain
+presumed comparisons rather than manually verified negative labels.
+
 Its completed baseline has positive IoU **0.714124**, Dice **0.789096**, and
 presumed-negative FPR **0.697987** (312/447). By negative source this is 116/156
 original unmatched comparisons and 196/291 supplemental recorded pairs. The lower
