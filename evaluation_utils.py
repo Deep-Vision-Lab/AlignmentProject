@@ -32,6 +32,7 @@ from dataset import AlignmentDataset, file_hash, prepare_image
 from text_embedding import read_side_text
 from dtw import cosine_similarity_matrix, hard_dtw_path, letter_cost_matrix
 from evaluate import region_mask, score_mask, source_interval, match_features, MATCH_VERSION, MATCH_DEFAULTS, resolved_match_settings, plot_match_routes
+from alignment_overlays import aligned_window_overlays
 from train import build_loaders, load_checkpoint
 
 
@@ -118,12 +119,11 @@ class EvaluationSession:
         self.dataset_path = Path(dataset).expanduser().resolve()
         self.device = torch.device('cpu' if str(device).startswith('cuda') and not torch.cuda.is_available()
                                    else ('cuda' if torch.cuda.is_available() else 'cpu') if device == 'auto' else device)
-        self.model, self.text_encoder, self.config, self.saved = load_checkpoint(self.checkpoint, self.device)
+        self.model, self._text_encoder, self.config, self.saved = load_checkpoint(self.checkpoint, self.device, load_text=False)
         self.crop_override = crop_override
         if crop_override is not None:
             self.config = replace(self.config, crop=crop_override)
         self.model.eval()
-        self.text_encoder.eval()
         self.split, self.seed = split, seed
         self.settings = dict(DEFAULT_MATCH_SETTINGS, **(settings or {}))
         # Saved IDs are mandatory: no random-split fallback is permitted here.
@@ -191,6 +191,17 @@ class EvaluationSession:
         self.feature_cache = {}
         self.metric_cache = {}
         self.checkpoint_sha256 = file_hash(self.checkpoint)
+
+    @property
+    def text_encoder(self):
+        """Restore letters only for explicit letter matching/recognition callers."""
+        if self._text_encoder is None:
+            self._text_encoder = load_inference_text_encoder(self.saved, self.config, self.device)
+        return self._text_encoder
+
+    @text_encoder.setter
+    def text_encoder(self, value):
+        self._text_encoder = value
 
     def _attach_annotations(self, manifest):
         """Read only pair-specific supplied annotation paths/intervals, never OCR."""
@@ -304,7 +315,8 @@ class EvaluationSession:
     def matching_cache_key(self, pair, representation='fused'):
         return (pair['sample_id'], representation, MATCH_VERSION, self.checkpoint_sha256,
                 json.dumps(resolved_match_settings(self.settings), sort_keys=True),
-                json.dumps(getattr(self.text_encoder,'letter_evidence_prior',None), sort_keys=True))
+                json.dumps(getattr(self._text_encoder, 'letter_evidence_prior',
+                                   self.saved.get('letter_evidence_prior')), sort_keys=True))
 
     def metrics(self, pair, representation='fused'):
         key = self.matching_cache_key(pair, representation)
@@ -313,16 +325,27 @@ class EvaluationSession:
         return self.metric_cache[key]
 
 
+def load_inference_text_encoder(saved, config, device):
+    from text_embedding import OrthogonalCharEmbedding
+    text = OrthogonalCharEmbedding(config.embedding_dim, config.text_vocab_size,
+                                   config.text_embedding_seed).to(device)
+    text.load_state_dict(saved['text_embedding'], strict=True)
+    text.letter_evidence_prior = saved.get('letter_evidence_prior')
+    return text.eval()
+
+
 def predict_cached_pair(session, pair, lines, representation='fused', *, settings=None, cosine=None):
     """One prediction flow for session and cached notebook samples; GT-free.
 
     ``lines`` contains only model features, valid physical identities and image
     geometry. Cosine can be reused without modifying it for plots or tuning.
     """
+    options = resolved_match_settings(session.settings if settings is None else settings)
+    needs_letters = options['similarity_mode'] == 'letter_evidence' or options['verify_with_letter_evidence']
     match = match_features(*(r['features'][representation] for r in lines),
-        *(r['physical'] for r in lines), text_encoder=session.text_encoder,
+        *(r['physical'] for r in lines), text_encoder=session.text_encoder if needs_letters else None,
         config=session.config, precomputed_cosine=cosine,
-        **(session.settings if settings is None else settings))
+        **options)
     masks = [region_mask(match['regions'], side, r['geometry'], session.config.window_width,
                          session.config.window_stride) for side,r in enumerate(lines)]
     return dict(pair=pair, representation=representation, lines=lines, cosine=match['cosine'],
@@ -446,12 +469,20 @@ def arabic_data_pairs(root, records, negative_count=None, seed=42):
             row = json.loads(line)
             stem = f"{row['pair_id']}__A_line_{row['A']['line_idx']:03d}__B_line_{row['B']['line_idx']:03d}"
             labels[stem] = row['label_type']
-    a_ids, b_ids = (inventory('alignedPairs', side) for side in 'AB')
+    aligned_folder = ('alignedPairs/A_B' if (root / 'alignedPairs/A_B').is_dir()
+                      else 'alignedPairs')
+    catalog_manifest = root / aligned_folder / 'pairs.jsonl'
+    if aligned_folder != 'alignedPairs' and catalog_manifest.is_file():
+        for line in catalog_manifest.read_text(encoding='utf-8').splitlines():
+            if line.strip():
+                row = json.loads(line)
+                labels[row['pair_id']] = row.get('label_type', 'stored_aligned_pair')
+    a_ids, b_ids = (inventory(aligned_folder, side) for side in 'AB')
     if a_ids != b_ids:
         raise ValueError('alignedPairs A/B filename stems disagree')
     stats['aligned_pairs'] = len(a_ids)
     for stem in a_ids:
-        lines = [read_line('alignedPairs', side, stem) for side in 'AB']
+        lines = [read_line(aligned_folder, side, stem) for side in 'AB']
         if any(line is None for line in lines):
             stats['excluded_aligned_pairs'] += 1
             continue
@@ -460,7 +491,7 @@ def arabic_data_pairs(root, records, negative_count=None, seed=42):
             raise ValueError(f'Negative source label inside alignedPairs: {stem}')
         annotations = []
         for side in 'AB':
-            mask = root / 'alignedPairs' / ('masks' + side) / (stem + '.png')
+            mask = root / aligned_folder / ('masks' + side) / (stem + '.png')
             annotations.append(dict(mask=str(mask.resolve()) if mask.is_file() else None))
         pairs.append(dict(sample_id='alignedPairs:' + stem, sides=[line['side'] for line in lines],
                           target=1, label=label, constructed_negative=False,
@@ -1304,6 +1335,14 @@ def _overlay(image, mask, color=(255, 70, 20), alpha=.4):
     return pixels.astype(np.uint8)
 
 
+def _predicted_overlays(session, result, originals):
+    return aligned_window_overlays(
+        originals, result['masks'], result['match']['regions'],
+        [line['physical'] for line in result['lines']],
+        [line['geometry'] for line in result['lines']],
+        session.config.window_width, session.config.window_stride)
+
+
 def _window_tick_indices(count):
     """Use the same readable round-number ticks on lines and heatmaps."""
     from matplotlib.ticker import MaxNLocator
@@ -1383,6 +1422,7 @@ def plot_pair_alignment(session, result, show_gt=False, max_rejected_paths=5, di
     for side in range(2):
         with Image.open(pair['sides'][side]['image']) as image:
             originals.append(image.convert('RGB'))
+    overlays = _predicted_overlays(session, result, originals)
     if diagnostic:
         fig = plt.figure(figsize=(18, 10 if show_gt else 8), constrained_layout=True)
         grid = fig.add_gridspec(4 if show_gt else 3, 2, height_ratios=([4, 1, 1, 1] if show_gt else [4, 1, 1]))
@@ -1400,7 +1440,7 @@ def plot_pair_alignment(session, result, show_gt=False, max_rejected_paths=5, di
             ax.imshow(result['masks'][side] > 0, cmap='gray', vmin=0, vmax=1, aspect='auto')
             ax.set_title(f'{name}: predicted mask'); ax.set_yticks([])
             ax = fig.add_subplot(grid[2, side])
-            ax.imshow(_overlay(originals[side], result['masks'][side]), aspect='auto')
+            ax.imshow(overlays[side], aspect='auto')
             ax.set_title(f'{name}: predicted source-image overlay'); ax.set_yticks([])
             if show_gt:
                 ax = fig.add_subplot(grid[3, side]); gt = result['ground_truth'][side]
@@ -1425,8 +1465,8 @@ def plot_pair_alignment(session, result, show_gt=False, max_rejected_paths=5, di
             (originals[side], False, f'Line {name} — original full line'),
             (np.asarray(result['masks'][side]) > 0, True,
              f'Predicted mask — line {name} (coverage {coverage:.1%})'),
-            (_overlay(originals[side], result['masks'][side]), False,
-             f'Predicted overlay — line {name} (orange on original)'),
+            (overlays[side], False,
+             f'Predicted overlay — line {name} (matched windows share colors)'),
         ]
         if show_gt:
             gt = result['ground_truth'][side]
@@ -1547,12 +1587,13 @@ def plot_representation_comparison(session, pair, *, results=None, show_masks=Fa
             ax.text(.5, .95, 'NO ACCEPTED REGION', transform=ax.transAxes, ha='center', va='top',
                     bbox=dict(facecolor='white', alpha=.8))
         if show_masks:
+            overlays = _predicted_overlays(session, result, originals)
             for side, label in enumerate(('A', 'B')):
                 mask_ax, overlay_ax = axes[1 + 2 * side, column], axes[2 + 2 * side, column]
                 mask_ax.imshow(np.asarray(result['masks'][side]) > 0,
                                cmap='gray', vmin=0, vmax=1, aspect='auto')
                 mask_ax.set_title(f'{label}: predicted mask'); mask_ax.set_yticks([])
-                overlay_ax.imshow(_overlay(originals[side], result['masks'][side]), aspect='auto')
+                overlay_ax.imshow(overlays[side], aspect='auto')
                 overlay_ax.set_title(f'{label}: predicted source-image overlay'); overlay_ax.set_yticks([])
                 if show_window_indices:
                     for image_ax in (mask_ax, overlay_ax):
@@ -1612,7 +1653,8 @@ def save_results(session, population, summary, aligned, unaligned, root, diagnos
                     epoch=session.saved['epoch'], config=asdict(session.config), split=session.split,
                     split_manifest_sha256=session.saved['split_manifest_sha256'], seed=session.seed,
                     settings=resolved_match_settings(session.settings), implementation_version=MATCH_VERSION,
-                    prior_metadata=getattr(session.text_encoder,'letter_evidence_prior',None),
+                    prior_metadata=getattr(session._text_encoder, 'letter_evidence_prior',
+                                           session.saved.get('letter_evidence_prior')),
                     summary=summary, feature_diagnostics=diagnostics,
                     representations=sorted({r['representation'] for r in population['rows']}),
                     evaluated_pair_ids=population['selected_pair_ids'],
@@ -1640,8 +1682,16 @@ def save_results(session, population, summary, aligned, unaligned, root, diagnos
 def save_pair_artifacts(session, result, directory):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=False)
+    originals = []
+    for record in result['pair']['sides']:
+        with Image.open(record['image']) as image:
+            originals.append(image.convert('RGB'))
+    overlays = _predicted_overlays(session, result, originals)
     np.save(directory / 'cosine.npy', result['cosine'])
     np.save(directory / 'alignment_rewards.npy', result['match']['rewards'])
+    for key in ('bidirectional_evidence', 'absolute_cosine_eligible', 'log_p_B_given_A', 'log_p_A_given_B'):
+        if key in result['match']:
+            np.save(directory / f'{key}.npy', result['match'][key])
     if 'letter_evidence' in result['match']:
         np.save(directory / 'letter_evidence.npy', result['match']['letter_evidence'])
         for side, logp in enumerate(result['match']['log_probabilities']):
@@ -1652,10 +1702,9 @@ def save_pair_artifacts(session, result, directory):
         np.save(directory / f'{name}_features.npy',result['lines'][side]['features'][result['representation']].numpy())
         Image.fromarray(result['masks'][side]).save(directory / f'line_{name}_mask.png')
         record = result['pair']['sides'][side]
-        with Image.open(record['image']) as image:
-            original = image.convert('RGB')
+        original = originals[side]
         original.save(directory / f'line_{name}_original.png')
-        Image.fromarray(_overlay(original, result['masks'][side])).save(directory / f'line_{name}_overlay.png')
+        Image.fromarray(overlays[side]).save(directory / f'line_{name}_overlay.png')
         gt = result['ground_truth'][side] if result.get('ground_truth') else None
         if gt is not None:
             Image.fromarray((np.asarray(gt, bool) * 255).astype(np.uint8)).save(

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from contextlib import nullcontext
 from dataclasses import replace
 import json
 import math
@@ -19,13 +20,15 @@ from torch.utils.data import DataLoader
 
 from dataloader import collate_samples
 from dataset import prepare_image, file_hash
-from dtw import cosine_similarity_matrix, alphabet_log_probabilities, letter_evidence_matrix
+from dtw import (cosine_similarity_matrix, alphabet_log_probabilities,
+                 letter_evidence_matrix, bidirectional_window_scores)
 from text_embedding import ARABIC_LETTERS
 from train import build_loaders, load_checkpoint, validate_one_epoch
 
 from alignment_candidates import PATH_DEFAULTS, validate_path_options, decode_candidates
+from alignment_overlays import aligned_window_overlays
 
-MATCH_VERSION = 'local-path-quality-3'
+MATCH_VERSION = 'local-path-quality-4-bidirectional-window'
 MATCH_DEFAULTS = dict(similarity_mode='cosine', decoder='local_repeat_dtw', threshold=.5,
     contrast_margin=.05, score_mode='background', min_windows=3, max_gap=1,
     gap_open=.2, gap_extend=.05, max_candidates=512, repeat_penalty=.05,
@@ -34,7 +37,9 @@ MATCH_DEFAULTS = dict(similarity_mode='cosine', decoder='local_repeat_dtw', thre
     min_distinct_windows_a=3, min_distinct_windows_b=3, min_matched_pairs=4,
     use_strong_start_anchor=False, start_top_k=3, start_min_reward=None,
     min_region_score=None, min_mean_reward=None, min_path_density=None,
-    max_repeat_fraction=None, min_secondary_score_ratio=None, **PATH_DEFAULTS)
+    max_repeat_fraction=None, min_secondary_score_ratio=None,
+    window_match_temperature=.10, window_match_min_cosine=.50,
+    window_match_reward_offset=0., **PATH_DEFAULTS)
 
 
 def resolved_match_settings(settings):
@@ -53,9 +58,26 @@ def resolved_match_settings(settings):
     if mode not in modes.values():
         raise ValueError('Unknown alignment mode/decoder')
     result.update(alignment_mode=mode, decoder={v:k for k,v in modes.items()}[mode])
+    similarity_modes = ('cosine', 'letter_evidence', 'bidirectional_window')
+    if result['similarity_mode'] not in similarity_modes:
+        raise ValueError('Unknown similarity mode')
     candidate_mode=result['candidate_similarity_mode'] or result['similarity_mode']
-    if candidate_mode not in ('cosine','letter_evidence'):raise ValueError('Unknown candidate similarity mode')
+    if candidate_mode not in similarity_modes:raise ValueError('Unknown candidate similarity mode')
+    if ('bidirectional_window' in (candidate_mode, result['similarity_mode'])
+            and candidate_mode != result['similarity_mode']):
+        raise ValueError('Mixed bidirectional_window modes are unsupported; set both similarity modes alike')
     result.update(candidate_similarity_mode=candidate_mode,similarity_mode=candidate_mode)
+    if not math.isfinite(result['window_match_temperature']) or result['window_match_temperature'] <= 0:
+        raise ValueError('window_match_temperature must be > 0')
+    if not -1 <= result['window_match_min_cosine'] <= 1:
+        raise ValueError('window_match_min_cosine must be in [-1,1]')
+    if not math.isfinite(result['window_match_reward_offset']):
+        raise ValueError('window_match_reward_offset must be finite')
+    if candidate_mode == 'bidirectional_window':
+        if result['decoder'] != 'local_repeat_dtw':
+            raise ValueError('bidirectional_window requires local_repeat_dtw')
+        if result['verify_with_letter_evidence']:
+            raise ValueError('bidirectional_window is image-only; disable verify_with_letter_evidence')
     # Retired first-cell settings remain parseable for old saved configurations.
     # They are diagnostic only; they never gate starts, trim or reject a route.
     return result
@@ -211,10 +233,29 @@ def match_features(features_a, features_b, physical_a, physical_b, *, text_encod
             raise ValueError('Valid features must be finite nonzero vectors; remove padding with token_valid')
     features_a, features_b = features
     physical_a, physical_b = physical
+    if options['similarity_mode'] == 'bidirectional_window':
+        features_a, features_b = (v.float() for v in features)
+        if features_a.shape[1] != features_b.shape[1]:
+            raise ValueError('Window embedding dimensions must agree')
+        normalized = []
+        for v in (features_a, features_b):
+            norms = v.norm(dim=1)
+            if not torch.isfinite(v).all() or not torch.isfinite(norms).all() or (norms == 0).any():
+                raise ValueError('Window embeddings must have finite nonzero float32 norms')
+            normalized.append(v / norms[:, None])
+        # Disable ambient mixed precision for both normalization and matmul.
+        if precomputed_cosine is None:
+            device_type = features_a.device.type
+            context = (torch.autocast(device_type=device_type, enabled=False)
+                       if torch.amp.autocast_mode.is_autocast_available(device_type) else nullcontext())
+            with context:
+                precomputed_cosine = (normalized[0] @ normalized[1].T).detach().cpu().numpy()
     cosine = (cosine_similarity_matrix(features_a,features_b).detach().cpu().numpy()
               if precomputed_cosine is None else np.asarray(precomputed_cosine))
     if cosine.shape != (len(features_a), len(features_b)) or not np.isfinite(cosine).all():
         raise ValueError('Cosine dimensions must match valid windows')
+    if options['similarity_mode'] == 'bidirectional_window':
+        cosine = np.asarray(cosine, dtype=np.float32)
     extra = {}
     baseline=options['threshold']
     if options['score_mode']=='background' and cosine.size:
@@ -222,6 +263,13 @@ def match_features(features_a, features_b, physical_a, physical_b, *, text_encod
         baseline=np.maximum(baseline,np.median(cosine,axis=0)[None,:]+options['contrast_margin'])
     elif options['score_mode'] not in ('raw','background'):raise ValueError('Unknown cosine score mode')
     rewards=cosine-baseline
+    match_eligible = None
+    if options['similarity_mode'] == 'bidirectional_window':
+        extra = {k: v.detach().cpu().numpy() for k, v in bidirectional_window_scores(
+            cosine, options['window_match_temperature'], options['window_match_reward_offset']).items()}
+        rewards = extra.pop('rewards')
+        match_eligible = cosine >= options['window_match_min_cosine']
+        extra['absolute_cosine_eligible'] = match_eligible
     if options['similarity_mode']=='letter_evidence' or options['verify_with_letter_evidence']:
         extra=checkpoint_letter_evidence(features_a,features_b,text_encoder,config,prior_metadata,options)
         if options['similarity_mode']=='letter_evidence':rewards=extra['letter_evidence']
@@ -234,6 +282,7 @@ def match_features(features_a, features_b, physical_a, physical_b, *, text_encod
                 'use_strong_start_anchor','start_top_k','start_min_reward','min_region_score',
                 'min_mean_reward','min_path_density','max_repeat_fraction','min_secondary_score_ratio')
         match=local_repeat_regions(cosine,physical_a,physical_b,rewards=rewards,
+            match_eligible=match_eligible,
             letter_evidence=extra.get('letter_evidence'),
             **{k:options[k] for k in (*keys,*PATH_DEFAULTS)})
     elif options['decoder']=='affine':
@@ -247,6 +296,8 @@ def match_features(features_a, features_b, physical_a, physical_b, *, text_encod
         match=decode_stretched_regions(rewards,physical_a,physical_b,**{k:options[k] for k in
             ('min_windows','max_gap','gap_open','gap_extend','repeat_penalty','max_stretch','max_candidates')})
     else: raise ValueError('Unknown decoder')
+    if options['similarity_mode'] == 'bidirectional_window':
+        match['rewards'] = rewards
     return dict(match, cosine=cosine, settings=options, implementation_version=MATCH_VERSION, **extra)
 
 
@@ -375,7 +426,7 @@ def shared_regions(cosine, physical_a, physical_b, threshold=.6, contrast_margin
 
 def _local_repeat_path(cosine, rewards, allowed, repeat_penalty, max_consecutive_repeats,
                        gap_open, gap_extend, start_anchors=None, *,
-                       return_candidates=False, max_candidates=128):
+                       return_candidates=False, max_candidates=128, match_eligible=None):
     """Best local path with matched repeat states and separate affine skip states."""
     n, m = rewards.shape
     run = max_consecutive_repeats
@@ -407,7 +458,7 @@ def _local_repeat_path(cosine, rewards, allowed, repeat_penalty, max_consecutive
                 if value > 0:
                     scores[i, j, gap_b], previous[i, j, gap_b] = value, state
             # A matched cell must itself beat the threshold/background baseline.
-            if reward <= 0:
+            if reward <= 0 or (match_eligible is not None and not match_eligible[i, j]):
                 continue
             # Deprecated start_anchors is ignored: reliability is assessed over
             # each complete candidate, never used to forbid a local start.
@@ -534,7 +585,7 @@ def local_repeat_regions(cosine, physical_a, physical_b, threshold=.5,
                          start_top_k=3, start_min_reward=None, min_region_score=None,
                          min_mean_reward=None, min_path_density=None,
                          max_repeat_fraction=None, min_secondary_score_ratio=None,
-                         rewards=None, letter_evidence=None, **path_settings):
+                         rewards=None, letter_evidence=None, match_eligible=None, **path_settings):
     """Generate first, then judge whole physical routes; no first-cell gate.
 
     Legacy min_windows/distinct settings constrain the normal class. The optional
@@ -575,10 +626,17 @@ def local_repeat_regions(cosine, physical_a, physical_b, threshold=.5,
         if letter_evidence.shape!=cosine.shape or not np.isfinite(letter_evidence).all():raise ValueError('Letter evidence must match valid cosine dimensions')
     elif options['verify_with_letter_evidence']:
         raise ValueError('Verification requested without image-only letter evidence')
+    if match_eligible is not None:
+        match_eligible = np.asarray(match_eligible)
+        if match_eligible.shape != cosine.shape or match_eligible.dtype != np.bool_:
+            raise ValueError('Match eligibility must be a boolean valid-window matrix')
     anchors=mutual_top_k_anchors(cosine,options['anchor_top_k']) & (rewards>0)
+    if match_eligible is not None:
+        anchors &= match_eligible
     raw,best,limited=_local_repeat_path(cosine,rewards,np.ones(cosine.shape,bool),repeat_penalty,
-        max_consecutive_repeats,gap_open,gap_extend,return_candidates=True,max_candidates=max_candidates)
-    decoded=decode_candidates(raw,cosine,rewards,physical,anchors,options,letter_evidence)
+        max_consecutive_repeats,gap_open,gap_extend,return_candidates=True,max_candidates=max_candidates,
+        match_eligible=match_eligible)
+    decoded=decode_candidates(raw,cosine,rewards,physical,anchors,options,letter_evidence,match_eligible)
     return dict(decoded,maximum_local_score=best,candidate_limit_reached=limited,
                 raw_candidate_count=len(raw),deprecated_settings=['use_strong_start_anchor','start_top_k','start_min_reward'])
 
@@ -646,6 +704,38 @@ def plot_match_routes(ax, match, max_rejected_paths=5):
     ax.legend(handles=handles,fontsize=6,loc='upper left',ncol=3)
 
 
+def plot_window_match_diagnostics(match, max_rejected_paths=5):
+    """Show raw, relative and absolute evidence with the existing route legend."""
+    if match['settings']['similarity_mode'] != 'bidirectional_window':
+        raise ValueError('Window diagnostics require bidirectional_window')
+    fig, axes = plt.subplots(1, 4, figsize=(22, 5), constrained_layout=True)
+    panels = [('cosine', 'Raw image cosine', 'coolwarm', dict(vmin=-1, vmax=1)),
+              ('bidirectional_evidence', 'Bidirectional evidence (uncalibrated)', 'coolwarm', {}),
+              ('rewards', 'Evidence minus reward offset', 'coolwarm', {}),
+              ('absolute_cosine_eligible', 'Absolute cosine eligibility', 'gray', dict(vmin=0, vmax=1))]
+    for ax, (key, title, cmap, limits) in zip(axes, panels):
+        matrix = match[key]
+        if matrix.size:
+            heat = ax.imshow(matrix, origin='lower', aspect='auto', cmap=cmap, **limits)
+            fig.colorbar(heat, ax=ax, shrink=.65)
+            plot_match_routes(ax, match, max_rejected_paths)
+        else:
+            ax.text(.5, .5, 'No valid window pairs', ha='center', transform=ax.transAxes)
+        ax.set(title=title, xlabel='B logical windows', ylabel='A logical windows')
+    return fig
+
+
+def window_match_diagnostic_examples():
+    """Small encoder-free examples: repeated valid matches and weak relative peaks."""
+    basis = torch.eye(5)
+    repeated = basis[[0, 0, 1, 2, 3]]
+    a = torch.cat((basis, torch.zeros_like(basis)), dim=1)
+    b = torch.cat((.2 * basis, math.sqrt(.96) * basis), dim=1)
+    settings = dict(similarity_mode='bidirectional_window', candidate_similarity_mode='bidirectional_window')
+    return dict(repeated_valid=match_features(repeated, repeated, np.arange(5), np.arange(5), **settings),
+                all_below_gate=match_features(a, b, np.arange(5), np.arange(5), **settings))
+
+
 def source_interval(physical,geometry,window_width,stride):
     x0,_,x1,_=geometry['crop']
     return [max(x0,x0+physical*stride/geometry['scale_x']),
@@ -689,7 +779,9 @@ def evaluate_loss(checkpoint,dataset,split='test',device='cpu',max_batches=0):
 
 def evaluate_pair(checkpoint,paths,output,device='cpu',representation='fused',crop_override=None,
                   ground_truth=(None,None),selection=None,line_bboxes=(None,None),**settings):
-    model,_text,config,saved=load_checkpoint(checkpoint,device)
+    options = resolved_match_settings(settings)
+    needs_letters = options['similarity_mode'] == 'letter_evidence' or options['verify_with_letter_evidence']
+    model,_text,config,saved=load_checkpoint(checkpoint,device,load_text=needs_letters)
     if representation not in {'local','context','fused'}: raise ValueError('Unknown representation')
     output=Path(output)
     output.mkdir(parents=True,exist_ok=False)
@@ -714,6 +806,9 @@ def evaluate_pair(checkpoint,paths,output,device='cpu',representation='fused',cr
     cosine=match['cosine']
     np.save(output/'cosine.npy',cosine)
     np.save(output/'alignment_scores.npy',match['rewards'])
+    for key in ('bidirectional_evidence', 'absolute_cosine_eligible', 'log_p_B_given_A', 'log_p_A_given_B'):
+        if key in match:
+            np.save(output / f'{key}.npy', match[key])
     if 'letter_evidence' in match:
         np.save(output/'letter_evidence.npy',match['letter_evidence'])
         for side,logp in enumerate(match['log_probabilities']):
@@ -736,8 +831,9 @@ def evaluate_pair(checkpoint,paths,output,device='cpu',representation='fused',cr
     for side in (0,1):
         mask=region_mask(match['regions'],side,geometry[side],config.window_width,config.window_stride)
         masks.append(mask);Image.fromarray(mask).save(output/f'line_{"ab"[side]}_mask.png')
-        pixels=np.array(originals[side]);active=mask>0
-        pixels[active]=(pixels[active]*.6+np.array([255,90,0])*.4).astype(np.uint8)
+    overlays=aligned_window_overlays(originals,masks,match['regions'],physical,geometry,
+                                   config.window_width,config.window_stride)
+    for side,pixels in enumerate(overlays):
         Image.fromarray(pixels).save(output/f'line_{"ab"[side]}_overlay.png')
     with (output/'correspondences.csv').open('w',newline='') as stream:
         writer=csv.writer(stream)
@@ -787,7 +883,8 @@ def main(argv=None):
     parser.add_argument('--max-gap',type=int,default=1,help='0=strict consecutive positive anchors')
     parser.add_argument('--gap-open',type=float,default=.2)
     parser.add_argument('--gap-extend',type=float,default=.05)
-    for key in ('similarity_mode','decoder','repeat_penalty','max_stretch','acceptance_offset','prior_floor','max_candidates'):
+    for key in ('similarity_mode','decoder','repeat_penalty','max_stretch','acceptance_offset','prior_floor','max_candidates',
+                'window_match_temperature','window_match_min_cosine','window_match_reward_offset'):
         value=MATCH_DEFAULTS[key]
         parser.add_argument('--'+key.replace('_','-'),type=type(value),default=value)
     for key in ('alignment_mode','max_consecutive_repeats','min_distinct_windows_a',
@@ -813,7 +910,7 @@ def main(argv=None):
     line_bboxes=(args.bbox_a,args.bbox_b)
     if args.record_indices is not None:
         if not args.dataset or args.image_a or args.image_b: parser.error('Use saved record indices OR explicit images')
-        _,_,config,saved=load_checkpoint(args.checkpoint,args.device)
+        _,_,config,saved=load_checkpoint(args.checkpoint,args.device,load_text=False)
         view=build_loaders(args.dataset,replace(config,augmentation=False),saved['split_ids'])[('train','val','test').index(args.split)].dataset
         if any(i<0 or i>=len(view) for i in args.record_indices): parser.error('Record index outside saved split')
         records=[view.records[i] for i in args.record_indices]

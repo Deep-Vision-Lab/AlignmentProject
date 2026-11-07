@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import torch
 
-from evaluate import local_repeat_regions, match_features, region_mask, mutual_top_k_anchors
+from evaluate import local_repeat_regions, match_features, region_mask, mutual_top_k_anchors, MATCH_VERSION
 from evaluation_utils import (EvaluationSession, predict_cached_pair, evaluate_population,
                               plot_pair_alignment)
 from test_evaluation_notebook import evaluation_fixture, notebook_source
@@ -228,4 +228,4 @@ def test_standalone_pair_local_decoder_with_frozen_fixture(evaluation_fixture,tm
     assert np.load(tmp_path/'standalone/cosine.npy').shape==(7,7)
     assert (tmp_path/'standalone/cosine_heatmap.png').exists()
     assert all(min(r['support'])>=5 for r in report['regions'])
-    assert report['implementation_version']=='local-path-quality-3'
+    assert report['implementation_version']==MATCH_VERSION

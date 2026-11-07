@@ -7,6 +7,7 @@ aligned_mean reports occupancy-weighted mean cell NLL.
 These positions belong to DTW, independently of Transformer positional encoding.
 """
 from dataclasses import dataclass
+from contextlib import nullcontext
 import math
 
 import torch
@@ -21,6 +22,43 @@ def cosine_similarity_matrix(visual, letters):
 
 def cosine_cost_matrix(visual, letters):
     return 1. - cosine_similarity_matrix(visual, letters)
+
+
+def bidirectional_window_scores(cosine, temperature=.10, reward_offset=0.):
+    """Float32 directional window evidence on an already compact valid grid.
+
+    Directional softmax scores are relative normalized scores, not calibrated
+    match probabilities. Never pass padded rows/columns into this function.
+    Empty rectangular grids retain their shape without taking log(0).
+    """
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError('window_match_temperature must be finite and > 0')
+    if not math.isfinite(reward_offset):
+        raise ValueError('window_match_reward_offset must be finite')
+    c = torch.as_tensor(cosine).float()
+    if c.ndim != 2 or not torch.isfinite(c).all():
+        raise ValueError('Window cosine must be a finite 2D valid-window matrix')
+    if ((c < -1.00001) | (c > 1.00001)).any():
+        raise ValueError('Window cosine must be in [-1,1]')
+    # PyTorch 2.4 has no MPS autocast context, even with enabled=False.
+    context = (torch.autocast(device_type=c.device.type, enabled=False)
+               if torch.amp.autocast_mode.is_autocast_available(c.device.type) else nullcontext())
+    with context:
+        if not c.numel():
+            row, column, evidence = c.clone(), c.clone(), c.clone()
+        else:
+            logits = c / temperature
+            if not torch.isfinite(logits).all():
+                raise ValueError('Temperature produces nonfinite float32 window logits')
+            row = F.log_softmax(logits, dim=1)
+            column = F.log_softmax(logits, dim=0)
+            n, m = c.shape
+            evidence = .5 * (row + math.log(m) + column + math.log(n))
+        rewards = evidence - reward_offset
+    if not torch.isfinite(rewards).all():
+        raise ValueError('Window parameters produce nonfinite float32 rewards')
+    return dict(log_p_B_given_A=row, log_p_A_given_B=column,
+                bidirectional_evidence=evidence, rewards=rewards)
 
 
 def letter_cost_matrix(visual, letters, *, alphabet=None, letter_ids=None,

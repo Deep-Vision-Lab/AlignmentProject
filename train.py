@@ -533,7 +533,7 @@ def save_checkpoint(path,model,optimizer,epoch,best_val,config,text_encoder,spli
     temporary.replace(path)
 
 
-def load_checkpoint(path,device='cpu'):
+def load_checkpoint(path,device='cpu', *, load_text=True):
     """Reconstruct format-1 checkpoints with strict model-state validation."""
     saved = torch.load(path,map_location='cpu',weights_only=False)  # trusted project checkpoints include RNG metadata
     if saved.get('format_version') != 1 or saved.get('architecture_family') != 'simple-alignment-core':
@@ -556,13 +556,18 @@ def load_checkpoint(path,device='cpu'):
         state['fusion.concat_projection.bias'] = state.pop('fusion.bias')
     model.load_state_dict(state,strict=True)
     model.cnn.initialization = saved['initialization']
-    text = OrthogonalCharEmbedding(config.embedding_dim,config.text_vocab_size,config.text_embedding_seed).to(device)
-    text.load_state_dict(saved['text_embedding'],strict=True)
-    text.letter_evidence_prior = saved.get('letter_evidence_prior')
+    # Image-only inference can skip constructing/restoring letter assets. The
+    # default reconstruction used by training and loss evaluation is unchanged.
+    text = None
+    if load_text:
+        text = OrthogonalCharEmbedding(config.embedding_dim,config.text_vocab_size,config.text_embedding_seed).to(device)
+        text.load_state_dict(saved['text_embedding'],strict=True)
+        text.letter_evidence_prior = saved.get('letter_evidence_prior')
     if hashlib.sha256(json.dumps(saved['split_ids'],sort_keys=True).encode()).hexdigest() != saved['split_manifest_sha256']:
         raise ValueError('Checkpoint split identity is inconsistent')
     model.eval()
-    text.eval()
+    if text is not None:
+        text.eval()
     return model,text,config,saved
 
 

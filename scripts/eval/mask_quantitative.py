@@ -364,7 +364,10 @@ def build_cache(args, split):
         write_json(output/'split_audit.json',dict(status='FAILED_SESSION_CONTRACT',error=str(exc)))
         raise
     if checkpoint_before!=session.checkpoint_sha256:raise ValueError('Checkpoint changed during loading; use a frozen checkpoint copy')
-    session.model.requires_grad_(False); session.text_encoder.requires_grad_(False)
+    session.model.requires_grad_(False)
+    needs_letters = baseline['similarity_mode'] == 'letter_evidence' or baseline['verify_with_letter_evidence']
+    if needs_letters:
+        session.text_encoder.requires_grad_(False)
     audit = audit_splits(session); write_json(output/'split_audit.json',audit)
     if audit['image_leakage'] or audit['page_group_leakage']:
         raise ValueError('Saved splits leak line images/page groups; see split_audit.json. No split was reorganized.')
@@ -458,8 +461,8 @@ def build_cache(args, split):
         print(f'Requested {args.pairs_per_split}; using {len(selected)} distinct balanced pairs because eligible positives/negatives are limited.',flush=True)
     source = source_identity()
     vocabulary=list(dict.fromkeys(session.config.alphabet_inventory or ARABIC_LETTERS))
-    prior=getattr(session.text_encoder,'letter_evidence_prior',None) or dict(source='explicit uniform fallback',
-        vocabulary=vocabulary,prior=[1/len(vocabulary)]*len(vocabulary))
+    prior = (session.saved.get('letter_evidence_prior') or dict(source='explicit uniform fallback',
+        vocabulary=vocabulary,prior=[1/len(vocabulary)]*len(vocabulary))) if needs_letters else None
     provenance = dict(version=VERSION,matcher_version=MATCH_VERSION,checkpoint=str(session.checkpoint),checkpoint_sha256=session.checkpoint_sha256,dataset=str(session.dataset_path),
         config=asdict(session.config),representation=args.representation,split=split,seed=args.seed,device=str(session.device),
         data_policy=policy,pair_source=session.pair_source,mask_source=mask_source,

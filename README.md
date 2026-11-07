@@ -86,8 +86,13 @@ one split; by default, each split selects equal numbers of A and B lines without
 replacement (`balance_books=False` disables this in `create_dataloaders`).
 The exported line images are used whole; subword bounding-box annotations are
 not applied as crops. A missing text file may use its manifest `raw_text`.
-The evaluation notebook uses `ArabicData/alignedPairs` for recorded A/B partners
+The evaluation notebook uses `ArabicData/alignedPairs/A_B` for recorded A/B partners
 and `ArabicData/Unalignedlines` for independent lines without recorded partners.
+The self-contained `A_B`, `A_C`, and `B_C` catalogs each contain 1,000 pairs, with
+images, supplied masks, texts, and full bounding boxes inside each catalog.
+`BookC` contains the 2,205 Kufic Quran lines; unaligned A/B/C inventories exclude
+all lines with saved partners in any catalog. Book C is not added to existing
+A/B training or checkpoint splits.
 Folder copies are verified against indexed book lines in the saved checkpoint
 split. Supplied pair masks are used when present; verified pair-local boxes supply
 derived LCS diagnostics otherwise. Seeded unmatched A/B combinations are presumed
@@ -254,11 +259,26 @@ selects the experimental alphabet-distribution score using the checkpoint codebo
 and training-only prior (explicit uniform fallback for old checkpoints). Background
 correction can suppress broad/repeated true matches; all settings are uncalibrated.
 
+`--similarity-mode bidirectional_window --candidate-similarity-mode bidirectional_window`
+selects an optional image-window-only reward with directional log-softmax
+normalization and an absolute cosine eligibility gate. It requires
+`local_repeat_dtw`; letter verification is disabled. Initial settings are
+`--window-match-temperature 0.10 --window-match-min-cosine 0.50
+--window-match-reward-offset 0.0`. See [usage, decoder flow, diagnostics and
+metric definitions](docs/bidirectional_window.md). Each mode requires separate
+validation tuning; rewards are not calibrated probabilities.
+
 Inspect `cosine_heatmap.png` (fixed −1…1 scale), `alignment_scores_heatmap.png`
 (separate transformed rewards), both full-width originals/model inputs,
 `line_a_mask.png`, `line_b_mask.png`, and overlays. Masks are source-sized,
-full-height, with white predicted shared regions. Physical window coordinates are
-inverted through the crop/resize geometry; 32 model pixels are not assumed to be
+full-height, with white predicted shared regions.
+Overlays give each masked window its own tint and reuse that tint for every
+window matched to it in the other line. Windows connected by repeat matches
+share one color; unrelated windows and gap-filled windows have separate colors.
+Overlapping sliding-window footprints are divided at the nearest window centers
+so colors remain distinct. Coloring uses accepted window pairs and source
+geometry only; binary masks and scores are unchanged. Physical window
+coordinates are inverted through the crop/resize geometry; 32 model pixels are not assumed to be
 32 source pixels. `cosine.npy`, `alignment_scores.npy`, `correspondences.csv`, and
 `metadata.json` retain numerical evidence and rejection reasons. Empty predictions
 are valid. `--gt-a`/`--gt-b` source-size masks are scored only after predictions;

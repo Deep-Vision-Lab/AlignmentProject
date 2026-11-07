@@ -222,12 +222,14 @@ def mask_iou(prediction, truth):
 
 def evaluate_settings(session, prepared, representation, settings):
     """Same matcher and mask builder as the notebook; GT enters only scoring."""
+    settings = resolved_match_settings(settings)
+    needs_letters = settings['similarity_mode'] == 'letter_evidence' or settings['verify_with_letter_evidence']
     rows = []
     for cached in prepared:
         lines = cached.lines
         match = match_features(*(line['features'][representation] for line in lines),
                                *(line['physical'] for line in lines),
-                               text_encoder=session.text_encoder, config=session.config,
+                               text_encoder=session.text_encoder if needs_letters else None, config=session.config,
                                precomputed_cosine=cached.cosine, **settings)
         masks = [region_mask(match['regions'], index, line['geometry'],
                              session.config.window_width, session.config.window_stride)

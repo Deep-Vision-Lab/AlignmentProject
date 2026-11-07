@@ -198,8 +198,8 @@ def test_same_actual_notebook_session_population_cli_and_saved_masks(evaluation_
                 'token_valid':torch.ones(len(images),7,dtype=torch.bool),
                 'physical_window_indices':torch.arange(6,-1,-1).expand(len(images),-1)}
     monkeypatch.setattr(model,'forward',frozen_output)
-    monkeypatch.setattr(evaluate,'load_checkpoint',lambda *args:(model,text,cfg,saved))
-    monkeypatch.setattr(evaluation_utils,'load_checkpoint',lambda *args:(model,text,cfg,saved))
+    monkeypatch.setattr(evaluate,'load_checkpoint',lambda *args,**kwargs:(model,text,cfg,saved))
+    monkeypatch.setattr(evaluation_utils,'load_checkpoint',lambda *args,**kwargs:(model,text,cfg,saved))
     session=EvaluationSession(cp,root,device='cpu')
     ns=dict(session=session)
     exec(notebook_source('# EVALUATION-ONLY MATCHING SETTINGS.'),ns)

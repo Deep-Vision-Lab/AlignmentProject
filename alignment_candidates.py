@@ -264,7 +264,7 @@ def _maximum_repeat_run(path):
     return maximum
 
 
-def extend_path(path,cosine,rewards,physical,anchors,uniqueness,o):
+def extend_path(path,cosine,rewards,physical,anchors,uniqueness,o,match_eligible=None):
     """Bounded monotonic continuation from both boundaries, never a new seed.
 
     Negative evidence cannot become a supported match. Nonanchor continuation is
@@ -288,6 +288,7 @@ def extend_path(path,cosine,rewards,physical,anchors,uniqueness,o):
                     if not (di or dj):continue
                     x,y=q[0]+direction*di,q[1]+direction*dj
                     if not (0<=x<n and 0<=y<m) or max(physical_gaps(q,(x,y),physical))>bound:continue
+                    if match_eligible is not None and not match_eligible[x,y]:continue
                     reward=float(rewards[x,y])
                     if reward<o['extension_min_reward'] or reward<0 or cosine[x,y]<o['threshold']:continue
                     weak=not anchors[x,y] or reward<=0
@@ -367,7 +368,7 @@ def select_candidates(candidates,o):
     return sorted(selected,key=lambda c:c['logical_ranges'][0][0])
 
 
-def merge_regions(regions,candidates,cosine,rewards,physical,anchors,uniqueness,o,letter_evidence=None):
+def merge_regions(regions,candidates,cosine,rewards,physical,anchors,uniqueness,o,letter_evidence=None,match_eligible=None):
     """Merge only ordered disjoint physical routes with supported small bridges."""
     merged=[]
     for right in regions:
@@ -381,7 +382,8 @@ def merge_regions(regions,candidates,cosine,rewards,physical,anchors,uniqueness,
         # Evidence for a missing bridge must actually be present; touching masks
         # or positive endpoint scores do not certify a blank bridge.
         interior=[(i,j) for i in range(a[0]+1,b[0]) for j in range(a[1]+1,b[1])
-                  if rewards[i,j]>o['extension_min_reward']]
+                  if rewards[i,j]>o['extension_min_reward']
+                  and (match_eligible is None or match_eligible[i,j])]
         if any(gaps) and not interior:
             merged.append(right);continue
         if len(interior)==1:
@@ -400,7 +402,7 @@ def merge_regions(regions,candidates,cosine,rewards,physical,anchors,uniqueness,
     return merged
 
 
-def extend_selected_regions(regions,candidates,cosine,rewards,physical,anchors,uniqueness,o,letter_evidence=None):
+def extend_selected_regions(regions,candidates,cosine,rewards,physical,anchors,uniqueness,o,letter_evidence=None,match_eligible=None):
     """Continue selected reliable cores using the bounded continuation rules.
 
     A moderately weaker tail need not beat its core's mean reward. It must pay
@@ -409,7 +411,7 @@ def extend_selected_regions(regions,candidates,cosine,rewards,physical,anchors,u
     """
     selected=list(regions)
     for k,core in enumerate(selected):
-        extended,added=extend_path(core['path_steps'],cosine,rewards,physical,anchors,uniqueness,o)
+        extended,added=extend_path(core['path_steps'],cosine,rewards,physical,anchors,uniqueness,o,match_eligible)
         if not added:continue
         candidate=candidate_statistics(extended,cosine,rewards,physical,anchors,uniqueness,o,letter_evidence,
             candidate_id=f'C{len(candidates)}',extension_pairs=added,parent_candidate_id=core['candidate_id'],
@@ -431,7 +433,7 @@ def extend_selected_regions(regions,candidates,cosine,rewards,physical,anchors,u
     return selected
 
 
-def decode_candidates(raw,cosine,rewards,physical,anchors,o,letter_evidence=None):
+def decode_candidates(raw,cosine,rewards,physical,anchors,o,letter_evidence=None,match_eligible=None):
     uniqueness=uniqueness_matrices(cosine)
     candidates=[];seen=set()
     for route in raw:
@@ -452,7 +454,7 @@ def decode_candidates(raw,cosine,rewards,physical,anchors,o,letter_evidence=None
                 trimmed_pairs=[q for q in original_pairs if q not in pairset]
                 versions=[(trimmed,[],variant)]
                 if o['enable_path_extension'] and strong:
-                    extended,added=extend_path(trimmed,cosine,rewards,physical,anchors,uniqueness,o)
+                    extended,added=extend_path(trimmed,cosine,rewards,physical,anchors,uniqueness,o,match_eligible)
                     if added:versions.append((extended,added,variant))
                 for version,added,kind in versions:
                     signature=tuple((s['i'],s['j']) for s in version if s['i'] is not None and s['j'] is not None)
@@ -467,8 +469,10 @@ def decode_candidates(raw,cosine,rewards,physical,anchors,o,letter_evidence=None
                     validate_candidate(c,o);candidates.append(c)
     regions=select_candidates(candidates,o)
     if o['enable_path_extension']:
-        regions=extend_selected_regions(regions,candidates,cosine,rewards,physical,anchors,uniqueness,o,letter_evidence)
-    if o['enable_region_merging']:regions=merge_regions(regions,candidates,cosine,rewards,physical,anchors,uniqueness,o,letter_evidence)
+        regions=extend_selected_regions(regions,candidates,cosine,rewards,physical,anchors,uniqueness,o,letter_evidence,match_eligible)
+    if o['enable_region_merging']:regions=merge_regions(regions,candidates,cosine,rewards,physical,anchors,uniqueness,o,letter_evidence,match_eligible)
+    if match_eligible is not None and any(not match_eligible[q] for c in candidates for q in c['pairs']):
+        raise RuntimeError('Path construction bypassed match eligibility')
     if regions and o['min_secondary_score_ratio'] is not None:
         best=max(regions,key=lambda c:c['score'])
         for c in list(regions):

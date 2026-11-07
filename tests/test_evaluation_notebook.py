@@ -245,6 +245,23 @@ def test_arabic_folder_partners_unmatched_sampling_split_and_masks(arabic_folder
         session.get_line_features(dict(side, image=str(root / 'alignedPairs/imagesA/pair_000000__A_line_001__B_line_001.png')))
 
 
+def test_arabic_folder_catalog_layout_preserves_split_and_supplied_masks(arabic_folder_fixture):
+    from evaluation_utils import positive_pairs
+    root, checkpoint = arabic_folder_fixture
+    previous = root / 'previous_alignedPairs'
+    (root / 'alignedPairs').rename(previous)
+    (root / 'alignedPairs').mkdir()
+    previous.rename(root / 'alignedPairs/A_B')
+    session = EvaluationSession(checkpoint, root, device='cpu', construct_negatives=False)
+    positives = positive_pairs(session)
+    assert len(positives) == 2
+    assert session.folder_summary['excluded_aligned_pairs'] == 4
+    assert all('/alignedPairs/A_B/' in side['image'] for pair in positives for side in pair['sides'])
+    result = session.evaluate_pair(positives[0])
+    assert result['ground_truth'][0][:, 20:50].all()
+    assert not result['ground_truth'][0][:, :20].any()
+
+
 def test_arabic_folder_review_flags_copy_verification_and_negatives_off(arabic_folder_fixture):
     from evaluation_utils import positive_pairs
     root, checkpoint = arabic_folder_fixture
