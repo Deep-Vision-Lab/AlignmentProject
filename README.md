@@ -1,5 +1,10 @@
 # AlignmentProject — simple alignment core
 
+**9 November evaluation update:** [independent/reordered passages and measured results](docs/reordered_regions_evaluation.md).
+Both evaluation notebooks now show the new checkpoint, real before/after examples,
+and the recall/false-positive trade-off near the top. Reload the notebook from disk
+before restarting its kernel to see edited cells.
+
 A standalone PyTorch pipeline for weakly supervised Arabic manuscript alignment.
 This refactor lives on `refactor/simple-alignment-core`; historical implementations
 remain available in Git. It starts **new experiments**, not silent migrations of

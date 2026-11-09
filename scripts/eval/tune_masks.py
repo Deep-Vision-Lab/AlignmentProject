@@ -21,11 +21,11 @@ from scripts.eval.mask_quantitative import (METRICS, VERSION, build_cache, effec
     evaluate, identity, notebook_baseline)
 from scripts.eval.tune_matching import write_json, write_csv, validate_study_manifest
 
-SEARCH_VERSION = 'two-stage-letter-evidence-2-completed-budgets'
+SEARCH_VERSION = 'two-stage-letter-evidence-3-disjoint-passages'
 OBJECTIVE = 'positive pair-macro foreground IoU; negative pair FPR <= predeclared limit'
 SPACE = dict(normal_min_distinct=[4,10],normal_min_matched_pairs=[4,12],allow_short_regions=[False,True],
     max_gap=[0,6],gap_open=[.05,.60],gap_extend=['.01','gap_open'],repeat_penalty=[0.,.02,.05,.10,.20],
-    max_consecutive_repeats=[1,4],anchor_top_k=[1,4],min_mutual_anchors_long=[1,5],
+    max_consecutive_repeats=[1,4],anchor_top_k=[1,4],min_mutual_anchors_long=[1,9],
     min_mutual_anchor_fraction_long=[.05,.10,.20,.35,.50,.70,.90],min_path_density=[.60,.70,.80,.85,.90,.95,1.],
     min_mean_reward=[None,0.,.1,.25,.5,1.],
     short_min_distinct=[3,'min(5,normal_min_distinct)'],short_min_matched_pairs=[4,7],
@@ -347,7 +347,7 @@ def negative_pair_count(value):
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('command',choices=('prepare','tune','test','export'))
-    p.add_argument('--checkpoint',default='Weights/phase4_typed_local03_sum_nogate/checkpoint_best.pt')
+    p.add_argument('--checkpoint',default='Weights/real_abc_balanced_optional_space_20261108/checkpoint_best.pt')
     p.add_argument('--dataset',default='DataSet/ArabicData')
     p.add_argument('--split-manifest',help='Reviewed JSON pair list, schema in docs/quantitative_mask_evaluation.md')
     p.add_argument('--data-policy',choices=('auto','folder_masks','reviewed'),default='auto',
@@ -368,6 +368,8 @@ def parser():
     p.add_argument('--pair-source',choices=('auto','dataset','folders'),default='auto')
     p.add_argument('--mask-source',choices=('manifest','folders'),default='manifest')
     p.add_argument('--resize-gt',action='store_true',help='Explicit uniform GT resize to source image, nearest-neighbor only')
+    p.add_argument('--quarantine-leaked-evaluation-images',action='store_true',
+                   help='Exclude and report evaluation pairs using duplicated cross-split pixels; saved splits and training are unchanged')
     p.add_argument('--stage1-trials',type=int,default=300)
     p.add_argument('--stage2-trials',type=int,default=200)
     p.add_argument('--startup-trials',type=int,default=40)

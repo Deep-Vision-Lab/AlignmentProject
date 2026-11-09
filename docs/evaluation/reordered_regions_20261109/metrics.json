@@ -1,0 +1,2347 @@
+{
+  "selected": {
+    "name": "joint_normal9_density0.85_short0.75_anchors7",
+    "settings": {
+      "similarity_mode": "letter_evidence",
+      "decoder": "local_repeat_dtw",
+      "threshold": 0.5,
+      "contrast_margin": 0.05,
+      "score_mode": "background",
+      "min_windows": 3,
+      "max_gap": 4,
+      "gap_open": 0.5940936607241908,
+      "gap_extend": 0.5826132317598225,
+      "max_candidates": 512,
+      "repeat_penalty": 0.2,
+      "max_stretch": 3,
+      "acceptance_offset": 0.1,
+      "prior_floor": 0.0001,
+      "alignment_mode": "local_repeat_dtw",
+      "max_consecutive_repeats": 2,
+      "min_distinct_windows_a": 3,
+      "min_distinct_windows_b": 3,
+      "min_matched_pairs": 4,
+      "use_strong_start_anchor": false,
+      "start_top_k": 3,
+      "start_min_reward": null,
+      "min_region_score": null,
+      "min_mean_reward": 0.0,
+      "min_path_density": 0.85,
+      "max_repeat_fraction": null,
+      "min_secondary_score_ratio": null,
+      "window_match_temperature": 0.1,
+      "window_match_min_cosine": 0.5,
+      "window_match_reward_offset": 0.0,
+      "use_path_anchor_check": true,
+      "anchor_top_k": 4,
+      "min_mutual_anchors_long": 7,
+      "min_mutual_anchor_fraction_long": 0.05,
+      "min_mutual_anchors_short": 2,
+      "min_mutual_anchor_fraction_short": 0.6,
+      "normal_min_distinct_a": 9,
+      "normal_min_distinct_b": 9,
+      "normal_min_matched_pairs": 12,
+      "normal_min_mean_cosine": 0.6,
+      "allow_short_regions": true,
+      "short_min_distinct_a": 3,
+      "short_min_distinct_b": 3,
+      "short_min_matched_pairs": 4,
+      "short_min_mean_cosine": 0.75,
+      "short_min_median_cosine": 0.75,
+      "short_min_mean_reward": 0.25,
+      "short_min_path_density": 0.9,
+      "short_max_internal_gap": 0,
+      "short_min_mutual_anchors": 2,
+      "short_min_mutual_anchor_fraction": 0.6,
+      "min_median_bidirectional_margin_long": null,
+      "min_median_bidirectional_margin_short": null,
+      "enable_path_extension": false,
+      "extension_min_reward": 0.0,
+      "extension_max_weak_run": 1,
+      "extension_max_internal_gap": 2,
+      "enable_region_merging": false,
+      "merge_max_gap_a": 1,
+      "merge_max_gap_b": 2,
+      "dominance_min_quality_ratio": 0.75,
+      "candidate_similarity_mode": "letter_evidence",
+      "verify_with_letter_evidence": false,
+      "min_mean_letter_evidence": null,
+      "min_letter_positive_fraction": null,
+      "allow_reordered_regions": true,
+      "split_gap_candidates": true,
+      "require_corroborated_short_regions": true
+    },
+    "validation_metrics": {
+      "positive_iou": 0.7072766540401686,
+      "positive_dice": 0.7649921508504843,
+      "precision": 0.7589498260212078,
+      "recall": 0.7935924502250734,
+      "positive_pairs": 147,
+      "negative_pairs": 98,
+      "negative_false_positive_pairs": 4,
+      "negative_pair_denominator": 98,
+      "negative_pair_fpr": 0.04081632653061224,
+      "negative_masked_area_fraction": 0.009189560973656757,
+      "candidate_limit_hits": 138,
+      "region_f1": {
+        "available": true,
+        "aggregation": "micro interval counts over both lines of all positive pairs",
+        "positive_pair_denominator": 147,
+        "non_full_height_positive_pairs": 0,
+        "tp": 234,
+        "fp": 111,
+        "fn": 133,
+        "precision": 0.6782608695652174,
+        "recall": 0.6376021798365122,
+        "f1": 0.6573033707865169
+      },
+      "positive_detected_pairs": 131,
+      "positive_pair_detection_recall": 0.891156462585034
+    },
+    "selection": "Highest validation foreground IoU with presumed-negative pair FPR <= 5%; test metrics were not used",
+    "checkpoint_sha256": "e0888cf49fdbdb3dd11bcdede1fc73bd68912db3cfa02bef8020cf7b11da5d9d",
+    "matcher_version": "local-path-quality-5-reordered-regions"
+  },
+  "test_methods": [
+    {
+      "name": "Previous checkpoint, same cohort/settings",
+      "settings": {
+        "similarity_mode": "letter_evidence",
+        "decoder": "local_repeat_dtw",
+        "threshold": 0.5,
+        "contrast_margin": 0.05,
+        "score_mode": "background",
+        "min_windows": 3,
+        "max_gap": 4,
+        "gap_open": 0.5940936607241908,
+        "gap_extend": 0.5826132317598225,
+        "max_candidates": 512,
+        "repeat_penalty": 0.2,
+        "max_stretch": 3,
+        "acceptance_offset": 0.1,
+        "prior_floor": 0.0001,
+        "alignment_mode": "local_repeat_dtw",
+        "max_consecutive_repeats": 2,
+        "min_distinct_windows_a": 3,
+        "min_distinct_windows_b": 3,
+        "min_matched_pairs": 4,
+        "use_strong_start_anchor": false,
+        "start_top_k": 3,
+        "start_min_reward": null,
+        "min_region_score": null,
+        "min_mean_reward": 0.0,
+        "min_path_density": 0.95,
+        "max_repeat_fraction": null,
+        "min_secondary_score_ratio": null,
+        "window_match_temperature": 0.1,
+        "window_match_min_cosine": 0.5,
+        "window_match_reward_offset": 0.0,
+        "use_path_anchor_check": true,
+        "anchor_top_k": 4,
+        "min_mutual_anchors_long": 5,
+        "min_mutual_anchor_fraction_long": 0.05,
+        "min_mutual_anchors_short": 2,
+        "min_mutual_anchor_fraction_short": 0.95,
+        "normal_min_distinct_a": 9,
+        "normal_min_distinct_b": 9,
+        "normal_min_matched_pairs": 12,
+        "allow_short_regions": false,
+        "short_min_distinct_a": 3,
+        "short_min_distinct_b": 3,
+        "short_min_matched_pairs": 4,
+        "short_min_mean_cosine": 0.78,
+        "short_min_median_cosine": 0.78,
+        "short_min_mean_reward": 0.25,
+        "short_min_path_density": 0.9,
+        "short_max_internal_gap": 0,
+        "short_min_mutual_anchors": 2,
+        "short_min_mutual_anchor_fraction": 0.6,
+        "min_median_bidirectional_margin_long": null,
+        "min_median_bidirectional_margin_short": null,
+        "enable_path_extension": false,
+        "extension_min_reward": 0.0,
+        "extension_max_weak_run": 1,
+        "extension_max_internal_gap": 2,
+        "enable_region_merging": false,
+        "merge_max_gap_a": 1,
+        "merge_max_gap_b": 2,
+        "dominance_min_quality_ratio": 0.75,
+        "candidate_similarity_mode": "letter_evidence",
+        "verify_with_letter_evidence": false,
+        "min_mean_letter_evidence": null,
+        "min_letter_positive_fraction": null,
+        "allow_reordered_regions": false,
+        "split_gap_candidates": false
+      },
+      "metrics": {
+        "positive_iou": 0.21184023344750452,
+        "positive_dice": 0.2606456113898558,
+        "precision": 0.2545917232973804,
+        "recall": 0.35862064630252477,
+        "positive_pairs": 32,
+        "negative_pairs": 100,
+        "negative_false_positive_pairs": 18,
+        "negative_pair_denominator": 100,
+        "negative_pair_fpr": 0.18,
+        "negative_masked_area_fraction": 0.0831792986522635,
+        "candidate_limit_hits": 121,
+        "region_f1": {
+          "available": true,
+          "aggregation": "micro interval counts over both lines of all positive pairs",
+          "positive_pair_denominator": 32,
+          "non_full_height_positive_pairs": 0,
+          "tp": 12,
+          "fp": 16,
+          "fn": 64,
+          "precision": 0.42857142857142855,
+          "recall": 0.15789473684210525,
+          "f1": 0.23076923076923078
+        },
+        "positive_detected_pairs": 14,
+        "positive_pair_detection_recall": 0.4375,
+        "confidence_intervals": {
+          "method": "pair bootstrap or connected manuscript/page/line groups",
+          "resamples": 1000,
+          "seed": 42,
+          "estimates": {
+            "positive_iou": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "positive_dice": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "precision": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "recall": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "negative_pair_fpr": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "negative_masked_area_fraction": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "negative_fpr_binomial": {
+              "available": false,
+              "method": "Clopper-Pearson exact, conditional on independent pairs",
+              "false_positive_pairs": 18,
+              "denominator": 100,
+              "low": null,
+              "high": null
+            }
+          },
+          "limitations": "Grouping uses available source page/group IDs and repeated image identities. Missing metadata cannot establish manuscript independence; one-group intervals are unavailable."
+        }
+      },
+      "directory": "/Users/ahmedmas/Desktop/AlignmentProject/Results/Evaluation/reordered_regions_20261109/test_reference_anchored/method_00",
+      "by_book_pair": {
+        "A_B": {
+          "positive_iou": 0.2552098340834377,
+          "positive_dice": 0.31124569828414733,
+          "precision": 0.28761687786330536,
+          "recall": 0.4354009302465489,
+          "positive_pairs": 26,
+          "negative_pairs": 100,
+          "negative_false_positive_pairs": 18,
+          "negative_pair_denominator": 100,
+          "negative_pair_fpr": 0.18,
+          "negative_masked_area_fraction": 0.0831792986522635,
+          "candidate_limit_hits": 117,
+          "region_f1": {
+            "available": true,
+            "aggregation": "micro interval counts over both lines of all positive pairs",
+            "positive_pair_denominator": 26,
+            "non_full_height_positive_pairs": 0,
+            "tp": 12,
+            "fp": 14,
+            "fn": 42,
+            "precision": 0.46153846153846156,
+            "recall": 0.2222222222222222,
+            "f1": 0.3
+          }
+        },
+        "A_C": {
+          "positive_iou": 0.0358579460376912,
+          "positive_dice": 0.06206785227188913,
+          "precision": 0.16722408026755853,
+          "recall": 0.03885912381763004,
+          "positive_pairs": 4,
+          "negative_pairs": 100,
+          "negative_false_positive_pairs": 18,
+          "negative_pair_denominator": 100,
+          "negative_pair_fpr": 0.18,
+          "negative_masked_area_fraction": 0.0831792986522635,
+          "candidate_limit_hits": 93,
+          "region_f1": {
+            "available": true,
+            "aggregation": "micro interval counts over both lines of all positive pairs",
+            "positive_pair_denominator": 4,
+            "non_full_height_positive_pairs": 0,
+            "tp": 0,
+            "fp": 2,
+            "fn": 12,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0
+          }
+        },
+        "B_C": {
+          "positive_iou": 0.0,
+          "positive_dice": 0.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "positive_pairs": 2,
+          "negative_pairs": 100,
+          "negative_false_positive_pairs": 18,
+          "negative_pair_denominator": 100,
+          "negative_pair_fpr": 0.18,
+          "negative_masked_area_fraction": 0.0831792986522635,
+          "candidate_limit_hits": 93,
+          "region_f1": {
+            "available": true,
+            "aggregation": "micro interval counts over both lines of all positive pairs",
+            "positive_pair_denominator": 2,
+            "non_full_height_positive_pairs": 0,
+            "tp": 0,
+            "fp": 0,
+            "fn": 10,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0
+          }
+        }
+      }
+    },
+    {
+      "name": "Current settings",
+      "settings": {
+        "similarity_mode": "letter_evidence",
+        "decoder": "local_repeat_dtw",
+        "threshold": 0.5,
+        "contrast_margin": 0.05,
+        "score_mode": "background",
+        "min_windows": 3,
+        "max_gap": 4,
+        "gap_open": 0.5940936607241908,
+        "gap_extend": 0.5826132317598225,
+        "max_candidates": 512,
+        "repeat_penalty": 0.2,
+        "max_stretch": 3,
+        "acceptance_offset": 0.1,
+        "prior_floor": 0.0001,
+        "alignment_mode": "local_repeat_dtw",
+        "max_consecutive_repeats": 2,
+        "min_distinct_windows_a": 3,
+        "min_distinct_windows_b": 3,
+        "min_matched_pairs": 4,
+        "use_strong_start_anchor": false,
+        "start_top_k": 3,
+        "start_min_reward": null,
+        "min_region_score": null,
+        "min_mean_reward": 0.0,
+        "min_path_density": 0.95,
+        "max_repeat_fraction": null,
+        "min_secondary_score_ratio": null,
+        "window_match_temperature": 0.1,
+        "window_match_min_cosine": 0.5,
+        "window_match_reward_offset": 0.0,
+        "use_path_anchor_check": true,
+        "anchor_top_k": 4,
+        "min_mutual_anchors_long": 5,
+        "min_mutual_anchor_fraction_long": 0.05,
+        "min_mutual_anchors_short": 2,
+        "min_mutual_anchor_fraction_short": 0.95,
+        "normal_min_distinct_a": 9,
+        "normal_min_distinct_b": 9,
+        "normal_min_matched_pairs": 12,
+        "allow_short_regions": false,
+        "short_min_distinct_a": 3,
+        "short_min_distinct_b": 3,
+        "short_min_matched_pairs": 4,
+        "short_min_mean_cosine": 0.78,
+        "short_min_median_cosine": 0.78,
+        "short_min_mean_reward": 0.25,
+        "short_min_path_density": 0.9,
+        "short_max_internal_gap": 0,
+        "short_min_mutual_anchors": 2,
+        "short_min_mutual_anchor_fraction": 0.6,
+        "min_median_bidirectional_margin_long": null,
+        "min_median_bidirectional_margin_short": null,
+        "enable_path_extension": false,
+        "extension_min_reward": 0.0,
+        "extension_max_weak_run": 1,
+        "extension_max_internal_gap": 2,
+        "enable_region_merging": false,
+        "merge_max_gap_a": 1,
+        "merge_max_gap_b": 2,
+        "dominance_min_quality_ratio": 0.75,
+        "candidate_similarity_mode": "letter_evidence",
+        "verify_with_letter_evidence": false,
+        "min_mean_letter_evidence": null,
+        "min_letter_positive_fraction": null,
+        "allow_reordered_regions": false,
+        "split_gap_candidates": false
+      },
+      "metrics": {
+        "positive_iou": 0.5102613697575571,
+        "positive_dice": 0.563982546398187,
+        "precision": 0.6264955186651666,
+        "recall": 0.5521458524820091,
+        "positive_pairs": 32,
+        "negative_pairs": 100,
+        "negative_false_positive_pairs": 3,
+        "negative_pair_denominator": 100,
+        "negative_pair_fpr": 0.03,
+        "negative_masked_area_fraction": 0.0046131940395124985,
+        "candidate_limit_hits": 59,
+        "region_f1": {
+          "available": true,
+          "aggregation": "micro interval counts over both lines of all positive pairs",
+          "positive_pair_denominator": 32,
+          "non_full_height_positive_pairs": 0,
+          "tp": 36,
+          "fp": 8,
+          "fn": 40,
+          "precision": 0.8181818181818182,
+          "recall": 0.47368421052631576,
+          "f1": 0.6
+        },
+        "positive_detected_pairs": 22,
+        "positive_pair_detection_recall": 0.6875,
+        "confidence_intervals": {
+          "method": "pair bootstrap or connected manuscript/page/line groups",
+          "resamples": 1000,
+          "seed": 42,
+          "estimates": {
+            "positive_iou": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "positive_dice": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "precision": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "recall": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "negative_pair_fpr": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "negative_masked_area_fraction": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "negative_fpr_binomial": {
+              "available": false,
+              "method": "Clopper-Pearson exact, conditional on independent pairs",
+              "false_positive_pairs": 3,
+              "denominator": 100,
+              "low": null,
+              "high": null
+            }
+          },
+          "limitations": "Grouping uses available source page/group IDs and repeated image identities. Missing metadata cannot establish manuscript independence; one-group intervals are unavailable."
+        }
+      },
+      "directory": "/Users/ahmedmas/Desktop/AlignmentProject/Results/Evaluation/reordered_regions_20261109/test_current_anchored/method_00",
+      "by_book_pair": {
+        "A_B": {
+          "positive_iou": 0.5444210182960865,
+          "positive_dice": 0.5904140532243769,
+          "precision": 0.6345411532140577,
+          "recall": 0.5846166668371385,
+          "positive_pairs": 26,
+          "negative_pairs": 100,
+          "negative_false_positive_pairs": 3,
+          "negative_pair_denominator": 100,
+          "negative_pair_fpr": 0.03,
+          "negative_masked_area_fraction": 0.0046131940395124985,
+          "candidate_limit_hits": 53,
+          "region_f1": {
+            "available": true,
+            "aggregation": "micro interval counts over both lines of all positive pairs",
+            "positive_pair_denominator": 26,
+            "non_full_height_positive_pairs": 0,
+            "tp": 31,
+            "fp": 5,
+            "fn": 23,
+            "precision": 0.8611111111111112,
+            "recall": 0.5740740740740741,
+            "f1": 0.6888888888888889
+          }
+        },
+        "A_C": {
+          "positive_iou": 0.4287381945049298,
+          "positive_dice": 0.5170565489536454,
+          "precision": 0.6694414972361211,
+          "recall": 0.4942007305645031,
+          "positive_pairs": 4,
+          "negative_pairs": 100,
+          "negative_false_positive_pairs": 3,
+          "negative_pair_denominator": 100,
+          "negative_pair_fpr": 0.03,
+          "negative_masked_area_fraction": 0.0046131940395124985,
+          "candidate_limit_hits": 47,
+          "region_f1": {
+            "available": true,
+            "aggregation": "micro interval counts over both lines of all positive pairs",
+            "positive_pair_denominator": 4,
+            "non_full_height_positive_pairs": 0,
+            "tp": 4,
+            "fp": 2,
+            "fn": 8,
+            "precision": 0.6666666666666666,
+            "recall": 0.3333333333333333,
+            "f1": 0.4444444444444444
+          }
+        },
+        "B_C": {
+          "positive_iou": 0.22923228926192987,
+          "positive_dice": 0.3142249525468023,
+          "precision": 0.43601031238767307,
+          "recall": 0.24591550970033668,
+          "positive_pairs": 2,
+          "negative_pairs": 100,
+          "negative_false_positive_pairs": 3,
+          "negative_pair_denominator": 100,
+          "negative_pair_fpr": 0.03,
+          "negative_masked_area_fraction": 0.0046131940395124985,
+          "candidate_limit_hits": 45,
+          "region_f1": {
+            "available": true,
+            "aggregation": "micro interval counts over both lines of all positive pairs",
+            "positive_pair_denominator": 2,
+            "non_full_height_positive_pairs": 0,
+            "tp": 1,
+            "fp": 1,
+            "fn": 9,
+            "precision": 0.5,
+            "recall": 0.1,
+            "f1": 0.16666666666666666
+          }
+        }
+      }
+    },
+    {
+      "name": "Reordering only",
+      "settings": {
+        "similarity_mode": "letter_evidence",
+        "decoder": "local_repeat_dtw",
+        "threshold": 0.5,
+        "contrast_margin": 0.05,
+        "score_mode": "background",
+        "min_windows": 3,
+        "max_gap": 4,
+        "gap_open": 0.5940936607241908,
+        "gap_extend": 0.5826132317598225,
+        "max_candidates": 512,
+        "repeat_penalty": 0.2,
+        "max_stretch": 3,
+        "acceptance_offset": 0.1,
+        "prior_floor": 0.0001,
+        "alignment_mode": "local_repeat_dtw",
+        "max_consecutive_repeats": 2,
+        "min_distinct_windows_a": 3,
+        "min_distinct_windows_b": 3,
+        "min_matched_pairs": 4,
+        "use_strong_start_anchor": false,
+        "start_top_k": 3,
+        "start_min_reward": null,
+        "min_region_score": null,
+        "min_mean_reward": 0.0,
+        "min_path_density": 0.95,
+        "max_repeat_fraction": null,
+        "min_secondary_score_ratio": null,
+        "window_match_temperature": 0.1,
+        "window_match_min_cosine": 0.5,
+        "window_match_reward_offset": 0.0,
+        "use_path_anchor_check": true,
+        "anchor_top_k": 4,
+        "min_mutual_anchors_long": 5,
+        "min_mutual_anchor_fraction_long": 0.05,
+        "min_mutual_anchors_short": 2,
+        "min_mutual_anchor_fraction_short": 0.95,
+        "normal_min_distinct_a": 9,
+        "normal_min_distinct_b": 9,
+        "normal_min_matched_pairs": 12,
+        "allow_short_regions": false,
+        "short_min_distinct_a": 3,
+        "short_min_distinct_b": 3,
+        "short_min_matched_pairs": 4,
+        "short_min_mean_cosine": 0.78,
+        "short_min_median_cosine": 0.78,
+        "short_min_mean_reward": 0.25,
+        "short_min_path_density": 0.9,
+        "short_max_internal_gap": 0,
+        "short_min_mutual_anchors": 2,
+        "short_min_mutual_anchor_fraction": 0.6,
+        "min_median_bidirectional_margin_long": null,
+        "min_median_bidirectional_margin_short": null,
+        "enable_path_extension": false,
+        "extension_min_reward": 0.0,
+        "extension_max_weak_run": 1,
+        "extension_max_internal_gap": 2,
+        "enable_region_merging": false,
+        "merge_max_gap_a": 1,
+        "merge_max_gap_b": 2,
+        "dominance_min_quality_ratio": 0.75,
+        "candidate_similarity_mode": "letter_evidence",
+        "verify_with_letter_evidence": false,
+        "min_mean_letter_evidence": null,
+        "min_letter_positive_fraction": null,
+        "allow_reordered_regions": true,
+        "split_gap_candidates": false
+      },
+      "metrics": {
+        "positive_iou": 0.5102613697575571,
+        "positive_dice": 0.563982546398187,
+        "precision": 0.6264955186651666,
+        "recall": 0.5521458524820091,
+        "positive_pairs": 32,
+        "negative_pairs": 100,
+        "negative_false_positive_pairs": 3,
+        "negative_pair_denominator": 100,
+        "negative_pair_fpr": 0.03,
+        "negative_masked_area_fraction": 0.0046131940395124985,
+        "candidate_limit_hits": 59,
+        "region_f1": {
+          "available": true,
+          "aggregation": "micro interval counts over both lines of all positive pairs",
+          "positive_pair_denominator": 32,
+          "non_full_height_positive_pairs": 0,
+          "tp": 36,
+          "fp": 8,
+          "fn": 40,
+          "precision": 0.8181818181818182,
+          "recall": 0.47368421052631576,
+          "f1": 0.6
+        },
+        "positive_detected_pairs": 22,
+        "positive_pair_detection_recall": 0.6875,
+        "confidence_intervals": {
+          "method": "pair bootstrap or connected manuscript/page/line groups",
+          "resamples": 1000,
+          "seed": 42,
+          "estimates": {
+            "positive_iou": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "positive_dice": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "precision": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "recall": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "negative_pair_fpr": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "negative_masked_area_fraction": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "negative_fpr_binomial": {
+              "available": false,
+              "method": "Clopper-Pearson exact, conditional on independent pairs",
+              "false_positive_pairs": 3,
+              "denominator": 100,
+              "low": null,
+              "high": null
+            }
+          },
+          "limitations": "Grouping uses available source page/group IDs and repeated image identities. Missing metadata cannot establish manuscript independence; one-group intervals are unavailable."
+        }
+      },
+      "directory": "/Users/ahmedmas/Desktop/AlignmentProject/Results/Evaluation/reordered_regions_20261109/test_current_anchored/method_01",
+      "by_book_pair": {
+        "A_B": {
+          "positive_iou": 0.5444210182960865,
+          "positive_dice": 0.5904140532243769,
+          "precision": 0.6345411532140577,
+          "recall": 0.5846166668371385,
+          "positive_pairs": 26,
+          "negative_pairs": 100,
+          "negative_false_positive_pairs": 3,
+          "negative_pair_denominator": 100,
+          "negative_pair_fpr": 0.03,
+          "negative_masked_area_fraction": 0.0046131940395124985,
+          "candidate_limit_hits": 53,
+          "region_f1": {
+            "available": true,
+            "aggregation": "micro interval counts over both lines of all positive pairs",
+            "positive_pair_denominator": 26,
+            "non_full_height_positive_pairs": 0,
+            "tp": 31,
+            "fp": 5,
+            "fn": 23,
+            "precision": 0.8611111111111112,
+            "recall": 0.5740740740740741,
+            "f1": 0.6888888888888889
+          }
+        },
+        "A_C": {
+          "positive_iou": 0.4287381945049298,
+          "positive_dice": 0.5170565489536454,
+          "precision": 0.6694414972361211,
+          "recall": 0.4942007305645031,
+          "positive_pairs": 4,
+          "negative_pairs": 100,
+          "negative_false_positive_pairs": 3,
+          "negative_pair_denominator": 100,
+          "negative_pair_fpr": 0.03,
+          "negative_masked_area_fraction": 0.0046131940395124985,
+          "candidate_limit_hits": 47,
+          "region_f1": {
+            "available": true,
+            "aggregation": "micro interval counts over both lines of all positive pairs",
+            "positive_pair_denominator": 4,
+            "non_full_height_positive_pairs": 0,
+            "tp": 4,
+            "fp": 2,
+            "fn": 8,
+            "precision": 0.6666666666666666,
+            "recall": 0.3333333333333333,
+            "f1": 0.4444444444444444
+          }
+        },
+        "B_C": {
+          "positive_iou": 0.22923228926192987,
+          "positive_dice": 0.3142249525468023,
+          "precision": 0.43601031238767307,
+          "recall": 0.24591550970033668,
+          "positive_pairs": 2,
+          "negative_pairs": 100,
+          "negative_false_positive_pairs": 3,
+          "negative_pair_denominator": 100,
+          "negative_pair_fpr": 0.03,
+          "negative_masked_area_fraction": 0.0046131940395124985,
+          "candidate_limit_hits": 45,
+          "region_f1": {
+            "available": true,
+            "aggregation": "micro interval counts over both lines of all positive pairs",
+            "positive_pair_denominator": 2,
+            "non_full_height_positive_pairs": 0,
+            "tp": 1,
+            "fp": 1,
+            "fn": 9,
+            "precision": 0.5,
+            "recall": 0.1,
+            "f1": 0.16666666666666666
+          }
+        }
+      }
+    },
+    {
+      "name": "Validation selected",
+      "settings": {
+        "similarity_mode": "letter_evidence",
+        "decoder": "local_repeat_dtw",
+        "threshold": 0.5,
+        "contrast_margin": 0.05,
+        "score_mode": "background",
+        "min_windows": 3,
+        "max_gap": 4,
+        "gap_open": 0.5940936607241908,
+        "gap_extend": 0.5826132317598225,
+        "max_candidates": 512,
+        "repeat_penalty": 0.2,
+        "max_stretch": 3,
+        "acceptance_offset": 0.1,
+        "prior_floor": 0.0001,
+        "alignment_mode": "local_repeat_dtw",
+        "max_consecutive_repeats": 2,
+        "min_distinct_windows_a": 3,
+        "min_distinct_windows_b": 3,
+        "min_matched_pairs": 4,
+        "use_strong_start_anchor": false,
+        "start_top_k": 3,
+        "start_min_reward": null,
+        "min_region_score": null,
+        "min_mean_reward": 0.0,
+        "min_path_density": 0.85,
+        "max_repeat_fraction": null,
+        "min_secondary_score_ratio": null,
+        "window_match_temperature": 0.1,
+        "window_match_min_cosine": 0.5,
+        "window_match_reward_offset": 0.0,
+        "use_path_anchor_check": true,
+        "anchor_top_k": 4,
+        "min_mutual_anchors_long": 7,
+        "min_mutual_anchor_fraction_long": 0.05,
+        "min_mutual_anchors_short": 2,
+        "min_mutual_anchor_fraction_short": 0.6,
+        "normal_min_distinct_a": 9,
+        "normal_min_distinct_b": 9,
+        "normal_min_matched_pairs": 12,
+        "normal_min_mean_cosine": 0.6,
+        "allow_short_regions": true,
+        "short_min_distinct_a": 3,
+        "short_min_distinct_b": 3,
+        "short_min_matched_pairs": 4,
+        "short_min_mean_cosine": 0.75,
+        "short_min_median_cosine": 0.75,
+        "short_min_mean_reward": 0.25,
+        "short_min_path_density": 0.9,
+        "short_max_internal_gap": 0,
+        "short_min_mutual_anchors": 2,
+        "short_min_mutual_anchor_fraction": 0.6,
+        "min_median_bidirectional_margin_long": null,
+        "min_median_bidirectional_margin_short": null,
+        "enable_path_extension": false,
+        "extension_min_reward": 0.0,
+        "extension_max_weak_run": 1,
+        "extension_max_internal_gap": 2,
+        "enable_region_merging": false,
+        "merge_max_gap_a": 1,
+        "merge_max_gap_b": 2,
+        "dominance_min_quality_ratio": 0.75,
+        "candidate_similarity_mode": "letter_evidence",
+        "verify_with_letter_evidence": false,
+        "min_mean_letter_evidence": null,
+        "min_letter_positive_fraction": null,
+        "allow_reordered_regions": true,
+        "split_gap_candidates": true,
+        "require_corroborated_short_regions": true
+      },
+      "metrics": {
+        "positive_iou": 0.6262995232918276,
+        "positive_dice": 0.6775536991673531,
+        "precision": 0.6594650315111075,
+        "recall": 0.7080657737869538,
+        "positive_pairs": 32,
+        "negative_pairs": 100,
+        "negative_false_positive_pairs": 8,
+        "negative_pair_denominator": 100,
+        "negative_pair_fpr": 0.08,
+        "negative_masked_area_fraction": 0.015936745103249373,
+        "candidate_limit_hits": 59,
+        "region_f1": {
+          "available": true,
+          "aggregation": "micro interval counts over both lines of all positive pairs",
+          "positive_pair_denominator": 32,
+          "non_full_height_positive_pairs": 0,
+          "tp": 48,
+          "fp": 13,
+          "fn": 28,
+          "precision": 0.7868852459016393,
+          "recall": 0.631578947368421,
+          "f1": 0.7007299270072993
+        },
+        "positive_detected_pairs": 24,
+        "positive_pair_detection_recall": 0.75,
+        "confidence_intervals": {
+          "method": "pair bootstrap or connected manuscript/page/line groups",
+          "resamples": 1000,
+          "seed": 42,
+          "estimates": {
+            "positive_iou": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "positive_dice": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "precision": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "recall": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "negative_pair_fpr": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "negative_masked_area_fraction": {
+              "low": null,
+              "high": null,
+              "units": 1,
+              "reason": "Fewer than two independent groups"
+            },
+            "negative_fpr_binomial": {
+              "available": false,
+              "method": "Clopper-Pearson exact, conditional on independent pairs",
+              "false_positive_pairs": 8,
+              "denominator": 100,
+              "low": null,
+              "high": null
+            }
+          },
+          "limitations": "Grouping uses available source page/group IDs and repeated image identities. Missing metadata cannot establish manuscript independence; one-group intervals are unavailable."
+        }
+      },
+      "directory": "/Users/ahmedmas/Desktop/AlignmentProject/Results/Evaluation/reordered_regions_20261109/test_current_anchored/method_02",
+      "by_book_pair": {
+        "A_B": {
+          "positive_iou": 0.7414913641851529,
+          "positive_dice": 0.8006369580481324,
+          "precision": 0.7767006215558983,
+          "recall": 0.8397107098808753,
+          "positive_pairs": 26,
+          "negative_pairs": 100,
+          "negative_false_positive_pairs": 8,
+          "negative_pair_denominator": 100,
+          "negative_pair_fpr": 0.08,
+          "negative_masked_area_fraction": 0.015936745103249373,
+          "candidate_limit_hits": 53,
+          "region_f1": {
+            "available": true,
+            "aggregation": "micro interval counts over both lines of all positive pairs",
+            "positive_pair_denominator": 26,
+            "non_full_height_positive_pairs": 0,
+            "tp": 46,
+            "fp": 13,
+            "fn": 8,
+            "precision": 0.7796610169491526,
+            "recall": 0.8518518518518519,
+            "f1": 0.8141592920353983
+          }
+        },
+        "A_C": {
+          "positive_iou": 0.19070231913112617,
+          "positive_dice": 0.21628936602596507,
+          "precision": 0.22716621197552123,
+          "recall": 0.2064065760699421,
+          "positive_pairs": 4,
+          "negative_pairs": 100,
+          "negative_false_positive_pairs": 8,
+          "negative_pair_denominator": 100,
+          "negative_pair_fpr": 0.08,
+          "negative_masked_area_fraction": 0.015936745103249373,
+          "candidate_limit_hits": 47,
+          "region_f1": {
+            "available": true,
+            "aggregation": "micro interval counts over both lines of all positive pairs",
+            "positive_pair_denominator": 4,
+            "non_full_height_positive_pairs": 0,
+            "tp": 2,
+            "fp": 0,
+            "fn": 10,
+            "precision": 1.0,
+            "recall": 0.16666666666666666,
+            "f1": 0.2857142857142857
+          }
+        },
+        "B_C": {
+          "positive_iou": 0.0,
+          "positive_dice": 0.0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "positive_pairs": 2,
+          "negative_pairs": 100,
+          "negative_false_positive_pairs": 8,
+          "negative_pair_denominator": 100,
+          "negative_pair_fpr": 0.08,
+          "negative_masked_area_fraction": 0.015936745103249373,
+          "candidate_limit_hits": 45,
+          "region_f1": {
+            "available": true,
+            "aggregation": "micro interval counts over both lines of all positive pairs",
+            "positive_pair_denominator": 2,
+            "non_full_height_positive_pairs": 0,
+            "tp": 0,
+            "fp": 0,
+            "fn": 10,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0
+          }
+        }
+      }
+    }
+  ],
+  "reference_membership": [
+    {
+      "sample_id": "Unalignedlines:014d89eb348fedc83997",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:032d3ef28fe7085e3f90",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:0a2fda01e1f481e13df6",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:1041735ba2c4ffe78fe8",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:10f397887f8e953676a5",
+      "category": "negative",
+      "reference_line_splits": [
+        "train",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:16109f7ebb38c5001a8f",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:1993aea8e3e4331a6e8c",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:1c341cc56c980f6420f2",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:245bb2064dea02cab6d4",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:24ee7af6ad1c6b08a632",
+      "category": "negative",
+      "reference_line_splits": [
+        "val",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:269a8a7e31adbedeeb7b",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:2cfeb30ecc62e5d63fc1",
+      "category": "negative",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:2dd8ca78c3cd4358b711",
+      "category": "negative",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:2ebabf1048e533c64e01",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:31bfcc0efb68cfeddc08",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:32b1b1baf5975e48dcd7",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:339deeb382c9bdfd2b03",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:35deb2944b9077d005dd",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:36160f1cbcd7bb14fa37",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:37aa52f9b56d280dbd92",
+      "category": "negative",
+      "reference_line_splits": [
+        "val",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:3ed6da6ad9287efbde90",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:441321204d0bc463cee2",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:492a2e8ce1f8ff7b4d83",
+      "category": "negative",
+      "reference_line_splits": [
+        "val",
+        "test"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:49a5b7e4ab3a8f63a468",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:49edaa8ffc4f37e6f6cd",
+      "category": "negative",
+      "reference_line_splits": [
+        "val",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:4a7be67d043adc82ab2d",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:4a91dbab04b519523cd2",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:4c5bed6fdbadbd0f1073",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:535fed0e4bbb27244334",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:553b82752a73d0c46120",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:5670ac88a08b9bd05583",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:58adb06e81802c533b00",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:5a97708a095c46c3c82b",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:5ab399fc275d929e8222",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:62c5709928f929acc8a2",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:6382e11e4b22776a7b5f",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:63eee5312372dd90c52e",
+      "category": "negative",
+      "reference_line_splits": [
+        "train",
+        "test"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:643d79be4aa87d945918",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:65857fc87b69329efa22",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:6695ebf262392e607053",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:6a2f8bf522bc953236dc",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:6bc5e5c7adcc5bb67d8a",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:6bf0164d05d671fb79e4",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:707f7ad7af046ad97b2f",
+      "category": "negative",
+      "reference_line_splits": [
+        "val",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:70ccaddfc2f8a35903ea",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:725de2c5d22184a77a79",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:79cc3b379a35c5e53741",
+      "category": "negative",
+      "reference_line_splits": [
+        "train",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:80d7b66f80cc09d0fc9e",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:8b49e1748d8cc988750b",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:8ed15835bc95d10fe67a",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:955dcc83630e3381fd96",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:95c8df9be71f5460a4f4",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:97101009d2040f8f60c7",
+      "category": "negative",
+      "reference_line_splits": [
+        "val",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:98a53c2a1e5395ae1106",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:9b19c94b7859723c2310",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:9bd9f0e561e0d0045465",
+      "category": "negative",
+      "reference_line_splits": [
+        "val",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:9c1798b3a4bad6b736d1",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:a3ebe3af35b4a9f3eb7b",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:a5b2f95362d919b30240",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "test"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:a5ff24c8a458725192f7",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:a70c9ca4f4a93b2659e6",
+      "category": "negative",
+      "reference_line_splits": [
+        "train",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:a83f9fa52635758d5650",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:a8a59cd6d353375e5b76",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:a8c93415410d2f43c657",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:aa8ead7fdd686c4b93f2",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:af11b7983871d0e67e7d",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:b099058919bc25980616",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:b4aa7e23779ae6a7b6e9",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:b913ac6d9e2bdf704cee",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:ba36c14a6231d3c38161",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:baf8f727d1b3777efc9e",
+      "category": "negative",
+      "reference_line_splits": [
+        "val",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:bafed1f8499f0710e21f",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:bb49108a88130ec55dd5",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:bb6dbc6f0c3709a195c5",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "test"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:bd533ab5fba458876855",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:c0a87df0de18a380c438",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:c6178c6f334783b1d1e2",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:c83c05a5c9c7fdd80c0d",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:cf32e5ad30cd318fe20c",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:d626b3e52a833625dff6",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:da57b05234107f5269f1",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:da634d754ac55a9596fd",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:dc7f5348e8d3e1a63697",
+      "category": "negative",
+      "reference_line_splits": [
+        "val",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:df430eb1dda2a699cf3d",
+      "category": "negative",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:e09bb3758520a59534ac",
+      "category": "negative",
+      "reference_line_splits": [
+        "val",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:e19c52d7889a4b7f42a8",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:e1b2125893742f56038b",
+      "category": "negative",
+      "reference_line_splits": [
+        "val",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:e1b2a6d1eb7471f33317",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:e516f33caedcac80ddd3",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:e5c4fc9298056b341728",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:e7b3f9a4e878045fed05",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:ea1b0156bd47f99a2b24",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:ea65b5d2475654ceb37a",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:efa005b4c5a268c54030",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:f416d5f77ffe66dcdcda",
+      "category": "negative",
+      "reference_line_splits": [
+        "train",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:f79e447b5b178c91c097",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:f7f84964040ec59cbf54",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:f8a41212bc1f0fb0fa46",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "Unalignedlines:fb5e8c2bead171f56c22",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "unseen"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "Unalignedlines:ff31edf170bd6e311a2f",
+      "category": "negative",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:A_C:auto_A_C_576726d694e833505c8f",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "alignedPairs:A_C:auto_A_C_811834f4a821a8658b98",
+      "category": "positive",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "alignedPairs:A_C:auto_A_C_ab4c7163560871181288",
+      "category": "positive",
+      "reference_line_splits": [
+        "unseen",
+        "test"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:A_C:auto_A_C_df450f4dbbecf992ee07",
+      "category": "positive",
+      "reference_line_splits": [
+        "unseen",
+        "test"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:B_C:auto_B_C_7209fa8dd82f0d1cfea9",
+      "category": "positive",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "alignedPairs:B_C:auto_B_C_a749c19e150774e21f0f",
+      "category": "positive",
+      "reference_line_splits": [
+        "train",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "alignedPairs:auto_A_B_610546280a8a13a07304",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_013__B_line_001",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_013__B_line_002",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_013__B_line_008",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_002",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_015__B_line_003",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_015__B_line_004",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_015__B_line_005",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_015__B_line_011",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000017__A_line_014__B_line_002",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000017__A_line_015__B_line_003",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000018__A_line_002__B_line_010",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000019__A_line_002__B_line_003",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000019__A_line_004__B_line_005",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000019__A_line_005__B_line_006",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000019__A_line_007__B_line_007",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000019__A_line_007__B_line_008",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000019__A_line_008__B_line_003",
+      "category": "positive",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000019__A_line_008__B_line_008",
+      "category": "positive",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000019__A_line_012__B_line_011",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000019__A_line_012__B_line_012",
+      "category": "positive",
+      "reference_line_splits": [
+        "val",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000019__A_line_013__B_line_012",
+      "category": "positive",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000019__A_line_013__B_line_013",
+      "category": "positive",
+      "reference_line_splits": [
+        "unseen",
+        "val"
+      ],
+      "includes_reference_training_line": false
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_003__B_line_013",
+      "category": "positive",
+      "reference_line_splits": [
+        "unseen",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_004__B_line_006",
+      "category": "positive",
+      "reference_line_splits": [
+        "train",
+        "train"
+      ],
+      "includes_reference_training_line": true
+    }
+  ],
+  "development_pairs_excluded": [
+    "alignedPairs:pair_000028__A_line_005__B_line_002"
+  ],
+  "comparison_limitation": "Previous and current checkpoints have zero common saved-test positive pairs. The same-cohort reference is descriptive; reference training membership is reported per pair.",
+  "validation_quarantine": {
+    "enabled": true,
+    "evaluation_lines": [
+      {
+        "split": "val",
+        "sample_id": "BookC:KuficQuran__0148__line_003",
+        "path": "/Users/ahmedmas/Desktop/AlignmentProject/DataSet/ArabicData/BookC/images/KuficQuran__0148__line_003.png",
+        "pixel_sha256": "7d9798c161810691c1d536a0deb3a3755ac6d520c5fa2f4c95321345f6d66342",
+        "group_id": "book:C:None:0148"
+      },
+      {
+        "split": "val",
+        "sample_id": "BookC:KuficQuran__0315__line_005",
+        "path": "/Users/ahmedmas/Desktop/AlignmentProject/DataSet/ArabicData/BookC/images/KuficQuran__0315__line_005.png",
+        "pixel_sha256": "7199603c954837a503eef987b2369a26c5725f59e76b310ae6a1a80c10df91e8",
+        "group_id": "book:C:None:0315"
+      }
+    ],
+    "excluded_pairs": [
+      "Unalignedlines:599f6c136fe66c4286f9",
+      "Unalignedlines:898dc2a563214ea80e94"
+    ]
+  },
+  "real_reordered_example": {
+    "pair_id": "pair_000001__A_line_011__B_line_005",
+    "book_pair": "A_B",
+    "annotated_word_order": {
+      "A": [
+        "الذين",
+        "قولا",
+        "غير"
+      ],
+      "B": [
+        "قولا",
+        "غير",
+        "الذين"
+      ]
+    },
+    "before_regions": 1,
+    "after_regions": 2,
+    "before_iou": 0.5238017529855412,
+    "after_iou": 0.8710368590910194,
+    "settings": {
+      "similarity_mode": "letter_evidence",
+      "decoder": "local_repeat_dtw",
+      "threshold": 0.5,
+      "contrast_margin": 0.05,
+      "score_mode": "background",
+      "min_windows": 3,
+      "max_gap": 4,
+      "gap_open": 0.5940936607241908,
+      "gap_extend": 0.5826132317598225,
+      "max_candidates": 512,
+      "repeat_penalty": 0.2,
+      "max_stretch": 3,
+      "acceptance_offset": 0.1,
+      "prior_floor": 0.0001,
+      "alignment_mode": "local_repeat_dtw",
+      "max_consecutive_repeats": 2,
+      "min_distinct_windows_a": 3,
+      "min_distinct_windows_b": 3,
+      "min_matched_pairs": 4,
+      "use_strong_start_anchor": false,
+      "start_top_k": 3,
+      "start_min_reward": null,
+      "min_region_score": null,
+      "min_mean_reward": 0.0,
+      "min_path_density": 0.85,
+      "max_repeat_fraction": null,
+      "min_secondary_score_ratio": null,
+      "window_match_temperature": 0.1,
+      "window_match_min_cosine": 0.5,
+      "window_match_reward_offset": 0.0,
+      "use_path_anchor_check": true,
+      "anchor_top_k": 4,
+      "min_mutual_anchors_long": 7,
+      "min_mutual_anchor_fraction_long": 0.05,
+      "min_mutual_anchors_short": 2,
+      "min_mutual_anchor_fraction_short": 0.6,
+      "normal_min_distinct_a": 9,
+      "normal_min_distinct_b": 9,
+      "normal_min_matched_pairs": 12,
+      "normal_min_mean_cosine": 0.6,
+      "allow_short_regions": true,
+      "short_min_distinct_a": 3,
+      "short_min_distinct_b": 3,
+      "short_min_matched_pairs": 4,
+      "short_min_mean_cosine": 0.75,
+      "short_min_median_cosine": 0.75,
+      "short_min_mean_reward": 0.25,
+      "short_min_path_density": 0.9,
+      "short_max_internal_gap": 0,
+      "short_min_mutual_anchors": 2,
+      "short_min_mutual_anchor_fraction": 0.6,
+      "min_median_bidirectional_margin_long": null,
+      "min_median_bidirectional_margin_short": null,
+      "enable_path_extension": false,
+      "extension_min_reward": 0.0,
+      "extension_max_weak_run": 1,
+      "extension_max_internal_gap": 2,
+      "enable_region_merging": false,
+      "merge_max_gap_a": 1,
+      "merge_max_gap_b": 2,
+      "dominance_min_quality_ratio": 0.75,
+      "candidate_similarity_mode": "letter_evidence",
+      "verify_with_letter_evidence": false,
+      "min_mean_letter_evidence": null,
+      "min_letter_positive_fraction": null,
+      "allow_reordered_regions": true,
+      "split_gap_candidates": true,
+      "require_corroborated_short_regions": true
+    },
+    "saved_line_splits": {
+      "A": "train",
+      "B": "train"
+    },
+    "interpretation": "Fixed training-pair illustration identified after parameters were frozen; not an extra held-out estimate"
+  },
+  "reference_exposure_counts": {
+    "negative_no_recorded_training": 46,
+    "negative_includes_training": 54,
+    "positive_includes_training": 6,
+    "positive_no_recorded_training": 26
+  },
+  "limitations": [
+    "Negative comparisons are presumed unrelated, not manually verified; 100 were sampled with seed 42.",
+    "The user-supplied development example and comparisons sharing its source lines are excluded from headline test metrics.",
+    "The reference and current checkpoints have zero common saved-test positive pairs; old-weight fixed-cohort scores include reference-training exposure.",
+    "Foreground masks measure localization, not word-to-word correspondence correctness. Reversed-order correctness is also covered by a separate synthetic regression.",
+    "Validation selection met a 5% presumed-negative FPR limit, but this did not transfer: final test FPR is 8%.",
+    "The provided three-word example remains only partially recovered; no claim is made that all missed matches are solved."
+  ]
+}

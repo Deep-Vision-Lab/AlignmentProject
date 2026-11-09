@@ -368,8 +368,23 @@ def build_cache(args, split):
     needs_letters = baseline['similarity_mode'] == 'letter_evidence' or baseline['verify_with_letter_evidence']
     if needs_letters:
         session.text_encoder.requires_grad_(False)
-    audit = audit_splits(session); write_json(output/'split_audit.json',audit)
-    if audit['image_leakage'] or audit['page_group_leakage']:
+    audit = audit_splits(session)
+    quarantine = dict(enabled=bool(getattr(args,'quarantine_leaked_evaluation_images',False)),
+                      evaluation_lines=[], excluded_pairs=[])
+    leaked_hashes = {row['image_sha256'] for row in audit['image_leakage']}
+    blocked_paths = set()
+    if quarantine['enabled']:
+        for name in ('val','test'):
+            for row in audit['records'][name]:
+                for image in row['images']:
+                    if image['pixel_sha256'] in leaked_hashes:
+                        blocked_paths.add(image['path'])
+                        quarantine['evaluation_lines'].append(dict(split=name,sample_id=row['sample_id'],**image))
+    # Audit identity must remain the same across validation and test. Pair
+    # exclusions depend on the selected split and belong in its own contract.
+    audit['evaluation_quarantine'] = {key:value for key,value in quarantine.items() if key!='excluded_pairs'}
+    write_json(output/'split_audit.json',audit)
+    if audit['page_group_leakage'] or (audit['image_leakage'] and not quarantine['enabled']):
         raise ValueError('Saved splits leak line images/page groups; see split_audit.json. No split was reorganized.')
     pixel_ids={image['path']:image['pixel_sha256'] for records in audit['records'].values() for row in records for image in row['images']}
     if folders:
@@ -378,6 +393,10 @@ def build_cache(args, split):
         pairs, pair_selection = explicit_pairs(session,args.split_manifest), dict(target='reviewed manifest/catalog')
     issues = []; selected = []; seen = set()
     for pair in sorted(pairs,key=lambda p:p['sample_id']):
+        if any(session.line_aliases.get(_side_key(side),_side_key(side))[0] in blocked_paths
+               for side in pair['sides']):
+            quarantine['excluded_pairs'].append(pair['sample_id'])
+            continue
         if pair['sample_id'] in seen: issues.append(dict(sample_id=pair['sample_id'],reason='duplicate pair ID')); continue
         seen.add(pair['sample_id'])
         presumed = bool(pair.get('constructed_negative') or pair.get('recorded_negative_black'))
@@ -438,6 +457,7 @@ def build_cache(args, split):
     units = dependency_units([p['record'] for p in selected])
     for item in selected:item['record']['bootstrap_group']=units[item['record']['sample_id']]
     contract = dict(split=split,counts={k:counts[k] for k in ('positive','negative')},inconsistent_records=issues,records=[p['record'] for p in selected],
+                    evaluation_quarantine=quarantine,
                     eligible_catalog_pairs=len(pairs),saved_split_lines=session.split_sizes,
                     folder_catalog=session.folder_summary,
                     pair_selection=pair_selection,
@@ -449,6 +469,7 @@ def build_cache(args, split):
                     label_as_black_count=sum(m.get('label_as_black',False) for p in selected for m in p['record']['masks']),
                     missing_mask_policy='black source-sized mask (notebook folder policy)' if folders else 'error, never presumed black',max_pairs=0)
     write_json(output/f'{split}_split_manifest.json',contract)
+    write_json(output/'split_audit.json',audit)
     if issues: raise ValueError(f'{len(issues)} inconsistent/unverified records; see {split}_split_manifest.json. No examples silently excluded.')
     if folders and args.class_balance=='balanced' and counts['positive'] != counts['negative']:
         raise ValueError('Folder-mask labels changed the selected class balance; inspect mask/label consistency in '+str(output/f'{split}_split_manifest.json'))
@@ -470,6 +491,7 @@ def build_cache(args, split):
         pairs_per_split=args.pairs_per_split if folders else 'reviewed',pair_selection=pair_selection,
         class_balance=args.class_balance if folders else 'manifest',
         missing_mask_policy=contract['missing_mask_policy'],
+        evaluation_quarantine=quarantine,
         resize_gt=args.resize_gt,bootstrap_resamples=args.bootstrap,
         notebook_path=str(Path(args.notebook).resolve()),notebook_sha256=file_hash(args.notebook),
         inference_mode='eval/no_grad, frozen model and character vectors, augmentation=False',

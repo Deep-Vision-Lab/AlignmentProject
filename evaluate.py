@@ -28,7 +28,7 @@ from train import build_loaders, load_checkpoint, validate_one_epoch
 from alignment_candidates import PATH_DEFAULTS, validate_path_options, decode_candidates
 from alignment_overlays import aligned_window_overlays
 
-MATCH_VERSION = 'local-path-quality-4-bidirectional-window'
+MATCH_VERSION = 'local-path-quality-5-reordered-regions'
 MATCH_DEFAULTS = dict(similarity_mode='cosine', decoder='local_repeat_dtw', threshold=.5,
     contrast_margin=.05, score_mode='background', min_windows=3, max_gap=1,
     gap_open=.2, gap_extend=.05, max_candidates=512, repeat_penalty=.05,
@@ -903,7 +903,8 @@ def main(argv=None):
         flag='--'+key.replace('_','-')
         if isinstance(value,bool):parser.add_argument(flag,action=argparse.BooleanOptionalAction,default=value)
         else:
-            kind=str if key=='candidate_similarity_mode' else int if ('normal_min_' in key or isinstance(value,int)) else float
+            counts=('normal_min_distinct_a','normal_min_distinct_b','normal_min_matched_pairs')
+            kind=str if key=='candidate_similarity_mode' else int if (key in counts or isinstance(value,int)) else float
             parser.add_argument(flag,type=kind,default=value)
     args=parser.parse_args(argv)
     if args.mode=='loss':

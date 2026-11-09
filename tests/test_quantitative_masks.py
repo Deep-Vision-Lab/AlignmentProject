@@ -160,7 +160,8 @@ def test_search_bounds_conditionals_and_anchor_aliases():
     assert tuning.baseline_params(baseline) is not None
     assert tuning.suggest(optuna.trial.FixedTrial(tuning.baseline_params(baseline)),baseline,1)==baseline
     resolved=q.effective_settings(baseline)
-    assert resolved['derived']['short_anchor_fraction']==.95
+    assert resolved['derived']['short_anchor_fraction']==max(
+        baseline['short_min_mutual_anchor_fraction'],baseline['min_mutual_anchor_fraction_short'])
     assert resolved['derived']['extension_gap']==2
 
 
@@ -389,6 +390,25 @@ def test_split_copy_leakage_is_reported(evaluation_fixture,tmp_path):
     args=arguments(root,checkpoint,tmp_path/'leak')
     with pytest.raises(ValueError,match='leak'):q.build_cache(args,'val')
     assert json.loads((args.output/'split_audit.json').read_text())['image_leakage']
+
+
+def test_explicit_quarantine_excludes_leaked_eval_pairs_and_keeps_saved_splits(evaluation_fixture,tmp_path):
+    root,checkpoint=evaluation_fixture;configure_fixture(root)
+    (root/'A9.png').write_bytes((root/'A0.png').read_bytes())
+    args=arguments(root,checkpoint,tmp_path/'quarantine')
+    args.quarantine_leaked_evaluation_images=True
+    session,prepared,provenance=q.build_cache(args,'test')
+    assert {item['record']['sample_id'] for item in prepared}=={'pair8:8','negative:10'}
+    quarantine=provenance['evaluation_quarantine']
+    assert quarantine['excluded_pairs']==['pair9:9']
+    assert any(row['split']=='test' for row in quarantine['evaluation_lines'])
+    audit=json.loads((args.output/'split_audit.json').read_text())
+    assert audit['image_leakage']
+    assert audit['evaluation_quarantine']['evaluation_lines']==quarantine['evaluation_lines']
+    assert 'excluded_pairs' not in audit['evaluation_quarantine']
+    assert audit['saved_split_ids']==session.saved['split_ids']
+    contract=json.loads((args.output/'test_split_manifest.json').read_text())
+    assert contract['evaluation_quarantine']==quarantine
 
 
 def test_missing_or_inconsistent_masks_are_not_silently_dropped(evaluation_fixture,tmp_path):

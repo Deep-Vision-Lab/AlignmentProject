@@ -2,7 +2,10 @@
 
 The notebooks now use `real_abc_balanced_optional_space_20261108` and display
 fresh inference on the same 15 examples. The new gallery is
-[`real_abc_optional_space_fixed_examples`](../Results/Evaluation/real_abc_optional_space_fixed_examples/index.html).
+[`reordered_regions_20261109/fixed_examples`](../Results/Evaluation/reordered_regions_20261109/fixed_examples/index.html).
+The [current quantitative report](reordered_regions_evaluation.md) documents the
+independent-passage matcher, its higher recall and higher held-out false-positive
+rate, and the incomplete recovery of the user-supplied three-word example.
 The selection rules and original gallery described below belong to the previous
 checkpoint; those ranking constraints are not guarantees for the new model.
 See [optional-space evaluation](optional_space_evaluation.md) for the current

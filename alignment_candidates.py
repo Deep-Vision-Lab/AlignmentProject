@@ -14,6 +14,7 @@ PATH_DEFAULTS = dict(
     min_mutual_anchors_long=2, min_mutual_anchor_fraction_long=.15,
     min_mutual_anchors_short=2, min_mutual_anchor_fraction_short=.40,
     normal_min_distinct_a=5, normal_min_distinct_b=5, normal_min_matched_pairs=5,
+    normal_min_mean_cosine=None,
     allow_short_regions=True, short_min_distinct_a=3, short_min_distinct_b=3,
     short_min_matched_pairs=4, short_min_mean_cosine=.72, short_min_median_cosine=.72,
     short_min_mean_reward=.15, short_min_path_density=.80, short_max_internal_gap=0,
@@ -23,10 +24,15 @@ PATH_DEFAULTS = dict(
     extension_max_internal_gap=1, enable_region_merging=True, merge_max_gap_a=1,
     merge_max_gap_b=1, dominance_min_quality_ratio=.90,
     candidate_similarity_mode=None, verify_with_letter_evidence=False,
-    min_mean_letter_evidence=None, min_letter_positive_fraction=None)
+    min_mean_letter_evidence=None, min_letter_positive_fraction=None,
+    allow_reordered_regions=False, split_gap_candidates=False,
+    require_corroborated_short_regions=False)
 
 
 def validate_path_options(options):
+    for key in ('allow_reordered_regions', 'split_gap_candidates', 'require_corroborated_short_regions'):
+        if not isinstance(options[key], bool):
+            raise ValueError(f'{key} must be boolean')
     for key, value in options.items():
         if isinstance(value,(int,float,np.number)) and not math.isfinite(value):
             raise ValueError(f'{key} must be finite')
@@ -48,6 +54,8 @@ def validate_path_options(options):
         if v is not None and not 0<=v<=1: raise ValueError(f'{key} must be in [0,1]')
     if not -1<=options['threshold']<=1 or options['contrast_margin']<0:
         raise ValueError('Invalid cosine threshold/contrast margin')
+    if options['normal_min_mean_cosine'] is not None and not -1<=options['normal_min_mean_cosine']<=1:
+        raise ValueError('normal_min_mean_cosine must be in [-1,1]')
     if not options['gap_open']>=options['gap_extend']>=0 or options['repeat_penalty']<0:
         raise ValueError('Invalid gap/repeat penalties')
     if options['score_mode'] not in ('raw','background'): raise ValueError('Invalid score mode')
@@ -221,6 +229,8 @@ def validate_candidate(c,o):
     elif _maximum_repeat_run(c['path_steps'])>o['max_consecutive_repeats']:reason='excessive_consecutive_repeats'
     elif c['score']<=0:reason='nonpositive_objective'
     elif c['maximum_internal_gap']>o['max_gap']:reason='excessive_internal_gap'
+    elif is_normal and o['normal_min_mean_cosine'] is not None and c['mean_cosine']<o['normal_min_mean_cosine']:
+        reason='below_normal_min_mean_cosine'
     elif not is_normal and o['allow_short_regions']:
         short_checks=(('mean_cosine','short_min_mean_cosine'),('median_cosine','short_min_median_cosine'),
                       ('mean_reward','short_min_mean_reward'),('path_density','short_min_path_density'))
@@ -340,6 +350,15 @@ def _rank(c):
             min(c['support']),sum(c['support']),c['score'])
 
 
+def compatible_regions(left, right, allow_reordered=False):
+    """Distinct passages may change order, but cannot share a span on either line."""
+    (a,b),(c,d) = left['logical_ranges']
+    (e,f),(g,h) = right['logical_ranges']
+    if allow_reordered:
+        return (b < e or f < a) and (d < g or h < c)
+    return (b < e and d < g) or (f < a and h < c)
+
+
 def select_candidates(candidates,o):
     """Validation/dominance on the complete pool precedes overlap selection."""
     valid=[c for c in candidates if c['valid']]
@@ -359,10 +378,9 @@ def select_candidates(candidates,o):
     selected=[]
     for c in sorted(valid,key=_rank,reverse=True):
         if c['dominated_by'] is not None:continue
-        (a,b),(d,e)=c['logical_ranges']
-        compatible=all((b<r['logical_ranges'][0][0] and e<r['logical_ranges'][1][0]) or
-                       (a>r['logical_ranges'][0][1] and d>r['logical_ranges'][1][1]) for r in selected)
-        c.update(accepted=compatible,reason='accepted' if compatible else 'crossing_or_reused_windows',
+        compatible=all(compatible_regions(c,r,o['allow_reordered_regions']) for r in selected)
+        rejection = 'reused_windows' if o['allow_reordered_regions'] else 'crossing_or_reused_windows'
+        c.update(accepted=compatible,reason='accepted' if compatible else rejection,
                  status='accepted_alignment_candidate' if compatible else 'rejected_visual_candidate')
         if compatible:selected.append(c)
     return sorted(selected,key=lambda c:c['logical_ranges'][0][0])
@@ -395,6 +413,10 @@ def merge_regions(regions,candidates,cosine,rewards,physical,anchors,uniqueness,
         candidate['candidate_id']=f'C{len(candidates)}'
         candidates.append(candidate)
         if validate_candidate(candidate,o):
+            if not all(compatible_regions(candidate, other, o['allow_reordered_regions'])
+                       for other in regions if other.get('accepted') and other is not left and other is not right):
+                candidate.update(reason='merge_reuses_selected_windows',status='rejected_visual_candidate')
+                merged.append(right);continue
             for original in (left,right):original.update(accepted=False,reason='merged_into_'+candidate['candidate_id'],status='rejected_visual_candidate')
             candidate.update(accepted=True,reason='accepted',status='accepted_alignment_candidate')
             merged[-1]=candidate
@@ -418,9 +440,7 @@ def extend_selected_regions(regions,candidates,cosine,rewards,physical,anchors,u
             variant=core['variant'],trimmed_prefix=core['trimmed_prefix'],trimmed_suffix=core['trimmed_suffix'],
             trimmed_pairs=[q for q in core['trimmed_pairs'] if q not in added])
         if not validate_candidate(candidate,o):continue
-        (a,b),(d,e)=candidate['logical_ranges']
-        if not all((b<r['logical_ranges'][0][0] and e<r['logical_ranges'][1][0]) or
-                   (a>r['logical_ranges'][0][1] and d>r['logical_ranges'][1][1])
+        if not all(compatible_regions(candidate,r,o['allow_reordered_regions'])
                    for j,r in enumerate(selected) if j!=k):continue
         # Preserve a single diagnostic record per pair sequence.
         existing=next((c for c in candidates if c['pairs']==candidate['pairs']),None)
@@ -433,51 +453,84 @@ def extend_selected_regions(regions,candidates,cosine,rewards,physical,anchors,u
     return selected
 
 
+def candidate_segments(raw, physical, options):
+    # Visit all original routes first so extra fragments cannot displace an
+    # existing candidate during signature deduplication.
+    for route in raw:
+        paths = segment_path(route['path_steps'], physical, options['max_gap'])
+        for path in paths:
+            yield route, path, False, len(paths) > 1
+    if options['split_gap_candidates']:
+        for route in raw:
+            paths = segment_path(route['path_steps'], physical, 0)
+            for path in paths:
+                yield route, path, True, len(paths) > 1
+
+
+def finalize_regions(regions, candidates, options):
+    """Several disjoint short passages may jointly establish a line match."""
+    if regions and options['min_secondary_score_ratio'] is not None:
+        best=max(regions,key=lambda c:c['score'])
+        for c in list(regions):
+            if c is not best and c['score']<best['score']*options['min_secondary_score_ratio']:
+                c.update(accepted=False,reason='below_secondary_score_ratio',status='rejected_visual_candidate')
+                regions.remove(c)
+    if (options['require_corroborated_short_regions'] and regions
+            and not any(c['candidate_type']=='normal' for c in regions)):
+        support=[len({window for c in regions for window in c['supported_physical'][side]}) for side in (0,1)]
+        required=[options['normal_min_distinct_a'] or max(options['min_windows'],options['min_distinct_windows_a']),
+                  options['normal_min_distinct_b'] or max(options['min_windows'],options['min_distinct_windows_b']),
+                  options['normal_min_matched_pairs'] or max(options['min_windows'],options['min_matched_pairs'])]
+        confirmed=(len(regions)>=2 and support[0]>=required[0] and support[1]>=required[1]
+                   and sum(c['matched_pairs'] for c in regions)>=required[2]
+                   and (not options['use_path_anchor_check'] or
+                        sum(c['mutual_anchor_count'] for c in regions)>=options['min_mutual_anchors_long']))
+        if not confirmed:
+            for c in regions:
+                c.update(accepted=False,reason='uncorroborated_short_regions',status='rejected_visual_candidate')
+            regions=[]
+    return regions
+
+
 def decode_candidates(raw,cosine,rewards,physical,anchors,o,letter_evidence=None,match_eligible=None):
     uniqueness=uniqueness_matrices(cosine)
     candidates=[];seen=set()
-    for route in raw:
-        segments=segment_path(route['path_steps'],physical,o['max_gap'])
-        for path in segments:
-            matched=[k for k,s in enumerate(path) if s['i'] is not None and s['j'] is not None]
-            strong=[k for k in matched if anchors[path[k]['i'],path[k]['j']]]
-            variants=[(0,len(path),'original')]
-            if strong:
-                variants += [(strong[0],len(path),'trimmed_prefix'),(0,strong[-1]+1,'trimmed_suffix'),
-                             (strong[0],strong[-1]+1,'trimmed_both')]
-            original_pairs=[(path[k]['i'],path[k]['j']) for k in matched]
-            parent_id=None
-            for begin,end,variant in variants:
-                if end<=begin:continue
-                trimmed=[dict(s) for s in path[begin:end]]
-                pairset={(s['i'],s['j']) for s in trimmed if s['i'] is not None and s['j'] is not None}
-                trimmed_pairs=[q for q in original_pairs if q not in pairset]
-                versions=[(trimmed,[],variant)]
-                if o['enable_path_extension'] and strong:
-                    extended,added=extend_path(trimmed,cosine,rewards,physical,anchors,uniqueness,o,match_eligible)
-                    if added:versions.append((extended,added,variant))
-                for version,added,kind in versions:
-                    signature=tuple((s['i'],s['j']) for s in version if s['i'] is not None and s['j'] is not None)
-                    if signature in seen:continue
-                    seen.add(signature)
-                    c=candidate_statistics(version,cosine,rewards,physical,anchors,uniqueness,o,letter_evidence,
-                        candidate_id=f'C{len(candidates)}',variant=kind,
-                        trimmed_prefix=begin>0,trimmed_suffix=end<len(path),trimmed_pairs=trimmed_pairs,
-                        extension_pairs=added,parent_candidate_id=parent_id,
-                        split_from_path=len(segments)>1,parent_path_score=route['score'])
-                    if parent_id is None:parent_id=c['candidate_id']
-                    validate_candidate(c,o);candidates.append(c)
+    for route,path,fragment,split in candidate_segments(raw,physical,o):
+        matched=[k for k,s in enumerate(path) if s['i'] is not None and s['j'] is not None]
+        strong=[k for k in matched if anchors[path[k]['i'],path[k]['j']]]
+        variants=[(0,len(path),'original')]
+        if strong:
+            variants += [(strong[0],len(path),'trimmed_prefix'),(0,strong[-1]+1,'trimmed_suffix'),
+                         (strong[0],strong[-1]+1,'trimmed_both')]
+        original_pairs=[(path[k]['i'],path[k]['j']) for k in matched]
+        parent_id=None
+        for begin,end,variant in variants:
+            if end<=begin:continue
+            trimmed=[dict(s) for s in path[begin:end]]
+            pairset={(s['i'],s['j']) for s in trimmed if s['i'] is not None and s['j'] is not None}
+            trimmed_pairs=[q for q in original_pairs if q not in pairset]
+            versions=[(trimmed,[],variant)]
+            if o['enable_path_extension'] and strong:
+                extended,added=extend_path(trimmed,cosine,rewards,physical,anchors,uniqueness,o,match_eligible)
+                if added:versions.append((extended,added,variant))
+            for version,added,kind in versions:
+                signature=tuple((s['i'],s['j']) for s in version if s['i'] is not None and s['j'] is not None)
+                if signature in seen:continue
+                seen.add(signature)
+                c=candidate_statistics(version,cosine,rewards,physical,anchors,uniqueness,o,letter_evidence,
+                    candidate_id=f'C{len(candidates)}',variant=kind,
+                    trimmed_prefix=begin>0,trimmed_suffix=end<len(path),trimmed_pairs=trimmed_pairs,
+                    extension_pairs=added,parent_candidate_id=parent_id,
+                    split_from_path=split,fragmented_at_gaps=fragment,parent_path_score=route['score'])
+                if parent_id is None:parent_id=c['candidate_id']
+                validate_candidate(c,o);candidates.append(c)
     regions=select_candidates(candidates,o)
     if o['enable_path_extension']:
         regions=extend_selected_regions(regions,candidates,cosine,rewards,physical,anchors,uniqueness,o,letter_evidence,match_eligible)
     if o['enable_region_merging']:regions=merge_regions(regions,candidates,cosine,rewards,physical,anchors,uniqueness,o,letter_evidence,match_eligible)
     if match_eligible is not None and any(not match_eligible[q] for c in candidates for q in c['pairs']):
         raise RuntimeError('Path construction bypassed match eligibility')
-    if regions and o['min_secondary_score_ratio'] is not None:
-        best=max(regions,key=lambda c:c['score'])
-        for c in list(regions):
-            if c is not best and c['score']<best['score']*o['min_secondary_score_ratio']:
-                c.update(accepted=False,reason='below_secondary_score_ratio',status='rejected_visual_candidate');regions.remove(c)
+    regions=finalize_regions(regions,candidates,o)
     rejected=[c for c in candidates if not c['accepted']]
     if not candidates:rejected=[dict(candidate_id=None,accepted=False,reason='no_positive_local_alignment',status='rejected_visual_candidate')]
     return dict(regions=regions,candidates=candidates,rejected=rejected,rewards=rewards,

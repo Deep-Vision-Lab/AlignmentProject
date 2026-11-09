@@ -146,7 +146,13 @@ def embed_examples(notebook_path, review_path, output):
     complete_catalogs = report.get('selection_scope') == 'complete_catalogs'
     fixed_examples = report.get('selection_scope') == 'fixed_previous_checkpoint_examples'
     ab_constraint = report.get('selection_constraints', {}).get('A_B')
-    source_cells = {row['review_id']: cell for row, cell in zip(report['samples'], review['cells'][2:])}
+    source_cells = {}
+    for row in report['samples']:
+        matches = [cell for cell in review['cells'] if cell['cell_type']=='code'
+                   and row['review_id']+'.png' in ''.join(cell['source'])]
+        if len(matches)!=1:
+            raise ValueError('Cannot identify the saved review figure: '+row['review_id'])
+        source_cells[row['review_id']] = matches[0]
 
     def markdown(cid, source):
         return dict(cell_type='markdown', id=cid, metadata={}, source=source.splitlines(keepends=True))

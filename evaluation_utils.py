@@ -431,6 +431,58 @@ def predict_cached_pair(session, pair, lines, representation='fused', *, setting
                 match=match, masks=masks, settings=match['settings'], split=session.split)
 
 
+CANDIDATE_REVALIDATION_KEYS = {
+    'normal_min_distinct_a','normal_min_distinct_b','normal_min_matched_pairs','normal_min_mean_cosine',
+    'allow_short_regions','short_min_distinct_a','short_min_distinct_b','short_min_matched_pairs',
+    'short_min_mean_cosine','short_min_median_cosine','short_min_mean_reward','short_min_path_density',
+    'short_max_internal_gap','short_min_mutual_anchors','short_min_mutual_anchor_fraction',
+    'min_mutual_anchors_long','min_mutual_anchor_fraction_long','min_mutual_anchors_short',
+    'min_mutual_anchor_fraction_short','use_path_anchor_check','min_region_score','min_mean_reward',
+    'min_path_density','max_repeat_fraction','min_secondary_score_ratio',
+    'min_median_bidirectional_margin_long','min_median_bidirectional_margin_short',
+    'allow_reordered_regions','split_gap_candidates','require_corroborated_short_regions',
+}
+
+
+def revalidate_cached_candidates(session, prediction, settings):
+    """Exact confidence/order sweep over an unchanged, GT-free candidate pool.
+
+    Path generation, evidence, anchors, extension and merging cannot be tuned
+    through this helper. Changed generation settings require full prediction.
+    """
+    from alignment_candidates import validate_candidate, select_candidates, finalize_regions, validate_path_options
+    options = resolved_match_settings(settings)
+    validate_path_options(options)
+    previous = resolved_match_settings(prediction['settings'])
+    changed = {key for key in options if options[key] != previous[key]}
+    if changed - CANDIDATE_REVALIDATION_KEYS:
+        raise ValueError('Candidate generation settings changed; run full prediction')
+    if options['enable_path_extension'] or options['enable_region_merging']:
+        raise ValueError('Candidate replay requires extension and merging disabled')
+    if options['split_gap_candidates'] and not previous['split_gap_candidates']:
+        raise ValueError('Cached pool contains no gap fragments; run full prediction')
+    if prediction['match']['implementation_version'] != MATCH_VERSION:
+        raise ValueError('Candidate cache belongs to another matcher version')
+    candidates = []
+    for original in prediction['match']['candidates']:
+        if original.get('fragmented_at_gaps') and not options['split_gap_candidates']:
+            continue
+        # The production validators change only top-level fields. Path/evidence
+        # arrays stay shared and read-only across this parameter sweep.
+        candidate = dict(original,accepted=False,dominated_by=None)
+        validate_candidate(candidate,options)
+        candidates.append(candidate)
+    regions = select_candidates(candidates,options)
+    regions = finalize_regions(regions,candidates,options)
+    match = dict(prediction['match'],candidates=candidates,regions=regions,settings=options,
+                 rejected=[c for c in candidates if not c['accepted']])
+    if not candidates:
+        match['rejected'] = [dict(reason='no_positive_local_alignment')]
+    masks = [region_mask(regions,index,line['geometry'],session.config.window_width,session.config.window_stride)
+             for index,line in enumerate(prediction['lines'])]
+    return dict(prediction,match=match,masks=masks,settings=options)
+
+
 def print_candidate_diagnostics(result, max_rejected=5):
     """Print route evidence and reasons for both accepted and rejected candidates."""
     pair,match=result['pair'],result['match']
