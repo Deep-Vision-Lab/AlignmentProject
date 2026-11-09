@@ -1,15 +1,18 @@
 # A–B, B–C and A–C qualitative evaluation
 
-The notebooks now use `real_abc_balanced_optional_space_20261108` and display
-fresh inference on the same 15 examples. The new gallery is
-[`reordered_regions_20261109/fixed_examples`](../Results/Evaluation/reordered_regions_20261109/fixed_examples/index.html).
-The [current quantitative report](reordered_regions_evaluation.md) documents the
-independent-passage matcher, its higher recall and higher held-out false-positive
-rate, and the incomplete recovery of the user-supplied three-word example.
-The selection rules and original gallery described below belong to the previous
-checkpoint; those ranking constraints are not guarantees for the new model.
-See [optional-space evaluation](optional_space_evaluation.md) for the current
-behavior and the training/evaluation parity checks.
+Both notebooks use `real_abc_balanced_optional_space_20261108` with the final
+validation-selected parameters. They embed final predictions for both supplied
+cases and fresh inference on the fixed 15-example gallery.
+
+See the [final quantitative report](final_fragments_evaluation.md) for all metric
+values and the two case diagnoses. Test FPR is 17%, above the requested 10%
+budget. The second supplied case remains partially recovered. The final gallery
+is [`final_fragments_20261109/fixed_examples`](../Results/Evaluation/final_fragments_20261109/fixed_examples/index.html).
+The 15 deliberately selected examples include mixed checkpoint splits; their
+scores are illustrations, not an independent population estimate.
+
+The catalog and original selection procedure below are historical context.
+Those original ranking constraints do not describe the final model's scores.
 
 The Drive folders `alignedPairs/A_B`, `alignedPairs/A_C`, and
 `alignedPairs/B_C` were added under `DataSet/ArabicData`, retaining their

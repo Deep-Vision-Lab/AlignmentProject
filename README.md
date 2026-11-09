@@ -1,8 +1,9 @@
 # AlignmentProject — simple alignment core
 
-**9 November evaluation update:** [independent/reordered passages and measured results](docs/reordered_regions_evaluation.md).
-Both evaluation notebooks now show the new checkpoint, real before/after examples,
-and the recall/false-positive trade-off near the top. Reload the notebook from disk
+**9 November final evaluation:** [final metrics and both supplied cases](docs/final_fragments_evaluation.md).
+Both evaluation notebooks show only final predictions from the optional-space
+checkpoint. Test FPR is 17%, above the requested 10% budget; the second supplied
+case remains partially recovered. Reload the notebook from disk
 before restarting its kernel to see edited cells.
 
 A standalone PyTorch pipeline for weakly supervised Arabic manuscript alignment.

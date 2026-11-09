@@ -1,0 +1,2 @@
+method,positive_iou,positive_dice,precision,recall,positive_pairs,negative_pairs,negative_false_positive_pairs,negative_pair_denominator,negative_pair_fpr,negative_masked_area_fraction,candidate_limit_hits,positive_detected_pairs,positive_pair_detection_recall
+Final matcher,0.6088152412354301,0.6770795718380385,0.6395602369341675,0.7322695209821556,29,100,17,100,0.17,0.0403414565812698,57,23,0.7931034482758621

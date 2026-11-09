@@ -1,0 +1,19 @@
+{
+  "full_suite": {
+    "command": ".venv-mask-eval/bin/python -m pytest -q --tb=short",
+    "passed": 350,
+    "subtests_passed": 7
+  },
+  "additional_regression": {
+    "command": ".venv-mask-eval/bin/python -m pytest -q tests/test_reordered_regions.py::test_reordered_short_word_may_have_two_windows_against_three --tb=short",
+    "passed": 1
+  },
+  "notebooks": {
+    "valid_json": true,
+    "all_code_cells_compile": true,
+    "exact_settings_match": true,
+    "checkpoint_hash_match": true,
+    "final_figures_per_notebook": 17,
+    "previous_comparison_cells": 0
+  }
+}

@@ -43,6 +43,22 @@ def test_reordering_keeps_overlap_forbidden_on_both_lines():
         assert not compatible_regions(left,dict(logical_ranges=conflict),True)
 
 
+def test_reordered_short_word_may_have_two_windows_against_three():
+    cosine=np.full((18,18),-.4)
+    for i in range(8):cosine[10+i,i]=.95
+    cosine[2:4,12:15]=.95
+    settings=dict(allow_reordered_regions=True,normal_min_distinct_a=6,
+        normal_min_distinct_b=6,normal_min_matched_pairs=6,
+        allow_short_regions=True,short_min_matched_pairs=4,
+        require_corroborated_short_regions=True)
+    assert len(decode(cosine,short_min_distinct_a=3,short_min_distinct_b=3,**settings)['regions'])==1
+    result=decode(cosine,short_min_distinct_a=2,short_min_distinct_b=2,**settings)
+    assert len(result['regions'])==2
+    short=next(c for c in result['regions'] if c['candidate_type']=='short')
+    assert short['support']==[2,3]
+    assert short['matched_pairs']>=4
+
+
 def test_separated_short_passages_corroborate_without_accepting_an_isolated_hit():
     cosine=np.full((18,18),-.4)
     for start in (0,8):
