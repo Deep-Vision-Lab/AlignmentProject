@@ -1,0 +1,52 @@
+{
+  "image_leakage": [
+    {
+      "image_sha256": "7199603c954837a503eef987b2369a26c5725f59e76b310ae6a1a80c10df91e8",
+      "splits": [
+        "train",
+        "val"
+      ]
+    },
+    {
+      "image_sha256": "7d9798c161810691c1d536a0deb3a3755ac6d520c5fa2f4c95321345f6d66342",
+      "splits": [
+        "train",
+        "val"
+      ]
+    }
+  ],
+  "page_group_leakage": [],
+  "manuscript_membership": [
+    {
+      "manuscript_id": "book:A:3158466",
+      "splits": [
+        "test",
+        "train",
+        "val"
+      ]
+    },
+    {
+      "manuscript_id": "book:B:3249138",
+      "splits": [
+        "test",
+        "train",
+        "val"
+      ]
+    },
+    {
+      "manuscript_id": "book:C:None",
+      "splits": [
+        "test",
+        "train",
+        "val"
+      ]
+    }
+  ],
+  "missing_group_records": 0,
+  "limitations": "Page/group IDs are checked where supplied. Book/manuscript identity may span splits under the existing page-level policy; splits are never regenerated.",
+  "saved_split_line_counts": {
+    "train": 3321,
+    "val": 546,
+    "test": 423
+  }
+}

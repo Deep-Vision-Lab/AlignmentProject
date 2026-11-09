@@ -1,0 +1,60 @@
+{
+  "catalog": {
+    "positive_iou": 0.7321250959333868,
+    "positive_dice": 0.8107137112312942,
+    "precision": 0.7572655233729297,
+    "recall": 0.8968438408317659,
+    "positive_pairs": 300,
+    "negative_pairs": 300,
+    "negative_false_positive_pairs": 71,
+    "negative_pair_denominator": 300,
+    "negative_pair_fpr": 0.23666666666666666,
+    "negative_masked_area_fraction": 0.0659572667063476,
+    "candidate_limit_hits": 430,
+    "region_f1": {
+      "available": true,
+      "aggregation": "micro interval counts over both lines of all positive pairs",
+      "positive_pair_denominator": 300,
+      "non_full_height_positive_pairs": 0,
+      "tp": 543,
+      "fp": 242,
+      "fn": 342,
+      "precision": 0.6917197452229299,
+      "recall": 0.6135593220338983,
+      "f1": 0.6502994011976048
+    },
+    "positive_detected_pairs": 283,
+    "positive_pair_detection_recall": 0.9433333333333334,
+    "pair_pixel_accuracy": 0.904591203387276,
+    "scope": "mixed-membership catalog diagnostic"
+  },
+  "heldout": {
+    "positive_iou": 0.7208462197480437,
+    "positive_dice": 0.8105454012371776,
+    "precision": 0.7587319034049039,
+    "recall": 0.8919246563180864,
+    "positive_pairs": 23,
+    "negative_pairs": 300,
+    "negative_false_positive_pairs": 71,
+    "negative_pair_denominator": 300,
+    "negative_pair_fpr": 0.23666666666666666,
+    "negative_masked_area_fraction": 0.0659572667063476,
+    "candidate_limit_hits": 201,
+    "region_f1": {
+      "available": true,
+      "aggregation": "micro interval counts over both lines of all positive pairs",
+      "positive_pair_denominator": 23,
+      "non_full_height_positive_pairs": 0,
+      "tp": 40,
+      "fp": 20,
+      "fn": 6,
+      "precision": 0.6666666666666666,
+      "recall": 0.8695652173913043,
+      "f1": 0.7547169811320755
+    },
+    "positive_detected_pairs": 22,
+    "positive_pair_detection_recall": 0.9565217391304348,
+    "pair_pixel_accuracy": 0.9312403710257977,
+    "scope": "saved-test; development-related images excluded"
+  }
+}

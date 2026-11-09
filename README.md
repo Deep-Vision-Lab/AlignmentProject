@@ -1,9 +1,15 @@
 # AlignmentProject — simple alignment core
 
+**9 November A–B evaluation on 600 pairs:** [updated model evaluation notebook](notebooks/model_evaluation.ipynb)
+and [new results](docs/ab_300_evaluation.md). The 300 aligned pairs include training/validation
+images; the 300 presumed negatives use saved-test A–B lines. IoU is 73.21%, foreground
+precision 75.73%, recall 89.68%, and presumed-negative FPR 71/300 (23.67%). A separate
+held-out positive subset is reported. Weights and matching settings are unchanged.
+
 **9 November image-only word evaluation:** [A–B, A–C, B–C metrics and supplied cases](docs/word_alignment_evaluation.md).
 The optional-space checkpoint was trained on all three books. Both real–real notebooks
 use whole-word verification for short masks and retain reliable long visual
-passages. Current test FPR is 15%, above the requested 10% budget. Reopen the
+passages. That report's original three-book cohort has 15% test FPR. Reopen the
 notebooks from disk before restarting their kernels to load the edited cells.
 
 **Synthetic–real evaluation without training:** [new notebook](notebooks/synthetic_real_evaluation.ipynb)
