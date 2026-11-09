@@ -307,7 +307,8 @@ def checkpoint_letter_evidence(features_a,features_b,text_encoder,config,prior_m
         raise ValueError('Letter evidence requires checkpoint character vectors/config')
     prior_metadata=prior_metadata or getattr(text_encoder,'letter_evidence_prior',None)
     vocabulary=(prior_metadata['vocabulary'] if prior_metadata else
-                list(dict.fromkeys(config.alphabet_inventory or ARABIC_LETTERS)))
+                list(dict.fromkeys(config.alphabet_inventory or
+                                   (' ' if config.space_mode == 'optional' else '') + ARABIC_LETTERS)))
     if not vocabulary or len(set(vocabulary))!=len(vocabulary):raise ValueError('Invalid fixed vocabulary')
     with torch.no_grad():
         alphabet=text_encoder.encode(''.join(vocabulary)).to(features_a.device)
@@ -771,6 +772,9 @@ def evaluate_loss(checkpoint,dataset,split='test',device='cpu',max_batches=0):
     model,text,config,saved=load_checkpoint(checkpoint,device)
     loaders=build_loaders(dataset,replace(config,augmentation=False),saved['split_ids'])
     selected=loaders[('train','val','test').index(split)].dataset
+    # The held-out view also needs deterministic corruptions when replaying a
+    # checkpoint with a negative objective; build_loaders configures train/val.
+    selected.negative_config = config
     loader=DataLoader(selected,batch_size=config.batch_size,shuffle=False,num_workers=config.num_workers,collate_fn=collate_samples)
     stats=validate_one_epoch(model,text,loader,config,device,max_batches)
     return dict(split=split,checkpoint=str(checkpoint),epoch=saved['epoch'],metrics=stats,

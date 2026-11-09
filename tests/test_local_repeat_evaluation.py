@@ -166,6 +166,19 @@ def test_notebook_session_population_predictions_identical_and_gt_independent(ev
     # Execute the real configuration cell, including applying it to the session.
     ns=dict(session=session)
     exec(notebook_source('# EVALUATION-ONLY MATCHING SETTINGS.'),ns)
+    # The settings function now lives in the following notebook cell, alongside
+    # interactive module reloads. Execute its definition without those UI actions.
+    import ast
+    from evaluate import resolved_match_settings
+    source = notebook_source('def current_match_settings(')
+    definition = next(node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef))
+    ns['resolved_match_settings'] = resolved_match_settings
+    exec(compile(ast.Module(body=[definition], type_ignores=[]), '<notebook-settings>', 'exec'), ns)
+    # This seven-window identity fixture controls cosine, not random letter
+    # predictions; real notebook examples may require more than seven windows.
+    ns.update(SIMILARITY_MODE='cosine', CANDIDATE_SIMILARITY_MODE='cosine',
+              NORMAL_MIN_DISTINCT_A=3, NORMAL_MIN_DISTINCT_B=3, NORMAL_MIN_MATCHED_PAIRS=4)
+    session.settings = ns['current_match_settings']()
     pair=session.pairs[0]
     for candidate in session.pairs:
         for side in candidate['sides']:

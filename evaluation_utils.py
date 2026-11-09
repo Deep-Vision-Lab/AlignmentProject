@@ -52,6 +52,39 @@ def _image_key(side):
     return str(Path(side['image']).resolve()), tuple(side.get('bbox') or ())
 
 
+def folder_mask_path(side, side_index):
+    """Match imagesB/imagesC to masksB/masksC independently of pair position."""
+    image = Path(side['image'])
+    book = image.parent.name.removeprefix('images')
+    if book not in ('A', 'B', 'C'):
+        book = side.get('book_id')
+    if book not in ('A', 'B', 'C'):
+        book = 'AB'[side_index]  # Legacy generic image folders.
+    return image.parent.parent / ('masks' + book) / (image.stem + '.png')
+
+
+def load_folder_masks(pair, lines=None):
+    """Load physical-book masks; missing files are black in source coordinates."""
+    masks, provenance = [], []
+    for index, side in enumerate(pair['sides']):
+        with Image.open(side['image']) as image:
+            shape = (image.height, image.width)
+        if lines is not None and tuple(reversed(lines[index]['geometry']['source_size'])) != shape:
+            raise ValueError('Source image/preprocessing geometry mismatch')
+        path = folder_mask_path(side, index)
+        if path.is_file():
+            with Image.open(path) as image:
+                mask = np.asarray(image.convert('L')) > 0
+            if mask.shape != shape:
+                raise ValueError(f'Folder mask/source size mismatch: {path}, {mask.shape} != {shape}')
+            provenance.append(f'folder mask: {path}')
+        else:
+            mask = np.zeros(shape, dtype=bool)
+            provenance.append(f'missing folder mask -> black: {path}')
+        masks.append(mask)
+    return masks, ' | '.join(provenance)
+
+
 def _distribution(values):
     values = np.asarray(values, dtype=float).ravel()
     values = values[np.isfinite(values)]
@@ -104,6 +137,32 @@ def _constructed_negatives(pairs, line_records, n, seed):
     return result
 
 
+def evaluation_split_ids(checkpoint, saved):
+    """Replay fine-tuning splits plus hash-verified source splits for other books."""
+    splits = {name: list(saved['split_ids'][name]) for name in ('train', 'val', 'test')}
+    provenance = dict(current=str(checkpoint), source_manifest=None)
+    source = saved.get('source_checkpoint')
+    expected = saved.get('source_split_manifest_sha256')
+    if not source or not expected or not saved.get('selected_books'):
+        return splits, provenance
+    source = Path(source)
+    # Training may have run on another machine. Resolve the sibling weights run
+    # locally, then verify its saved membership before using any source IDs.
+    candidates = [source.parent / 'split_manifest.json',
+                  Path(checkpoint).parent.parent / source.parent.name / 'split_manifest.json']
+    manifest = next((path for path in candidates if path.is_file()), None)
+    if manifest is None:
+        raise FileNotFoundError(f'Source split manifest required for fine-tuned evaluation: {candidates[-1]}')
+    original = json.loads(manifest.read_text())
+    if hashlib.sha256(json.dumps(original, sort_keys=True).encode()).hexdigest() != expected:
+        raise ValueError('Source split manifest does not match fine-tuned checkpoint provenance')
+    current_books = {sid.split(':', 1)[0] for ids in splits.values() for sid in ids}
+    for name in splits:
+        splits[name].extend(sid for sid in original[name] if sid.split(':', 1)[0] not in current_books)
+    provenance.update(source_manifest=str(manifest.resolve()), source_manifest_sha256=expected)
+    return splits, provenance
+
+
 class EvaluationSession:
     """Load once; cache CPU feature tensors; retain the checkpoint's exact split."""
     def __init__(self, checkpoint, dataset, split='test', device='cuda', seed=42,
@@ -129,8 +188,9 @@ class EvaluationSession:
         # Saved IDs are mandatory: no random-split fallback is permitted here.
         if not self.saved.get('split_ids'):
             raise ValueError('Checkpoint has no saved split IDs; evaluation cannot reconstruct membership')
+        self.evaluation_split_ids, self.split_provenance = evaluation_split_ids(self.checkpoint, self.saved)
         loaders = build_loaders(self.dataset_path, replace(self.config, augmentation=False, num_workers=0),
-                                self.saved['split_ids'])
+                                self.evaluation_split_ids)
         self.views = {name: loader.dataset for name, loader in zip(('train', 'val', 'test'), loaders)}
         self.view = self.views[split]
         self.split_sizes = {name: len(view) for name, view in self.views.items()}
@@ -149,7 +209,7 @@ class EvaluationSession:
         self.line_aliases, self.folder_summary = {}, {}
         if self.pair_source == 'folders':
             if self.view.source_layout != 'book_lines':
-                raise ValueError('ArabicData folder evaluation requires BookA/BookB indexes for saved split membership')
+                raise ValueError('ArabicData folder evaluation requires book line indexes for saved split membership')
             self.pairs, self.line_aliases, self.folder_summary = arabic_data_pairs(
                 self.dataset_path, self.view.records, negative_count if construct_negatives else 0, seed)
             self.excluded_pairs = self.folder_summary['excluded_aligned_pairs']
@@ -191,6 +251,22 @@ class EvaluationSession:
         self.feature_cache = {}
         self.metric_cache = {}
         self.checkpoint_sha256 = file_hash(self.checkpoint)
+        self._bind_folder_mask_policy()
+
+    def _bind_folder_mask_policy(self):
+        """Keep cached notebook subclasses on the declared physical-book policy.
+
+        Older notebook cells redefine positional A/B helpers in their globals.
+        Rebind those two helpers on every session construction, before their
+        subclass initializer loads masks or their scoring code checks files.
+        """
+        policy = 'folder_masks_missing_black'
+        if getattr(self, 'mask_ground_truth_policy', None) != policy:
+            return
+        loader = getattr(type(self), 'load_ground_truth', None)
+        namespace = getattr(loader, '__globals__', None)
+        if namespace is not None and namespace.get('MASK_GT_POLICY') == policy:
+            namespace.update(folder_mask_path=folder_mask_path, load_folder_masks=load_folder_masks)
 
     @property
     def text_encoder(self):
@@ -251,6 +327,8 @@ class EvaluationSession:
                           Split_manifest_SHA256=saved['split_manifest_sha256'])
         checkpoint.update(Alignment_objective=c.alignment_objective, Cost_mode=c.dtw_cost_mode,
                           Competition_temperature=c.competition_temperature, Position_prior=c.position_prior,
+                          Space_mode=c.space_mode, Space_skip_penalty_ratio=c.space_skip_penalty_ratio,
+                          Alphabet=(self.saved.get('letter_evidence_prior') or {}).get('vocabulary'),
                           Negative_weight=c.negative_dtw_weight,
                           Evidence_prior=(self.saved.get('letter_evidence_prior') or {}).get('source','uniform fallback'))
         data = dict(Path=str(self.dataset_path), Dataset_type=self.view.dataset_type, Split=self.split,
@@ -263,14 +341,15 @@ class EvaluationSession:
                     Ground_truth_masks_available=sum(bool(a.get('mask')) for p in self.pairs for a in p['annotations']),
                     Ground_truth_aligned_intervals_available=sum(a.get('intervals') is not None for p in self.pairs for a in p['annotations']),
                     Saved_split_sizes=self.split_sizes)
+        data['Split_provenance'] = self.split_provenance
         for title, values in (('CHECKPOINT', checkpoint), ('EVALUATION DATASET', data)):
             print('=' * 60 + '\n' + title + '\n' + '=' * 60)
             for name, value in values.items():
                 print(f'{name.replace("_", " ")}: {value}')
         if self.pair_source == 'folders':
-            print('alignedPairs contains recorded A/B partners, including partial overlap. '
+            print('alignedPairs contains recorded book partners, including partial overlap. '
                   'Unalignedlines contains independent lines without recorded partners; sampled '
-                  'A/B combinations are presumed negatives. Missing masks use verified box-LCS '
+                  'cross-book combinations are presumed negatives. Missing masks use verified box-LCS '
                   'diagnostics; review boxes do not supply localization truth.')
         else:
             print('Line/XML crop boxes are NOT alignment ground truth. Pair labels are manifest labels, not character accuracy.')
@@ -456,7 +535,7 @@ def arabic_data_pairs(root, records, negative_count=None, seed=42):
         if digest(image) != digest(canonical['image']) or not same_text:
             raise ValueError(f'Folder copy differs from indexed book line: {folder}/{stem}, side {side}')
         copied = dict(canonical, image=image, text=text, bounding_boxes=str(box.resolve()),
-                      bounding_boxes_status=payload.get('crop_status'))
+                      bounding_boxes_status=payload.get('crop_status'), book_id=side)
         aliases[_side_key(copied)] = _side_key(canonical)
         return dict(side=copied, group_id=member['group_id'], source_pairs=set(member['source_pairs']))
 
@@ -469,37 +548,48 @@ def arabic_data_pairs(root, records, negative_count=None, seed=42):
             row = json.loads(line)
             stem = f"{row['pair_id']}__A_line_{row['A']['line_idx']:03d}__B_line_{row['B']['line_idx']:03d}"
             labels[stem] = row['label_type']
-    aligned_folder = ('alignedPairs/A_B' if (root / 'alignedPairs/A_B').is_dir()
-                      else 'alignedPairs')
-    catalog_manifest = root / aligned_folder / 'pairs.jsonl'
-    if aligned_folder != 'alignedPairs' and catalog_manifest.is_file():
-        for line in catalog_manifest.read_text(encoding='utf-8').splitlines():
-            if line.strip():
-                row = json.loads(line)
-                labels[row['pair_id']] = row.get('label_type', 'stored_aligned_pair')
-    a_ids, b_ids = (inventory(aligned_folder, side) for side in 'AB')
-    if a_ids != b_ids:
-        raise ValueError('alignedPairs A/B filename stems disagree')
-    stats['aligned_pairs'] = len(a_ids)
-    for stem in a_ids:
-        lines = [read_line(aligned_folder, side, stem) for side in 'AB']
-        if any(line is None for line in lines):
-            stats['excluded_aligned_pairs'] += 1
-            continue
-        label = labels.get(stem, 'stored_aligned_pair')
-        if label in NEGATIVE_LABELS:
-            raise ValueError(f'Negative source label inside alignedPairs: {stem}')
-        annotations = []
-        for side in 'AB':
-            mask = root / aligned_folder / ('masks' + side) / (stem + '.png')
-            annotations.append(dict(mask=str(mask.resolve()) if mask.is_file() else None))
-        pairs.append(dict(sample_id='alignedPairs:' + stem, sides=[line['side'] for line in lines],
-                          target=1, label=label, constructed_negative=False,
-                          group_ids=[line['group_id'] for line in lines], annotations=annotations,
-                          anchor_id='', annotation_provenance='alignedPairs supplied mask'))
+    books = sorted({r['book_id'] for r in records})
+    book_pairs = [(a, b) for i, a in enumerate(books) for b in books[i + 1:]]
+    for first, second in book_pairs:
+        group = first + '_' + second
+        aligned_folder = 'alignedPairs/' + group
+        if not (root / aligned_folder).is_dir():
+            if group == 'A_B' and (root / 'alignedPairs/imagesA').is_dir():
+                aligned_folder = 'alignedPairs'
+            else:
+                continue
+        group_labels = dict(labels) if group == 'A_B' else {}
+        catalog_manifest = root / aligned_folder / 'pairs.jsonl'
+        if catalog_manifest.is_file():
+            for line in catalog_manifest.read_text(encoding='utf-8').splitlines():
+                if line.strip():
+                    row = json.loads(line)
+                    group_labels[row['pair_id']] = row.get('label_type', 'stored_aligned_pair')
+        first_ids, second_ids = (inventory(aligned_folder, side) for side in (first, second))
+        if first_ids != second_ids:
+            raise ValueError(f'alignedPairs {first}/{second} filename stems disagree')
+        stats['aligned_pairs'] += len(first_ids)
+        for stem in first_ids:
+            lines = [read_line(aligned_folder, side, stem) for side in (first, second)]
+            if any(line is None for line in lines):
+                stats['excluded_aligned_pairs'] += 1
+                continue
+            label = group_labels.get(stem, 'stored_aligned_pair')
+            if label in NEGATIVE_LABELS:
+                raise ValueError(f'Negative source label inside alignedPairs: {stem}')
+            annotations = []
+            for side in (first, second):
+                mask = root / aligned_folder / ('masks' + side) / (stem + '.png')
+                annotations.append(dict(mask=str(mask.resolve()) if mask.is_file() else None))
+            # Retain historical A/B IDs; C catalogs need their own namespace.
+            prefix = 'alignedPairs:' + (group + ':' if group != 'A_B' else '')
+            pairs.append(dict(sample_id=prefix + stem, sides=[line['side'] for line in lines],
+                              target=1, label=label, constructed_negative=False,
+                              group_ids=[line['group_id'] for line in lines], annotations=annotations,
+                              book_pair=group, anchor_id='', annotation_provenance='alignedPairs supplied mask'))
 
     unmatched = {}
-    for side in 'AB':
+    for side in books:
         stems = inventory('Unalignedlines', side)
         stats['unmatched_' + side] = len(stems)
         unmatched[side] = [line for stem in stems if (line := read_line('Unalignedlines', side, stem)) is not None]
@@ -507,18 +597,19 @@ def arabic_data_pairs(root, records, negative_count=None, seed=42):
         for line in unmatched[side]:
             line['words'] = {_normalized_unit(word) for word in Path(line['side']['text']).read_text(encoding='utf-8').split()} - {''}
     rng, candidates, seen = random.Random(seed), [], 0
-    for a in unmatched['A']:
-        for b in unmatched['B']:
-            if (a['group_id'] == b['group_id'] or a['source_pairs'] & b['source_pairs']
-                    or a['words'] & b['words'] or digest(a['side']['image']) == digest(b['side']['image'])):
-                continue
-            seen += 1
-            if n is None or len(candidates) < n:
-                candidates.append((a, b))
-            elif n:
-                slot = rng.randrange(seen)
-                if slot < n:
-                    candidates[slot] = (a, b)
+    for first, second in book_pairs:
+        for a in unmatched[first]:
+            for b in unmatched[second]:
+                if (a['group_id'] == b['group_id'] or a['source_pairs'] & b['source_pairs']
+                        or a['words'] & b['words'] or digest(a['side']['image']) == digest(b['side']['image'])):
+                    continue
+                seen += 1
+                if n is None or len(candidates) < n:
+                    candidates.append((a, b))
+                elif n:
+                    slot = rng.randrange(seen)
+                    if slot < n:
+                        candidates[slot] = (a, b)
     for a, b in candidates:
         sides = [a['side'], b['side']]
         identity = hashlib.sha256(json.dumps([_side_key(side) for side in sides]).encode()).hexdigest()[:20]
@@ -1148,6 +1239,7 @@ def evaluate_population(session, representation='fused', max_pairs=0):
                 distribution_stats={k: _distribution(v) for k, v in distributions.items()},
                 population='all eligible saved-split pairs' if not max_pairs else 'explicit random pair subset',
                 available_pairs=len(session.pairs), evaluated_pairs=len(rows), split=session.split,
+                split_provenance=getattr(session, 'split_provenance', None),
                 selected_pair_ids=[p['sample_id'] for p in pairs],
                 evaluated_unique_lines=len({_image_key(s) for p in pairs for s in p['sides']}),
                 saved_split_unique_lines=len(session.allowed))
@@ -1652,6 +1744,7 @@ def save_results(session, population, summary, aligned, unaligned, root, diagnos
     metadata = dict(checkpoint=str(session.checkpoint), checkpoint_sha256=session.checkpoint_sha256,
                     epoch=session.saved['epoch'], config=asdict(session.config), split=session.split,
                     split_manifest_sha256=session.saved['split_manifest_sha256'], seed=session.seed,
+                    split_provenance=getattr(session, 'split_provenance', None),
                     settings=resolved_match_settings(session.settings), implementation_version=MATCH_VERSION,
                     prior_metadata=getattr(session._text_encoder, 'letter_evidence_prior',
                                            session.saved.get('letter_evidence_prior')),

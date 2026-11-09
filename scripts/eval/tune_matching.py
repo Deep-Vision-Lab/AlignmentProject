@@ -28,7 +28,7 @@ from tqdm.auto import tqdm
 from dataset import file_hash
 from dtw import cosine_similarity_matrix
 from evaluate import MATCH_VERSION, match_features, region_mask, resolved_match_settings
-from evaluation_utils import EvaluationSession
+from evaluation_utils import EvaluationSession, folder_mask_path
 
 
 SEARCH_VERSION = 1
@@ -132,8 +132,7 @@ def suggest_settings(trial, max_candidates=512):
 def mask_path(pair, index, mask_source):
     side = pair['sides'][index]
     if mask_source == 'folders':
-        image = Path(side['image'])
-        return image.parent.parent / ('masks' + 'AB'[index]) / (image.stem + '.png')
+        return folder_mask_path(side, index)
     value = pair['annotations'][index].get('mask')
     return Path(value) if value else None
 

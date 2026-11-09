@@ -27,7 +27,7 @@ from scipy.stats import beta
 from dataset import file_hash
 from dtw import cosine_similarity_matrix
 from evaluate import resolved_match_settings, MATCH_VERSION
-from evaluation_utils import EvaluationSession, predict_cached_pair, recorded_negative_pairs, _side_key
+from evaluation_utils import EvaluationSession, folder_mask_path, predict_cached_pair, recorded_negative_pairs, _side_key
 from text_embedding import ARABIC_LETTERS
 from scripts.eval.tune_matching import write_json, write_csv
 
@@ -387,7 +387,7 @@ def build_cache(args, split):
         for i,side in enumerate(pair['sides']):
             path = pair['annotations'][i].get('mask')
             if mask_source=='folders':
-                image = Path(side['image']); path = image.parent.parent/('masks'+'AB'[i])/(image.stem+'.png')
+                path = folder_mask_path(side, i)
             path = Path(path) if path else None
             with Image.open(side['image']) as image: size = image.size
             if folders and pair.get('recorded_negative_black'):

@@ -6,7 +6,7 @@ moves cost 1e4 when T>=L. Legacy normalizes free energy by T+L;
 aligned_mean reports occupancy-weighted mean cell NLL.
 These positions belong to DTW, independently of Transformer positional encoding.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from contextlib import nullcontext
 import math
 
@@ -220,13 +220,29 @@ class HardDTW:
     path: list[tuple[int, int]]
     total: float
     normalized: float  # legacy total/(T+L), not the aligned_mean training energy
+    skipped_columns: list[int] = field(default_factory=list)
 
 
 def hard_dtw_path(costs, vertical_penalty=.05, horizontal_penalty=.30,
-                  position_prior=.15, disable_horizontal_when_feasible=True):
-    """Hard argmin, ties diagonal then vertical; scalar includes transition costs."""
-    cells = effective_costs(costs.detach().double(), position_prior).cpu().tolist()
+                  position_prior=.15, disable_horizontal_when_feasible=True, *,
+                  space_columns=None, space_skip_penalty=0.):
+    """Hard counterpart of training Soft-DTW, including zero-window space skips.
+
+    A skip advances text on the same visual row, pays the saved skip penalty,
+    and emits no alignment cell. Ties prefer diagonal, vertical, horizontal,
+    then skipping. Horizontal suppression uses the full transcript length,
+    exactly as in the training recurrence.
+    """
+    cells = effective_costs(costs.detach().cpu().double(), position_prior).tolist()
     t, l = len(cells), len(cells[0])
+    spaces = [False] * l
+    if space_columns is not None:
+        mask = torch.as_tensor(space_columns, device='cpu', dtype=torch.bool)
+        if mask.shape != (l,):
+            raise ValueError('space_columns must have one entry per transcript token')
+        if not math.isfinite(space_skip_penalty) or space_skip_penalty <= 0:
+            raise ValueError('space_skip_penalty must be finite and positive')
+        spaces = mask.tolist()
     horizontal = 1e4 if disable_horizontal_when_feasible and t >= l else horizontal_penalty
     dp = [[math.inf] * (l + 1) for _ in range(t + 1)]
     dp[0][0] = 0.
@@ -238,10 +254,18 @@ def hard_dtw_path(costs, vertical_penalty=.05, horizontal_penalty=.30,
                        (dp[i][j-1] + horizontal, (i,j-1))]
             best, predecessor = min(choices, key=lambda x: x[0])
             dp[i][j] = cells[i-1][j-1] + best
-            back[i,j] = predecessor
-    path, position = [], (t,l)
+            skipped = False
+            if j > 1 and spaces[j-1] and dp[i][j-1] + space_skip_penalty < dp[i][j]:
+                dp[i][j] = dp[i][j-1] + space_skip_penalty
+                predecessor, skipped = (i, j-1), True
+            back[i,j] = predecessor, skipped
+    path, skipped_columns, position = [], [], (t,l)
     while position != (0,0):
         i,j = position
-        path.append((i-1,j-1))
-        position = back[position]
-    return HardDTW(path[::-1], dp[t][l], dp[t][l] / (t+l))
+        predecessor, skipped = back[position]
+        if skipped:
+            skipped_columns.append(j-1)
+        else:
+            path.append((i-1,j-1))
+        position = predecessor
+    return HardDTW(path[::-1], dp[t][l], dp[t][l] / (t+l), skipped_columns[::-1])

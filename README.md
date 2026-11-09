@@ -58,8 +58,13 @@ padding, exact SLURM commands, and notebook comparisons.
 DTW retains full-alphabet NLL before gathering transcript columns, temperature
 0.10, gamma 0.05, vertical penalty 0.05, horizontal penalty 0.30, position prior
 0.15, horizontal suppression when windows ≥ letters, and `T+L` normalization.
-NFKC Arabic-letter cleaning drops whitespace, marks, digits, punctuation and
-tatweel from **DTW supervision**, not from stored transcripts. The codebook retains
+Legacy NFKC Arabic-letter cleaning drops whitespace, marks, digits, punctuation and
+tatweel from **DTW supervision**, not from stored transcripts. With `space_mode=optional`,
+internal word boundaries become space tokens that can occupy zero, one, or several
+windows. Both evaluation notebooks now use
+`Weights/real_abc_balanced_optional_space_20261108/checkpoint_best.pt`.
+See [optional-space evaluation](docs/optional_space_evaluation.md) for the recurrence,
+checkpoint provenance, and training/evaluation parity checks. The codebook retains
 the seed-1234 Unicode mapping and normalized fixed-LayerNorm directions. Space has
 a valid vector; PAD is zero. Vectors are approximately, not exactly, orthogonal.
 
@@ -86,16 +91,22 @@ one split; by default, each split selects equal numbers of A and B lines without
 replacement (`balance_books=False` disables this in `create_dataloaders`).
 The exported line images are used whole; subword bounding-box annotations are
 not applied as crops. A missing text file may use its manifest `raw_text`.
-The evaluation notebook uses `ArabicData/alignedPairs/A_B` for recorded A/B partners
+The evaluation notebook uses the available `ArabicData/alignedPairs/A_B`, `A_C`,
+and `B_C` catalogs for recorded partners in the evaluation membership,
 and `ArabicData/Unalignedlines` for independent lines without recorded partners.
 The self-contained `A_B`, `A_C`, and `B_C` catalogs each contain 1,000 pairs, with
 images, supplied masks, texts, and full bounding boxes inside each catalog.
 `BookC` contains the 2,205 Kufic Quran lines; unaligned A/B/C inventories exclude
 all lines with saved partners in any catalog. Book C is not added to existing
 A/B training or checkpoint splits.
+For Book C fine-tuned checkpoints, evaluation loads the saved C membership and
+the source checkpoint's A/B split manifest, verified against the source hash
+stored in the fine-tuned checkpoint. It prints and saves both split sources;
+no new splits are drawn. The dataset loader includes Book C when saved IDs
+request it, while the default A/B training population stays unchanged.
 Folder copies are verified against indexed book lines in the saved checkpoint
 split. Supplied pair masks are used when present; verified pair-local boxes supply
-derived LCS diagnostics otherwise. Seeded unmatched A/B combinations are presumed
+derived LCS diagnostics otherwise. Seeded unmatched cross-book combinations are presumed
 negatives, bounded by the notebook's `NEGATIVE_POOL_SIZE`, not verified negative pairs.
 Bridge V3 uses `dataset_manifest.jsonl` or `anchor_index.jsonl`; each item preserves
 its real/positive-synthetic images, transcripts, optional positive mask, and
@@ -183,7 +194,7 @@ is `content`. Cropping uses image pixels; line panels and a before/after preview
 show the actual input region. All representations share it, while masks retain
 source coordinates. Use `EVALUATION_CROP="none"` for full images, then rebuild
 the session and sample caches after changing modes.
-The notebook uses only the matching folder `masksA`/`masksB` images as ground truth.
+The notebook uses only the matching folder `masksA`/`masksB`/`masksC` images as ground truth.
 A missing mask becomes a black mask under the requested no-alignment policy;
 there is no box/LCS or transcript-mask fallback. It reports per-line pixel accuracy,
 pixel-weighted aggregate accuracy, and per-pair alignment/no-alignment accuracy.

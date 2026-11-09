@@ -27,6 +27,41 @@ def notebook_source(first_line):
     return matches[0]
 
 
+def test_optional_space_recognition_uses_saved_alphabet_and_maps_letter_boxes(evaluation_fixture):
+    root, checkpoint = evaluation_fixture
+    saved = torch.load(checkpoint, map_location='cpu', weights_only=False)
+    saved['config'].update(space_mode='optional', space_skip_penalty_ratio=1., position_prior=0.,
+                           negative_target_mode='uniform_ratio', dtw_normalization='aligned_mean')
+    saved['letter_evidence_prior'] = dict(vocabulary=list(' با'), prior=[.2, .4, .4])
+    torch.save(saved, checkpoint)
+    session = EvaluationSession(checkpoint, root, device='cpu')
+    pair = session.pairs[0]
+    side = pair['sides'][0]
+    Path(side['text']).write_text('ب ا', encoding='utf-8')
+    line = session.get_line_features(side)
+    count = len(line['logical'])
+    line['features']['fused'] = session.text_encoder.encode('ب' * 3 + 'ا' * (count-3))
+    from dtw import cosine_similarity_matrix, letter_cost_matrix, hard_dtw_path
+    from evaluate import source_interval
+    namespace = dict(session=session, torch=torch, np=np, pd=__import__('pandas'), Path=Path,
+                     TOP_K=3, cosine_similarity_matrix=cosine_similarity_matrix,
+                     letter_cost_matrix=letter_cost_matrix, hard_dtw_path=hard_dtw_path,
+                     source_interval=source_interval)
+    exec(notebook_source('def ensure_recognition_alphabet():'), namespace)
+    namespace['ensure_recognition_alphabet']()
+    exec(notebook_source('def cosine_checked('), namespace)
+    diagnostic = namespace['recognize_line'](session, side, line, 3)
+    assert namespace['FULL_ALPHABET'] == list(' با')
+    assert diagnostic['letters'] == list('ب ا')
+    assert diagnostic['skipped_space_positions'] == [1]
+    assert diagnostic['matched_space_positions'] == []
+    assert {j for _, j in diagnostic['path']} == {0, 2}
+    overlap = namespace['spatial_character_gt'](
+        dict(character_boxes=[dict(text_position=1, character='ا', x_start=0, x_end=20)]),
+        list('ب ا'), (0, 10))
+    assert overlap[0]['position'] == 2
+
+
 @pytest.fixture
 def evaluation_fixture(tmp_path):
     root = tmp_path / 'data'
@@ -172,6 +207,114 @@ def test_no_saved_split_fallback(evaluation_fixture):
     torch.save(saved, checkpoint)
     with pytest.raises(ValueError, match='split identity'):
         EvaluationSession(checkpoint, root, device='cpu')
+
+
+def test_finetuned_book_c_replays_source_splits_and_scores_c_folder_masks(arabic_folder_fixture, tmp_path):
+    import hashlib
+    import shutil
+    from evaluation_utils import compute_pair_metrics, evaluation_split_ids
+    root, checkpoint = arabic_folder_fixture
+    saved = torch.load(checkpoint, map_location='cpu', weights_only=False)
+    original = saved['split_ids']
+    source = tmp_path / 'Weights/base/split_manifest.json'
+    source.parent.mkdir(parents=True)
+    source.write_text(json.dumps(original))
+    ids = dict(train=[], val=[], test=[])
+    rows = []
+    for kind in ('images', 'texts', 'BoundingBoxes'):
+        (root / 'BookC' / kind).mkdir(parents=True)
+        (root / 'Unalignedlines' / (kind + 'C')).mkdir(parents=True)
+    for page in range(6):
+        for number in range(2):
+            line_id = f'C_{page:02d}_{number:02d}'
+            image = f'BookC/images/{line_id}.png'
+            text = f'BookC/texts/{line_id}.txt'
+            Image.new('L', (120, 24), 30 + page + number).save(root / image)
+            (root / text).write_text('قديم', encoding='utf-8')
+            row = dict(side='C', line_id=line_id, page_id=f'page-{page}', writer_id=None,
+                       image_path=image, text_path=text, raw_text='قديم',
+                       source_occurrences=[dict(image_member=f'archive/{line_id}.png')])
+            rows.append(row)
+            ids[('train', 'val', 'test')[page // 2]].append('BookC:' + line_id)
+            if number == 1:
+                for kind, ext, value in [('images', '.png', image), ('texts', '.txt', text)]:
+                    shutil.copyfile(root / value, root / 'Unalignedlines' / (kind + 'C') / (line_id + ext))
+                (root / 'Unalignedlines/BoundingBoxesC' / (line_id + '.json')).write_text(json.dumps(dict(line_id=line_id)))
+            else:
+                for book in 'AB':
+                    folder = root / 'alignedPairs' / (book + '_C')
+                    stem = f'pair_{page}'
+                    for side in (book, 'C'):
+                        for kind in ('images', 'texts', 'BoundingBoxes', 'masks'):
+                            (folder / (kind + side)).mkdir(parents=True, exist_ok=True)
+                        sid = f'{side}_{page:02d}_00'
+                        for kind, ext in [('images', '.png'), ('texts', '.txt')]:
+                            shutil.copyfile(root / f'Book{side}' / kind / (sid + ext),
+                                            folder / (kind + side) / (stem + ext))
+                        (folder / ('BoundingBoxes' + side) / (stem + '.json')).write_text(json.dumps(dict(line_id=sid)))
+                        mask = np.zeros((24, 120) if side == 'C' else (32, 80), np.uint8)
+                        mask[:, 15:45] = 255
+                        Image.fromarray(mask).save(folder / ('masks' + side) / (stem + '.png'))
+    (root / 'BookC/lines.jsonl').write_text('\n'.join(json.dumps(row) for row in rows))
+    for page in range(6):
+        for side in 'AB':
+            folder = root / 'alignedPairs' / ('masks' + side)
+            folder.mkdir(exist_ok=True)
+            mask = np.zeros((32, 80), np.uint8); mask[:, 15:45] = 255
+            Image.fromarray(mask).save(folder / f'pair_{page:06d}__A_line_001__B_line_001.png')
+    # The training machine's source path is deliberately unavailable locally.
+    saved.update(split_ids=ids, selected_books=['C'], source_checkpoint='/remote/Weights/base/checkpoint_best.pt',
+                 source_split_manifest_sha256=hashlib.sha256(json.dumps(original, sort_keys=True).encode()).hexdigest(),
+                 split_manifest_sha256=hashlib.sha256(json.dumps(ids, sort_keys=True).encode()).hexdigest())
+    fine = tmp_path / 'Weights/fine/checkpoint_best.pt'
+    fine.parent.mkdir(parents=True)
+    torch.save(saved, fine)
+    c_loaders = build_loaders(root, Config(**saved['config']), ids)
+    assert [len(loader.dataset) for loader in c_loaders] == [4, 4, 4]
+    assert all(record['book_id'] == 'C' for loader in c_loaders for record in loader.dataset.records)
+    namespace = dict(np=np, Path=Path, json=json, EvaluationSession=EvaluationSession,
+                     compute_pair_metrics=compute_pair_metrics, plot_pair_alignment=plot_pair_alignment)
+    exec(notebook_source('# FOLDER MASK GROUND TRUTH'), namespace)
+    legacy_helpers = '''
+def folder_mask_path(side, side_index):
+    image = Path(side['image'])
+    return image.parent.parent / ('masks' + 'AB'[side_index]) / (image.stem + '.png')
+
+def load_folder_masks(pair, lines=None):
+    raise RuntimeError('Cached A/B-only notebook loader must be replaced before use')
+'''
+    exec(legacy_helpers, namespace)
+    assert namespace['folder_mask_path'](dict(image=str(root / 'imagesC/example.png')), 1).parent.name == 'masksB'
+    session = namespace['FolderMaskEvaluationSession'](fine, root, device='cpu', negative_count=100)
+    from evaluation_utils import folder_mask_path, load_folder_masks
+    assert namespace['folder_mask_path'] is folder_mask_path
+    assert namespace['load_folder_masks'] is load_folder_masks
+    assert session.saved['split_ids'] == ids
+    assert session.split_sizes == dict(train=14, val=14, test=14)
+    positives = [p for p in session.pairs if p['target'] == 1]
+    assert len(positives) == 6 and {p['book_pair'] for p in positives} == {'A_B', 'A_C', 'B_C'}
+    negatives = [p for p in session.pairs if p['constructed_negative']]
+    assert any(side.get('book_id') == 'C' for p in negatives for side in p['sides'])
+    pair = next(p for p in positives if p['book_pair'] == 'B_C')
+    result = session.evaluate_pair(pair)
+    assert result['metrics']['b_mask_file_exists']
+    assert result['ground_truth'][1][:, 15:45].all()
+    assert 'masksC' in result['metrics']['ground_truth_provenance']
+    assert result['ground_truth'][0].shape == (32, 80)
+    assert result['ground_truth'][1].shape == (24, 120)
+    assert set(session.evaluation_split_ids['test']) == set(ids['test'] + original['test'])
+    # Re-executing the cached notebook cell must not reinstate the failure.
+    exec(legacy_helpers, namespace)
+    repeated = namespace['FolderMaskEvaluationSession'](fine, root, device='cpu', negative_count=100)
+    assert namespace['load_folder_masks'] is load_folder_masks
+    assert len(repeated.folder_mask_cache) == len(session.folder_mask_cache)
+    # Source split identities must be verified, never reconstructed randomly.
+    source.write_text(json.dumps(dict(train=[], val=[], test=[])))
+    with pytest.raises(ValueError, match='provenance'):
+        evaluation_split_ids(fine, saved)
+    source.unlink()
+    with pytest.raises(FileNotFoundError, match='Source split manifest'):
+        evaluation_split_ids(fine, saved)
 
 
 @pytest.fixture
@@ -371,6 +514,46 @@ def test_rtl_image_axis_matches_heatmap_decade_ticks():
     plt.close(figure)
 
 
+@pytest.mark.parametrize('books', ['AB', 'AC', 'BC'])
+def test_notebook_folder_masks_follow_book_folders_with_unequal_sizes(tmp_path, books):
+    from evaluation_utils import compute_pair_metrics
+    from scripts.eval.tune_matching import load_masks
+    namespace = dict(np=np, Path=Path, json=json, EvaluationSession=EvaluationSession,
+                     compute_pair_metrics=compute_pair_metrics, plot_pair_alignment=plot_pair_alignment)
+    exec(notebook_source('# FOLDER MASK GROUND TRUTH'), namespace)
+    sizes = dict(A=(9, 4), B=(7, 5), C=(13, 6))
+    expected, sides = {}, {}
+    for book, (width, height) in sizes.items():
+        image = tmp_path / ('images' + book) / 'same-pair.png'
+        mask = tmp_path / ('masks' + book) / 'same-pair.png'
+        image.parent.mkdir(); mask.parent.mkdir()
+        Image.new('L', (width, height), 255).save(image)
+        pixels = np.zeros((height, width), np.uint8)
+        pixels[:, 1:width // 2] = 255
+        Image.fromarray(pixels).save(mask)
+        expected[book] = pixels > 0
+        # Folder identity also takes precedence over stale book metadata.
+        sides[book] = dict(image=str(image), book_id='A')
+    pair = dict(sample_id='different-books', sides=[sides[book] for book in books])
+    masks, provenance = namespace['load_folder_masks'](pair)
+    tuning_masks, _ = load_masks(pair, 'folders')
+    for index, book in enumerate(books):
+        np.testing.assert_array_equal(masks[index], expected[book])
+        np.testing.assert_array_equal(tuning_masks[index], expected[book])
+        assert namespace['folder_mask_path'](pair['sides'][index], index).parent.name == 'masks' + book
+        assert 'masks' + book in provenance
+    # An old notebook helper must not affect the imported module's mask loader.
+    namespace['folder_mask_path'] = lambda *_: pytest.fail('stale notebook helper was used')
+    reloaded, _ = namespace['load_folder_masks'](pair)
+    for index, book in enumerate(books):
+        np.testing.assert_array_equal(reloaded[index], expected[book])
+    last = books[-1]
+    # A missing C mask must remain black, even when a B mask of the same stem exists.
+    (tmp_path / ('masks' + last) / 'same-pair.png').unlink()
+    missing, _ = namespace['load_folder_masks'](pair)
+    assert missing[-1].shape == expected[last].shape and not missing[-1].any()
+
+
 def test_notebook_folder_mask_missing_black_and_accuracy(tmp_path):
     from evaluation_utils import compute_pair_metrics
     namespace = dict(np=np, Path=Path, json=json, EvaluationSession=EvaluationSession,
@@ -482,11 +665,16 @@ def test_aggregate_discrimination_retrieval_ties_and_render(evaluation_fixture, 
 
 
 def test_notebook_structure_and_python_cells():
+    import ast
     path = Path(__file__).parents[1] / 'notebooks/model_evaluation.ipynb'
     book = json.loads(path.read_text())
     assert book['nbformat'] == 4
     code = [c for c in book['cells'] if c['cell_type'] == 'code']
-    assert 'NUM_SAMPLES = 5' in ''.join(code[0]['source'])
+    setup = ast.parse(''.join(code[0]['source']))
+    sample_count = next(node.value.value for node in setup.body if isinstance(node, ast.Assign)
+                        and any(isinstance(target, ast.Name) and target.id == 'NUM_SAMPLES'
+                                for target in node.targets))
+    assert 1 <= sample_count <= 10
     # Existing saved review figures are user results; notebook edits retain them.
     assert all(isinstance(c['outputs'], list) for c in code)
     for i, cell in enumerate(code):
@@ -611,6 +799,8 @@ def test_cached_samples_threshold_sweeps_and_independent_slots(evaluation_fixtur
     namespace = dict(
         session=session, RANDOM_SEED=42, REQUIRE_GROUND_TRUTH=True,
         REPRESENTATION='fused', NUM_SAMPLES=5, np=np, pd=pd, torch=torch,
+        SHOWN_REPRESENTATIONS=('local', 'context', 'fused'),
+        SHOW_REPRESENTATIONS='all',
         random=random, time=time, Counter=Counter,
         shuffled_positive_pairs=shuffled_positive_pairs,
         cosine_similarity_matrix=cosine_similarity_matrix,
@@ -623,6 +813,13 @@ def test_cached_samples_threshold_sweeps_and_independent_slots(evaluation_fixtur
     )
     exec(notebook_source('pool = shuffled_positive_pairs('), namespace)
     exec(notebook_source('# EVALUATION-ONLY MATCHING SETTINGS.'), namespace)
+    # The matching settings function now lives in its own notebook cell.
+    import ast
+    settings_function = ast.parse(notebook_source('def current_match_settings(')).body[0]
+    exec(compile(ast.Module(body=[settings_function], type_ignores=[]), '<settings>', 'exec'), namespace)
+    # This test compares the cosine affine baseline with the repeat decoder.
+    namespace['SIMILARITY_MODE'] = namespace['CANDIDATE_SIMILARITY_MODE'] = 'cosine'
+    session.settings = namespace['current_match_settings']()
     exec(notebook_source('KEY_METRICS ='), namespace)
     sample_slots = namespace['sample_slots']
 

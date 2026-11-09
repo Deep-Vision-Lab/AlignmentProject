@@ -25,6 +25,10 @@ def test_offline_wrapper_forwards_all_negative_flags(tmp_path):
     sbatch = fake_bin / 'sbatch'
     sbatch.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n')
     sbatch.chmod(0o755)
+    # Exercise cluster submission on every host, including macOS.
+    uname = fake_bin / 'uname'
+    uname.write_text('#!/usr/bin/env bash\nprintf "Linux\\n"\n')
+    uname.chmod(0o755)
     env = dict(os.environ, PATH=f'{fake_bin}:{os.environ["PATH"]}',
                RUN_NAME='real_sum_gate_neg4_w05', FUSION_MODE='sum', USE_GATED_FUSION='1')
     flags = ['--negative-dtw-weight', '0.5', '--negative-count', '4',
@@ -84,6 +88,9 @@ def test_offline_uniform_ratio_flags_reach_config_without_weight_override(tmp_pa
     sbatch = fake_bin / 'sbatch'
     sbatch.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n')
     sbatch.chmod(0o755)
+    uname = fake_bin / 'uname'
+    uname.write_text('#!/usr/bin/env bash\nprintf "Linux\\n"\n')
+    uname.chmod(0o755)
     flags = ['--positive-dtw-weight', '1.0', '--negative-dtw-weight', '0.5',
              '--negative-count', '4', '--hard-negative-k', '2',
              '--negative-loss-type', 'absolute', '--dtw-normalization', 'aligned_mean',

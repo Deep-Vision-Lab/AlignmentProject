@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, fields, replace
 from collections import Counter
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -136,6 +137,10 @@ def _batch_postfix(stats, optimizer=None, gradients=None, device=None):
 
 
 def build_loaders(dataset, config, split_ids=None, books=None):
+    if books is None and split_ids is not None:
+        ids = [sid for values in split_ids.values() for sid in values]
+        if ids and all(sid.split(':', 1)[0] in ('BookA', 'BookB', 'BookC') for sid in ids):
+            books = sorted({sid.split(':', 1)[0][4:] for sid in ids})
     loaders = create_dataloaders(dataset, config.dataset_type, config.train_ratio, config.val_ratio,
                               config.test_ratio, config.split_mode, config.split_seed,
                               config.batch_size, config.num_workers, config.augmentation,
@@ -255,8 +260,10 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
         if training:
             optimizer.zero_grad(set_to_none=True)
         with torch.set_grad_enabled(training):
-            with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
-                                enabled=config.use_amp and device.type=='cuda'):
+            amp_context = (torch.autocast(device_type='cuda', dtype=torch.bfloat16,
+                                          enabled=config.use_amp)
+                           if device.type == 'cuda' else nullcontext())
+            with amp_context:
                 output = model(images)
             loss,stats = compute_loss(output,texts,text_encoder,active_config, negative_texts=negative_texts,
                                      negative_metadata=negative_metadata,
@@ -508,6 +515,7 @@ def validate_one_epoch(model,text_encoder,loader,config,device,max_batches=0,epo
     device = torch.device(device)
     modes = [(module,module.training) for module in list(model.modules())+list(text_encoder.modules())]
     python_rng,numpy_rng = random.getstate(),np.random.get_state()
+    mps_rng = torch.mps.get_rng_state() if device.type == 'mps' else None
     loader_rng = loader.generator.get_state() if loader.generator is not None else None
     try:
         with torch.random.fork_rng(devices=[device.index or 0] if device.type=='cuda' else []), torch.no_grad():
@@ -519,6 +527,8 @@ def validate_one_epoch(model,text_encoder,loader,config,device,max_batches=0,epo
             module.training = mode
         random.setstate(python_rng)
         np.random.set_state(numpy_rng)
+        if mps_rng is not None:
+            torch.mps.set_rng_state(mps_rng)
         if loader_rng is not None:
             loader.generator.set_state(loader_rng)
 
@@ -943,6 +953,8 @@ def main(argv=None, epoch_callback=None):
             random.setstate(state['python']); np.random.set_state(state['numpy'])
             torch.set_rng_state(state['torch'])
             if device.type == 'cuda': torch.cuda.set_rng_state(state['cuda'], device)
+            if device.type == 'mps' and state.get('mps') is not None:
+                torch.mps.set_rng_state(state['mps'])
             if train_loader.generator is not None and state['loader'] is not None:
                 train_loader.generator.set_state(state['loader'])
         elif rank == 0:
@@ -1001,6 +1013,7 @@ def main(argv=None, epoch_callback=None):
         best = min(best,val_stats['total'])
         rng = dict(python=random.getstate(), numpy=np.random.get_state(), torch=torch.get_rng_state(),
                    cuda=torch.cuda.get_rng_state(device) if device.type == 'cuda' else None,
+                   mps=torch.mps.get_rng_state() if device.type == 'mps' else None,
                    loader=train_loader.generator.get_state() if train_loader.generator is not None else None)
         rng_states = [None] * world
         if world > 1: dist.all_gather_object(rng_states, rng)

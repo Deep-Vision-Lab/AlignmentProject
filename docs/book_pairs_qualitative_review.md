@@ -1,5 +1,13 @@
 # A–B, B–C and A–C qualitative evaluation
 
+The notebooks now use `real_abc_balanced_optional_space_20261108` and display
+fresh inference on the same 15 examples. The new gallery is
+[`real_abc_optional_space_fixed_examples`](../Results/Evaluation/real_abc_optional_space_fixed_examples/index.html).
+The selection rules and original gallery described below belong to the previous
+checkpoint; those ranking constraints are not guarantees for the new model.
+See [optional-space evaluation](optional_space_evaluation.md) for the current
+behavior and the training/evaluation parity checks.
+
 The Drive folders `alignedPairs/A_B`, `alignedPairs/A_C`, and
 `alignedPairs/B_C` were added under `DataSet/ArabicData`, retaining their
 original images and masks. Each folder has 1,000 pairs, 2,000 images,
@@ -17,73 +25,72 @@ three catalogs: A has 841 lines, B has 314, and C has 800. These inventories do
 not certify negative pairs. Book C transcriptions retain their source spacing
 and blank values; full boxes retain their original geometry and review flags.
 
-Open [the review notebook](../notebooks/book_pairs_qualitative.ipynb) or
-[the figure gallery](../Results/Evaluation/book_pairs_qualitative/index.html).
-The overview sheets show all ten examples for
-[A–B](../Results/Evaluation/book_pairs_qualitative/contact_A_B.png),
-[B–C](../Results/Evaluation/book_pairs_qualitative/contact_B_C.png), and
-[A–C](../Results/Evaluation/book_pairs_qualitative/contact_A_C.png).
-Green bands above each source image show supplied mask foreground; blue
-bands below show the model prediction.
+Open [the main evaluation notebook](../notebooks/model_evaluation.ipynb),
+[the compact review notebook](../notebooks/book_pairs_qualitative.ipynb), or
+[the figure gallery](../Results/Evaluation/book_pairs_examples/index.html).
 
-The fixed seed-42 selection contains five consecutive and five non-consecutive
-pairs per book pair, with distinct lines within each stratum. Consecutive means
-one connected foreground interval in both supplied masks. Non-consecutive means
-at least two separated intervals in both masks. Asymmetric cases are excluded.
-This describes annotation topology; the model can predict a different number
-of regions. Selection never uses the model's output.
+The gallery shows **five small-region A–B pairs, five A–C pairs, and five B–C
+pairs**. All 1,000 pairs in each catalog have foreground IoU scores. Selection
+prioritizes catching the supplied white foreground on **both** lines: rank by
+the smaller of the two white F2 scores, then mean foreground IoU, then the
+smaller black-background specificity. F2 is `5 * TP / (5 * TP + 4 * FN + FP)`;
+it gives missing white four times the weight of extra white. Each line must
+have at least 80% white precision and 90% black specificity. These are sample
+selection rules; prediction thresholds and metric formulas are unchanged.
+Repeated transcript content and previously displayed pairs remain eligible.
+No annotation-topology or diversity filtering is used. Rigorous upper bounds
+on achievable F2 prune candidates that cannot beat the selected fifth pair;
+all remaining candidates are verified with actual model predictions.
+For A–B, the predicted white foreground must occupy 10–45% of each source line,
+and both supplied and predicted foreground must fit within a 45% horizontal
+span. This excludes short predictions that merely miss a large supplied mask.
+Only three A–B pairs met the precision/background requirements with the earlier
+35% limit; 45% permits five stronger matches while keeping them below half a line.
+A–C and B–C have no supplied pair confined to 45% of both lines, so their five
+examples are explicitly labeled as larger regions. Their available white-mask
+recovery is weaker; displaying five does not certify that each is a good match.
 
-All A/B lines are in the checkpoint's saved test membership. Book C lines are
-external to that membership. Membership was checked against both the saved
-split manifest and the actual checkpoint. This does not establish that Book C
-transcripts are disjoint from training transcripts. No training, split changes
-or threshold search was performed.
+The white foreground of each predicted mask is compared with the actual supplied
+mask in source-image coordinates. IoU is foreground intersection over union.
+Per-line precision measures how much predicted white is correct; recall measures
+how much supplied white was recovered. Both IoUs, their mean, precision, recall,
+and the actual white masks are shown. Black specificity is `TN / (TN + FP)`:
+the fraction of supplied black preserved as black. It is shown separately from
+foreground IoU, so a large black background cannot inflate the white score.
+Masks are not altered to improve the score.
+Each group also has a direct supplied-versus-predicted white-mask comparison
+(`white_masks_A_B.png`, `white_masks_A_C.png`, `white_masks_B_C.png`), embedded
+before its first detailed sample. Supplied and predicted masks share source
+coordinates; only their display size changes.
 
-Inference uses `Weights/phase4_typed_local03_sum_nogate/checkpoint_best.pt`,
-the fused representation, CPU, and the existing notebook's content crop and
-matching settings. The checkpoint SHA256 is
-`d5fcb9f706a6456b38e1cef100a1b8e0ac491c79d653a968eb8ebdb209d023d6`.
-The report saves the resolved settings, input hashes, predicted intervals,
-candidate diagnostics and mask metrics. Supplied masks are read after prediction
-for scoring; they do not enter the matcher. Automatic subword annotations retain
-their original provenance and have not been certified by this review.
+The checkpoint is
+`Weights/book_c_phase4_sum_nogate_ft_20261108/checkpoint_best.pt`.
+Matching parameters, crop, representation, and device come from
+`notebooks/model_evaluation.ipynb`. The prediction algorithm, mask projection,
+and metric formulas are unchanged. Masks are read after prediction for scoring.
 
-| Book pair | Supplied path type | Samples | Pairs with accepted routes | Mean A/B-side IoU |
-| --- | --- | ---: | ---: | ---: |
-| A–B | Consecutive | 5 | 5 | 0.861 |
-| A–B | Non-consecutive | 5 | 5 | 0.424 |
-| B–C | Consecutive | 5 | 3 | 0.150 |
-| B–C | Non-consecutive | 5 | 2 | 0.071 |
-| A–C | Consecutive | 5 | 2 | 0.134 |
-| A–C | Non-consecutive | 5 | 3 | 0.158 |
+These examples are deliberately selected best results, not a population
+performance estimate. Current checkpoint split membership is shown on each
+figure, and automatic annotations retain their source provenance.
 
-The IoU column averages the two input-line IoUs for each sample, then averages
-the five samples. Accepted routes do not necessarily overlap the supplied masks.
-These small, stratified summaries describe this review only.
+CSV files retain the unrestricted catalog IoU order; `selected_for_gallery` marks
+the displayed pairs after applying foreground, background and size requirements.
+Additional CSV columns contain measured recall, precision, specificity and F2;
+blank values mean exact foreground verification was pruned by the bound.
 
-Visual inspection of all three overview sheets shows close boundary agreement
-on most continuous A–B examples. `A_B_non_consecutive_01` and `_05` recover the
-dominant region but miss a smaller supplied region. `_02` and `_04` place much
-of the foreground away from the supplied regions; `_03` recovers only a subset.
+Scores, ranking, figures, and the report are saved in
+`Results/Evaluation/book_pairs_examples/`. Checkpoint hashes and parameter
+fingerprints protect cached scores. The notebooks embed the final figures.
 
-Book C is delivered as black-and-white Kufic line imagery, unlike the manuscript
-scans in A/B. C comparisons often produce no accepted route or cover only part
-of a large supplied region. `B_C_consecutive_05` has zero B-side IoU despite an
-accepted route; `B_C_non_consecutive_02` detects a region away from much of the
-supplied B-side foreground. `A_C_consecutive_01` follows part of the shared span
-but omits much of its extent. Several other C examples have completely empty
-predictions. These observations suggest a domain/representation issue worth
-investigating, but this review cannot separate representation, decoder and
-automatic-annotation errors.
-
-Reproduce from the repository root in the project Python environment:
+Run the complete search and render:
 
 ```sh
-python scripts/data/validate_book_pair_folders.py
-python scripts/eval/review_book_pairs.py --device cpu
+python scripts/eval/select_book_pair_examples.py
 ```
 
-Use `--prepare-only` to regenerate just the fixed selection without loading
-the model. The existing main evaluation notebook is preserved. The new notebook
-contains saved real inference figures with explicit provenance; rerunning its
-cells redisplays those artifacts. Run the script to recompute predictions.
+Independent catalog scans can also be run with `--group A_B --scan-only`
+(and `A_C` / `B_C`), followed by `--render-only`. A render-only run fails if any
+catalog pair has no compatible cached score. The default candidate limit is zero,
+meaning the complete catalog. The A–B size bounds can be set with
+`--ab-min-coverage` and `--ab-max-coverage`; using 0 and 1 disables the size filter. An explicit `--candidate-limit` is for exploratory
+subsets and cannot substantiate a complete-catalog best-results claim.

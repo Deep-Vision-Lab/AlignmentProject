@@ -35,8 +35,8 @@ for setting in NEGATIVE_DTW_WEIGHT NEGATIVE_COUNT NEGATIVE_MARGIN NEGATIVE_SEVER
                STRONG_NEGATIVE_COUNT LOCAL_SUBSTITUTION_COUNT ORDER_NEGATIVE_COUNT \
                STRONG_NEGATIVE_WEIGHT WRONG_LETTER_WEIGHT ORDER_NEGATIVE_WEIGHT \
                STRONG_NEGATIVE_SEVERITY LOCAL_SUBSTITUTION_SEVERITY ORDER_MARGIN; do
-    if [[ -v $setting ]]; then
-        flag="${setting,,}"
+    if declare -p "$setting" >/dev/null 2>&1; then
+        flag="$(printf '%s' "$setting" | tr '[:upper:]' '[:lower:]')"
         echo "$setting is not a launcher setting; pass --${flag//_/-} instead" >&2
         exit 2
     fi

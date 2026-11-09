@@ -76,7 +76,7 @@ class OptunaSmokeTest(unittest.TestCase):
         trial = _DepthTrial(4)
         config = run_optuna._suggest_config(trial, {},
                                             run_optuna.DEFAULT_SEARCH_SPACE)
-        self.assertEqual(trial.seen['cnn_layers'], (1, 2, 3, 4, 5))
+        self.assertEqual(trial.seen['cnn_layers'], (1, 2, 3, 4))
         self.assertEqual(config['cnn_layers'], 4)
         self.assertEqual(config['cnn_type'], 'simple')
 
@@ -98,7 +98,7 @@ class OptunaSmokeTest(unittest.TestCase):
         from parameters import Config
         from train import build_model
 
-        for depth in (1, 2, 3, 4, 5):
+        for depth in (1, 2, 3, 4):
             with self.subTest(depth=depth):
                 trial = _DepthTrial(depth)
                 suggested = run_optuna._suggest_config(trial, {},
@@ -198,7 +198,7 @@ class OptunaSmokeTest(unittest.TestCase):
                 self.assertEqual(tuple(trial.distributions['transformer_heads'].choices),
                                  (1, 2, 4))
                 # Architecture search fixes the simple CNN; depth is sampled.
-                self.assertIn(trial.params['cnn_layers'], (1, 2, 3, 4, 5))
+                self.assertIn(trial.params['cnn_layers'], (1, 2, 3, 4))
                 config = trial.user_attrs['config']
                 self.assertEqual(config['cnn_type'], 'simple')
                 self.assertFalse(config['cnn_pretrained'])
@@ -299,9 +299,9 @@ class OptunaSmokeTest(unittest.TestCase):
             self.assertIn('CNN layers', headers)
             for trial in study.trials:
                 depth = trial.params['cnn_layers']  # sampled for the simple CNN
-                self.assertIn(depth, (1, 2, 3, 4, 5))
+                self.assertIn(depth, (1, 2, 3, 4))
                 self.assertEqual(tuple(trial.distributions['cnn_layers'].choices),
-                                 (1, 2, 3, 4, 5))
+                                 (1, 2, 3, 4))
                 self.assertEqual(trial.params['vector_dimension']
                                  % trial.params['transformer_heads'], 0)
                 self.assertFalse(trial.intermediate_values)  # no pruning
@@ -320,7 +320,7 @@ class OptunaSmokeTest(unittest.TestCase):
                 self.assertEqual(row[headers['CNN layers']], depth)
             space = {row[0]: row[1] for row in
                      workbook['SearchSpace'].iter_rows(min_row=2, values_only=True)}
-            self.assertEqual(json.loads(space['cnn_layers']), [1, 2, 3, 4, 5])
+            self.assertEqual(json.loads(space['cnn_layers']), [1, 2, 3, 4])
             self.assertEqual(set(space), set(run_optuna.DEFAULT_SEARCH_SPACE))
             workbook.close()
 
@@ -401,7 +401,7 @@ class OptunaSmokeTest(unittest.TestCase):
             self.assertEqual(space['job_name'], 'test_optuna_job')
             self.assertEqual(space['slurm_job_id'], '12345')
             self.assertEqual(space['searched'], run_optuna.DEFAULT_SEARCH_SPACE)
-            self.assertEqual(space['searched']['cnn_layers'], [1, 2, 3, 4, 5])
+            self.assertEqual(space['searched']['cnn_layers'], [1, 2, 3, 4])
             self.assertEqual(space['fixed'], run_optuna.FIXED_SEARCH_PARAMETERS)
             workbook = load_workbook(root / 'optuna_alignment_experiment_tracker.xlsx',
                                      read_only=True)
