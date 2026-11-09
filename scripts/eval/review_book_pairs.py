@@ -20,6 +20,20 @@ sys.path.insert(0, str(ROOT))
 GROUPS = ('A_B', 'B_C', 'A_C')
 
 
+def training_book_counts(split_ids):
+    """Book exposure and individual line membership are different facts."""
+    from collections import Counter
+    return dict(Counter(sid.split(':', 1)[0].removeprefix('Book')
+                        for sid in split_ids['train']))
+
+
+def membership_caption(book, line_split, book_counts):
+    line = ('outside saved subset' if line_split == 'unseen' else line_split)
+    count = book_counts.get(book, 0)
+    exposure = f'{count:,} book training lines' if count else 'book training not recorded in this split'
+    return f'{book}: line={line}; {exposure}'
+
+
 def merged_intervals(intervals):
     result = []
     for left, right in sorted(intervals):
@@ -109,7 +123,7 @@ def reuse_selection(source, split_manifest, output):
         'Same fixed examples as the original review, selected using the previous checkpoint. '
         'They have not been selected or ranked using the current checkpoint. '
         'Current checkpoint split membership is recorded per sample, including training and validation lines. '
-        'Unseen means absent from this checkpoint split manifest, not necessarily from earlier training. '
+        'An individual line absent from the balanced split does not mean its book was absent from training. '
         'This mixed-split qualitative comparison is not a held-out performance estimate.')
     if selection.get('mode') == 'illustrative_examples':
         selection['scope'] = 'fixed_previous_checkpoint_examples'
@@ -198,6 +212,7 @@ def evaluate(args, selection):
                           else 'cpu' if args.device.startswith('cuda') and not torch.cuda.is_available()
                           else args.device)
     model, _, config, saved = load_checkpoint(args.checkpoint, device, load_text=False)
+    book_counts = training_book_counts(saved['split_ids'])
     actual_membership = {sid: name for name, ids in saved['split_ids'].items() for sid in ids}
     for row in selection['samples']:
         for book, expected in row['saved_line_splits'].items():
@@ -222,7 +237,7 @@ def evaluate(args, selection):
     report = dict(checkpoint=str(args.checkpoint), checkpoint_sha256=session.checkpoint_sha256,
         config=vars(config), settings=session.settings, selection_policy=selection['policy'],
         split=session.split, device=str(device), representation=args.representation,
-        settings_source=settings_source, samples=[])
+        settings_source=settings_source, book_training_counts=book_counts, samples=[])
     showcase = selection.get('mode') == 'illustrative_examples'
     if showcase:
         report['selection_inventory'] = selection['inventory']
@@ -235,6 +250,8 @@ def evaluate(args, selection):
         '# A–B, B–C and A–C qualitative review\n',
         sample_description,
         f'Checkpoint: `{args.checkpoint.resolve().relative_to(ROOT)}`.\n',
+        'Saved training-line counts by book: '+', '.join(f'{b}={n:,}' for b,n in sorted(book_counts.items()))+'. '
+        'Line membership below refers to the individual image, not whether its book was trained.\n',
         f'Matching parameters from `{settings_path.relative_to(ROOT)}`; '
         f'representation=`{args.representation}`, crop=`{args.crop}`, device=`{device}`.\n',
         selection['policy'] + '\n',
@@ -271,8 +288,8 @@ def evaluate(args, selection):
         metrics, gt = compute_pair_metrics(result, config, preloaded_ground_truth=truth)
         metrics['ground_truth_provenance'] = pair['annotation_provenance']
         result.update(metrics=metrics, ground_truth=gt)
-        split_labels = ', '.join(f"{book}={row['saved_line_splits'][book]}" for book in books)
-        title = f"{row['review_id']} | physical books {books[0]}/{books[1]} (plot rows A/B) | splits: {split_labels}"
+        split_labels = ' | '.join(membership_caption(book, row['saved_line_splits'][book], book_counts) for book in books)
+        title = f"{row['review_id']} | physical books {books[0]}/{books[1]} (plot rows A/B)\n{split_labels}"
         figure = plot_pair_alignment(session, result, show_gt=True, show_window_indices=True)
         figure.suptitle(title)
         figure.savefig(args.output / (row['review_id'] + '.png'), dpi=90)

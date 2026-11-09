@@ -141,6 +141,7 @@ def test_explicit_pair_manifest_requires_review_and_saved_membership(evaluation_
 
 def test_search_bounds_conditionals_and_anchor_aliases():
     _,baseline=q.notebook_baseline()
+    baseline=__import__('evaluate').resolved_match_settings(dict(baseline,alignment_mode='local_repeat_dtw'))
     study=optuna.create_study(sampler=optuna.samplers.RandomSampler(seed=42))
     for i in range(60):
         t=study.ask(); s=tuning.suggest(t,baseline,2)
@@ -179,9 +180,30 @@ def configure_fixture(root):
     path.write_text('\n'.join(json.dumps(row) for row in records))
 
 
+def legacy_fixture_notebook(output):
+    """Geometry/tuner fixtures use the legacy decoder; word parity has its own fixtures."""
+    import ast
+    source=Path(__file__).parents[1]/'notebooks/model_evaluation.ipynb'
+    book=json.loads(source.read_text());cells=[]
+    for cell in book['cells']:
+        text=''.join(cell['source'])
+        if not text.startswith(('# MODEL/DATA SETUP.','# EVALUATION-ONLY MATCHING SETTINGS.','def current_match_settings(')):continue
+        if text.startswith('# EVALUATION-ONLY'):
+            lines=text.splitlines(keepends=True)
+            for node in ast.parse(text).body:
+                if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='ALIGNMENT_MODE' for t in node.targets):
+                    lines[node.lineno-1]="ALIGNMENT_MODE = 'local_repeat_dtw'\n"
+            text=''.join(lines)
+        cells.append(dict(cell_type='code',source=text.splitlines(keepends=True),metadata={},outputs=[],execution_count=None))
+    path=Path(output).parent/'legacy_fixture_settings.ipynb';path.parent.mkdir(parents=True,exist_ok=True)
+    path.write_text(json.dumps(dict(cells=cells,nbformat=4,nbformat_minor=5,metadata={})))
+    return path
+
+
 def arguments(root, checkpoint, output, command='prepare'):
     return tuning.parser().parse_args([command,'--dataset',str(root),'--checkpoint',str(checkpoint),
-        '--output',str(output),'--device','cpu','--crop','checkpoint','--pair-source','dataset','--bootstrap','20'])
+        '--output',str(output),'--notebook',str(legacy_fixture_notebook(output)),
+        '--device','cpu','--crop','checkpoint','--pair-source','dataset','--bootstrap','20'])
 
 
 def folder_arguments(fixture, output):
@@ -192,7 +214,8 @@ def folder_arguments(fixture, output):
         for image in (root/'alignedPairs'/('images'+side)).glob('*.png'):
             Image.fromarray((span([(20,50)],80,32)*255).astype(np.uint8)).save(directory/image.name)
     return tuning.parser().parse_args(['prepare','--dataset',str(root),'--checkpoint',str(checkpoint),
-        '--output',str(output),'--device','cpu','--negative-count','2','--pairs-per-split','all','--bootstrap','20'])
+        '--output',str(output),'--notebook',str(legacy_fixture_notebook(output)),
+        '--device','cpu','--negative-count','2','--pairs-per-split','all','--bootstrap','20'])
 
 
 def test_arabic_folder_default_uses_both_exports_and_marks_presumed_negatives(arabic_folder_fixture,tmp_path):
@@ -345,6 +368,7 @@ def test_folder_tuning_and_frozen_test_exports_retain_assumption_labels(arabic_f
     output=tmp_path/'folder-study'
     args=folder_arguments(arabic_folder_fixture,output)
     command=['tune','--dataset',args.dataset,'--checkpoint',args.checkpoint,
+        '--notebook',str(args.notebook),
         '--output',str(output),'--device','cpu','--negative-count','2',
         '--pairs-per-split','all','--bootstrap','20','--stage1-trials','1','--stage2-trials','1']
     studies=tuning.main(command)
@@ -365,7 +389,7 @@ def test_exact_notebook_prediction_parity_cache_and_gt_separation(evaluation_fix
     root,checkpoint=evaluation_fixture;configure_fixture(root)
     args=arguments(root,checkpoint,tmp_path/'result')
     session,prepared,provenance=q.build_cache(args,'val')
-    _,settings=q.notebook_baseline();session.settings=settings
+    _,settings=q.notebook_baseline(args.notebook);session.settings=settings
     direct=[session.predict_pair(item['inference']) for item in prepared]
     observed=[]
     def record(*a,**kw):
@@ -428,6 +452,7 @@ def test_smoke_sqlite_resume_and_selection_lock(evaluation_fixture,tmp_path):
     root,checkpoint=evaluation_fixture;configure_fixture(root)
     output=tmp_path/'smoke';args=arguments(root,checkpoint,output,'tune')
     command=['tune','--dataset',str(root),'--checkpoint',str(checkpoint),'--output',str(output),
+        '--notebook',str(args.notebook),
         '--device','cpu','--crop','checkpoint','--pair-source','dataset','--bootstrap','20',
         '--max-negative-pair-fpr','1','--stage1-trials','2','--stage2-trials','3']
     studies=tuning.main(command)
@@ -456,6 +481,7 @@ def test_failed_objective_keeps_actual_error_and_has_no_selected_trial(evaluatio
         if Path(a[4]).name=='baseline':return original(*a,**kw)
         raise RuntimeError('controlled matcher failure')
     args=['tune','--dataset',str(root),'--checkpoint',str(checkpoint),'--output',str(output),
+        '--notebook',str(legacy_fixture_notebook(output)),
         '--device','cpu','--crop','checkpoint','--pair-source','dataset','--bootstrap','20','--stage1-trials','1','--stage2-trials','1']
     with patch.object(tuning,'evaluate',side_effect=failure):studies=tuning.main(args)
     assert all(s.trials[0].state==optuna.trial.TrialState.FAIL and s.trials[0].value is None for _,s in studies)
@@ -466,6 +492,7 @@ def test_failed_objective_keeps_actual_error_and_has_no_selected_trial(evaluatio
 def test_stage2_completed_seed_preserves_exact_baseline_additions(evaluation_fixture,tmp_path):
     root,checkpoint=evaluation_fixture;configure_fixture(root);output=tmp_path/'seeded'
     studies=tuning.main(['tune','--dataset',str(root),'--checkpoint',str(checkpoint),'--output',str(output),
+        '--notebook',str(legacy_fixture_notebook(output)),
         '--device','cpu','--crop','checkpoint','--pair-source','dataset','--bootstrap','20',
         '--max-negative-pair-fpr','1','--stage1-trials','1','--stage2-trials','2'])
     first=studies[0][1].trials[0];seed=studies[1][1].trials[0]

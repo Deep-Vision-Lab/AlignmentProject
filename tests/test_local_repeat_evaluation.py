@@ -177,6 +177,7 @@ def test_notebook_session_population_predictions_identical_and_gt_independent(ev
     # This seven-window identity fixture controls cosine, not random letter
     # predictions; real notebook examples may require more than seven windows.
     ns.update(SIMILARITY_MODE='cosine', CANDIDATE_SIMILARITY_MODE='cosine',
+              ALIGNMENT_MODE='local_repeat_dtw',
               NORMAL_MIN_DISTINCT_A=3, NORMAL_MIN_DISTINCT_B=3, NORMAL_MIN_MATCHED_PAIRS=4)
     session.settings = ns['current_match_settings']()
     pair=session.pairs[0]

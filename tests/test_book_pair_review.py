@@ -3,7 +3,17 @@ import json
 import pytest
 
 from scripts.eval.review_book_pairs import (GROUPS, load_evaluation_setup, load_settings,
+                                           membership_caption, training_book_counts,
                                            merged_intervals, prepare, reuse_selection, topology)
+
+
+def test_book_training_is_separate_from_balanced_line_selection():
+    counts = training_book_counts(dict(train=['BookA:a','BookC:c','BookC:d'],val=[],test=[]))
+    assert counts == dict(A=1,C=2)
+    label = membership_caption('C','unseen',counts)
+    assert 'outside saved subset' in label and '2 book training lines' in label
+    assert 'unseen' not in label
+    assert 'line=test' in membership_caption('C','test',counts)
 
 
 def test_topology_uses_connected_regions_in_both_supplied_masks():

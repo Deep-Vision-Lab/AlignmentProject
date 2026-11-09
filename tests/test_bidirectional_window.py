@@ -276,7 +276,8 @@ def test_legacy_rewards_are_unchanged(evaluation_fixture):
 def test_notebook_settings_roundtrip_and_examples():
     ns = {}
     exec(notebook_source('# EVALUATION-ONLY MATCHING SETTINGS.'), ns)
-    ns.update(CANDIDATE_SIMILARITY_MODE='bidirectional_window', SIMILARITY_MODE='bidirectional_window')
+    ns.update(CANDIDATE_SIMILARITY_MODE='bidirectional_window', SIMILARITY_MODE='bidirectional_window',
+              ALIGNMENT_MODE='local_repeat_dtw')
     import ast
     cell = notebook_source('def current_match_settings(')
     function = next(n for n in ast.parse(cell).body if isinstance(n,ast.FunctionDef) and n.name=='current_match_settings')
@@ -334,7 +335,7 @@ ns = dict(session=session, pd=pd, display=lambda value:None,
           predict_cached_pair=evaluation_utils.predict_cached_pair)
 exec(cell("# EVALUATION-ONLY MATCHING SETTINGS."), ns)
 ns.update(CANDIDATE_SIMILARITY_MODE="bidirectional_window",
-          SIMILARITY_MODE="bidirectional_window")
+          SIMILARITY_MODE="bidirectional_window", ALIGNMENT_MODE="local_repeat_dtw")
 # Reproduce the saved traceback: an earlier imported evaluator lacks these keys.
 for key in ("window_match_temperature", "window_match_min_cosine", "window_match_reward_offset"):
     evaluate.MATCH_DEFAULTS.pop(key)

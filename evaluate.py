@@ -28,7 +28,7 @@ from train import build_loaders, load_checkpoint, validate_one_epoch
 from alignment_candidates import PATH_DEFAULTS, validate_path_options, decode_candidates
 from alignment_overlays import aligned_window_overlays
 
-MATCH_VERSION = 'local-path-quality-5-reordered-regions'
+MATCH_VERSION = 'local-path-quality-6-word-lattice'
 MATCH_DEFAULTS = dict(similarity_mode='cosine', decoder='local_repeat_dtw', threshold=.5,
     contrast_margin=.05, score_mode='background', min_windows=3, max_gap=1,
     gap_open=.2, gap_extend=.05, max_candidates=512, repeat_penalty=.05,
@@ -39,7 +39,11 @@ MATCH_DEFAULTS = dict(similarity_mode='cosine', decoder='local_repeat_dtw', thre
     min_region_score=None, min_mean_reward=None, min_path_density=None,
     max_repeat_fraction=None, min_secondary_score_ratio=None,
     window_match_temperature=.10, window_match_min_cosine=.50,
-    window_match_reward_offset=0., **PATH_DEFAULTS)
+    window_match_reward_offset=0., word_vocabulary_path=None,
+    word_max_nll=1.5, word_min_posterior=.05, word_min_posterior_short=.15,
+    word_min_cosine=.45, word_boundary_weight=2., word_lattice_temperature=1.,
+    word_keep_long_regions=True,word_visual_weight=12.,word_min_distinct_types=2,
+    word_min_total_characters=8, **PATH_DEFAULTS)
 
 
 def resolved_match_settings(settings):
@@ -53,7 +57,8 @@ def resolved_match_settings(settings):
         raise ValueError('Cosine threshold must be in [-1,1] and contrast margin nonnegative')
     if result['acceptance_offset']<0:
         raise ValueError('acceptance_offset must be nonnegative')
-    modes = {'affine': 'smith_waterman', 'stretch': 'stretch', 'local_repeat_dtw': 'local_repeat_dtw'}
+    modes = {'affine': 'smith_waterman', 'stretch': 'stretch', 'local_repeat_dtw': 'local_repeat_dtw',
+             'word_dtw':'word_dtw'}
     mode = result['alignment_mode'] or modes.get(result['decoder'])
     if mode not in modes.values():
         raise ValueError('Unknown alignment mode/decoder')
@@ -67,6 +72,20 @@ def resolved_match_settings(settings):
             and candidate_mode != result['similarity_mode']):
         raise ValueError('Mixed bidirectional_window modes are unsupported; set both similarity modes alike')
     result.update(candidate_similarity_mode=candidate_mode,similarity_mode=candidate_mode)
+    if mode=='word_dtw':
+        if candidate_mode!='letter_evidence' or not result['word_vocabulary_path']:
+            raise ValueError('word_dtw requires checkpoint letter evidence and a training vocabulary')
+        for key in ('word_min_posterior','word_min_posterior_short'):
+            if not .001<=result[key]<=1:raise ValueError(f'{key} must be in [.001,1]')
+        if not -1<=result['word_min_cosine']<=1 or result['word_max_nll']<=0:
+            raise ValueError('Invalid word visual or lexical threshold')
+        if result['word_boundary_weight']<0 or result['word_lattice_temperature']<=0:
+            raise ValueError('Invalid word lattice parameters')
+        if not isinstance(result['word_keep_long_regions'],bool) or result['word_visual_weight']<0:
+            raise ValueError('Invalid word passage settings')
+        for key in ('word_min_distinct_types','word_min_total_characters'):
+            if not isinstance(result[key],int) or isinstance(result[key],bool) or result[key]<1:
+                raise ValueError(f'{key} must be a positive integer')
     if not math.isfinite(result['window_match_temperature']) or result['window_match_temperature'] <= 0:
         raise ValueError('window_match_temperature must be > 0')
     if not -1 <= result['window_match_min_cosine'] <= 1:
@@ -207,7 +226,7 @@ def decode_stretched_regions(rewards, physical_a, physical_b, *, min_windows=3, 
 
 def match_features(features_a, features_b, physical_a, physical_b, *, text_encoder=None,
                    config=None, prior_metadata=None, precomputed_cosine=None,
-                   token_valid_a=None, token_valid_b=None, **settings):
+                   token_valid_a=None, token_valid_b=None, word_boundaries=None, **settings):
     """SINGLE image-only matcher dispatch, used by CLI, session, population and exports."""
     options = resolved_match_settings(settings)
     # A caller may pass full model tokens; filter validity BEFORE cosine and mapping.
@@ -275,7 +294,13 @@ def match_features(features_a, features_b, physical_a, physical_b, *, text_encod
         if options['similarity_mode']=='letter_evidence':rewards=extra['letter_evidence']
     if options['verify_with_letter_evidence'] and options['decoder']!='local_repeat_dtw':
         raise ValueError('Two-stage verification requires local_repeat_dtw')
-    if options['decoder']=='local_repeat_dtw':
+    if options['decoder']=='word_dtw':
+        from word_alignment import word_regions
+        if word_boundaries is None or len(word_boundaries)!=2 or any(np.shape(b)!=(len(p)+1,) for b,p in zip(word_boundaries,physical)):
+            raise ValueError('Word matching requires image-only boundary scores for both lines')
+        match=word_regions(extra['log_probabilities'],extra['vocabulary'],cosine,rewards,physical,
+                           word_boundaries,options)
+    elif options['decoder']=='local_repeat_dtw':
         keys = ('threshold','contrast_margin','score_mode','min_windows','max_gap',
                 'gap_open','gap_extend','max_candidates','repeat_penalty','max_consecutive_repeats',
                 'min_distinct_windows_a','min_distinct_windows_b','min_matched_pairs',
@@ -747,6 +772,10 @@ def region_mask(regions,side,geometry,window_width,stride):
     width,height=geometry['source_size']
     mask=np.zeros((height,width),dtype=np.uint8)
     for region in regions:
+        if 'source_word_ranges' in region:
+            a,b=region['source_word_ranges'][side]
+            mask[:,max(0,math.floor(a)):min(width,math.ceil(b))]=255
+            continue
         for physical in region['supported_physical'][side]+region['filled_physical'][side]:
             a,b=source_interval(physical,geometry,window_width,stride)
             mask[:,max(0,math.floor(a)):min(width,math.ceil(b))]=255
@@ -806,7 +835,21 @@ def evaluate_pair(checkpoint,paths,output,device='cpu',representation='fused',cr
         features.append(bundle[representation][0][valid])
         physical.append(bundle['physical_window_indices'][0][valid].cpu().numpy())
         geometry.append(geo)
-    match=match_features(*features,*physical,text_encoder=_text,config=config,**settings)
+    word_extra={};word_pixels=None
+    if options['decoder']=='word_dtw':
+        from word_alignment import image_word_boundaries,load_vocabulary
+        if load_vocabulary(options['word_vocabulary_path'])['checkpoint_sha256']!=file_hash(checkpoint):
+            raise ValueError('Word vocabulary belongs to a different checkpoint')
+        word_data=[image_word_boundaries(path,geo,p,config.window_width,config.window_stride)
+                   for path,geo,p in zip(paths,geometry,physical)]
+        word_extra['word_boundaries']=[value[0] for value in word_data]
+        word_pixels=[value[1] for value in word_data]
+    match=match_features(*features,*physical,text_encoder=_text,config=config,**word_extra,**settings)
+    if word_pixels is not None:
+        for candidate in match['candidates']:
+            if candidate['candidate_type']!='word':continue
+            candidate['source_word_ranges']=[sorted([float(p[a]),float(p[b+1])])
+                for p,(a,b) in zip(word_pixels,candidate['logical_ranges'])]
     cosine=match['cosine']
     np.save(output/'cosine.npy',cosine)
     np.save(output/'alignment_scores.npy',match['rewards'])
@@ -899,6 +942,13 @@ def main(argv=None):
         kind=str if key=='alignment_mode' else int if isinstance(value,int) else float
         parser.add_argument('--'+key.replace('_','-'),type=kind,default=value)
     parser.add_argument('--use-strong-start-anchor',action=argparse.BooleanOptionalAction,default=False)
+    for key in ('word_vocabulary_path','word_max_nll','word_min_posterior','word_min_posterior_short',
+                'word_min_cosine','word_boundary_weight','word_lattice_temperature','word_visual_weight'):
+        parser.add_argument('--'+key.replace('_','-'),type=str if key=='word_vocabulary_path' else float,
+                            default=MATCH_DEFAULTS[key])
+    parser.add_argument('--word-keep-long-regions',action=argparse.BooleanOptionalAction,default=True)
+    for key in ('word_min_distinct_types','word_min_total_characters'):
+        parser.add_argument('--'+key.replace('_','-'),type=int,default=MATCH_DEFAULTS[key])
     for key,value in PATH_DEFAULTS.items():
         flag='--'+key.replace('_','-')
         if isinstance(value,bool):parser.add_argument(flag,action=argparse.BooleanOptionalAction,default=value)

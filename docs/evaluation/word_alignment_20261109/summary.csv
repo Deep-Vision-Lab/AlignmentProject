@@ -1,0 +1,2 @@
+method,positive_iou,positive_dice,precision,recall,positive_pairs,negative_pairs,negative_false_positive_pairs,negative_pair_denominator,negative_pair_fpr,negative_masked_area_fraction,candidate_limit_hits,positive_detected_pairs,positive_pair_detection_recall
+Image-only word verification,0.6843954889002448,0.7779209165671922,0.7551770280553547,0.8331970495624251,29,100,15,100,0.15,0.0353986914688889,84,27,0.9310344827586207

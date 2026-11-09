@@ -202,6 +202,8 @@ def tune(args, prepared_run=None):
     output = Path(args.output)
     if (output/'test/selection_used.json').exists(): raise ValueError('Selection was frozen for final test. Further tuning in this output is prohibited.')
     session,prepared,provenance = prepared_run if prepared_run is not None else build_cache(args,'val')
+    if provenance['baseline_settings']['decoder']=='word_dtw':
+        raise ValueError('Word verification uses scripts/eval/review_words.py; this tuner searches legacy local paths')
     manifest = stable_manifest(provenance,args)
     if (output/'run_manifest.json').exists() and json.loads((output/'run_manifest.json').read_text()) != manifest:
         raise ValueError('Run provenance/objective/search space changed; use a new output directory')

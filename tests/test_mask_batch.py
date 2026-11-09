@@ -16,7 +16,7 @@ from scripts.eval import tune_masks as tuning
 from evaluation_utils import EvaluationSession
 from dataset import file_hash
 from test_evaluation_notebook import evaluation_fixture
-from test_quantitative_masks import configure_fixture
+from test_quantitative_masks import configure_fixture,legacy_fixture_notebook
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -192,6 +192,7 @@ def test_bounded_journal_worker_resume_and_interrupted_trial_budget(evaluation_f
     env=dict(os.environ,PATH=str(fake)+':'+os.environ['PATH'],SLURM_JOB_ID='900001',
         SLURMD_NODENAME=socket.gethostname(),CONDA_DEFAULT_ENV='manucripts_align')
     command=[sys.executable,'scripts/eval/mask_batch.py','--dataset',str(data),'--checkpoint',str(checkpoint),
+        '--notebook',str(legacy_fixture_notebook(output)),
         '--split-manifest',str(manifest),'--output',str(output),'--device','cpu','--crop','checkpoint','--pair-source','dataset',
         '--stage1-trials','2','--stage2-trials','3','--max-negative-pair-fpr','1','--bootstrap','20']
     before=file_hash(checkpoint)

@@ -71,6 +71,14 @@ def pool_signature(checkpoint,settings):
         dtw.bidirectional_window_scores]
     source={function.__name__:hashlib.sha256(inspect.getsource(function).encode()).hexdigest() for function in functions}
     source['candidate_construction']=hashlib.sha256(inspect.getsource(candidates.decode_candidates).split('    regions=select_candidates')[0].encode()).hexdigest()
+    if settings['decoder']=='word_dtw':
+        import word_alignment as words
+        from word_alignment import load_vocabulary
+        for function in (words._word_spots,words.word_lattice,words.image_word_boundaries,
+                         words.full_span_path,words.long_visual_passages):
+            source['word_'+function.__name__]=hashlib.sha256(inspect.getsource(function).encode()).hexdigest()
+        source['word_construction']=hashlib.sha256(inspect.getsource(words.word_regions).split('    regions=select_word_candidates')[0].encode()).hexdigest()
+        source['word_vocabulary']=q.identity(load_vocabulary(settings['word_vocabulary_path']))
     generating={key:value for key,value in settings.items() if key not in CANDIDATE_REVALIDATION_KEYS or key=='split_gap_candidates'}
     return q.identity(dict(checkpoint=file_hash(checkpoint),settings=generating,source=source,matcher=MATCH_VERSION))
 

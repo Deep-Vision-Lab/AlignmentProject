@@ -1,15 +1,17 @@
 # A–B, B–C and A–C qualitative evaluation
 
-Both notebooks use `real_abc_balanced_optional_space_20261108` with the final
-validation-selected parameters. They embed final predictions for both supplied
-cases and fresh inference on the fixed 15-example gallery.
+Both notebooks use `real_abc_balanced_optional_space_20261108` with image-only
+word verification, full-line preprocessing and fresh figures for all three book
+pairs. The checkpoint records 1,107 training lines from each of A, B and C.
+Figure captions distinguish an individual line’s saved split from its book’s
+training exposure. A line outside the balanced subset does not mean its book
+was absent from training.
 
-See the [final quantitative report](final_fragments_evaluation.md) for all metric
-values and the two case diagnoses. Test FPR is 17%, above the requested 10%
-budget. The second supplied case remains partially recovered. The final gallery
-is [`final_fragments_20261109/fixed_examples`](../Results/Evaluation/final_fragments_20261109/fixed_examples/index.html).
-The 15 deliberately selected examples include mixed checkpoint splits; their
-scores are illustrations, not an independent population estimate.
+See the [current word evaluation](word_alignment_evaluation.md) for metrics and
+both supplied cases. The current gallery is
+[`word_alignment_20261109/fixed_examples`](../Results/Evaluation/word_alignment_20261109/fixed_examples/index.html).
+The 15 fixed illustrations include mixed splits and are not a separate held-out
+performance estimate. Test false detections are 15/100, above the 10% target.
 
 The catalog and original selection procedure below are historical context.
 Those original ranking constraints do not describe the final model's scores.

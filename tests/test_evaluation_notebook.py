@@ -466,7 +466,7 @@ def test_content_crop_reaches_model_input_and_all_representations(evaluation_fix
     with pytest.raises(ValueError, match='outside saved'):
         session.get_line_features(dict(pair['sides'][0], image=str(root / 'A0.png')))
     setup = notebook_source('# MODEL/DATA SETUP.')
-    assert 'EVALUATION_CROP = "content"' in setup
+    assert 'EVALUATION_CROP = "none"' in setup
     assert 'crop_override=EVALUATION_CROP' in setup
     assert 'NotebookBoundingBoxSession' not in setup
 
@@ -819,6 +819,7 @@ def test_cached_samples_threshold_sweeps_and_independent_slots(evaluation_fixtur
     exec(compile(ast.Module(body=[settings_function], type_ignores=[]), '<settings>', 'exec'), namespace)
     # This test compares the cosine affine baseline with the repeat decoder.
     namespace['SIMILARITY_MODE'] = namespace['CANDIDATE_SIMILARITY_MODE'] = 'cosine'
+    namespace['ALIGNMENT_MODE'] = 'local_repeat_dtw'
     session.settings = namespace['current_match_settings']()
     exec(notebook_source('KEY_METRICS ='), namespace)
     sample_slots = namespace['sample_slots']

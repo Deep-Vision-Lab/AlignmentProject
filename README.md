@@ -1,10 +1,10 @@
 # AlignmentProject — simple alignment core
 
-**9 November final evaluation:** [final metrics and both supplied cases](docs/final_fragments_evaluation.md).
-Both evaluation notebooks show only final predictions from the optional-space
-checkpoint. Test FPR is 17%, above the requested 10% budget; the second supplied
-case remains partially recovered. Reload the notebook from disk
-before restarting its kernel to see edited cells.
+**9 November image-only word evaluation:** [A–B, A–C, B–C metrics and supplied cases](docs/word_alignment_evaluation.md).
+The optional-space checkpoint was trained on all three books. Both notebooks
+use whole-word verification for short masks and retain reliable long visual
+passages. Current test FPR is 15%, above the requested 10% budget. Reopen the
+notebooks from disk before restarting their kernels to load the edited cells.
 
 A standalone PyTorch pipeline for weakly supervised Arabic manuscript alignment.
 This refactor lives on `refactor/simple-alignment-core`; historical implementations

@@ -1,5 +1,10 @@
 # Optional-space evaluation
 
+For the current image-to-image decoder and A/B/C metrics, see
+[image-only word verification](word_alignment_evaluation.md). The checkpoint
+records training on all three books. The recurrence details below remain the
+checkpoint-faithful transcript diagnostics.
+
 Both notebooks use `Weights/real_abc_balanced_optional_space_20261108/checkpoint_best.pt`
 (epoch 20). Its saved configuration contains `space_mode=optional`,
 `space_skip_penalty_ratio=1.0`, and `dtw_normalization=aligned_mean`.

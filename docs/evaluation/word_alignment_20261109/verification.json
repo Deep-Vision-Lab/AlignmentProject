@@ -1,0 +1,28 @@
+{
+  "tests": {
+    "passed": 362,
+    "subtests_passed": 7,
+    "command": ".venv-mask-eval/bin/python -m pytest -q --tb=short"
+  },
+  "notebooks": {
+    "exact_final_settings": true,
+    "code_cells_compile": true,
+    "final_figures": {
+      "model_evaluation": 17,
+      "book_pairs_qualitative": 17
+    }
+  },
+  "gallery": {
+    "book_training_counts": {
+      "A": 1107,
+      "B": 1107,
+      "C": 1107
+    },
+    "exact_checkpoint_and_settings": true
+  },
+  "development_regressions": {
+    "reordered": true,
+    "three_words": true
+  },
+  "limitation": "Test presumed-negative FPR is 15%, above the requested 10% budget. C test counts are small."
+}

@@ -421,10 +421,29 @@ def predict_cached_pair(session, pair, lines, representation='fused', *, setting
     """
     options = resolved_match_settings(session.settings if settings is None else settings)
     needs_letters = options['similarity_mode'] == 'letter_evidence' or options['verify_with_letter_evidence']
+    boundaries=None;pixels=None
+    if options['decoder']=='word_dtw':
+        from word_alignment import image_word_boundaries, load_vocabulary
+        metadata=load_vocabulary(options['word_vocabulary_path'])
+        expected=getattr(session,'checkpoint_sha256',None)
+        if expected and metadata['checkpoint_sha256']!=expected:
+            raise ValueError('Word vocabulary belongs to a different checkpoint')
+        extracted=[]
+        for side,line in zip(pair['sides'],lines):
+            if 'word_boundaries' not in line:
+                line['word_boundaries']=image_word_boundaries(side['image'],line['geometry'],line['physical'],
+                    session.config.window_width,session.config.window_stride)
+            extracted.append(line['word_boundaries'])
+        boundaries=[r[0] for r in extracted];pixels=[r[1] for r in extracted]
     match = match_features(*(r['features'][representation] for r in lines),
         *(r['physical'] for r in lines), text_encoder=session.text_encoder if needs_letters else None,
-        config=session.config, precomputed_cosine=cosine,
+        config=session.config, precomputed_cosine=cosine,word_boundaries=boundaries,
         **options)
+    if pixels is not None:
+        for c in match['candidates']:
+            if c['candidate_type']!='word':continue
+            c['source_word_ranges']=[sorted([float(p[a]),float(p[b+1])])
+                for p,(a,b) in zip(pixels,c['logical_ranges'])]
     masks = [region_mask(match['regions'], side, r['geometry'], session.config.window_width,
                          session.config.window_stride) for side,r in enumerate(lines)]
     return dict(pair=pair, representation=representation, lines=lines, cosine=match['cosine'],
@@ -432,6 +451,8 @@ def predict_cached_pair(session, pair, lines, representation='fused', *, setting
 
 
 CANDIDATE_REVALIDATION_KEYS = {
+    'word_max_nll','word_min_posterior','word_min_posterior_short','word_min_cosine','word_visual_weight',
+    'word_min_distinct_types','word_min_total_characters',
     'normal_min_distinct_a','normal_min_distinct_b','normal_min_matched_pairs','normal_min_mean_cosine',
     'allow_short_regions','short_min_distinct_a','short_min_distinct_b','short_min_matched_pairs',
     'short_min_mean_cosine','short_min_median_cosine','short_min_mean_reward','short_min_path_density',
@@ -463,6 +484,18 @@ def revalidate_cached_candidates(session, prediction, settings):
         raise ValueError('Cached pool contains no gap fragments; run full prediction')
     if prediction['match']['implementation_version'] != MATCH_VERSION:
         raise ValueError('Candidate cache belongs to another matcher version')
+    if options['decoder']=='word_dtw':
+        from word_alignment import select_word_candidates
+        if changed-{'word_max_nll','word_min_posterior','word_min_posterior_short','word_min_cosine','word_visual_weight',
+                    'word_min_distinct_types','word_min_total_characters'}:
+            raise ValueError('Word candidate generation settings changed; run full prediction')
+        candidates=[dict(c) for c in prediction['match']['candidates']]
+        regions=select_word_candidates(candidates,options)
+        match=dict(prediction['match'],candidates=candidates,regions=regions,settings=options,
+                   rejected=[c for c in candidates if not c['accepted']])
+        masks=[region_mask(regions,i,line['geometry'],session.config.window_width,session.config.window_stride)
+               for i,line in enumerate(prediction['lines'])]
+        return dict(prediction,match=match,masks=masks,settings=options)
     candidates = []
     for original in prediction['match']['candidates']:
         if original.get('fragmented_at_gaps') and not options['split_gap_candidates']:
@@ -492,6 +525,7 @@ def print_candidate_diagnostics(result, max_rejected=5):
     print('Accepted regions:',len(match['regions']))
     print('Evaluation category:',result.get('metrics',{}).get('evaluation_category','unavailable'))
     fields=('candidate_id','candidate_type','status','score','score_per_match','matching_reward',
+        'word','word_nll','word_posteriors','word_pair_posterior','word_selection_score',
         'gap_penalty','repeat_penalty','support_a','support_b','matched_pairs','required_support_a',
         'required_support_b','required_matched_pairs','mean_cosine','median_cosine','min_cosine',
         'mean_reward','median_reward','path_density','gap_fraction','horizontal_repeats','vertical_repeats',
