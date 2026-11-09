@@ -1,0 +1,117 @@
+{
+  "row": {
+    "review_id": "A_B_example_03",
+    "pair_id": "pair_000063__A_line_002__B_line_010",
+    "book_pair": "A_B",
+    "saved_line_splits": {
+      "A": "train",
+      "B": "train"
+    },
+    "A": {
+      "line_id": "3158466___053-2__line_002",
+      "image_path": "alignedPairs/A_B/imagesA/pair_000063__A_line_002__B_line_010.png",
+      "mask_path": "alignedPairs/A_B/masksA/pair_000063__A_line_002__B_line_010.png"
+    },
+    "B": {
+      "line_id": "3249138__0051-2__line_010",
+      "image_path": "alignedPairs/A_B/imagesB/pair_000063__A_line_002__B_line_010.png",
+      "mask_path": "alignedPairs/A_B/masksB/pair_000063__A_line_002__B_line_010.png"
+    }
+  },
+  "results": {
+    "coarse": {
+      "iou": 0.0,
+      "words": []
+    },
+    "strong_pair_nll0.55_cos0.7": {
+      "iou": 0.9494826099453866,
+      "words": [
+        "الذين",
+        "كفروا"
+      ]
+    },
+    "strong_pair_nll0.55_cos0.75": {
+      "iou": 0.9494826099453866,
+      "words": [
+        "الذين",
+        "كفروا"
+      ]
+    },
+    "strong_pair_nll0.55_cos0.8": {
+      "iou": 0.0,
+      "words": []
+    },
+    "strong_pair_nll0.6_cos0.7": {
+      "iou": 0.9494826099453866,
+      "words": [
+        "الذين",
+        "كفروا"
+      ]
+    },
+    "strong_pair_nll0.6_cos0.75": {
+      "iou": 0.9494826099453866,
+      "words": [
+        "الذين",
+        "كفروا"
+      ]
+    },
+    "strong_pair_nll0.6_cos0.8": {
+      "iou": 0.0,
+      "words": []
+    },
+    "strong_pair_nll0.7_cos0.7": {
+      "iou": 0.9494826099453866,
+      "words": [
+        "الذين",
+        "كفروا"
+      ]
+    },
+    "strong_pair_nll0.7_cos0.75": {
+      "iou": 0.9494826099453866,
+      "words": [
+        "الذين",
+        "كفروا"
+      ]
+    },
+    "strong_pair_nll0.7_cos0.8": {
+      "iou": 0.0,
+      "words": []
+    },
+    "strong_pair_nll0.8_cos0.7": {
+      "iou": 0.9494826099453866,
+      "words": [
+        "الذين",
+        "كفروا"
+      ]
+    },
+    "strong_pair_nll0.8_cos0.75": {
+      "iou": 0.9494826099453866,
+      "words": [
+        "الذين",
+        "كفروا"
+      ]
+    },
+    "strong_pair_nll0.8_cos0.8": {
+      "iou": 0.0,
+      "words": []
+    },
+    "strong_pair_nll1.0_cos0.7": {
+      "iou": 0.9494826099453866,
+      "words": [
+        "الذين",
+        "كفروا"
+      ]
+    },
+    "strong_pair_nll1.0_cos0.75": {
+      "iou": 0.9494826099453866,
+      "words": [
+        "الذين",
+        "كفروا"
+      ]
+    },
+    "strong_pair_nll1.0_cos0.8": {
+      "iou": 0.0,
+      "words": []
+    }
+  }
+}

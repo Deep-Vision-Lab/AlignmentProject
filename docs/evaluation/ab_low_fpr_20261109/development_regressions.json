@@ -1,0 +1,290 @@
+{
+  "coarse": [
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "iou": 0.8949980881707333,
+      "words": [
+        "الله"
+      ]
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_005__B_line_002",
+      "iou": 0.7857474787149883,
+      "words": [
+        "ابتغا",
+        "الله",
+        "من"
+      ]
+    }
+  ],
+  "strong_pair_nll0.55_cos0.7": [
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "iou": 0.8949980881707333,
+      "words": [
+        "الله"
+      ]
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_005__B_line_002",
+      "iou": 0.7857474787149883,
+      "words": [
+        "ابتغا",
+        "الله",
+        "من"
+      ]
+    }
+  ],
+  "strong_pair_nll0.55_cos0.75": [
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "iou": 0.8949980881707333,
+      "words": [
+        "الله"
+      ]
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_005__B_line_002",
+      "iou": 0.7857474787149883,
+      "words": [
+        "ابتغا",
+        "الله",
+        "من"
+      ]
+    }
+  ],
+  "strong_pair_nll0.55_cos0.8": [
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "iou": 0.8949980881707333,
+      "words": [
+        "الله"
+      ]
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_005__B_line_002",
+      "iou": 0.7857474787149883,
+      "words": [
+        "ابتغا",
+        "الله",
+        "من"
+      ]
+    }
+  ],
+  "strong_pair_nll0.6_cos0.7": [
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "iou": 0.8949980881707333,
+      "words": [
+        "الله"
+      ]
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_005__B_line_002",
+      "iou": 0.7857474787149883,
+      "words": [
+        "ابتغا",
+        "الله",
+        "من"
+      ]
+    }
+  ],
+  "strong_pair_nll0.6_cos0.75": [
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "iou": 0.8949980881707333,
+      "words": [
+        "الله"
+      ]
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_005__B_line_002",
+      "iou": 0.7857474787149883,
+      "words": [
+        "ابتغا",
+        "الله",
+        "من"
+      ]
+    }
+  ],
+  "strong_pair_nll0.6_cos0.8": [
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "iou": 0.8949980881707333,
+      "words": [
+        "الله"
+      ]
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_005__B_line_002",
+      "iou": 0.7857474787149883,
+      "words": [
+        "ابتغا",
+        "الله",
+        "من"
+      ]
+    }
+  ],
+  "strong_pair_nll0.7_cos0.7": [
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "iou": 0.8949980881707333,
+      "words": [
+        "الله"
+      ]
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_005__B_line_002",
+      "iou": 0.7857474787149883,
+      "words": [
+        "ابتغا",
+        "الله",
+        "من"
+      ]
+    }
+  ],
+  "strong_pair_nll0.7_cos0.75": [
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "iou": 0.8949980881707333,
+      "words": [
+        "الله"
+      ]
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_005__B_line_002",
+      "iou": 0.7857474787149883,
+      "words": [
+        "ابتغا",
+        "الله",
+        "من"
+      ]
+    }
+  ],
+  "strong_pair_nll0.7_cos0.8": [
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "iou": 0.8949980881707333,
+      "words": [
+        "الله"
+      ]
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_005__B_line_002",
+      "iou": 0.7857474787149883,
+      "words": [
+        "ابتغا",
+        "الله",
+        "من"
+      ]
+    }
+  ],
+  "strong_pair_nll0.8_cos0.7": [
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "iou": 0.8949980881707333,
+      "words": [
+        "الله"
+      ]
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_005__B_line_002",
+      "iou": 0.7857474787149883,
+      "words": [
+        "ابتغا",
+        "الله",
+        "من"
+      ]
+    }
+  ],
+  "strong_pair_nll0.8_cos0.75": [
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "iou": 0.8949980881707333,
+      "words": [
+        "الله"
+      ]
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_005__B_line_002",
+      "iou": 0.7857474787149883,
+      "words": [
+        "ابتغا",
+        "الله",
+        "من"
+      ]
+    }
+  ],
+  "strong_pair_nll0.8_cos0.8": [
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "iou": 0.8949980881707333,
+      "words": [
+        "الله"
+      ]
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_005__B_line_002",
+      "iou": 0.7857474787149883,
+      "words": [
+        "ابتغا",
+        "الله",
+        "من"
+      ]
+    }
+  ],
+  "strong_pair_nll1.0_cos0.7": [
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "iou": 0.8949980881707333,
+      "words": [
+        "الله"
+      ]
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_005__B_line_002",
+      "iou": 0.7857474787149883,
+      "words": [
+        "ابتغا",
+        "الله",
+        "من"
+      ]
+    }
+  ],
+  "strong_pair_nll1.0_cos0.75": [
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "iou": 0.8949980881707333,
+      "words": [
+        "الله"
+      ]
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_005__B_line_002",
+      "iou": 0.7857474787149883,
+      "words": [
+        "ابتغا",
+        "الله",
+        "من"
+      ]
+    }
+  ],
+  "strong_pair_nll1.0_cos0.8": [
+    {
+      "sample_id": "alignedPairs:pair_000016__A_line_014__B_line_003",
+      "iou": 0.8949980881707333,
+      "words": [
+        "الله"
+      ]
+    },
+    {
+      "sample_id": "alignedPairs:pair_000028__A_line_005__B_line_002",
+      "iou": 0.7857474787149883,
+      "words": [
+        "ابتغا",
+        "الله",
+        "من"
+      ]
+    }
+  ]
+}

@@ -11,6 +11,36 @@ from evaluation_utils import predict_cached_pair, revalidate_cached_candidates
 from parameters import Config
 from text_embedding import OrthogonalCharEmbedding
 from word_alignment import full_span_path, word_lattice
+from word_alignment import select_word_candidates
+
+
+def test_two_strong_words_can_corroborate_without_a_weak_third_fragment():
+    from copy import deepcopy
+    options=resolved_match_settings(dict(require_corroborated_short_regions=True,
+        word_min_distinct_types=3,word_min_total_characters=9,
+        normal_min_distinct_a=9,normal_min_distinct_b=9,
+        word_max_nll=1.6,word_min_cosine=.6))
+    candidates=[]
+    for word,lo,hi in [('الذين',0,4),('كفروا',5,9)]:
+        candidates.append(dict(candidate_type='word',word=word,word_nll=[.4,.5],
+            word_pair_posterior=.4,mean_cosine=.8,logical_ranges=[[lo,hi],[lo,hi]],
+            supported_physical=[list(range(lo,hi+1))]*2,filled_physical=[[],[]]))
+    assert not select_word_candidates(deepcopy(candidates),options)
+    enabled=dict(options,word_strong_pair_max_nll=.6,word_strong_pair_min_cosine=.75)
+    assert {c['word'] for c in select_word_candidates(deepcopy(candidates),enabled)}=={'الذين','كفروا'}
+    weak=deepcopy(candidates);weak[0]['word_nll']=[.4,.7]
+    assert not select_word_candidates(weak,enabled)
+    weak=deepcopy(candidates);weak[0]['mean_cosine']=.7
+    assert not select_word_candidates(weak,enabled)
+    assert not select_word_candidates(deepcopy(candidates[:1]),enabled)
+    # The exception does not bypass combined character/support requirements.
+    assert not select_word_candidates(deepcopy(candidates),dict(enabled,word_min_total_characters=11))
+    assert not select_word_candidates(deepcopy(candidates),dict(enabled,normal_min_distinct_a=11))
+    # Enabling it cannot alter a pair that already passed ordinary corroboration.
+    ordinary=dict(options,word_min_distinct_types=2)
+    before=select_word_candidates(deepcopy(candidates),ordinary)
+    after=select_word_candidates(deepcopy(candidates),dict(ordinary,word_strong_pair_max_nll=.6,word_strong_pair_min_cosine=.75))
+    assert [c['logical_ranges'] for c in before]==[c['logical_ranges'] for c in after]
 
 
 @pytest.fixture

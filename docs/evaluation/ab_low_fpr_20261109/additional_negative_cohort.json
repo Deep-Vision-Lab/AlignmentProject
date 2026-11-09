@@ -1,0 +1,4502 @@
+[
+  {
+    "sample_id": "Unalignedlines:ced4475d9a2625ec7d4c",
+    "image_sha256": [
+      "7c3d98d5c5348cdbd92d80975bc2430902932132b43c9fd0252b8719cbb51642",
+      "cf566e926d53004fc79fa3188c2edbd06f8a081bd4b3ffd9d2216921c8a5b293"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:2307372f6aadc6116c41",
+    "image_sha256": [
+      "68ccbc6cd868137aeba8e49b3712a88f8d9fa22142e360ddcc6412866bfc9914",
+      "84b42c7cc035ab760312bfcbbaaad6ea1a9a0cbd64ec6da38a26fc522113ce43"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_012.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:07b1ea55182b29a2189a",
+    "image_sha256": [
+      "87c6deda7ce5c8f6ab0b334417306e26bf3132454312ec321250293fda026294",
+      "5c7ae1416eaf6521bb95ad4c3850ee788ac817718b105b493d4d208547812e9b"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:f0a0cd9a3c5d720ad0c7",
+    "image_sha256": [
+      "d5046abaab526daf5987261b0a53c367c12846e7ca955787c6dd36bd1719c4c4",
+      "9659114d8b5ebb72bf67c6890e8c5063a7984d2c23bd1604bbc7ed448e14a76c"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:54637e79178c86615129",
+    "image_sha256": [
+      "25d3dc7de580d01d42ebb10c0c7a3890399d83144d1384a41286f42b6aa9952b",
+      "9659114d8b5ebb72bf67c6890e8c5063a7984d2c23bd1604bbc7ed448e14a76c"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:4a5a80a458baf95a6fa7",
+    "image_sha256": [
+      "0ef9467443cb5182f15938479ab6de80412f1158996bae2b32df7c17a3216c82",
+      "dc3be9d146457d6c21f8bee4abc4ee573b8eabd2f2eabce23e57f20f5f3469c3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___027-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:437bad92a736cef73fcb",
+    "image_sha256": [
+      "63a32e0ceb382c460bb4ed09496dd84c992cc9735eba85c85e63856863cb4713",
+      "9cc6a7cac9fd3eb1b3c96b82c6ee9907dde2b0521ec77e19cd708fbfadbc81dd"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_010.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:2b6c0579a72d50ea048c",
+    "image_sha256": [
+      "7c3d98d5c5348cdbd92d80975bc2430902932132b43c9fd0252b8719cbb51642",
+      "ffd22541df93b8dda0476146758ceabf4c0a93ff1a77585ed9f18dd18b0dba23"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:eebfa2b7d7fb134ead02",
+    "image_sha256": [
+      "86e10180c4cd64589afcddc0620e2a4659833717ff83b4a63e093b273de07fd6",
+      "1d0713811f47a3424efcde858f97e81934dfe0888bc9db68d40145d092a3c7b1"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___027-1__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_012.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:204b8b8c9364d8a12bf1",
+    "image_sha256": [
+      "132db335469467ae7fedb4f7757d0e16c3c898b14562a1a948648916f2b236f3",
+      "84b42c7cc035ab760312bfcbbaaad6ea1a9a0cbd64ec6da38a26fc522113ce43"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:da57b05234107f5269f1",
+    "image_sha256": [
+      "65e90aa9a72b4b233223f98a04b65fb26268bd37f4353cf568c43c3ebe93864e",
+      "9b3c21e3c7970ebfb7685573e96dfbb6f158e3532503b3378f41f0686a8f0d22"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:f08434d3ba14539d44a4",
+    "image_sha256": [
+      "a53705678e3b68537e091207e7e5a53570cf194bcb4b6b02416cdad9abd6251a",
+      "3ccf847f8c65e0bcde863ccffd00577d62eba0d680a45f44c09f224929f86ad6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:abccbec238adf5c842b8",
+    "image_sha256": [
+      "4a8e7c551030ba69ac80787f9d019672f32644e9cf12a8078a7d094c4f7d89a9",
+      "ce846b5f3b6f9ebd257691c998ce4f3688bb750b40b8bf1140d946ac5c5ba744"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:1bbf8a4b71e424b9f011",
+    "image_sha256": [
+      "791f60584d2c1d63770b90050a53ea0aad23384637daa7161d89ff12f4f0179a",
+      "84b42c7cc035ab760312bfcbbaaad6ea1a9a0cbd64ec6da38a26fc522113ce43"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_015.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:bc854f729d6e00053e54",
+    "image_sha256": [
+      "2f4839ceb3d054421a76427be296cd87aaa189db6df9b8d6cdc51d4c297271d1",
+      "e8c3d6a15f8bf63267722c1b4aada6b80f9b4eb8480cb3681c3b6c8f6e890bed"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:852a5e38ff85d5c709d4",
+    "image_sha256": [
+      "cd4ca99d4ec6fa8c9f6e53e1a4b7d44edba7e6fa27e6332c8d6fddf5bcc4dbf5",
+      "e433c26068ee805f85fe91a68d3bafb4d888441d3ada5dddcad5230002ac7d32"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:098b1417d475e58f9eea",
+    "image_sha256": [
+      "1f510e887d40d03ade99fce2e3c560ad3366f71e1d73500eadc4f934a8e73c7b",
+      "7776333daea23fc98c380f45c2992d001912dbc07a204b2eb38f283d0517669e"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:0937128894092a1eb25e",
+    "image_sha256": [
+      "68ccbc6cd868137aeba8e49b3712a88f8d9fa22142e360ddcc6412866bfc9914",
+      "9b3c21e3c7970ebfb7685573e96dfbb6f158e3532503b3378f41f0686a8f0d22"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_012.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:1d4c75c9ad70deff6e5d",
+    "image_sha256": [
+      "25030faaf89368aa663180e351ccde2be061a0bc598228dd6a4c7ffc802a556a",
+      "40dca21e6d4d9ef337c50b0124925f4fceb48d4686b02d4563d566d79eb8b2e3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:417c88340d813401b1af",
+    "image_sha256": [
+      "791f60584d2c1d63770b90050a53ea0aad23384637daa7161d89ff12f4f0179a",
+      "9cc6a7cac9fd3eb1b3c96b82c6ee9907dde2b0521ec77e19cd708fbfadbc81dd"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_015.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:45b7cd765f5351954f83",
+    "image_sha256": [
+      "791f60584d2c1d63770b90050a53ea0aad23384637daa7161d89ff12f4f0179a",
+      "d7d99f1e6a87ed7bcaf3eefb64a81173a29d9305444486576a90f4faa2738eb9"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_015.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:9fd393b059b692d32e7e",
+    "image_sha256": [
+      "25d3dc7de580d01d42ebb10c0c7a3890399d83144d1384a41286f42b6aa9952b",
+      "dc3be9d146457d6c21f8bee4abc4ee573b8eabd2f2eabce23e57f20f5f3469c3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:c021aa080cdcce05b250",
+    "image_sha256": [
+      "a9e947f83b357a0b00a15a29f7b338a0447c9773a029deefb315ceb25a2e9c6d",
+      "84b42c7cc035ab760312bfcbbaaad6ea1a9a0cbd64ec6da38a26fc522113ce43"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:087bdb3dad7b18cd32e9",
+    "image_sha256": [
+      "216e0d85be4bf3918c0c8137d4c4df742ac37676070ff4d00f995aa831512296",
+      "cf566e926d53004fc79fa3188c2edbd06f8a081bd4b3ffd9d2216921c8a5b293"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:b2a3baa6b515aef5476d",
+    "image_sha256": [
+      "cd4ca99d4ec6fa8c9f6e53e1a4b7d44edba7e6fa27e6332c8d6fddf5bcc4dbf5",
+      "40dca21e6d4d9ef337c50b0124925f4fceb48d4686b02d4563d566d79eb8b2e3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:3b9bf08f05c1e7f7ee7c",
+    "image_sha256": [
+      "132db335469467ae7fedb4f7757d0e16c3c898b14562a1a948648916f2b236f3",
+      "9b3c21e3c7970ebfb7685573e96dfbb6f158e3532503b3378f41f0686a8f0d22"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:e850685b803029aed68b",
+    "image_sha256": [
+      "b03cf0e2287d1d890358810b6180fb32b93e11c8cf701ae7e47c5df9a0e44cfc",
+      "d7d99f1e6a87ed7bcaf3eefb64a81173a29d9305444486576a90f4faa2738eb9"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___022-1__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:d21e5f6196123fe213e7",
+    "image_sha256": [
+      "09b68822b77d0cd4ba799d5aedb01f5021e51e630bbda1f7a234ca43d54f87f0",
+      "db479f4d8542391d40f90b80ad542bfd1de7917af76d758e5827143bae523820"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___022-1__line_009.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:e30d5bf50e6f36aa06e5",
+    "image_sha256": [
+      "937104fc34086887ecf881d4419819eeea669e15acdfc27e534574c5cf5a46a8",
+      "7776333daea23fc98c380f45c2992d001912dbc07a204b2eb38f283d0517669e"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:84b4fa74dc44c29cf984",
+    "image_sha256": [
+      "e4868db6a9fab448762744fe19a2ea1b65c2f3273c4b586a84690292a0dce271",
+      "4f5e8f4a736a82ec7f7329730b8197690612bfe288fb794eabdc4aa4e82c85e0"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_015.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:4326d5e4d284c4ea6e1d",
+    "image_sha256": [
+      "d170ec47fe8fcb400410c7ed0677f37500109158c1ba88ba8798f18052f072e6",
+      "8b01633f54546e053ee6adb83867a56685437f38dc8a69c2ca5ada6654ee36e6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_015.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_009.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:8d04b7618905a694c7c0",
+    "image_sha256": [
+      "2e81b3be7119faa08162cb2ec70b82760b8948f0c3b0ef4b0dc4b9a85224c484",
+      "3ccf847f8c65e0bcde863ccffd00577d62eba0d680a45f44c09f224929f86ad6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:bc794c7a08c59a292322",
+    "image_sha256": [
+      "1f510e887d40d03ade99fce2e3c560ad3366f71e1d73500eadc4f934a8e73c7b",
+      "5c7ae1416eaf6521bb95ad4c3850ee788ac817718b105b493d4d208547812e9b"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:5536997923c4aeca31cc",
+    "image_sha256": [
+      "50f1a848fd06b4627a938bc171c8801ad9ae70888edb99958815af4c5d228abc",
+      "0f3c166eefb56235cbe0f2295814d0234ae777265b7ad5c7b4541b7ab8f0e685"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___057-1__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:01c389f54008da1c44a3",
+    "image_sha256": [
+      "63a32e0ceb382c460bb4ed09496dd84c992cc9735eba85c85e63856863cb4713",
+      "cc5f2f19d88f9a38bacbd51e443a87cbcd0b60bcccd65a8d8924f05ce6c50e99"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_010.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:f76b4f2356ff7d12dbab",
+    "image_sha256": [
+      "65e90aa9a72b4b233223f98a04b65fb26268bd37f4353cf568c43c3ebe93864e",
+      "e8c3d6a15f8bf63267722c1b4aada6b80f9b4eb8480cb3681c3b6c8f6e890bed"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:316e0dc5dca1e13fdf28",
+    "image_sha256": [
+      "ea76329abb6d94758bd3ee6eb29043b7c15a2278d44307f4d9420a211dc7cca5",
+      "3309cdb8be6818ee0606ca3ad1a964e3f34e7b85fb35daaf43854795dc8a8b70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_002.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:e113a2f6f43f80bfd244",
+    "image_sha256": [
+      "d5046abaab526daf5987261b0a53c367c12846e7ca955787c6dd36bd1719c4c4",
+      "7776333daea23fc98c380f45c2992d001912dbc07a204b2eb38f283d0517669e"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:853f51ce433fc4a5626f",
+    "image_sha256": [
+      "216e0d85be4bf3918c0c8137d4c4df742ac37676070ff4d00f995aa831512296",
+      "7776333daea23fc98c380f45c2992d001912dbc07a204b2eb38f283d0517669e"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:683227e6d73d284d1924",
+    "image_sha256": [
+      "2f4839ceb3d054421a76427be296cd87aaa189db6df9b8d6cdc51d4c297271d1",
+      "440c7820497bf95a0d810f563a5751dfb43b4bb5f61ced8ce5ef8f09ebc1ca60"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:302243a166436021abf5",
+    "image_sha256": [
+      "d5046abaab526daf5987261b0a53c367c12846e7ca955787c6dd36bd1719c4c4",
+      "cf566e926d53004fc79fa3188c2edbd06f8a081bd4b3ffd9d2216921c8a5b293"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:405e9463b7176797da48",
+    "image_sha256": [
+      "87c6deda7ce5c8f6ab0b334417306e26bf3132454312ec321250293fda026294",
+      "a1f7c1d38fc40071e3c5dcdf8912beae491a6370382a7061fc7c4700ca88fa70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:f8440c0a65830e9086d1",
+    "image_sha256": [
+      "09b68822b77d0cd4ba799d5aedb01f5021e51e630bbda1f7a234ca43d54f87f0",
+      "d7d99f1e6a87ed7bcaf3eefb64a81173a29d9305444486576a90f4faa2738eb9"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___022-1__line_009.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:67da97360ca31f4b8bb2",
+    "image_sha256": [
+      "132db335469467ae7fedb4f7757d0e16c3c898b14562a1a948648916f2b236f3",
+      "1d0713811f47a3424efcde858f97e81934dfe0888bc9db68d40145d092a3c7b1"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_012.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:1d2ada77d18a4f9e36aa",
+    "image_sha256": [
+      "132db335469467ae7fedb4f7757d0e16c3c898b14562a1a948648916f2b236f3",
+      "504cb3107f53a5ce8d81f993919f31b6c2d938c24c4388b5f2e286d9f562eb44"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_006.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:753cda7556e22931a8b9",
+    "image_sha256": [
+      "d170ec47fe8fcb400410c7ed0677f37500109158c1ba88ba8798f18052f072e6",
+      "e433c26068ee805f85fe91a68d3bafb4d888441d3ada5dddcad5230002ac7d32"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_015.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:1df8acba73c560ba8e17",
+    "image_sha256": [
+      "2bab64b17a8fc78921b3fce4dd7bea3d2205f7ba7dcf7759a0015e03160b8959",
+      "e433c26068ee805f85fe91a68d3bafb4d888441d3ada5dddcad5230002ac7d32"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___057-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:6e20fc29074a2a2f3137",
+    "image_sha256": [
+      "78f76c2c1f7bbdec36ea707c253ece649f432bd302497836c9f2437d062eaf05",
+      "4f5e8f4a736a82ec7f7329730b8197690612bfe288fb794eabdc4aa4e82c85e0"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_009.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:69725186931ae4f7c4e7",
+    "image_sha256": [
+      "7e696e600899777e102c83e5d817fdb29bc6dc3fdc60baba50c6f20c3c7ac5f4",
+      "5c7ae1416eaf6521bb95ad4c3850ee788ac817718b105b493d4d208547812e9b"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:c07881a6bda130d90907",
+    "image_sha256": [
+      "bfa0f028629b9ea542528bf3d55ef0bf6bc0e2771b6abb2eabc6939844a0e68c",
+      "84b42c7cc035ab760312bfcbbaaad6ea1a9a0cbd64ec6da38a26fc522113ce43"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:509b05e48dd728c57095",
+    "image_sha256": [
+      "7c3d98d5c5348cdbd92d80975bc2430902932132b43c9fd0252b8719cbb51642",
+      "9cc6a7cac9fd3eb1b3c96b82c6ee9907dde2b0521ec77e19cd708fbfadbc81dd"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:0d8a35379365963baf83",
+    "image_sha256": [
+      "4bd05849a886362664719ae02d39655213470e0f19c4426dc00f31a0b050b99f",
+      "40dca21e6d4d9ef337c50b0124925f4fceb48d4686b02d4563d566d79eb8b2e3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_009.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:ec0a9c3905068661ccd7",
+    "image_sha256": [
+      "45b93ad30158d0426d4254283a4c032f5c9f3916767e0a6afc8ce1ff36055bda",
+      "0f3c166eefb56235cbe0f2295814d0234ae777265b7ad5c7b4541b7ab8f0e685"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_001.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:8fd8780a05046d3b8850",
+    "image_sha256": [
+      "e79fad512bb9933c8ad8990da142d3260bcaa8e54d83f9562a8ac9a1c8c76358",
+      "3309cdb8be6818ee0606ca3ad1a964e3f34e7b85fb35daaf43854795dc8a8b70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_002.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:a96bd7bd6c31ed672938",
+    "image_sha256": [
+      "56a2c9f6b8b5b9fe356057e18229be5104b52b0a7f14f4e69393678992d43dfe",
+      "370092944a498d85ed62e6993eb92a39733bdb4fc090806f1bab97fa40c0f925"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_012.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:2649a4e05382a4e7f160",
+    "image_sha256": [
+      "3ce20483ec4b86a4ce698cb16c8210ea47fb688c2386a2dab54ff5f915efdeb3",
+      "9cc6a7cac9fd3eb1b3c96b82c6ee9907dde2b0521ec77e19cd708fbfadbc81dd"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_004.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:74c22c467796d19a6fd3",
+    "image_sha256": [
+      "56a2c9f6b8b5b9fe356057e18229be5104b52b0a7f14f4e69393678992d43dfe",
+      "fe6e9b267f3d014b527a6cb48c2108b981d5ef6b3eeb3d81914210bc41ca5aba"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_012.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:183bdac7d98538347471",
+    "image_sha256": [
+      "2f4839ceb3d054421a76427be296cd87aaa189db6df9b8d6cdc51d4c297271d1",
+      "dc3be9d146457d6c21f8bee4abc4ee573b8eabd2f2eabce23e57f20f5f3469c3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:ae3f8641678d77238072",
+    "image_sha256": [
+      "7e696e600899777e102c83e5d817fdb29bc6dc3fdc60baba50c6f20c3c7ac5f4",
+      "1d0713811f47a3424efcde858f97e81934dfe0888bc9db68d40145d092a3c7b1"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_012.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:596cc7063e09c789d6f4",
+    "image_sha256": [
+      "771891c8a80fa14cbf3f6e2ceaa62a27591160e06bcb6655be02f621dfbee391",
+      "d7d99f1e6a87ed7bcaf3eefb64a81173a29d9305444486576a90f4faa2738eb9"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:cade9b59ec2700fd47af",
+    "image_sha256": [
+      "55d1d975607f03dca50b970efa3194c30bff2f878dded875ef9abb339eccef2b",
+      "9b3c21e3c7970ebfb7685573e96dfbb6f158e3532503b3378f41f0686a8f0d22"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_011.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:c87d07ede7e449ba610c",
+    "image_sha256": [
+      "4a8e7c551030ba69ac80787f9d019672f32644e9cf12a8078a7d094c4f7d89a9",
+      "0f3c166eefb56235cbe0f2295814d0234ae777265b7ad5c7b4541b7ab8f0e685"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:6f1ebfcfa522b9f7a3f5",
+    "image_sha256": [
+      "87c6deda7ce5c8f6ab0b334417306e26bf3132454312ec321250293fda026294",
+      "440c7820497bf95a0d810f563a5751dfb43b4bb5f61ced8ce5ef8f09ebc1ca60"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:b8f0aeae31f7ed49cc2d",
+    "image_sha256": [
+      "1f510e887d40d03ade99fce2e3c560ad3366f71e1d73500eadc4f934a8e73c7b",
+      "a1f7c1d38fc40071e3c5dcdf8912beae491a6370382a7061fc7c4700ca88fa70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:397f9531127f604f1b4c",
+    "image_sha256": [
+      "771891c8a80fa14cbf3f6e2ceaa62a27591160e06bcb6655be02f621dfbee391",
+      "20f9bc61a7d5c4473630b2bf6393f59834c5e9b8fef93817e0cb5c7966dbc231"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:e3ef219c9b86bb51e2e7",
+    "image_sha256": [
+      "2e81b3be7119faa08162cb2ec70b82760b8948f0c3b0ef4b0dc4b9a85224c484",
+      "d7d99f1e6a87ed7bcaf3eefb64a81173a29d9305444486576a90f4faa2738eb9"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:164843e0526ced84c495",
+    "image_sha256": [
+      "1f510e887d40d03ade99fce2e3c560ad3366f71e1d73500eadc4f934a8e73c7b",
+      "9659114d8b5ebb72bf67c6890e8c5063a7984d2c23bd1604bbc7ed448e14a76c"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:0ec228b632ba9bda7284",
+    "image_sha256": [
+      "b3ae1cb3f28cca5a1a497af862d38e9e2358a9f13522a51e67786400c26d754f",
+      "9b3c21e3c7970ebfb7685573e96dfbb6f158e3532503b3378f41f0686a8f0d22"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___057-1__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:d5c4e9c7e82bb0b4745a",
+    "image_sha256": [
+      "161d76dbe548fe89fb8c7ab49e02a7051e76b35b92d3191871e84910a94aa6a4",
+      "7469308778863c485ad7a9067a2b1c1274817126283ee3481c5e6f41ecb371aa"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___015-1__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:44b16dd45f66f06d47ed",
+    "image_sha256": [
+      "a53705678e3b68537e091207e7e5a53570cf194bcb4b6b02416cdad9abd6251a",
+      "ffd22541df93b8dda0476146758ceabf4c0a93ff1a77585ed9f18dd18b0dba23"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:fc60c59aaffd4daabbd0",
+    "image_sha256": [
+      "2e81b3be7119faa08162cb2ec70b82760b8948f0c3b0ef4b0dc4b9a85224c484",
+      "8b01633f54546e053ee6adb83867a56685437f38dc8a69c2ca5ada6654ee36e6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_009.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:57dc8e07c4d0135ec86e",
+    "image_sha256": [
+      "b03cf0e2287d1d890358810b6180fb32b93e11c8cf701ae7e47c5df9a0e44cfc",
+      "9659114d8b5ebb72bf67c6890e8c5063a7984d2c23bd1604bbc7ed448e14a76c"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___022-1__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:185a3d5660eef9b27c9a",
+    "image_sha256": [
+      "132db335469467ae7fedb4f7757d0e16c3c898b14562a1a948648916f2b236f3",
+      "cc5f2f19d88f9a38bacbd51e443a87cbcd0b60bcccd65a8d8924f05ce6c50e99"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:1f460b5559b49eba5566",
+    "image_sha256": [
+      "86e10180c4cd64589afcddc0620e2a4659833717ff83b4a63e093b273de07fd6",
+      "ce846b5f3b6f9ebd257691c998ce4f3688bb750b40b8bf1140d946ac5c5ba744"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___027-1__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:8e622171209a5b39ed94",
+    "image_sha256": [
+      "a9e947f83b357a0b00a15a29f7b338a0447c9773a029deefb315ceb25a2e9c6d",
+      "fe6e9b267f3d014b527a6cb48c2108b981d5ef6b3eeb3d81914210bc41ca5aba"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:cd107900aa634f527752",
+    "image_sha256": [
+      "24c4eee7fd435d8f5e8fd34302b3abfb0a31ebd7570a2ac8bf0229bb69d150fa",
+      "db479f4d8542391d40f90b80ad542bfd1de7917af76d758e5827143bae523820"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:707f7ad7af046ad97b2f",
+    "image_sha256": [
+      "132db335469467ae7fedb4f7757d0e16c3c898b14562a1a948648916f2b236f3",
+      "5c7ae1416eaf6521bb95ad4c3850ee788ac817718b105b493d4d208547812e9b"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:32e71ba4508b7e8ed7d9",
+    "image_sha256": [
+      "b0c6f449684f0323f3edcc80705ebace1387fa9ea4cf57d7a401e915261c7f24",
+      "4f5e8f4a736a82ec7f7329730b8197690612bfe288fb794eabdc4aa4e82c85e0"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_001.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:72ab00f9de639f10e56f",
+    "image_sha256": [
+      "2e81b3be7119faa08162cb2ec70b82760b8948f0c3b0ef4b0dc4b9a85224c484",
+      "504cb3107f53a5ce8d81f993919f31b6c2d938c24c4388b5f2e286d9f562eb44"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_006.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:6ce9a2b68ef6221a894c",
+    "image_sha256": [
+      "4a8e7c551030ba69ac80787f9d019672f32644e9cf12a8078a7d094c4f7d89a9",
+      "0609c4f4ada429882113753a4192fdc58e2795effb9882535ab6f0f558adf259"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:3e8c67aa314a0e399820",
+    "image_sha256": [
+      "7c3d98d5c5348cdbd92d80975bc2430902932132b43c9fd0252b8719cbb51642",
+      "40dca21e6d4d9ef337c50b0124925f4fceb48d4686b02d4563d566d79eb8b2e3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:d8793fd9f33d85b11deb",
+    "image_sha256": [
+      "25d3dc7de580d01d42ebb10c0c7a3890399d83144d1384a41286f42b6aa9952b",
+      "84b42c7cc035ab760312bfcbbaaad6ea1a9a0cbd64ec6da38a26fc522113ce43"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:518f099d0a8d8a712459",
+    "image_sha256": [
+      "b03cf0e2287d1d890358810b6180fb32b93e11c8cf701ae7e47c5df9a0e44cfc",
+      "7776333daea23fc98c380f45c2992d001912dbc07a204b2eb38f283d0517669e"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___022-1__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:e3825136255f50a37b36",
+    "image_sha256": [
+      "c71df567a25cdc215a4282c09972a34508103a6c33a8210b9e6ee2ecccbf148d",
+      "0f3c166eefb56235cbe0f2295814d0234ae777265b7ad5c7b4541b7ab8f0e685"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:dc7f5348e8d3e1a63697",
+    "image_sha256": [
+      "9ef861ec9192f6ab9a3e79dea17eb0fbf4605bf553eec50b3777269300ec76b3",
+      "cc5f2f19d88f9a38bacbd51e443a87cbcd0b60bcccd65a8d8924f05ce6c50e99"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___022-1__line_001.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:d1cd2d65f6a14a01b2c1",
+    "image_sha256": [
+      "d53782b6a5d63ae4a9995eda4a17e650e50dd3e5b1dcdf08af27a16aecf10269",
+      "20f9bc61a7d5c4473630b2bf6393f59834c5e9b8fef93817e0cb5c7966dbc231"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:1696023efd4bf1a76f75",
+    "image_sha256": [
+      "8d342636aec42747c4072f91e4c8050dac682c46b669e05b1fa6629e4b398156",
+      "5bdae603d7e9ac65f0f8b1b04013966e4e458a8b1acd3a0e96a97da48d7bdfb8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___014-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:c2a2a0df064a182b0705",
+    "image_sha256": [
+      "2e81b3be7119faa08162cb2ec70b82760b8948f0c3b0ef4b0dc4b9a85224c484",
+      "cc5f2f19d88f9a38bacbd51e443a87cbcd0b60bcccd65a8d8924f05ce6c50e99"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:cd05058f201cca918371",
+    "image_sha256": [
+      "aa0f0bb20856c8c67071cc0afbc4e4803934e8f138238fcab2029e704181f797",
+      "e8c3d6a15f8bf63267722c1b4aada6b80f9b4eb8480cb3681c3b6c8f6e890bed"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_010.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:3504d4c6349d434c77a6",
+    "image_sha256": [
+      "78f76c2c1f7bbdec36ea707c253ece649f432bd302497836c9f2437d062eaf05",
+      "20f9bc61a7d5c4473630b2bf6393f59834c5e9b8fef93817e0cb5c7966dbc231"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_009.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:a8e6561111347f3ba0e6",
+    "image_sha256": [
+      "ea76329abb6d94758bd3ee6eb29043b7c15a2278d44307f4d9420a211dc7cca5",
+      "40dca21e6d4d9ef337c50b0124925f4fceb48d4686b02d4563d566d79eb8b2e3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:ebf9be1c57221a5cbeb3",
+    "image_sha256": [
+      "7badb2dd89163c0b7774e05bc2237b757a84c99ff3446574e3d71d52e831e80e",
+      "e8c3d6a15f8bf63267722c1b4aada6b80f9b4eb8480cb3681c3b6c8f6e890bed"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:32fcac415690ca8a5ca4",
+    "image_sha256": [
+      "09b68822b77d0cd4ba799d5aedb01f5021e51e630bbda1f7a234ca43d54f87f0",
+      "9b3c21e3c7970ebfb7685573e96dfbb6f158e3532503b3378f41f0686a8f0d22"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___022-1__line_009.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:90ef40059dca474d3696",
+    "image_sha256": [
+      "9ef861ec9192f6ab9a3e79dea17eb0fbf4605bf553eec50b3777269300ec76b3",
+      "a1f7c1d38fc40071e3c5dcdf8912beae491a6370382a7061fc7c4700ca88fa70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___022-1__line_001.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:750ff2a338e7348f5869",
+    "image_sha256": [
+      "b0c6f449684f0323f3edcc80705ebace1387fa9ea4cf57d7a401e915261c7f24",
+      "ffd22541df93b8dda0476146758ceabf4c0a93ff1a77585ed9f18dd18b0dba23"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_001.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:53a4d6643b141adc4678",
+    "image_sha256": [
+      "56a2c9f6b8b5b9fe356057e18229be5104b52b0a7f14f4e69393678992d43dfe",
+      "7469308778863c485ad7a9067a2b1c1274817126283ee3481c5e6f41ecb371aa"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_012.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:cee90aa3afec832ffc15",
+    "image_sha256": [
+      "8d342636aec42747c4072f91e4c8050dac682c46b669e05b1fa6629e4b398156",
+      "0609c4f4ada429882113753a4192fdc58e2795effb9882535ab6f0f558adf259"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___014-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:de5d623c2d9bace9a256",
+    "image_sha256": [
+      "7badb2dd89163c0b7774e05bc2237b757a84c99ff3446574e3d71d52e831e80e",
+      "fe6e9b267f3d014b527a6cb48c2108b981d5ef6b3eeb3d81914210bc41ca5aba"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:b101a2541bfcca61202e",
+    "image_sha256": [
+      "b0c6f449684f0323f3edcc80705ebace1387fa9ea4cf57d7a401e915261c7f24",
+      "3ccf847f8c65e0bcde863ccffd00577d62eba0d680a45f44c09f224929f86ad6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_001.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:41e37d945d179c713a5b",
+    "image_sha256": [
+      "68ccbc6cd868137aeba8e49b3712a88f8d9fa22142e360ddcc6412866bfc9914",
+      "cf566e926d53004fc79fa3188c2edbd06f8a081bd4b3ffd9d2216921c8a5b293"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_012.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:dcb8fbeb5be7b2ef055a",
+    "image_sha256": [
+      "3ce20483ec4b86a4ce698cb16c8210ea47fb688c2386a2dab54ff5f915efdeb3",
+      "0609c4f4ada429882113753a4192fdc58e2795effb9882535ab6f0f558adf259"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_004.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:6382e11e4b22776a7b5f",
+    "image_sha256": [
+      "7e696e600899777e102c83e5d817fdb29bc6dc3fdc60baba50c6f20c3c7ac5f4",
+      "3ccf847f8c65e0bcde863ccffd00577d62eba0d680a45f44c09f224929f86ad6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:fa955bd4c57f5f7f37b0",
+    "image_sha256": [
+      "8d342636aec42747c4072f91e4c8050dac682c46b669e05b1fa6629e4b398156",
+      "0f3c166eefb56235cbe0f2295814d0234ae777265b7ad5c7b4541b7ab8f0e685"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___014-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:fdcfc045b4d007f1d435",
+    "image_sha256": [
+      "65e90aa9a72b4b233223f98a04b65fb26268bd37f4353cf568c43c3ebe93864e",
+      "0d3d05ce40d8801a1d8a1bcda0fd163bac9bf818e723adc8082ef94ccbb8681a"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0023-1__line_002.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:120d185a08c3e0a2e501",
+    "image_sha256": [
+      "78f76c2c1f7bbdec36ea707c253ece649f432bd302497836c9f2437d062eaf05",
+      "9b3c21e3c7970ebfb7685573e96dfbb6f158e3532503b3378f41f0686a8f0d22"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_009.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:44eb516c5f8574dceccb",
+    "image_sha256": [
+      "50f1a848fd06b4627a938bc171c8801ad9ae70888edb99958815af4c5d228abc",
+      "a1f7c1d38fc40071e3c5dcdf8912beae491a6370382a7061fc7c4700ca88fa70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___057-1__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:5fc7a4a2a66fd89c964c",
+    "image_sha256": [
+      "e79fad512bb9933c8ad8990da142d3260bcaa8e54d83f9562a8ac9a1c8c76358",
+      "9b3c21e3c7970ebfb7685573e96dfbb6f158e3532503b3378f41f0686a8f0d22"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:7e123cfe8f10ae5c657a",
+    "image_sha256": [
+      "a8e893569dbdc6aff711402c82288348c52cca7a90e5a3a552cbc94df1ab13db",
+      "5bdae603d7e9ac65f0f8b1b04013966e4e458a8b1acd3a0e96a97da48d7bdfb8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:5246d1cff7ed304278c6",
+    "image_sha256": [
+      "25d3dc7de580d01d42ebb10c0c7a3890399d83144d1384a41286f42b6aa9952b",
+      "4f5e8f4a736a82ec7f7329730b8197690612bfe288fb794eabdc4aa4e82c85e0"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:157ebec6ee4a68d95f49",
+    "image_sha256": [
+      "87c6deda7ce5c8f6ab0b334417306e26bf3132454312ec321250293fda026294",
+      "cf566e926d53004fc79fa3188c2edbd06f8a081bd4b3ffd9d2216921c8a5b293"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:3ea2b1b6dc7a0323acb6",
+    "image_sha256": [
+      "77be1b460750f456113111f5c935fc1fcff22d2cb9c58ea546911082e18038b0",
+      "3ccf847f8c65e0bcde863ccffd00577d62eba0d680a45f44c09f224929f86ad6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:b54ce5c9c0ad0ca55623",
+    "image_sha256": [
+      "c71df567a25cdc215a4282c09972a34508103a6c33a8210b9e6ee2ecccbf148d",
+      "7776333daea23fc98c380f45c2992d001912dbc07a204b2eb38f283d0517669e"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:e8deb2156376fbbd74ff",
+    "image_sha256": [
+      "25d3dc7de580d01d42ebb10c0c7a3890399d83144d1384a41286f42b6aa9952b",
+      "be62d8e6a4a46baf8800d61be8305595c2c8636166d9db9e0b2c050696ced9f1"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:5f9c444df3ebc1a5aeb2",
+    "image_sha256": [
+      "fa9ac71f2691d5a344d4b8f30a9f428cb0ef085e4e45fcd64c0b7a9564bff842",
+      "0d3d05ce40d8801a1d8a1bcda0fd163bac9bf818e723adc8082ef94ccbb8681a"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0023-1__line_002.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:3f40c01df49746788197",
+    "image_sha256": [
+      "e4868db6a9fab448762744fe19a2ea1b65c2f3273c4b586a84690292a0dce271",
+      "7776333daea23fc98c380f45c2992d001912dbc07a204b2eb38f283d0517669e"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_015.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:d3efd87e154b837b41f7",
+    "image_sha256": [
+      "25d3dc7de580d01d42ebb10c0c7a3890399d83144d1384a41286f42b6aa9952b",
+      "40dca21e6d4d9ef337c50b0124925f4fceb48d4686b02d4563d566d79eb8b2e3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:9e05040d8a6a86d8e4eb",
+    "image_sha256": [
+      "132db335469467ae7fedb4f7757d0e16c3c898b14562a1a948648916f2b236f3",
+      "fe6e9b267f3d014b527a6cb48c2108b981d5ef6b3eeb3d81914210bc41ca5aba"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:7b1bac7827fa30132f3b",
+    "image_sha256": [
+      "132db335469467ae7fedb4f7757d0e16c3c898b14562a1a948648916f2b236f3",
+      "0f3c166eefb56235cbe0f2295814d0234ae777265b7ad5c7b4541b7ab8f0e685"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:d06daf0cf3b828713f60",
+    "image_sha256": [
+      "2f4839ceb3d054421a76427be296cd87aaa189db6df9b8d6cdc51d4c297271d1",
+      "5bdae603d7e9ac65f0f8b1b04013966e4e458a8b1acd3a0e96a97da48d7bdfb8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:8fc20fa28cce57860d7e",
+    "image_sha256": [
+      "7badb2dd89163c0b7774e05bc2237b757a84c99ff3446574e3d71d52e831e80e",
+      "8b01633f54546e053ee6adb83867a56685437f38dc8a69c2ca5ada6654ee36e6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_009.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:2c499bbd5ed98e25a638",
+    "image_sha256": [
+      "09b68822b77d0cd4ba799d5aedb01f5021e51e630bbda1f7a234ca43d54f87f0",
+      "20f9bc61a7d5c4473630b2bf6393f59834c5e9b8fef93817e0cb5c7966dbc231"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___022-1__line_009.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:50d37ec9f9a94a42b37c",
+    "image_sha256": [
+      "e4868db6a9fab448762744fe19a2ea1b65c2f3273c4b586a84690292a0dce271",
+      "9b3c21e3c7970ebfb7685573e96dfbb6f158e3532503b3378f41f0686a8f0d22"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_015.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:4a91dbab04b519523cd2",
+    "image_sha256": [
+      "d53782b6a5d63ae4a9995eda4a17e650e50dd3e5b1dcdf08af27a16aecf10269",
+      "440c7820497bf95a0d810f563a5751dfb43b4bb5f61ced8ce5ef8f09ebc1ca60"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:f213d58a46129248661c",
+    "image_sha256": [
+      "e4868db6a9fab448762744fe19a2ea1b65c2f3273c4b586a84690292a0dce271",
+      "e433c26068ee805f85fe91a68d3bafb4d888441d3ada5dddcad5230002ac7d32"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_015.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:aa1227b2f1c0b4d051a7",
+    "image_sha256": [
+      "7e696e600899777e102c83e5d817fdb29bc6dc3fdc60baba50c6f20c3c7ac5f4",
+      "8b01633f54546e053ee6adb83867a56685437f38dc8a69c2ca5ada6654ee36e6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_009.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:50696b6d9d127124ea82",
+    "image_sha256": [
+      "4bd05849a886362664719ae02d39655213470e0f19c4426dc00f31a0b050b99f",
+      "fe6e9b267f3d014b527a6cb48c2108b981d5ef6b3eeb3d81914210bc41ca5aba"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_009.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:f2a3933be7ef25517750",
+    "image_sha256": [
+      "d5046abaab526daf5987261b0a53c367c12846e7ca955787c6dd36bd1719c4c4",
+      "440c7820497bf95a0d810f563a5751dfb43b4bb5f61ced8ce5ef8f09ebc1ca60"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:bb07e1d053f94826d460",
+    "image_sha256": [
+      "a53705678e3b68537e091207e7e5a53570cf194bcb4b6b02416cdad9abd6251a",
+      "440c7820497bf95a0d810f563a5751dfb43b4bb5f61ced8ce5ef8f09ebc1ca60"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:8646d18b668fea668bdc",
+    "image_sha256": [
+      "55d1d975607f03dca50b970efa3194c30bff2f878dded875ef9abb339eccef2b",
+      "5bdae603d7e9ac65f0f8b1b04013966e4e458a8b1acd3a0e96a97da48d7bdfb8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_011.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:baecf4629b5b28cdfbea",
+    "image_sha256": [
+      "aa0f0bb20856c8c67071cc0afbc4e4803934e8f138238fcab2029e704181f797",
+      "ce846b5f3b6f9ebd257691c998ce4f3688bb750b40b8bf1140d946ac5c5ba744"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_010.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:7d3039de1043da659473",
+    "image_sha256": [
+      "cd4ca99d4ec6fa8c9f6e53e1a4b7d44edba7e6fa27e6332c8d6fddf5bcc4dbf5",
+      "a1f7c1d38fc40071e3c5dcdf8912beae491a6370382a7061fc7c4700ca88fa70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:6f6ac13a40d3180b0d71",
+    "image_sha256": [
+      "a9e947f83b357a0b00a15a29f7b338a0447c9773a029deefb315ceb25a2e9c6d",
+      "e11f967057fa7f75833db0999ca4e741d076f519895fddb3d99fd998a872d32d"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:2aea3a0eb8bea6c0e8b9",
+    "image_sha256": [
+      "45b93ad30158d0426d4254283a4c032f5c9f3916767e0a6afc8ce1ff36055bda",
+      "ffd22541df93b8dda0476146758ceabf4c0a93ff1a77585ed9f18dd18b0dba23"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_001.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:a1591eb14aaa7b2baaed",
+    "image_sha256": [
+      "b0c6f449684f0323f3edcc80705ebace1387fa9ea4cf57d7a401e915261c7f24",
+      "cc5f2f19d88f9a38bacbd51e443a87cbcd0b60bcccd65a8d8924f05ce6c50e99"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_001.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:9b2527d5141ea755be5a",
+    "image_sha256": [
+      "2f4839ceb3d054421a76427be296cd87aaa189db6df9b8d6cdc51d4c297271d1",
+      "fe6e9b267f3d014b527a6cb48c2108b981d5ef6b3eeb3d81914210bc41ca5aba"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:1ceef13aff95db07ca14",
+    "image_sha256": [
+      "1bf617c09c28b3a696f9ce04b387bc43550df1557d5ef1f283f9c4824f38d17e",
+      "84b42c7cc035ab760312bfcbbaaad6ea1a9a0cbd64ec6da38a26fc522113ce43"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___014-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:f61f7a4efddb5149a41f",
+    "image_sha256": [
+      "ea76329abb6d94758bd3ee6eb29043b7c15a2278d44307f4d9420a211dc7cca5",
+      "9cc6a7cac9fd3eb1b3c96b82c6ee9907dde2b0521ec77e19cd708fbfadbc81dd"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:0ef66c00aee61c73947b",
+    "image_sha256": [
+      "77be1b460750f456113111f5c935fc1fcff22d2cb9c58ea546911082e18038b0",
+      "5bdae603d7e9ac65f0f8b1b04013966e4e458a8b1acd3a0e96a97da48d7bdfb8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:223b7ab3fcb3753838eb",
+    "image_sha256": [
+      "7e696e600899777e102c83e5d817fdb29bc6dc3fdc60baba50c6f20c3c7ac5f4",
+      "7469308778863c485ad7a9067a2b1c1274817126283ee3481c5e6f41ecb371aa"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:2f52e4d3ebe5e0a74bb3",
+    "image_sha256": [
+      "aa0f0bb20856c8c67071cc0afbc4e4803934e8f138238fcab2029e704181f797",
+      "fe6e9b267f3d014b527a6cb48c2108b981d5ef6b3eeb3d81914210bc41ca5aba"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_010.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:ca9eb9efaa6b263f83e6",
+    "image_sha256": [
+      "3ce20483ec4b86a4ce698cb16c8210ea47fb688c2386a2dab54ff5f915efdeb3",
+      "8b01633f54546e053ee6adb83867a56685437f38dc8a69c2ca5ada6654ee36e6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_004.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_009.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:3177372bf59d46f4565b",
+    "image_sha256": [
+      "c71df567a25cdc215a4282c09972a34508103a6c33a8210b9e6ee2ecccbf148d",
+      "dc3be9d146457d6c21f8bee4abc4ee573b8eabd2f2eabce23e57f20f5f3469c3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:dbb86276ab369041f7af",
+    "image_sha256": [
+      "ae16385c75c6c1db5a0147c0f497c355dde7038919f9c0c8cc5e833a134ae51b",
+      "e8c3d6a15f8bf63267722c1b4aada6b80f9b4eb8480cb3681c3b6c8f6e890bed"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___049-2__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:bec5626a2fd86e99e37d",
+    "image_sha256": [
+      "cb9133860033b9ac1607fc4f3f87962e8d01a0f20ff896a8fe0bdf7701d298cb",
+      "84b42c7cc035ab760312bfcbbaaad6ea1a9a0cbd64ec6da38a26fc522113ce43"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:148c7465003be5703bc1",
+    "image_sha256": [
+      "fa9ac71f2691d5a344d4b8f30a9f428cb0ef085e4e45fcd64c0b7a9564bff842",
+      "e11f967057fa7f75833db0999ca4e741d076f519895fddb3d99fd998a872d32d"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:762673c97aa9e147534a",
+    "image_sha256": [
+      "7e696e600899777e102c83e5d817fdb29bc6dc3fdc60baba50c6f20c3c7ac5f4",
+      "9cc6a7cac9fd3eb1b3c96b82c6ee9907dde2b0521ec77e19cd708fbfadbc81dd"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:7569b914b2590ae67115",
+    "image_sha256": [
+      "2f4839ceb3d054421a76427be296cd87aaa189db6df9b8d6cdc51d4c297271d1",
+      "be62d8e6a4a46baf8800d61be8305595c2c8636166d9db9e0b2c050696ced9f1"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:bebe57442d024639bd74",
+    "image_sha256": [
+      "1f510e887d40d03ade99fce2e3c560ad3366f71e1d73500eadc4f934a8e73c7b",
+      "440c7820497bf95a0d810f563a5751dfb43b4bb5f61ced8ce5ef8f09ebc1ca60"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:92ebcaaafc4aeedd4041",
+    "image_sha256": [
+      "cd4ca99d4ec6fa8c9f6e53e1a4b7d44edba7e6fa27e6332c8d6fddf5bcc4dbf5",
+      "440c7820497bf95a0d810f563a5751dfb43b4bb5f61ced8ce5ef8f09ebc1ca60"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:a7c84276f5d4b77f370e",
+    "image_sha256": [
+      "ea76329abb6d94758bd3ee6eb29043b7c15a2278d44307f4d9420a211dc7cca5",
+      "1d0713811f47a3424efcde858f97e81934dfe0888bc9db68d40145d092a3c7b1"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_012.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:4b68ab42753cfab9aee3",
+    "image_sha256": [
+      "25030faaf89368aa663180e351ccde2be061a0bc598228dd6a4c7ffc802a556a",
+      "fe6e9b267f3d014b527a6cb48c2108b981d5ef6b3eeb3d81914210bc41ca5aba"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:aed6939c0e3f0df8ba94",
+    "image_sha256": [
+      "bfa0f028629b9ea542528bf3d55ef0bf6bc0e2771b6abb2eabc6939844a0e68c",
+      "db479f4d8542391d40f90b80ad542bfd1de7917af76d758e5827143bae523820"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:032d3ef28fe7085e3f90",
+    "image_sha256": [
+      "7badb2dd89163c0b7774e05bc2237b757a84c99ff3446574e3d71d52e831e80e",
+      "be62d8e6a4a46baf8800d61be8305595c2c8636166d9db9e0b2c050696ced9f1"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:e9a0c7455a75b48cb542",
+    "image_sha256": [
+      "68ccbc6cd868137aeba8e49b3712a88f8d9fa22142e360ddcc6412866bfc9914",
+      "0609c4f4ada429882113753a4192fdc58e2795effb9882535ab6f0f558adf259"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_012.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:24392774c843bbd13855",
+    "image_sha256": [
+      "1bf617c09c28b3a696f9ce04b387bc43550df1557d5ef1f283f9c4824f38d17e",
+      "3ccf847f8c65e0bcde863ccffd00577d62eba0d680a45f44c09f224929f86ad6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___014-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:dbebfe3d6aab80ccbb34",
+    "image_sha256": [
+      "63a32e0ceb382c460bb4ed09496dd84c992cc9735eba85c85e63856863cb4713",
+      "dc3be9d146457d6c21f8bee4abc4ee573b8eabd2f2eabce23e57f20f5f3469c3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_010.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:a981ea4e961e114c23ac",
+    "image_sha256": [
+      "50f1a848fd06b4627a938bc171c8801ad9ae70888edb99958815af4c5d228abc",
+      "e8c3d6a15f8bf63267722c1b4aada6b80f9b4eb8480cb3681c3b6c8f6e890bed"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___057-1__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:f4a330e779a3f0f57c1f",
+    "image_sha256": [
+      "87c6deda7ce5c8f6ab0b334417306e26bf3132454312ec321250293fda026294",
+      "e11f967057fa7f75833db0999ca4e741d076f519895fddb3d99fd998a872d32d"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:fae193f2a7f1a4e38bcc",
+    "image_sha256": [
+      "24c4eee7fd435d8f5e8fd34302b3abfb0a31ebd7570a2ac8bf0229bb69d150fa",
+      "0f3c166eefb56235cbe0f2295814d0234ae777265b7ad5c7b4541b7ab8f0e685"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:cfd19f35c569f56c94ea",
+    "image_sha256": [
+      "791f60584d2c1d63770b90050a53ea0aad23384637daa7161d89ff12f4f0179a",
+      "8b01633f54546e053ee6adb83867a56685437f38dc8a69c2ca5ada6654ee36e6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_015.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_009.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:597d02c6a4be80b5bfe5",
+    "image_sha256": [
+      "bfa0f028629b9ea542528bf3d55ef0bf6bc0e2771b6abb2eabc6939844a0e68c",
+      "8b01633f54546e053ee6adb83867a56685437f38dc8a69c2ca5ada6654ee36e6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_009.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:889fce31ffea6ad47cfd",
+    "image_sha256": [
+      "a53705678e3b68537e091207e7e5a53570cf194bcb4b6b02416cdad9abd6251a",
+      "20f9bc61a7d5c4473630b2bf6393f59834c5e9b8fef93817e0cb5c7966dbc231"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:30fa11b4f74b068f05f5",
+    "image_sha256": [
+      "cd4ca99d4ec6fa8c9f6e53e1a4b7d44edba7e6fa27e6332c8d6fddf5bcc4dbf5",
+      "9659114d8b5ebb72bf67c6890e8c5063a7984d2c23bd1604bbc7ed448e14a76c"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:8e78d213bb7da5e98c14",
+    "image_sha256": [
+      "937104fc34086887ecf881d4419819eeea669e15acdfc27e534574c5cf5a46a8",
+      "3309cdb8be6818ee0606ca3ad1a964e3f34e7b85fb35daaf43854795dc8a8b70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_002.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:00d4e995a19fc7350902",
+    "image_sha256": [
+      "86e10180c4cd64589afcddc0620e2a4659833717ff83b4a63e093b273de07fd6",
+      "dc3be9d146457d6c21f8bee4abc4ee573b8eabd2f2eabce23e57f20f5f3469c3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___027-1__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:e9dee84d6f8859b0e19b",
+    "image_sha256": [
+      "b0c6f449684f0323f3edcc80705ebace1387fa9ea4cf57d7a401e915261c7f24",
+      "fe6e9b267f3d014b527a6cb48c2108b981d5ef6b3eeb3d81914210bc41ca5aba"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_001.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:e922d33497205329c7da",
+    "image_sha256": [
+      "d5046abaab526daf5987261b0a53c367c12846e7ca955787c6dd36bd1719c4c4",
+      "be62d8e6a4a46baf8800d61be8305595c2c8636166d9db9e0b2c050696ced9f1"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:50766e423ce8357086bc",
+    "image_sha256": [
+      "d53782b6a5d63ae4a9995eda4a17e650e50dd3e5b1dcdf08af27a16aecf10269",
+      "40dca21e6d4d9ef337c50b0124925f4fceb48d4686b02d4563d566d79eb8b2e3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:9e6695936ad4c29a92ae",
+    "image_sha256": [
+      "7badb2dd89163c0b7774e05bc2237b757a84c99ff3446574e3d71d52e831e80e",
+      "84b42c7cc035ab760312bfcbbaaad6ea1a9a0cbd64ec6da38a26fc522113ce43"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:f7f84964040ec59cbf54",
+    "image_sha256": [
+      "55d1d975607f03dca50b970efa3194c30bff2f878dded875ef9abb339eccef2b",
+      "d7d99f1e6a87ed7bcaf3eefb64a81173a29d9305444486576a90f4faa2738eb9"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_011.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:36cd2f9baeb493dbca6b",
+    "image_sha256": [
+      "161d76dbe548fe89fb8c7ab49e02a7051e76b35b92d3191871e84910a94aa6a4",
+      "9cc6a7cac9fd3eb1b3c96b82c6ee9907dde2b0521ec77e19cd708fbfadbc81dd"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___015-1__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:a0edb003b295adb4c20f",
+    "image_sha256": [
+      "d5046abaab526daf5987261b0a53c367c12846e7ca955787c6dd36bd1719c4c4",
+      "3309cdb8be6818ee0606ca3ad1a964e3f34e7b85fb35daaf43854795dc8a8b70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_002.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:21451baf7d7ecd01193a",
+    "image_sha256": [
+      "e79fad512bb9933c8ad8990da142d3260bcaa8e54d83f9562a8ac9a1c8c76358",
+      "3ccf847f8c65e0bcde863ccffd00577d62eba0d680a45f44c09f224929f86ad6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:c968d314dc398ff5e62b",
+    "image_sha256": [
+      "d170ec47fe8fcb400410c7ed0677f37500109158c1ba88ba8798f18052f072e6",
+      "e8c3d6a15f8bf63267722c1b4aada6b80f9b4eb8480cb3681c3b6c8f6e890bed"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_015.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:5b5e78ba44cd507d6b74",
+    "image_sha256": [
+      "e79fad512bb9933c8ad8990da142d3260bcaa8e54d83f9562a8ac9a1c8c76358",
+      "a1f7c1d38fc40071e3c5dcdf8912beae491a6370382a7061fc7c4700ca88fa70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:ce87fac3c2576976c8f2",
+    "image_sha256": [
+      "cb9133860033b9ac1607fc4f3f87962e8d01a0f20ff896a8fe0bdf7701d298cb",
+      "8b01633f54546e053ee6adb83867a56685437f38dc8a69c2ca5ada6654ee36e6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_009.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:738cf653382d9011255d",
+    "image_sha256": [
+      "ae16385c75c6c1db5a0147c0f497c355dde7038919f9c0c8cc5e833a134ae51b",
+      "db479f4d8542391d40f90b80ad542bfd1de7917af76d758e5827143bae523820"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___049-2__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:f7f9794a04769b62e58e",
+    "image_sha256": [
+      "2bab64b17a8fc78921b3fce4dd7bea3d2205f7ba7dcf7759a0015e03160b8959",
+      "9b3c21e3c7970ebfb7685573e96dfbb6f158e3532503b3378f41f0686a8f0d22"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___057-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:323385bee64ef723a1cb",
+    "image_sha256": [
+      "63a32e0ceb382c460bb4ed09496dd84c992cc9735eba85c85e63856863cb4713",
+      "ce846b5f3b6f9ebd257691c998ce4f3688bb750b40b8bf1140d946ac5c5ba744"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_010.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:aa1b565ccc9dbc310a49",
+    "image_sha256": [
+      "8d342636aec42747c4072f91e4c8050dac682c46b669e05b1fa6629e4b398156",
+      "e8c3d6a15f8bf63267722c1b4aada6b80f9b4eb8480cb3681c3b6c8f6e890bed"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___014-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:fe927beed74f2fb477d0",
+    "image_sha256": [
+      "771891c8a80fa14cbf3f6e2ceaa62a27591160e06bcb6655be02f621dfbee391",
+      "5c7ae1416eaf6521bb95ad4c3850ee788ac817718b105b493d4d208547812e9b"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:a81ba446f9fe03fabf35",
+    "image_sha256": [
+      "52f76567c174dcb9bfd6f86acae77ed5ac48559f012cc2fa10883f2625683257",
+      "ce846b5f3b6f9ebd257691c998ce4f3688bb750b40b8bf1140d946ac5c5ba744"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_004.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:00483637ac64f9bfed0d",
+    "image_sha256": [
+      "7badb2dd89163c0b7774e05bc2237b757a84c99ff3446574e3d71d52e831e80e",
+      "504cb3107f53a5ce8d81f993919f31b6c2d938c24c4388b5f2e286d9f562eb44"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_006.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:bfa8fd546494792e415f",
+    "image_sha256": [
+      "aa0f0bb20856c8c67071cc0afbc4e4803934e8f138238fcab2029e704181f797",
+      "7776333daea23fc98c380f45c2992d001912dbc07a204b2eb38f283d0517669e"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_010.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:6304b7ad51837ef176a4",
+    "image_sha256": [
+      "a8e893569dbdc6aff711402c82288348c52cca7a90e5a3a552cbc94df1ab13db",
+      "0609c4f4ada429882113753a4192fdc58e2795effb9882535ab6f0f558adf259"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:9908025affbf74f25a66",
+    "image_sha256": [
+      "45b93ad30158d0426d4254283a4c032f5c9f3916767e0a6afc8ce1ff36055bda",
+      "cc5f2f19d88f9a38bacbd51e443a87cbcd0b60bcccd65a8d8924f05ce6c50e99"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_001.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:0591df493968bad6896e",
+    "image_sha256": [
+      "771891c8a80fa14cbf3f6e2ceaa62a27591160e06bcb6655be02f621dfbee391",
+      "4f5e8f4a736a82ec7f7329730b8197690612bfe288fb794eabdc4aa4e82c85e0"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:2309ceebe5da454813de",
+    "image_sha256": [
+      "cb9133860033b9ac1607fc4f3f87962e8d01a0f20ff896a8fe0bdf7701d298cb",
+      "3ccf847f8c65e0bcde863ccffd00577d62eba0d680a45f44c09f224929f86ad6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:6fe200cd733b4beeb001",
+    "image_sha256": [
+      "1f510e887d40d03ade99fce2e3c560ad3366f71e1d73500eadc4f934a8e73c7b",
+      "ffd22541df93b8dda0476146758ceabf4c0a93ff1a77585ed9f18dd18b0dba23"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:5d582ccb4a7a176920d9",
+    "image_sha256": [
+      "161d76dbe548fe89fb8c7ab49e02a7051e76b35b92d3191871e84910a94aa6a4",
+      "ffd22541df93b8dda0476146758ceabf4c0a93ff1a77585ed9f18dd18b0dba23"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___015-1__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:47f03ff99e737a0bc4aa",
+    "image_sha256": [
+      "216e0d85be4bf3918c0c8137d4c4df742ac37676070ff4d00f995aa831512296",
+      "d7d99f1e6a87ed7bcaf3eefb64a81173a29d9305444486576a90f4faa2738eb9"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:1336f7d0ace9f7d3cc08",
+    "image_sha256": [
+      "771891c8a80fa14cbf3f6e2ceaa62a27591160e06bcb6655be02f621dfbee391",
+      "40dca21e6d4d9ef337c50b0124925f4fceb48d4686b02d4563d566d79eb8b2e3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:49132f0ee11d118668da",
+    "image_sha256": [
+      "7e696e600899777e102c83e5d817fdb29bc6dc3fdc60baba50c6f20c3c7ac5f4",
+      "d7d99f1e6a87ed7bcaf3eefb64a81173a29d9305444486576a90f4faa2738eb9"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:1b003649da5077a2f5ae",
+    "image_sha256": [
+      "bfa0f028629b9ea542528bf3d55ef0bf6bc0e2771b6abb2eabc6939844a0e68c",
+      "5bdae603d7e9ac65f0f8b1b04013966e4e458a8b1acd3a0e96a97da48d7bdfb8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:ec9c8c7b4f934e66465e",
+    "image_sha256": [
+      "d53782b6a5d63ae4a9995eda4a17e650e50dd3e5b1dcdf08af27a16aecf10269",
+      "84b42c7cc035ab760312bfcbbaaad6ea1a9a0cbd64ec6da38a26fc522113ce43"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:98bba194c02229bc1d6e",
+    "image_sha256": [
+      "fff905cb07429a95686849176505dba38054e2f958211296188fb672eb790fc3",
+      "7469308778863c485ad7a9067a2b1c1274817126283ee3481c5e6f41ecb371aa"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:162610c999a2371a39a8",
+    "image_sha256": [
+      "b3ae1cb3f28cca5a1a497af862d38e9e2358a9f13522a51e67786400c26d754f",
+      "3309cdb8be6818ee0606ca3ad1a964e3f34e7b85fb35daaf43854795dc8a8b70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___057-1__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_002.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:f790e6c1e7c68e15d7cd",
+    "image_sha256": [
+      "09b68822b77d0cd4ba799d5aedb01f5021e51e630bbda1f7a234ca43d54f87f0",
+      "440c7820497bf95a0d810f563a5751dfb43b4bb5f61ced8ce5ef8f09ebc1ca60"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___022-1__line_009.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:a890a9c2dc570097210e",
+    "image_sha256": [
+      "7e696e600899777e102c83e5d817fdb29bc6dc3fdc60baba50c6f20c3c7ac5f4",
+      "440c7820497bf95a0d810f563a5751dfb43b4bb5f61ced8ce5ef8f09ebc1ca60"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:f9efef606ae47df39095",
+    "image_sha256": [
+      "b0c6f449684f0323f3edcc80705ebace1387fa9ea4cf57d7a401e915261c7f24",
+      "0609c4f4ada429882113753a4192fdc58e2795effb9882535ab6f0f558adf259"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_001.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:2662cdb19636577f9534",
+    "image_sha256": [
+      "4a8e7c551030ba69ac80787f9d019672f32644e9cf12a8078a7d094c4f7d89a9",
+      "3ccf847f8c65e0bcde863ccffd00577d62eba0d680a45f44c09f224929f86ad6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:27283f9c50d721f7cb95",
+    "image_sha256": [
+      "a8e893569dbdc6aff711402c82288348c52cca7a90e5a3a552cbc94df1ab13db",
+      "7776333daea23fc98c380f45c2992d001912dbc07a204b2eb38f283d0517669e"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:d557d35d471aac8f9f55",
+    "image_sha256": [
+      "ae16385c75c6c1db5a0147c0f497c355dde7038919f9c0c8cc5e833a134ae51b",
+      "ffd22541df93b8dda0476146758ceabf4c0a93ff1a77585ed9f18dd18b0dba23"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___049-2__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:94ed80555e588d777b29",
+    "image_sha256": [
+      "2bab64b17a8fc78921b3fce4dd7bea3d2205f7ba7dcf7759a0015e03160b8959",
+      "5bdae603d7e9ac65f0f8b1b04013966e4e458a8b1acd3a0e96a97da48d7bdfb8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___057-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:ad21de380e89f99d8bd6",
+    "image_sha256": [
+      "937104fc34086887ecf881d4419819eeea669e15acdfc27e534574c5cf5a46a8",
+      "3ccf847f8c65e0bcde863ccffd00577d62eba0d680a45f44c09f224929f86ad6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:33286c78c8358d8e6f32",
+    "image_sha256": [
+      "2e81b3be7119faa08162cb2ec70b82760b8948f0c3b0ef4b0dc4b9a85224c484",
+      "9cc6a7cac9fd3eb1b3c96b82c6ee9907dde2b0521ec77e19cd708fbfadbc81dd"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:a77f768fe8a4b19e643a",
+    "image_sha256": [
+      "78f76c2c1f7bbdec36ea707c253ece649f432bd302497836c9f2437d062eaf05",
+      "a1f7c1d38fc40071e3c5dcdf8912beae491a6370382a7061fc7c4700ca88fa70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_009.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:c1b67331bc5e0c223b33",
+    "image_sha256": [
+      "86e10180c4cd64589afcddc0620e2a4659833717ff83b4a63e093b273de07fd6",
+      "20f9bc61a7d5c4473630b2bf6393f59834c5e9b8fef93817e0cb5c7966dbc231"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___027-1__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:854a587f9e66b6630bdb",
+    "image_sha256": [
+      "216e0d85be4bf3918c0c8137d4c4df742ac37676070ff4d00f995aa831512296",
+      "40dca21e6d4d9ef337c50b0124925f4fceb48d4686b02d4563d566d79eb8b2e3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:3ea60ef30035704c5d59",
+    "image_sha256": [
+      "2bab64b17a8fc78921b3fce4dd7bea3d2205f7ba7dcf7759a0015e03160b8959",
+      "7469308778863c485ad7a9067a2b1c1274817126283ee3481c5e6f41ecb371aa"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___057-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:f5f9ae2e59322f412c8c",
+    "image_sha256": [
+      "cd4ca99d4ec6fa8c9f6e53e1a4b7d44edba7e6fa27e6332c8d6fddf5bcc4dbf5",
+      "9cc6a7cac9fd3eb1b3c96b82c6ee9907dde2b0521ec77e19cd708fbfadbc81dd"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:ded2a9a723728b35514b",
+    "image_sha256": [
+      "8d342636aec42747c4072f91e4c8050dac682c46b669e05b1fa6629e4b398156",
+      "cf566e926d53004fc79fa3188c2edbd06f8a081bd4b3ffd9d2216921c8a5b293"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___014-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:3c16d33db03f2c01a96d",
+    "image_sha256": [
+      "63a32e0ceb382c460bb4ed09496dd84c992cc9735eba85c85e63856863cb4713",
+      "7469308778863c485ad7a9067a2b1c1274817126283ee3481c5e6f41ecb371aa"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_010.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:e7bf9ad4a34c19a1ea7a",
+    "image_sha256": [
+      "87c6deda7ce5c8f6ab0b334417306e26bf3132454312ec321250293fda026294",
+      "dc3be9d146457d6c21f8bee4abc4ee573b8eabd2f2eabce23e57f20f5f3469c3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:5eb5e7b363df6ca13e72",
+    "image_sha256": [
+      "fa9ac71f2691d5a344d4b8f30a9f428cb0ef085e4e45fcd64c0b7a9564bff842",
+      "440c7820497bf95a0d810f563a5751dfb43b4bb5f61ced8ce5ef8f09ebc1ca60"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:d94f56d3edc2649b2d5c",
+    "image_sha256": [
+      "ea76329abb6d94758bd3ee6eb29043b7c15a2278d44307f4d9420a211dc7cca5",
+      "ffd22541df93b8dda0476146758ceabf4c0a93ff1a77585ed9f18dd18b0dba23"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:736aa898a8ddff53df32",
+    "image_sha256": [
+      "b3ae1cb3f28cca5a1a497af862d38e9e2358a9f13522a51e67786400c26d754f",
+      "5bdae603d7e9ac65f0f8b1b04013966e4e458a8b1acd3a0e96a97da48d7bdfb8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___057-1__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:8a6924a996bc47f4a68d",
+    "image_sha256": [
+      "52f76567c174dcb9bfd6f86acae77ed5ac48559f012cc2fa10883f2625683257",
+      "0609c4f4ada429882113753a4192fdc58e2795effb9882535ab6f0f558adf259"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_004.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:a461b44946daadb9ed54",
+    "image_sha256": [
+      "2f4839ceb3d054421a76427be296cd87aaa189db6df9b8d6cdc51d4c297271d1",
+      "370092944a498d85ed62e6993eb92a39733bdb4fc090806f1bab97fa40c0f925"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:8e2f59072c086590b561",
+    "image_sha256": [
+      "a8e893569dbdc6aff711402c82288348c52cca7a90e5a3a552cbc94df1ab13db",
+      "440c7820497bf95a0d810f563a5751dfb43b4bb5f61ced8ce5ef8f09ebc1ca60"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:2589225b279259ad8cf4",
+    "image_sha256": [
+      "ea76329abb6d94758bd3ee6eb29043b7c15a2278d44307f4d9420a211dc7cca5",
+      "3347312a15379ab7dba8e45541c9128e17a5781b6613403c08d9e73f794159c8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_007.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:4ae023247b280522df03",
+    "image_sha256": [
+      "55d1d975607f03dca50b970efa3194c30bff2f878dded875ef9abb339eccef2b",
+      "ffd22541df93b8dda0476146758ceabf4c0a93ff1a77585ed9f18dd18b0dba23"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_011.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:43b28949dad187708ca9",
+    "image_sha256": [
+      "ea76329abb6d94758bd3ee6eb29043b7c15a2278d44307f4d9420a211dc7cca5",
+      "5c7ae1416eaf6521bb95ad4c3850ee788ac817718b105b493d4d208547812e9b"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:1496150f3062d7a6b152",
+    "image_sha256": [
+      "2bab64b17a8fc78921b3fce4dd7bea3d2205f7ba7dcf7759a0015e03160b8959",
+      "ffd22541df93b8dda0476146758ceabf4c0a93ff1a77585ed9f18dd18b0dba23"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___057-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:6800641c5579a48c7332",
+    "image_sha256": [
+      "e4868db6a9fab448762744fe19a2ea1b65c2f3273c4b586a84690292a0dce271",
+      "8b01633f54546e053ee6adb83867a56685437f38dc8a69c2ca5ada6654ee36e6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_015.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_009.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:06089fcc273269685bce",
+    "image_sha256": [
+      "d53782b6a5d63ae4a9995eda4a17e650e50dd3e5b1dcdf08af27a16aecf10269",
+      "5c7ae1416eaf6521bb95ad4c3850ee788ac817718b105b493d4d208547812e9b"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:bc2866173af5b81686ea",
+    "image_sha256": [
+      "937104fc34086887ecf881d4419819eeea669e15acdfc27e534574c5cf5a46a8",
+      "0609c4f4ada429882113753a4192fdc58e2795effb9882535ab6f0f558adf259"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:aee00e551d83bbd0c7e6",
+    "image_sha256": [
+      "2f4839ceb3d054421a76427be296cd87aaa189db6df9b8d6cdc51d4c297271d1",
+      "cc5f2f19d88f9a38bacbd51e443a87cbcd0b60bcccd65a8d8924f05ce6c50e99"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:45160ee87712de522b9e",
+    "image_sha256": [
+      "fa9ac71f2691d5a344d4b8f30a9f428cb0ef085e4e45fcd64c0b7a9564bff842",
+      "3347312a15379ab7dba8e45541c9128e17a5781b6613403c08d9e73f794159c8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_007.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:bc526d3eb9b7cc26c5b0",
+    "image_sha256": [
+      "56a2c9f6b8b5b9fe356057e18229be5104b52b0a7f14f4e69393678992d43dfe",
+      "0f3c166eefb56235cbe0f2295814d0234ae777265b7ad5c7b4541b7ab8f0e685"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_012.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:01f015660e563535605b",
+    "image_sha256": [
+      "a53705678e3b68537e091207e7e5a53570cf194bcb4b6b02416cdad9abd6251a",
+      "5c7ae1416eaf6521bb95ad4c3850ee788ac817718b105b493d4d208547812e9b"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:16847c7846a1090ec8d0",
+    "image_sha256": [
+      "2e81b3be7119faa08162cb2ec70b82760b8948f0c3b0ef4b0dc4b9a85224c484",
+      "7469308778863c485ad7a9067a2b1c1274817126283ee3481c5e6f41ecb371aa"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:e5802a673aa94ae666c2",
+    "image_sha256": [
+      "ae16385c75c6c1db5a0147c0f497c355dde7038919f9c0c8cc5e833a134ae51b",
+      "504cb3107f53a5ce8d81f993919f31b6c2d938c24c4388b5f2e286d9f562eb44"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___049-2__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_006.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:cb184d2e10617c5a220f",
+    "image_sha256": [
+      "2bab64b17a8fc78921b3fce4dd7bea3d2205f7ba7dcf7759a0015e03160b8959",
+      "40dca21e6d4d9ef337c50b0124925f4fceb48d4686b02d4563d566d79eb8b2e3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___057-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:137b8667bbf86a455ed7",
+    "image_sha256": [
+      "b0c6f449684f0323f3edcc80705ebace1387fa9ea4cf57d7a401e915261c7f24",
+      "20f9bc61a7d5c4473630b2bf6393f59834c5e9b8fef93817e0cb5c7966dbc231"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_001.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:44e9c7c4a8280f25901c",
+    "image_sha256": [
+      "1bf617c09c28b3a696f9ce04b387bc43550df1557d5ef1f283f9c4824f38d17e",
+      "504cb3107f53a5ce8d81f993919f31b6c2d938c24c4388b5f2e286d9f562eb44"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___014-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_006.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:160f5e332daf4ac4550d",
+    "image_sha256": [
+      "132db335469467ae7fedb4f7757d0e16c3c898b14562a1a948648916f2b236f3",
+      "db479f4d8542391d40f90b80ad542bfd1de7917af76d758e5827143bae523820"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:0980d707a69b6913dd52",
+    "image_sha256": [
+      "cd4ca99d4ec6fa8c9f6e53e1a4b7d44edba7e6fa27e6332c8d6fddf5bcc4dbf5",
+      "fe6e9b267f3d014b527a6cb48c2108b981d5ef6b3eeb3d81914210bc41ca5aba"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:655834f1e8599acf50f4",
+    "image_sha256": [
+      "2f4839ceb3d054421a76427be296cd87aaa189db6df9b8d6cdc51d4c297271d1",
+      "cf566e926d53004fc79fa3188c2edbd06f8a081bd4b3ffd9d2216921c8a5b293"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:a375f08b5fef2545dd04",
+    "image_sha256": [
+      "791f60584d2c1d63770b90050a53ea0aad23384637daa7161d89ff12f4f0179a",
+      "fe6e9b267f3d014b527a6cb48c2108b981d5ef6b3eeb3d81914210bc41ca5aba"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_015.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:47c7a3b0024d84b442ab",
+    "image_sha256": [
+      "45b93ad30158d0426d4254283a4c032f5c9f3916767e0a6afc8ce1ff36055bda",
+      "dc3be9d146457d6c21f8bee4abc4ee573b8eabd2f2eabce23e57f20f5f3469c3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_001.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:554be6062e95884b276e",
+    "image_sha256": [
+      "132db335469467ae7fedb4f7757d0e16c3c898b14562a1a948648916f2b236f3",
+      "370092944a498d85ed62e6993eb92a39733bdb4fc090806f1bab97fa40c0f925"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:d751ece052e01a83d8e0",
+    "image_sha256": [
+      "56a2c9f6b8b5b9fe356057e18229be5104b52b0a7f14f4e69393678992d43dfe",
+      "0609c4f4ada429882113753a4192fdc58e2795effb9882535ab6f0f558adf259"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_012.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:98a53c2a1e5395ae1106",
+    "image_sha256": [
+      "1bf617c09c28b3a696f9ce04b387bc43550df1557d5ef1f283f9c4824f38d17e",
+      "a1f7c1d38fc40071e3c5dcdf8912beae491a6370382a7061fc7c4700ca88fa70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___014-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:40430934cff1d722eaf5",
+    "image_sha256": [
+      "fff905cb07429a95686849176505dba38054e2f958211296188fb672eb790fc3",
+      "9cc6a7cac9fd3eb1b3c96b82c6ee9907dde2b0521ec77e19cd708fbfadbc81dd"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:28780484f36f74477608",
+    "image_sha256": [
+      "2e81b3be7119faa08162cb2ec70b82760b8948f0c3b0ef4b0dc4b9a85224c484",
+      "0609c4f4ada429882113753a4192fdc58e2795effb9882535ab6f0f558adf259"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:ea3532235999f22a602a",
+    "image_sha256": [
+      "50f1a848fd06b4627a938bc171c8801ad9ae70888edb99958815af4c5d228abc",
+      "3309cdb8be6818ee0606ca3ad1a964e3f34e7b85fb35daaf43854795dc8a8b70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___057-1__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_002.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:b665a78d2cdfc2ef312f",
+    "image_sha256": [
+      "216e0d85be4bf3918c0c8137d4c4df742ac37676070ff4d00f995aa831512296",
+      "ce846b5f3b6f9ebd257691c998ce4f3688bb750b40b8bf1140d946ac5c5ba744"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:b8b48e1c912e0acc3b35",
+    "image_sha256": [
+      "3ce20483ec4b86a4ce698cb16c8210ea47fb688c2386a2dab54ff5f915efdeb3",
+      "370092944a498d85ed62e6993eb92a39733bdb4fc090806f1bab97fa40c0f925"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_004.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:944202d5840520393afe",
+    "image_sha256": [
+      "55d1d975607f03dca50b970efa3194c30bff2f878dded875ef9abb339eccef2b",
+      "e8c3d6a15f8bf63267722c1b4aada6b80f9b4eb8480cb3681c3b6c8f6e890bed"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_011.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:49d120174b6a54014b18",
+    "image_sha256": [
+      "ae16385c75c6c1db5a0147c0f497c355dde7038919f9c0c8cc5e833a134ae51b",
+      "440c7820497bf95a0d810f563a5751dfb43b4bb5f61ced8ce5ef8f09ebc1ca60"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___049-2__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:7ffdea462a5b131764bf",
+    "image_sha256": [
+      "132db335469467ae7fedb4f7757d0e16c3c898b14562a1a948648916f2b236f3",
+      "3ccf847f8c65e0bcde863ccffd00577d62eba0d680a45f44c09f224929f86ad6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:3937625aa2812f8381a3",
+    "image_sha256": [
+      "68ccbc6cd868137aeba8e49b3712a88f8d9fa22142e360ddcc6412866bfc9914",
+      "3347312a15379ab7dba8e45541c9128e17a5781b6613403c08d9e73f794159c8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_012.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_007.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:1d7722c4180a61b5f335",
+    "image_sha256": [
+      "3ce20483ec4b86a4ce698cb16c8210ea47fb688c2386a2dab54ff5f915efdeb3",
+      "dc3be9d146457d6c21f8bee4abc4ee573b8eabd2f2eabce23e57f20f5f3469c3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_004.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:d53a188b37a550a35967",
+    "image_sha256": [
+      "b3ae1cb3f28cca5a1a497af862d38e9e2358a9f13522a51e67786400c26d754f",
+      "cc5f2f19d88f9a38bacbd51e443a87cbcd0b60bcccd65a8d8924f05ce6c50e99"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___057-1__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:87515a08ec5fcafca584",
+    "image_sha256": [
+      "937104fc34086887ecf881d4419819eeea669e15acdfc27e534574c5cf5a46a8",
+      "ce846b5f3b6f9ebd257691c998ce4f3688bb750b40b8bf1140d946ac5c5ba744"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:6cb2b75959f8064c73ed",
+    "image_sha256": [
+      "a53705678e3b68537e091207e7e5a53570cf194bcb4b6b02416cdad9abd6251a",
+      "3347312a15379ab7dba8e45541c9128e17a5781b6613403c08d9e73f794159c8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_007.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:8572f2f52b8a4c5cb509",
+    "image_sha256": [
+      "87c6deda7ce5c8f6ab0b334417306e26bf3132454312ec321250293fda026294",
+      "db479f4d8542391d40f90b80ad542bfd1de7917af76d758e5827143bae523820"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:80f205892dafd3e03e06",
+    "image_sha256": [
+      "52f76567c174dcb9bfd6f86acae77ed5ac48559f012cc2fa10883f2625683257",
+      "cc5f2f19d88f9a38bacbd51e443a87cbcd0b60bcccd65a8d8924f05ce6c50e99"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_004.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:926e4fd19b76d6e52e88",
+    "image_sha256": [
+      "55d1d975607f03dca50b970efa3194c30bff2f878dded875ef9abb339eccef2b",
+      "cc5f2f19d88f9a38bacbd51e443a87cbcd0b60bcccd65a8d8924f05ce6c50e99"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_011.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:1154970048b2c9f0bbf8",
+    "image_sha256": [
+      "fa9ac71f2691d5a344d4b8f30a9f428cb0ef085e4e45fcd64c0b7a9564bff842",
+      "5bdae603d7e9ac65f0f8b1b04013966e4e458a8b1acd3a0e96a97da48d7bdfb8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:d9a8ed307b9ae5a2e330",
+    "image_sha256": [
+      "c71df567a25cdc215a4282c09972a34508103a6c33a8210b9e6ee2ecccbf148d",
+      "20f9bc61a7d5c4473630b2bf6393f59834c5e9b8fef93817e0cb5c7966dbc231"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:d35b8411e0414236a736",
+    "image_sha256": [
+      "b0c6f449684f0323f3edcc80705ebace1387fa9ea4cf57d7a401e915261c7f24",
+      "3309cdb8be6818ee0606ca3ad1a964e3f34e7b85fb35daaf43854795dc8a8b70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_001.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_002.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:d0f3efa7aa8522fe3db4",
+    "image_sha256": [
+      "b03cf0e2287d1d890358810b6180fb32b93e11c8cf701ae7e47c5df9a0e44cfc",
+      "7469308778863c485ad7a9067a2b1c1274817126283ee3481c5e6f41ecb371aa"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___022-1__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:1e4b86356f37e274f125",
+    "image_sha256": [
+      "4a8e7c551030ba69ac80787f9d019672f32644e9cf12a8078a7d094c4f7d89a9",
+      "5bdae603d7e9ac65f0f8b1b04013966e4e458a8b1acd3a0e96a97da48d7bdfb8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:13c76dd006372dbc7afc",
+    "image_sha256": [
+      "78f76c2c1f7bbdec36ea707c253ece649f432bd302497836c9f2437d062eaf05",
+      "dc3be9d146457d6c21f8bee4abc4ee573b8eabd2f2eabce23e57f20f5f3469c3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_009.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:7e26448477d41eae596f",
+    "image_sha256": [
+      "1f510e887d40d03ade99fce2e3c560ad3366f71e1d73500eadc4f934a8e73c7b",
+      "e433c26068ee805f85fe91a68d3bafb4d888441d3ada5dddcad5230002ac7d32"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_013.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:ebf476c3506aa88847c7",
+    "image_sha256": [
+      "cb9133860033b9ac1607fc4f3f87962e8d01a0f20ff896a8fe0bdf7701d298cb",
+      "d7d99f1e6a87ed7bcaf3eefb64a81173a29d9305444486576a90f4faa2738eb9"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:6815efefcefe918f2d16",
+    "image_sha256": [
+      "25d3dc7de580d01d42ebb10c0c7a3890399d83144d1384a41286f42b6aa9952b",
+      "9cc6a7cac9fd3eb1b3c96b82c6ee9907dde2b0521ec77e19cd708fbfadbc81dd"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:221781ccde00ab05c6dc",
+    "image_sha256": [
+      "771891c8a80fa14cbf3f6e2ceaa62a27591160e06bcb6655be02f621dfbee391",
+      "84b42c7cc035ab760312bfcbbaaad6ea1a9a0cbd64ec6da38a26fc522113ce43"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:4b09703ff80584fa74e8",
+    "image_sha256": [
+      "d5046abaab526daf5987261b0a53c367c12846e7ca955787c6dd36bd1719c4c4",
+      "e8c3d6a15f8bf63267722c1b4aada6b80f9b4eb8480cb3681c3b6c8f6e890bed"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:3961d6ade7ae95a133cf",
+    "image_sha256": [
+      "d5046abaab526daf5987261b0a53c367c12846e7ca955787c6dd36bd1719c4c4",
+      "d7d99f1e6a87ed7bcaf3eefb64a81173a29d9305444486576a90f4faa2738eb9"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:8c9ef4388f83ef8596a9",
+    "image_sha256": [
+      "8d342636aec42747c4072f91e4c8050dac682c46b669e05b1fa6629e4b398156",
+      "1d0713811f47a3424efcde858f97e81934dfe0888bc9db68d40145d092a3c7b1"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___014-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_012.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:2bbed2c683cdc4db21de",
+    "image_sha256": [
+      "a53705678e3b68537e091207e7e5a53570cf194bcb4b6b02416cdad9abd6251a",
+      "9b3c21e3c7970ebfb7685573e96dfbb6f158e3532503b3378f41f0686a8f0d22"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:37aa52f9b56d280dbd92",
+    "image_sha256": [
+      "c71df567a25cdc215a4282c09972a34508103a6c33a8210b9e6ee2ecccbf148d",
+      "3ccf847f8c65e0bcde863ccffd00577d62eba0d680a45f44c09f224929f86ad6"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_006.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:915c2f0e3b64f2b24af7",
+    "image_sha256": [
+      "63a32e0ceb382c460bb4ed09496dd84c992cc9735eba85c85e63856863cb4713",
+      "3347312a15379ab7dba8e45541c9128e17a5781b6613403c08d9e73f794159c8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_010.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_007.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:4b22038130574b2769d6",
+    "image_sha256": [
+      "771891c8a80fa14cbf3f6e2ceaa62a27591160e06bcb6655be02f621dfbee391",
+      "9b3c21e3c7970ebfb7685573e96dfbb6f158e3532503b3378f41f0686a8f0d22"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:170dddba409c418da12d",
+    "image_sha256": [
+      "937104fc34086887ecf881d4419819eeea669e15acdfc27e534574c5cf5a46a8",
+      "440c7820497bf95a0d810f563a5751dfb43b4bb5f61ced8ce5ef8f09ebc1ca60"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:8aed23f06fb3a4489dc9",
+    "image_sha256": [
+      "b0c6f449684f0323f3edcc80705ebace1387fa9ea4cf57d7a401e915261c7f24",
+      "9cc6a7cac9fd3eb1b3c96b82c6ee9907dde2b0521ec77e19cd708fbfadbc81dd"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___017-1__line_001.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:ade1ffdc748551b171e9",
+    "image_sha256": [
+      "a53705678e3b68537e091207e7e5a53570cf194bcb4b6b02416cdad9abd6251a",
+      "cc5f2f19d88f9a38bacbd51e443a87cbcd0b60bcccd65a8d8924f05ce6c50e99"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___066-1__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:1e4895defef91feb4c7b",
+    "image_sha256": [
+      "fff905cb07429a95686849176505dba38054e2f958211296188fb672eb790fc3",
+      "440c7820497bf95a0d810f563a5751dfb43b4bb5f61ced8ce5ef8f09ebc1ca60"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___024-1__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:0fd760b4284eadabe974",
+    "image_sha256": [
+      "2bab64b17a8fc78921b3fce4dd7bea3d2205f7ba7dcf7759a0015e03160b8959",
+      "4f5e8f4a736a82ec7f7329730b8197690612bfe288fb794eabdc4aa4e82c85e0"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___057-1__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:d2dab0cb3b601a6fea5f",
+    "image_sha256": [
+      "161d76dbe548fe89fb8c7ab49e02a7051e76b35b92d3191871e84910a94aa6a4",
+      "5c7ae1416eaf6521bb95ad4c3850ee788ac817718b105b493d4d208547812e9b"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___015-1__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0038-2__line_001.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:aa861904096067d0661b",
+    "image_sha256": [
+      "bfa0f028629b9ea542528bf3d55ef0bf6bc0e2771b6abb2eabc6939844a0e68c",
+      "1d0713811f47a3424efcde858f97e81934dfe0888bc9db68d40145d092a3c7b1"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_012.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:041d2149e2b381a9e550",
+    "image_sha256": [
+      "937104fc34086887ecf881d4419819eeea669e15acdfc27e534574c5cf5a46a8",
+      "3347312a15379ab7dba8e45541c9128e17a5781b6613403c08d9e73f794159c8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_007.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:f585ea77b58ceed4f8cc",
+    "image_sha256": [
+      "8d342636aec42747c4072f91e4c8050dac682c46b669e05b1fa6629e4b398156",
+      "ffd22541df93b8dda0476146758ceabf4c0a93ff1a77585ed9f18dd18b0dba23"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___014-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:476832fe20067d226345",
+    "image_sha256": [
+      "e79fad512bb9933c8ad8990da142d3260bcaa8e54d83f9562a8ac9a1c8c76358",
+      "370092944a498d85ed62e6993eb92a39733bdb4fc090806f1bab97fa40c0f925"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_008.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:33522437014653bdafad",
+    "image_sha256": [
+      "78f76c2c1f7bbdec36ea707c253ece649f432bd302497836c9f2437d062eaf05",
+      "cc5f2f19d88f9a38bacbd51e443a87cbcd0b60bcccd65a8d8924f05ce6c50e99"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_009.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:7fe0e75bea742701868b",
+    "image_sha256": [
+      "937104fc34086887ecf881d4419819eeea669e15acdfc27e534574c5cf5a46a8",
+      "40dca21e6d4d9ef337c50b0124925f4fceb48d4686b02d4563d566d79eb8b2e3"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0021-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:97b7ad2b9b7907bbf03b",
+    "image_sha256": [
+      "09b68822b77d0cd4ba799d5aedb01f5021e51e630bbda1f7a234ca43d54f87f0",
+      "e8c3d6a15f8bf63267722c1b4aada6b80f9b4eb8480cb3681c3b6c8f6e890bed"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___022-1__line_009.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0022-1__line_010.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:3fabf366028fbe512422",
+    "image_sha256": [
+      "a9e947f83b357a0b00a15a29f7b338a0447c9773a029deefb315ceb25a2e9c6d",
+      "0f3c166eefb56235cbe0f2295814d0234ae777265b7ad5c7b4541b7ab8f0e685"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:331f33123cd334f30c7e",
+    "image_sha256": [
+      "937104fc34086887ecf881d4419819eeea669e15acdfc27e534574c5cf5a46a8",
+      "cf566e926d53004fc79fa3188c2edbd06f8a081bd4b3ffd9d2216921c8a5b293"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_002.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_014.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:750ad98515d694b49222",
+    "image_sha256": [
+      "2f4839ceb3d054421a76427be296cd87aaa189db6df9b8d6cdc51d4c297271d1",
+      "7776333daea23fc98c380f45c2992d001912dbc07a204b2eb38f283d0517669e"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0016-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:00af4baf311b865899be",
+    "image_sha256": [
+      "25030faaf89368aa663180e351ccde2be061a0bc598228dd6a4c7ffc802a556a",
+      "a1f7c1d38fc40071e3c5dcdf8912beae491a6370382a7061fc7c4700ca88fa70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___006-2__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:78fd41b3ab7563279a42",
+    "image_sha256": [
+      "bfa0f028629b9ea542528bf3d55ef0bf6bc0e2771b6abb2eabc6939844a0e68c",
+      "fe6e9b267f3d014b527a6cb48c2108b981d5ef6b3eeb3d81914210bc41ca5aba"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_014.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:50d5041145ca30f12a6d",
+    "image_sha256": [
+      "e79fad512bb9933c8ad8990da142d3260bcaa8e54d83f9562a8ac9a1c8c76358",
+      "5bdae603d7e9ac65f0f8b1b04013966e4e458a8b1acd3a0e96a97da48d7bdfb8"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___016-2__line_005.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0039-2__line_011.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:8ec47841b29773e4a5b8",
+    "image_sha256": [
+      "24c4eee7fd435d8f5e8fd34302b3abfb0a31ebd7570a2ac8bf0229bb69d150fa",
+      "d7d99f1e6a87ed7bcaf3eefb64a81173a29d9305444486576a90f4faa2738eb9"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___071-2__line_003.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0027-2__line_003.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:5758ebea983adebaaa01",
+    "image_sha256": [
+      "d53782b6a5d63ae4a9995eda4a17e650e50dd3e5b1dcdf08af27a16aecf10269",
+      "a1f7c1d38fc40071e3c5dcdf8912beae491a6370382a7061fc7c4700ca88fa70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_007.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:e09b81cf5d8a394fb063",
+    "image_sha256": [
+      "9ef861ec9192f6ab9a3e79dea17eb0fbf4605bf553eec50b3777269300ec76b3",
+      "7469308778863c485ad7a9067a2b1c1274817126283ee3481c5e6f41ecb371aa"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___022-1__line_001.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0030-2__line_013.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  },
+  {
+    "sample_id": "Unalignedlines:ec8e7b828944e1b12d35",
+    "image_sha256": [
+      "7e696e600899777e102c83e5d817fdb29bc6dc3fdc60baba50c6f20c3c7ac5f4",
+      "a1f7c1d38fc40071e3c5dcdf8912beae491a6370382a7061fc7c4700ca88fa70"
+    ],
+    "images": [
+      "DataSet/ArabicData/Unalignedlines/imagesA/3158466___070-2__line_008.png",
+      "DataSet/ArabicData/Unalignedlines/imagesB/3249138__0024-1__line_004.png"
+    ],
+    "source_splits": [
+      "test",
+      "test"
+    ]
+  }
+]

@@ -1,5 +1,7 @@
 # A–B quantitative evaluation on 600 pairs
 
+This report records the **baseline preset** before the false-positive refinement. See [the current A–B comparison](ab_false_positive_reduction.md) for the new rule and results.
+
 The quantitative section of [model_evaluation.ipynb](../notebooks/model_evaluation.ipynb) now evaluates **300 aligned A–B pairs and 300 presumed unaligned A–B pairs**. Its population is independent of the qualitative sample slots and their smaller comparison pool. The frozen `real_abc_balanced_optional_space_20261108` checkpoint, full-line preprocessing and existing validation-selected word-matching settings are retained. No training, vocabulary rebuilding or parameter search is performed.
 
 ## Completed results — 9 November 2026

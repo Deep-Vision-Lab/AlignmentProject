@@ -1,0 +1,9 @@
+{
+  "pairs": 600,
+  "false_positives": 51,
+  "original_pairs": 300,
+  "additional_pairs": 300,
+  "overlap_pairs": 0,
+  "limitation": "600 distinct combinations reuse the same saved-test A/B image inventory; no independence claim",
+  "fpr": 0.085
+}

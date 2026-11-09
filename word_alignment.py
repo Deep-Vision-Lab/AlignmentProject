@@ -192,7 +192,10 @@ def select_word_candidates(candidates, options):
             and not any(c['candidate_type']=='visual_passage' for c in selected)):
         identities={c['word'] for c in selected}
         support=[len({p for c in selected for p in c['supported_physical'][side]}) for side in (0,1)]
-        confirmed=(len(identities)>=options['word_min_distinct_types']
+        strong_pair=(len(identities)==2 and options.get('word_strong_pair_max_nll') is not None
+            and all(max(c['word_nll'])<=options['word_strong_pair_max_nll']
+                    and c['mean_cosine']>=options['word_strong_pair_min_cosine'] for c in selected))
+        confirmed=((len(identities)>=options['word_min_distinct_types'] or strong_pair)
             and sum(map(len,identities))>=options['word_min_total_characters']
             and support[0]>=options['normal_min_distinct_a']
             and support[1]>=options['normal_min_distinct_b'])

@@ -176,6 +176,8 @@ def render_contact_sheets(dataset, output, selection, report):
     details = {row['review_id']: row for row in report['samples']}
     for group in GROUPS:
         rows = [row for row in selection['samples'] if row['book_pair'] == group]
+        if not rows:
+            continue
         fig, axes = plt.subplots(len(rows), 2, figsize=(18, 2.1 * len(rows)), layout='constrained')
         fig.suptitle(f'{group.replace("_", "–")} | green band above = supplied mask; blue band below = prediction', fontsize=14)
         for row, axrow in zip(rows, axes):

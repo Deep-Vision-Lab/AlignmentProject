@@ -452,7 +452,7 @@ def predict_cached_pair(session, pair, lines, representation='fused', *, setting
 
 CANDIDATE_REVALIDATION_KEYS = {
     'word_max_nll','word_min_posterior','word_min_posterior_short','word_min_cosine','word_visual_weight',
-    'word_min_distinct_types','word_min_total_characters',
+    'word_min_distinct_types','word_min_total_characters','word_strong_pair_max_nll','word_strong_pair_min_cosine',
     'normal_min_distinct_a','normal_min_distinct_b','normal_min_matched_pairs','normal_min_mean_cosine',
     'allow_short_regions','short_min_distinct_a','short_min_distinct_b','short_min_matched_pairs',
     'short_min_mean_cosine','short_min_median_cosine','short_min_mean_reward','short_min_path_density',
@@ -487,7 +487,7 @@ def revalidate_cached_candidates(session, prediction, settings):
     if options['decoder']=='word_dtw':
         from word_alignment import select_word_candidates
         if changed-{'word_max_nll','word_min_posterior','word_min_posterior_short','word_min_cosine','word_visual_weight',
-                    'word_min_distinct_types','word_min_total_characters'}:
+                    'word_min_distinct_types','word_min_total_characters','word_strong_pair_max_nll','word_strong_pair_min_cosine'}:
             raise ValueError('Word candidate generation settings changed; run full prediction')
         candidates=[dict(c) for c in prediction['match']['candidates']]
         regions=select_word_candidates(candidates,options)

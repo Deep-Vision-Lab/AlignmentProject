@@ -1,0 +1,26 @@
+{
+  "tests": {
+    "passed": 388,
+    "subtests_passed": 7,
+    "command": ".venv-mask-eval/bin/python -m pytest -q --tb=short"
+  },
+  "checkpoint_sha256": "e0888cf49fdbdb3dd11bcdede1fc73bd68912db3cfa02bef8020cf7b11da5d9d",
+  "training_steps": 0,
+  "book_pair_scope": "A_B only; C base settings retained",
+  "selected_preset": "strong_pair_nll0.55_cos0.75",
+  "comparison_cohort_unchanged": true,
+  "additional_negative_pair_overlap": 0,
+  "same_600_pair_images_and_masks": true,
+  "csv_aggregates_reproduced": true,
+  "additional_negative_pairs_disjoint": true,
+  "negative_notebook_pngs": 10,
+  "c_gallery_cells_unchanged": true,
+  "notebook_AB_settings_exact": true,
+  "notebook_C_base_settings_exact": true,
+  "source_sha256": {
+    "evaluation_presets.py": "c5ade4d69972226c49e8b9ebb382ffaab1180a896fb5e455036931f857054e88",
+    "evaluate.py": "5393e558af32a3d1b8f859b5d0d5cab225f520b353c5567e002bf228164066de",
+    "word_alignment.py": "bf221af3c2c0bcdd401d480b53921db1fdf133eba413a0d6e5c8a97219dd3af3",
+    "evaluation_utils.py": "059b1f343df76b0eff26ba32e91894ad220ae9e32f87ea447cbe8421d6f0f7fb"
+  }
+}

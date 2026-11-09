@@ -1,6 +1,12 @@
 # AlignmentProject — simple alignment core
 
-**9 November A–B evaluation on 600 pairs:** [updated model evaluation notebook](notebooks/model_evaluation.ipynb)
+**A–B false-positive reduction:** [new results and trade-offs](docs/ab_false_positive_reduction.md).
+On the same 300 presumed negatives, false detections fell from 71 to 31 (23.67% → 10.33%);
+mask IoU changed from 73.21% to 71.93% and recall from 89.68% to 85.84%.
+An additional 300 negatives produced 20 false detections (6.67%); the combined estimate is 51/600 (8.50%).
+Only A–B uses the new confidence rule; A–C/B–C retain their base settings. Weights are unchanged.
+
+**Baseline A–B evaluation on 600 pairs (before the confidence update):** [updated model evaluation notebook](notebooks/model_evaluation.ipynb)
 and [new results](docs/ab_300_evaluation.md). The 300 aligned pairs include training/validation
 images; the 300 presumed negatives use saved-test A–B lines. IoU is 73.21%, foreground
 precision 75.73%, recall 89.68%, and presumed-negative FPR 71/300 (23.67%). A separate

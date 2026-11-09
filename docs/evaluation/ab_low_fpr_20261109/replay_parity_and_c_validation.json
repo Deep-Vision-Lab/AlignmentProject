@@ -1,0 +1,51 @@
+{
+  "exact_source_mask_parity": true,
+  "checked_validation_pairs": [
+    "alignedPairs:auto_A_B_39d10eca2f70f1a89eb5",
+    "alignedPairs:auto_A_B_c315719f9a291bc3ca1e",
+    "alignedPairs:auto_A_B_ed0b52b4a241a9264c48",
+    "Unalignedlines:080ed22f344d3b897689",
+    "Unalignedlines:19d29f788c3a1de85e77"
+  ],
+  "c_validation": {
+    "A_C": {
+      "pairs": 7,
+      "baseline": [
+        0.6385427834520275,
+        0.7629329447218571,
+        0.873818743699326,
+        0.6986739005322686
+      ],
+      "selected": [
+        0.42194362072549885,
+        0.4710140196511529,
+        0.528354298872901,
+        0.43862195677878596
+      ]
+    },
+    "B_C": {
+      "pairs": 6,
+      "baseline": [
+        0.6020425833757256,
+        0.7392208694540329,
+        0.9270373649557525,
+        0.6330265076282672
+      ],
+      "selected": [
+        0.23116101815000842,
+        0.3107096206645704,
+        0.44486222471384657,
+        0.2474456291962388
+      ]
+    }
+  },
+  "metric_order": [
+    "IoU",
+    "Dice",
+    "Precision",
+    "Recall"
+  ],
+  "stage": "coarse confidence-only preset before strong-pair refinement",
+  "selected_preset": "confidence_168",
+  "current_policy": "C keeps the original base settings"
+}

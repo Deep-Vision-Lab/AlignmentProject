@@ -1,0 +1,8 @@
+{
+  "selection_sha256": "0b2f7baaf0807b217bce708236f4e901cb19a80ced84ab65e8e364f9c1125f45",
+  "selected_preset": "strong_pair_nll0.55_cos0.75",
+  "selection": "Final validation selection frozen before the final evaluation; see refinement protocol for the stopped coarse computation",
+  "main_cohort": "Exact same 300 aligned and 300 presumed-negative A/B pairs as baseline, seed 42",
+  "additional_negatives": "300 saved-test A/B comparisons excluding the original 300 negative combinations",
+  "no_test_parameter_search": true
+}

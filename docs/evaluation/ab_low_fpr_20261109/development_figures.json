@@ -1,0 +1,20 @@
+[
+  {
+    "pair_id": "pair_000016__A_line_014__B_line_003",
+    "image": "Results/Evaluation/ab_low_fpr_20261109/pair_000016__A_line_014__B_line_003_final.png",
+    "iou": 0.8949980881707333,
+    "words": [
+      "الله"
+    ]
+  },
+  {
+    "pair_id": "pair_000028__A_line_005__B_line_002",
+    "image": "Results/Evaluation/ab_low_fpr_20261109/pair_000028__A_line_005__B_line_002_final.png",
+    "iou": 0.7857474787149883,
+    "words": [
+      "ابتغا",
+      "الله",
+      "من"
+    ]
+  }
+]

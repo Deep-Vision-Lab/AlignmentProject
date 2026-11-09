@@ -43,7 +43,8 @@ MATCH_DEFAULTS = dict(similarity_mode='cosine', decoder='local_repeat_dtw', thre
     word_max_nll=1.5, word_min_posterior=.05, word_min_posterior_short=.15,
     word_min_cosine=.45, word_boundary_weight=2., word_lattice_temperature=1.,
     word_keep_long_regions=True,word_visual_weight=12.,word_min_distinct_types=2,
-    word_min_total_characters=8, **PATH_DEFAULTS)
+    word_min_total_characters=8, word_strong_pair_max_nll=None,
+    word_strong_pair_min_cosine=.75, **PATH_DEFAULTS)
 
 
 def resolved_match_settings(settings):
@@ -79,6 +80,9 @@ def resolved_match_settings(settings):
             if not .001<=result[key]<=1:raise ValueError(f'{key} must be in [.001,1]')
         if not -1<=result['word_min_cosine']<=1 or result['word_max_nll']<=0:
             raise ValueError('Invalid word visual or lexical threshold')
+        if (result['word_strong_pair_max_nll'] is not None and result['word_strong_pair_max_nll']<=0
+                or not -1<=result['word_strong_pair_min_cosine']<=1):
+            raise ValueError('Invalid strong two-word confidence threshold')
         if result['word_boundary_weight']<0 or result['word_lattice_temperature']<=0:
             raise ValueError('Invalid word lattice parameters')
         if not isinstance(result['word_keep_long_regions'],bool) or result['word_visual_weight']<0:
@@ -943,7 +947,8 @@ def main(argv=None):
         parser.add_argument('--'+key.replace('_','-'),type=kind,default=value)
     parser.add_argument('--use-strong-start-anchor',action=argparse.BooleanOptionalAction,default=False)
     for key in ('word_vocabulary_path','word_max_nll','word_min_posterior','word_min_posterior_short',
-                'word_min_cosine','word_boundary_weight','word_lattice_temperature','word_visual_weight'):
+                'word_min_cosine','word_boundary_weight','word_lattice_temperature','word_visual_weight',
+                'word_strong_pair_max_nll','word_strong_pair_min_cosine'):
         parser.add_argument('--'+key.replace('_','-'),type=str if key=='word_vocabulary_path' else float,
                             default=MATCH_DEFAULTS[key])
     parser.add_argument('--word-keep-long-regions',action=argparse.BooleanOptionalAction,default=True)

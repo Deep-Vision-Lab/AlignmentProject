@@ -1,0 +1,24 @@
+{
+  "seed": 42,
+  "statistics": {
+    "aligned_pairs": 1000,
+    "excluded_aligned_pairs": 973,
+    "unmatched_A": 841,
+    "eligible_unmatched_A": 56,
+    "unmatched_B": 314,
+    "eligible_unmatched_B": 35,
+    "eligible_negative_combinations": 1904,
+    "sampled_presumed_negatives": 1904,
+    "requested_presumed_negatives": "all"
+  },
+  "available_after_excluding_old": 1604,
+  "old_negative_pairs": 300,
+  "overlap_pairs": 0,
+  "limitation": "Different pair combinations from the same saved-test line inventory; not independent new images",
+  "pairs": 300,
+  "false_positive_pairs": 20,
+  "fpr": 0.06666666666666667,
+  "masked_area": 0.01622778011528825,
+  "feature_signature": "ccfa65df0eddbfa02890acf00616dfbf53a8a039e15f8f230bfcfe6b5f9c2735",
+  "selected_preset": "strong_pair_nll0.55_cos0.75"
+}

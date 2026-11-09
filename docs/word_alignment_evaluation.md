@@ -1,5 +1,7 @@
 # Image-only word verification and A/B/C evaluation — 9 November 2026
 
+The A–B confidence preset was subsequently refined; see [the current A–B results](ab_false_positive_reduction.md). The A–C and B–C base settings remain unchanged. A–B metrics below describe the earlier preset.
+
 Weights: `Weights/real_abc_balanced_optional_space_20261108/checkpoint_best.pt`; full-line preprocessing (`crop=none`); decoder `word_dtw`.
 
 All three books are recorded in training: A=1,107 lines, B=1,107 lines, C=1,107 lines. A figure’s line split describes that individual image. A line outside the balanced saved subset does not imply that its book was absent from training. The refreshed figures show book exposure and line membership separately.
