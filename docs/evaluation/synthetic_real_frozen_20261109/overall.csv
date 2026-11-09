@@ -1,0 +1,2 @@
+pairs,unique_anchors,positives,negatives,iou,dice,precision,recall,positive_detection_rate,negative_false_positives,negative_pair_fpr,negative_real_coverage,negative_synthetic_coverage
+60,6,48,12,0.13789723221489555,0.1955174936816568,0.332115926098711,0.1465737910620246,0.375,0,0.0,0.0,0.0

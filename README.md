@@ -1,10 +1,14 @@
 # AlignmentProject — simple alignment core
 
 **9 November image-only word evaluation:** [A–B, A–C, B–C metrics and supplied cases](docs/word_alignment_evaluation.md).
-The optional-space checkpoint was trained on all three books. Both notebooks
+The optional-space checkpoint was trained on all three books. Both real–real notebooks
 use whole-word verification for short masks and retain reliable long visual
 passages. Current test FPR is 15%, above the requested 10% budget. Reopen the
 notebooks from disk before restarting their kernels to load the edited cells.
+
+**Synthetic–real evaluation without training:** [new notebook](notebooks/synthetic_real_evaluation.ipynb)
+renders Arabic with `arabic_reshaper` and tests the frozen checkpoint on A, B and C.
+See [the experiment and results](docs/synthetic_real_evaluation.md).
 
 A standalone PyTorch pipeline for weakly supervised Arabic manuscript alignment.
 This refactor lives on `refactor/simple-alignment-core`; historical implementations
@@ -67,7 +71,7 @@ DTW retains full-alphabet NLL before gathering transcript columns, temperature
 Legacy NFKC Arabic-letter cleaning drops whitespace, marks, digits, punctuation and
 tatweel from **DTW supervision**, not from stored transcripts. With `space_mode=optional`,
 internal word boundaries become space tokens that can occupy zero, one, or several
-windows. Both evaluation notebooks now use
+windows. Both real–real evaluation notebooks now use
 `Weights/real_abc_balanced_optional_space_20261108/checkpoint_best.pt`.
 See [optional-space evaluation](docs/optional_space_evaluation.md) for the recurrence,
 checkpoint provenance, and training/evaluation parity checks. The codebook retains

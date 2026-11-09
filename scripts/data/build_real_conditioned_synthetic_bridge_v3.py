@@ -33,7 +33,6 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from real_unique_line_training import _all_unique_records, _positive_eval_pages
 from scripts.data.build_real_conditioned_synthetic_bridge import (
     _anchor_id,
     _font_candidates,
@@ -390,6 +389,7 @@ def choose_safe_sentences(
 
 
 def build(args: argparse.Namespace) -> None:
+    from real_unique_line_training import _all_unique_records, _positive_eval_pages
     data_dir = Path(args.data_dir).expanduser().resolve()
     output_dir = Path(args.output_dir).expanduser().resolve()
     if output_dir.exists():

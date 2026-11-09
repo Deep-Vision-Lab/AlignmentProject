@@ -1,0 +1,3 @@
+font,pairs,unique_anchors,positives,negatives,iou,dice,precision,recall,positive_detection_rate,negative_false_positives,negative_pair_fpr,negative_real_coverage,negative_synthetic_coverage
+Amiri-Regular,30,6,24,6,0.26947203218837884,0.38026737073025924,0.6374461379117077,0.2862865155254135,0.7083333333333334,0,0.0,0.0,0.0
+Arslan_Wessam,30,6,24,6,0.006322432241412276,0.010767616633054323,0.026785714285714284,0.00686106659863566,0.041666666666666664,0,0.0,0.0,0.0
