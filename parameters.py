@@ -82,6 +82,8 @@ class Config:
     disable_horizontal_when_feasible: bool = True
     dtw_cost_mode: str = 'full_alphabet_nll'
     dtw_normalization: str = 'legacy'  # old total/(T+L); explicit aligned_mean for new runs
+    space_mode: str = 'off'  # old letter-only checkpoints remain unchanged
+    space_skip_penalty_ratio: float = 1.0  # skip cost = ratio * log(effective alphabet size)
     batch_size: int = 32
     epochs: int = 20
     learning_rate: float = 2e-5
@@ -93,6 +95,14 @@ class Config:
 
 def validate_objective(config):
     import math
+    if config.space_mode not in {'off', 'optional'}:
+        raise ValueError('space_mode must be off or optional')
+    if not math.isfinite(config.space_skip_penalty_ratio) or config.space_skip_penalty_ratio <= 0:
+        raise ValueError('space_skip_penalty_ratio must be finite and positive')
+    if config.space_mode == 'optional' and (config.alignment_objective != 'dtw'
+                                            or config.dtw_cost_mode != 'full_alphabet_nll'
+                                            or config.dtw_normalization != 'aligned_mean'):
+        raise ValueError('Optional spaces require DTW, full_alphabet_nll and aligned_mean')
     if config.alignment_objective not in {'dtw', 'ctc'}:
         raise ValueError('alignment_objective must be dtw or ctc')
     if config.dtw_cost_mode not in {'full_alphabet_nll', 'cosine'}:

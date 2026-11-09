@@ -126,7 +126,8 @@ def effective_costs(costs, position_prior=.15):
 
 def soft_dtw(costs, gamma=.05, vertical_penalty=.05, horizontal_penalty=.30,
              position_prior=.15, disable_horizontal_when_feasible=True,
-             normalization='legacy', return_occupancy=False):
+             normalization='legacy', return_occupancy=False, *, space_columns=None,
+             space_skip_penalty=0., return_space_skip_count=False):
     """Soft path energy; aligned_mean uses d(total)/d(cell cost) as occupancy.
 
     The derivative of the log-partition Soft-DTW total is the expected number
@@ -139,17 +140,29 @@ def soft_dtw(costs, gamma=.05, vertical_penalty=.05, horizontal_penalty=.30,
         raise ValueError('gamma must be finite and positive')
     if normalization not in {'legacy', 'aligned_mean'}:
         raise ValueError('Unknown DTW normalization')
+    if space_columns is not None:
+        space_columns = torch.as_tensor(space_columns, device=costs.device, dtype=torch.bool)
+        if space_columns.shape != (costs.shape[1],):
+            raise ValueError('space_columns must have one entry per transcript token')
+        if not math.isfinite(space_skip_penalty) or space_skip_penalty <= 0:
+            raise ValueError('space_skip_penalty must be finite and positive')
     outer_grad = torch.is_grad_enabled()
     with torch.enable_grad():
         raw = costs.float()
-        if (normalization == 'aligned_mean' or return_occupancy) and not raw.requires_grad:
+        if (normalization == 'aligned_mean' or return_occupancy or return_space_skip_count) and not raw.requires_grad:
             raw = raw.detach().requires_grad_(True)
+        skip_penalty = (raw.new_tensor(space_skip_penalty, requires_grad=return_space_skip_count)
+                        if space_columns is not None and bool(space_columns.any()) else None)
         total = _soft_dtw_total(raw, gamma, vertical_penalty, horizontal_penalty,
-                                position_prior, disable_horizontal_when_feasible)
-        occupancy = None
-        if normalization == 'aligned_mean' or return_occupancy:
-            occupancy = torch.autograd.grad(total, raw, create_graph=outer_grad,
-                                            retain_graph=outer_grad)[0]
+                                position_prior, disable_horizontal_when_feasible,
+                                space_columns, skip_penalty)
+        occupancy = expected_skips = None
+        if normalization == 'aligned_mean' or return_occupancy or return_space_skip_count:
+            parameters = (raw, skip_penalty) if return_space_skip_count and skip_penalty is not None else (raw,)
+            derivatives = torch.autograd.grad(total, parameters, create_graph=outer_grad,
+                                              retain_graph=outer_grad)
+            occupancy = derivatives[0]
+            expected_skips = derivatives[1] if len(derivatives) == 2 else raw.new_zeros(())
             if not torch.isfinite(occupancy).all() or occupancy.sum() <= 0:
                 raise FloatingPointError('Invalid Soft-DTW alignment occupancy')
         value = ((occupancy * raw).sum() / occupancy.sum() if normalization == 'aligned_mean'
@@ -158,11 +171,16 @@ def soft_dtw(costs, gamma=.05, vertical_penalty=.05, horizontal_penalty=.30,
         value = value.detach()
         if occupancy is not None:
             occupancy = occupancy.detach()
+        if expected_skips is not None:
+            expected_skips = expected_skips.detach()
+    if return_space_skip_count:
+        return (value, occupancy, expected_skips) if return_occupancy else (value, expected_skips)
     return (value, occupancy) if return_occupancy else value
 
 
 def _soft_dtw_total(raw_costs, gamma, vertical_penalty, horizontal_penalty,
-                    position_prior, disable_horizontal_when_feasible):
+                    position_prior, disable_horizontal_when_feasible,
+                    space_columns=None, space_skip_penalty=None):
     costs = effective_costs(raw_costs, position_prior)
     t, l = costs.shape
     horizontal = 1e4 if disable_horizontal_when_feasible and t >= l else horizontal_penalty
@@ -185,6 +203,13 @@ def _soft_dtw_total(raw_costs, gamma, vertical_penalty, horizontal_penalty,
         diagonal = torch.where((i == 0) & (j == 0), torch.zeros_like(diagonal), diagonal)
         choices = torch.stack((diagonal, vertical + vertical_penalty, horizontal_cost + horizontal))
         current = costs[i, j] - max(gamma, 1e-5) * torch.logsumexp(-choices / max(gamma, 1e-5), dim=0)
+        if space_columns is not None and space_skip_penalty is not None and previous is not None:
+            # A space alone may advance the text without consuming a visual
+            # window or paying its NLL. All Arabic letters retain old moves.
+            skip = torch.where((j > 0) & space_columns[j],
+                               previous[(i - previous_start).clamp(0, len(previous) - 1)]
+                               + space_skip_penalty, missing)
+            current = -gamma * torch.logsumexp(torch.stack((-current / gamma, -skip / gamma)), dim=0)
         previous2, previous2_start = previous, previous_start
         previous, previous_start = current, start
     return previous[0]

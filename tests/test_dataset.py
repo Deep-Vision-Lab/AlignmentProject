@@ -61,6 +61,24 @@ def make_book_lines(root, pages=10):
     return root
 
 
+def make_book_c(root, pages=12):
+    side = root / 'BookC'
+    (side / 'images').mkdir(parents=True)
+    (side / 'texts').mkdir()
+    rows = []
+    for page in range(pages):
+        line_id = f'C_{page:02d}_00'
+        image = f'BookC/images/{line_id}.png'
+        transcript = f'BookC/texts/{line_id}.txt'
+        Image.new('L', (80, 32), 180).save(root / image)
+        (root / transcript).write_text('اب', encoding='utf-8')
+        rows.append(dict(side='C', writer_id=None, page_id=f'{page:02d}',
+                         line_id=line_id, image_path=image, text_path=transcript,
+                         raw_text='اب', source_occurrences=[]))
+    (side / 'lines.jsonl').write_text('\n'.join(json.dumps(row) for row in rows), encoding='utf-8')
+    return root
+
+
 def test_synthetic(tmp_path):
     root = make_synthetic(tmp_path / 'synthetic')
     ds = AlignmentDataset(root)
@@ -86,6 +104,16 @@ def test_arabic_data_book_lines(tmp_path):
     assert sample['geometry'][0]['crop'] == [0, 0, 80, 32]
     with pytest.raises(ValueError, match='independent book lines'):
         AlignmentDataset(root, paired=True)
+
+
+def test_book_c_selection_preserves_default_ab_population(tmp_path):
+    root = make_book_c(make_book_lines(tmp_path / 'ArabicData'))
+    default = AlignmentDataset(root)
+    selected = AlignmentDataset(root, dataset_type='real', books=('C',))
+    assert {record['book_id'] for record in default.records} == {'A', 'B'}
+    assert len(selected) == 12
+    assert {record['book_id'] for record in selected.records} == {'C'}
+    assert selected[0]['text'] == 'اب'
 
 
 @pytest.mark.parametrize('anchor_index', [False, True])

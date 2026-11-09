@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from dataloader import create_dataloaders
-from test_dataset import make_synthetic, make_manifest, make_book_lines
+from test_dataset import make_synthetic, make_manifest, make_book_lines, make_book_c
 
 
 @pytest.mark.parametrize('ratios,counts', [((.8,.1,.1),(16,2,2)), ((.6,.2,.2),(12,4,4))])
@@ -60,3 +60,15 @@ def test_arabic_data_balances_each_split_and_replays_saved_ids(tmp_path):
     replay = create_dataloaders(root, dataset_type='real', num_workers=0, seed=999, split_ids=ids)
     assert [[r['sample_id'] for r in loader.dataset.records] for loader in replay] == list(ids.values())
     assert len(next(iter(loaders[0]))['book_id']) == 32
+
+
+def test_book_c_only_group_split_and_replay(tmp_path):
+    root = make_book_c(make_book_lines(tmp_path / 'ArabicData'))
+    loaders = create_dataloaders(root, dataset_type='real', books=('C',), num_workers=0)
+    assert [len(loader.dataset) for loader in loaders] == [9, 1, 2]
+    ids = {name: [r['sample_id'] for r in loader.dataset.records]
+           for name, loader in zip(('train', 'val', 'test'), loaders)}
+    assert all(sample.startswith('BookC:') for values in ids.values() for sample in values)
+    replay = create_dataloaders(root, dataset_type='real', books=('C',), num_workers=0,
+                                split_ids=ids)
+    assert [[r['sample_id'] for r in loader.dataset.records] for loader in replay] == list(ids.values())

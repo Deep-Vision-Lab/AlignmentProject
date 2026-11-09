@@ -105,6 +105,8 @@ def _batch_postfix(stats, optimizer=None, gradients=None, device=None):
                   sigreg=_format_value(stats['sigreg']),
                   evaluated=stats['evaluated'], skipped=stats['skipped'],
                   windows=_format_value(stats.get('mean_windows')), letters=_format_value(stats.get('mean_letters')))
+    if stats.get('space_tokens'):
+        values['spaceSkip'] = f'{100 * stats["space_skipped_expected"] / stats["space_tokens"]:.0f}%'
     if stats.get('negative_loss_type') == 'hybrid_typed':
         values.update(sNeg=_format_value(stats['strong_cost_sum'] / stats['strong_count'] if stats['strong_count'] else None),
                       sLoss=_format_value(stats['strong_sum'] / stats['strong_count'] if stats['strong_count'] else None),
@@ -133,11 +135,11 @@ def _batch_postfix(stats, optimizer=None, gradients=None, device=None):
     return values
 
 
-def build_loaders(dataset, config, split_ids=None):
+def build_loaders(dataset, config, split_ids=None, books=None):
     loaders = create_dataloaders(dataset, config.dataset_type, config.train_ratio, config.val_ratio,
                               config.test_ratio, config.split_mode, config.split_seed,
                               config.batch_size, config.num_workers, config.augmentation,
-                              split_ids=split_ids, paired=config.paired,
+                              split_ids=split_ids, paired=config.paired, books=books,
                               image_size=(config.image_height,config.image_width),
                               grayscale=config.grayscale, crop=config.crop, binarize=config.binarize)
     for loader in loaders[:2]:
@@ -203,7 +205,7 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
     distributed = training and dist.is_available() and dist.is_initialized()
     # DTW is aggregated per LINE, including both sides, excluding empty text.
     # SIGReg is a token-weighted batch-population statistic, not a per-line loss.
-    totals = torch.zeros(25,dtype=torch.float32 if device.type == 'mps' else torch.float64,
+    totals = torch.zeros(27,dtype=torch.float32 if device.type == 'mps' else torch.float64,
                          device=device)
     typed_totals = torch.zeros(20, dtype=totals.dtype, device=device)
     corruption, skip_reasons = Counter(), Counter()
@@ -335,7 +337,8 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                                       stats['hard_cost_sum'], stats['hard_count'], stats['target_sum'],
                                       stats['target_success'],
                                       stats['positive_below_reference'],
-                                      stats['hard_target_success'], stats['hard_target_count']])
+                                      stats['hard_target_success'], stats['hard_target_count'],
+                                      stats['space_tokens'], stats['space_skipped_expected']])
         typed_totals += typed_totals.new_tensor([
             stats['strong_sum'], stats['strong_count'], stats['strong_cost_sum'],
             stats['strong_target_sum'], stats['strong_target_success'],
@@ -375,7 +378,8 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
     (dtw_sum,n,skipped,sig_sum,tokens,windows,letters,batches,neg_sum,ranked,
      candidates,correct,margins,negative_cost_sum,margin_violations,absolute_sum,
      ranking_sum,wrong_sum,hard_cost_sum,hard_count,target_sum,target_success,
-     positive_below_reference,hard_target_success,hard_target_count) = totals.tolist()
+     positive_below_reference,hard_target_success,hard_target_count,
+     space_tokens,space_skipped_expected) = totals.tolist()
     (strong_sum,strong_count,strong_cost_sum,strong_target_sum,strong_target_success,
      typed_wrong_sum,wrong_count,local_count,wrong_probability_sum,correct_probability_sum,
      changed_positions_count,order_sum,order_count,order_cost_sum,order_gap_sum,
@@ -433,6 +437,8 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                 weighted_sigreg=config.sigreg_weight*(sigreg or 0.),evaluated=int(n),skipped=int(skipped),
                 valid_tokens=int(tokens),batches=int(batches),mean_windows=windows/n if n else None,
                 mean_letters=letters/n if n else None,gamma=config.dtw_gamma,
+                space_tokens=int(space_tokens), space_skipped_expected=space_skipped_expected,
+                space_skip_fraction=(space_skipped_expected/space_tokens if space_tokens else None),
                 population='explicit-batch-subset' if max_batches else 'full-split',
                 seconds=time.monotonic()-started)
     result.update(strong_neg_cost_mean=strong_cost_sum/strong_count if strong_count else None,
@@ -583,6 +589,9 @@ def _print_dataset_summary(args, config, loaders, text_encoder):
         print(f'{name}:', flush=True)
         print(f'  samples: {len(loader.dataset)}', flush=True)
         print(f'  batches: {len(loader)}', flush=True)
+        if loader.dataset.source_layout == 'book_lines':
+            by_book = Counter(record['book_id'] for record in loader.dataset.records)
+            print(f'  books: {dict(sorted(by_book.items()))}', flush=True)
     print(f'Split mode: {config.split_mode}', flush=True)
     print(f'Split ratios: {config.train_ratio:.2f} / {config.val_ratio:.2f} / {config.test_ratio:.2f}', flush=True)
     print('Augmentation:', flush=True)
@@ -628,6 +637,12 @@ def _print_dataset_summary(args, config, loaders, text_encoder):
         print(f'Hard negative k: {config.hard_negative_k}', flush=True)
     print(f'DTW normalization: {config.dtw_normalization}', flush=True)
     k, uniform_nll, target_min, target_max = resolved_negative_targets(config, text_encoder)
+    print(f'Space mode: {config.space_mode}', flush=True)
+    if config.space_mode == 'optional':
+        print(f'Space skip penalty ratio: {config.space_skip_penalty_ratio}', flush=True)
+        print('Space skip penalty: ' +
+              (f'{config.space_skip_penalty_ratio * uniform_nll:.4f}' if uniform_nll is not None
+               else 'per-line ratio × log(alphabet size)'), flush=True)
     print(f'Effective alphabet size: {k if k is not None else "variable per line (fixed-target legacy mode)"}', flush=True)
     print(f'Uniform-reference NLL: {uniform_nll if uniform_nll is not None else "variable per line"}', flush=True)
     print(f'Negative target mode: {config.negative_target_mode}', flush=True)
@@ -668,6 +683,10 @@ def _print_epoch_summary(epoch, epochs, train_stats, val_stats, gradients, previ
     def value(item):
         return 'n/a' if item is None else f'{item:.4f}'
     def objective_details(stats):
+        if stats['space_tokens']:
+            print(f'  transcript spaces: {stats["space_tokens"]}; expected skipped: '
+                  f'{stats["space_skipped_expected"]:.1f} '
+                  f'({100 * stats["space_skip_fraction"]:.1f}%)', flush=True)
         if stats['negative_loss_type'] == 'hybrid_typed':
             c = stats['corruption']
             print('POSITIVE', flush=True)
@@ -773,7 +792,13 @@ def main(argv=None, epoch_callback=None):
     parser.add_argument('--device',default='auto')
     parser.add_argument('--max-batches',type=int,default=0,help='Explicit smoke cap on BOTH passes; 0=full splits')
     parser.add_argument('--resume',help='New-format checkpoint; config must match (epochs may increase)')
+    parser.add_argument('--restart-after-preemption', action='store_true',
+                        help='SLURM requeue only: retry a run that has no complete checkpoint yet')
     parser.add_argument('--finetune',help='Load weights and saved splits, fresh optimizer; explicitly allow changed loss settings')
+    parser.add_argument('--finetune-new-split', action='store_true',
+                        help='Fine-tune on a new dataset/book population with fresh group splits; requires --finetune')
+    parser.add_argument('--books', default=None,
+                        help='Comma-separated book manifests to train on, e.g. C for Book C only; default A,B')
     for field in fields(Config):
         kwargs = dict(default=field.default)
         if isinstance(field.default,bool): kwargs['action']=argparse.BooleanOptionalAction
@@ -782,6 +807,18 @@ def main(argv=None, epoch_callback=None):
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(raw_argv)
     config = Config(**{f.name:getattr(args,f.name) for f in fields(Config)})
+    if args.finetune:
+        # A fine-tune inherits the checkpoint's training settings unless the
+        # caller explicitly overrides them. Architecture checks below still
+        # reject incompatible changes. The saved split is handled separately.
+        source = torch.load(args.finetune, map_location='cpu', weights_only=False)
+        source_values = dict(source['config'])
+        source_values.pop('local_positive_dtw_weight', None)  # retired objective
+        explicit = {arg.split('=', 1)[0] for arg in raw_argv}
+        inherited = Config(**source_values)
+        config = replace(inherited, **{
+            f.name: getattr(args, f.name) for f in fields(Config)
+            if '--' + f.name.replace('_', '-') in explicit})
     negative_controls = {'--negative-count', '--negative-margin', '--negative-severity',
                          '--negative-operations', '--negative-seed', '--negative-warmup-epochs',
                          '--negative-curriculum-epochs', '--negative-loss-type',
@@ -805,6 +842,14 @@ def main(argv=None, epoch_callback=None):
     validate_objective(config)
     if args.resume and args.finetune:
         raise ValueError('--resume and --finetune are mutually exclusive')
+    if args.restart_after_preemption and (args.resume or args.finetune):
+        raise ValueError('--restart-after-preemption cannot be combined with --resume or --finetune')
+    if args.finetune_new_split and not args.finetune:
+        raise ValueError('--finetune-new-split requires --finetune')
+    books = tuple(part.strip().upper() for part in args.books.split(',')) if args.books else None
+    if books is not None and (not books or len(set(books)) != len(books) or any(
+            book not in {'A', 'B', 'C'} for book in books)):
+        raise ValueError('--books must list distinct books from A,B,C')
     if args.max_batches < 0 or Path(args.run_name).name != args.run_name:
         raise ValueError('Use a simple run name and nonnegative smoke cap')
     rank,world,local_rank = [int(os.environ.get(k,d)) for k,d in [('RANK','0'),('WORLD_SIZE','1'),('LOCAL_RANK','0')]]
@@ -821,10 +866,20 @@ def main(argv=None, epoch_callback=None):
     np.random.seed(config.seed+rank)
     torch.manual_seed(config.seed+rank)
     output_dir = Path(args.output_root)/args.run_name
-    if output_dir.exists() and not args.resume:
+    if args.restart_after_preemption:
+        if int(os.environ.get('SLURM_RESTART_COUNT', '0')) < 1:
+            raise ValueError('--restart-after-preemption requires a requeued SLURM job')
+        if output_dir.exists():
+            allowed = {'split_manifest.json', 'history.json',
+                       'checkpoint_latest.tmp', 'checkpoint_best.tmp'}
+            unexpected = sorted(p.name for p in output_dir.iterdir() if p.name not in allowed)
+            if unexpected:
+                raise FileExistsError(f'Refusing first-epoch retry in {output_dir}: '
+                                      f'unexpected files {unexpected}; use --resume for a checkpoint')
+    elif output_dir.exists() and not args.resume:
         raise FileExistsError(f'Refusing to overwrite run {output_dir}; use a new run name')
     if world>1: dist.barrier()
-    if rank==0: output_dir.mkdir(parents=True,exist_ok=bool(args.resume))
+    if rank==0: output_dir.mkdir(parents=True,exist_ok=bool(args.resume or args.restart_after_preemption))
     if world>1: dist.barrier()
     start,best,saved = 0,float('inf'),None
     if args.resume or args.finetune:
@@ -842,7 +897,7 @@ def main(argv=None, epoch_callback=None):
                         'positive_dtw_weight','dtw_gamma','vertical_penalty','horizontal_penalty',
                         'competition_temperature','dtw_cost_mode','disable_horizontal_when_feasible',
                         'dtw_normalization','hard_negative_k','ranking_aux_weight',
-                        'wrong_letter_unlikelihood_weight'}
+                        'wrong_letter_unlikelihood_weight','space_mode','space_skip_penalty_ratio'}
             changed = {key for key in expected if expected[key] != actual[key]}
             if changed - allowed:
                 raise ValueError(f'Fine-tuning may change losses only, not architecture/data: {sorted(changed-allowed)}')
@@ -850,14 +905,23 @@ def main(argv=None, epoch_callback=None):
         model = build_model(config).to(device)
         text = OrthogonalCharEmbedding(config.embedding_dim,config.text_vocab_size,config.text_embedding_seed).to(device)
     model_parameter_count = sum(parameter.numel() for parameter in model.parameters())
-    loaders = build_loaders(args.dataset,config,saved['split_ids'] if saved else None)
+    if args.resume and books is None:
+        books = tuple(saved['selected_books']) if saved.get('selected_books') else None
+    if args.resume and saved.get('selected_books') and tuple(saved['selected_books']) != books:
+        raise ValueError('Resume books differ from checkpoint')
+    if args.finetune and args.finetune_new_split and books is None:
+        raise ValueError('--finetune-new-split requires an explicit --books selection')
+    source_splits = saved['split_ids'] if saved and not args.finetune_new_split else None
+    loaders = build_loaders(args.dataset,config,source_splits,books=books)
     train_loader,val_loader,_test_loader = loaders  # Never iterate test during training.
     if not len(train_loader.dataset) or not len(val_loader.dataset):
         raise ValueError('Training and validation need nonempty group splits')
     split_ids = {name:[r['sample_id'] for r in loader.dataset.records]
                  for name,loader in zip(('train','val','test'),loaders)}
     if not args.resume:
-        text.letter_evidence_prior = fit_letter_prior(train_loader.dataset.records, config.alphabet_inventory)
+        text.letter_evidence_prior = fit_letter_prior(
+            train_loader.dataset.records, config.alphabet_inventory,
+            include_spaces=config.space_mode == 'optional')
         text.letter_evidence_prior['train_ids_sha256'] = hashlib.sha256(
             json.dumps(split_ids['train'], sort_keys=True).encode()).hexdigest()
     k, uniform_nll, target_min, target_max = resolved_negative_targets(config, text)
@@ -885,8 +949,25 @@ def main(argv=None, epoch_callback=None):
             print('WARNING: legacy checkpoint lacks matching per-rank RNG states; resume is not bit-exact.', flush=True)
     history_path = output_dir/'history.json'
     history = json.loads(history_path.read_text()) if args.resume and history_path.exists() else []
+    if args.resume:
+        # A preemption can occur after history was written but before the next
+        # checkpoint was atomically replaced. The checkpoint is authoritative.
+        history = [entry for entry in history if entry['epoch'] <= start]
+        if rank == 0 and history_path.exists():
+            history_path.write_text(json.dumps(history, indent=2))
     if rank==0:
         _print_dataset_summary(args, config, loaders, text)
+        if args.finetune:
+            print('FINE-TUNING', flush=True)
+            print(f'  source checkpoint: {Path(args.finetune).resolve()}', flush=True)
+            print(f'  source epoch: {saved["epoch"]}', flush=True)
+            print(f'  source split reused: {not args.finetune_new_split}', flush=True)
+            print(f'  selected books: {",".join(books) if books else "default A,B"}', flush=True)
+            retired_weight = saved['config'].get('local_positive_dtw_weight', 0.0)
+            if retired_weight:
+                print(f'  WARNING: source checkpoint used local positive DTW weight {retired_weight}; '
+                      'this branch has retired that auxiliary loss. Fine-tuning uses the '
+                      'current fused objective.', flush=True)
         _print_runtime(device, world, rank, config)
         print('CONFIG',json.dumps(asdict(config),sort_keys=True),flush=True)
         print('SPLITS',{name:len(ids) for name,ids in split_ids.items()},flush=True)
@@ -935,6 +1016,8 @@ def main(argv=None, epoch_callback=None):
                           rng_states=rng_states, run_mode='finetune' if args.finetune else 'resume' if args.resume else 'fresh',
                           source_checkpoint=args.finetune or args.resume,
                           source_config=saved['config'] if saved else None,
+                          selected_books=list(books or ('A', 'B')) if loaders[0].dataset.source_layout else None,
+                          source_split_manifest_sha256=saved.get('split_manifest_sha256') if saved else None,
                           negative_target_reference=target_reference)
             objective_keys = (('positive_cost_mean', 'strong_neg_cost_mean', 'strong_neg_1_cost_mean',
                                'strong_neg_2_cost_mean', 'strong_neg_target_mean',

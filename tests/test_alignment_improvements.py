@@ -270,6 +270,34 @@ def test_exact_resume_and_explicit_finetune(tmp_path):
     assert saved['config']['negative_dtw_weight']==.2 and saved['letter_evidence_prior']['source'].startswith('training-only')
 
 
+def test_finetune_book_c_uses_new_splits_and_checkpoint_settings(tmp_path):
+    from test_dataset import make_book_c, make_book_lines
+    from train import build_model, main, save_checkpoint
+    from text_embedding import OrthogonalCharEmbedding
+    root = make_book_c(make_book_lines(tmp_path / 'ArabicData'))
+    cfg = Config(dataset_type='real', cnn_type='simple', cnn_pretrained=False,
+                 image_height=32, image_width=64, embedding_dim=16,
+                 transformer_layers=1, transformer_heads=1, fusion_mode='sum',
+                 batch_size=2, num_workers=0, epochs=1)
+    model = build_model(cfg, initialize=False)
+    text = OrthogonalCharEmbedding(cfg.embedding_dim, cfg.text_vocab_size, cfg.text_embedding_seed)
+    source = tmp_path / 'source.pt'
+    old_ids = dict(train=['BookA:old'], val=['BookB:old'], test=[])
+    save_checkpoint(source, model, None, 1, 3.0, cfg, text, old_ids)
+    output = main(['--dataset', str(root), '--run-name', 'book_c_finetune',
+                   '--output-root', str(tmp_path), '--device', 'cpu', '--books', 'C',
+                   '--finetune', str(source), '--finetune-new-split', '--epochs', '1',
+                   '--max-batches', '1'])
+    saved = load_checkpoint(output / 'checkpoint_latest.pt')[3]
+    assert saved['run_mode'] == 'finetune'
+    assert saved['selected_books'] == ['C']
+    assert saved['source_split_manifest_sha256'] == load_checkpoint(source)[3]['split_manifest_sha256']
+    assert saved['split_ids'] != old_ids
+    assert all(sample.startswith('BookC:') for ids in saved['split_ids'].values() for sample in ids)
+    assert saved['config']['fusion_mode'] == 'sum'
+    assert saved['epoch'] == 1
+
+
 def _distributed_ranking_worker(rank, rendezvous, output):
     from datetime import timedelta
     import torch.distributed as dist

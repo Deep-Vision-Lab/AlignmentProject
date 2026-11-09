@@ -68,15 +68,15 @@ def create_dataloaders(root, dataset_type='auto', train_ratio=.8, val_ratio=.1,
         assigned = {g: name for name, gs in zip(names, (groups[:first], groups[first:second], groups[second:])) for g in gs}
         for r in dataset.records:
             records[assigned[r['group_id']]].append(r)
-    if dataset.source_layout == 'book_lines' and balance_books and split_ids is None:
+    if dataset.source_layout == 'book_lines' and balance_books and split_ids is None and len(dataset.selected_books) > 1:
         # Balance each split separately, not only the overall population. This
         # avoids a train/validation/test view dominated by either book.
         for index, name in enumerate(names):
-            a = [r for r in records[name] if r['book_id'] == 'A']
-            b = [r for r in records[name] if r['book_id'] == 'B']
-            take = min(len(a), len(b))
+            per_book = [[r for r in records[name] if r['book_id'] == book]
+                        for book in dataset.selected_books]
+            take = min(map(len, per_book))
             rng = random.Random(seed + 1009 * index)
-            selected = {r['sample_id'] for side in (a, b) for r in rng.sample(side, take)}
+            selected = {r['sample_id'] for side in per_book for r in rng.sample(side, take)}
             records[name] = [r for r in records[name] if r['sample_id'] in selected]
     group_sets = [{r['group_id'] for r in records[name]} for name in names]
     if any(group_sets[i] & group_sets[j] for i in range(3) for j in range(i + 1, 3)):

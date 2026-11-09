@@ -7,7 +7,15 @@ from torch.distributed.nn.functional import all_reduce
 from torch.nn import functional as F
 
 from dtw import letter_cost_matrix, soft_dtw, alphabet_log_probabilities
-from text_embedding import ARABIC_LETTERS, clean_letters
+from text_embedding import ARABIC_LETTERS, clean_letters, clean_alignment_tokens
+
+
+def alignment_tokens(text, config):
+    return clean_alignment_tokens(text, include_spaces=config.space_mode == 'optional')
+
+
+def letter_columns(tokens):
+    return [index for index, token in enumerate(tokens) if token != ' ']
 
 
 def effective_alphabet(config, text_embedding, letters=()):
@@ -22,6 +30,8 @@ def effective_alphabet(config, text_embedding, letters=()):
     else:
         inventory = list(dict.fromkeys(ARABIC_LETTERS if config.alignment_objective == 'ctc'
                                        else ARABIC_LETTERS + ''.join(letters)))
+    if config.space_mode == 'optional' and ' ' not in inventory:
+        inventory.insert(0, ' ')
     if len(inventory) < 2 or len(set(inventory)) != len(inventory):
         raise ValueError('Effective alphabet must contain at least two unique letters')
     return inventory
@@ -48,6 +58,7 @@ def resolved_negative_targets(config, text_embedding):
 
 
 def _line_loss(visual, letters, text_embedding, config, *, return_occupancy=False,
+               return_space_skip_count=False,
                inventory_override=None):
     inventory = list(inventory_override) if inventory_override is not None else effective_alphabet(config, text_embedding, letters)
     lookup = {c: i for i, c in enumerate(inventory)}
@@ -68,7 +79,11 @@ def _line_loss(visual, letters, text_embedding, config, *, return_occupancy=Fals
                               temperature=config.competition_temperature, mode=config.dtw_cost_mode)
     return soft_dtw(costs, config.dtw_gamma, config.vertical_penalty, config.horizontal_penalty,
                     config.position_prior, config.disable_horizontal_when_feasible,
-                    normalization=config.dtw_normalization, return_occupancy=return_occupancy)
+                    normalization=config.dtw_normalization, return_occupancy=return_occupancy,
+                    space_columns=[letter == ' ' for letter in letters] if config.space_mode == 'optional' else None,
+                    space_skip_penalty=(config.space_skip_penalty_ratio * math.log(len(inventory))
+                                        if config.space_mode == 'optional' else 0.),
+                    return_space_skip_count=return_space_skip_count)
 
 
 class AlignmentInfeasible(ValueError):
@@ -82,8 +97,9 @@ def positive_dtw_loss(vectors, texts, text_embedding, config, token_valid=None, 
     values = []
     lengths = []
     costs, alignments, reasons = [], [], Counter()
+    space_tokens, space_skipped_expected = 0, 0.
     for index, text in enumerate(texts):
-        letters = clean_letters(text)
+        letters = alignment_tokens(text, config)
         visual = vectors[index] if token_valid is None else vectors[index][token_valid[index]]
         if not letters or len(visual) == 0:
             reasons['empty_transcript' if not letters else 'no_valid_windows'] += 1
@@ -91,9 +107,18 @@ def positive_dtw_loss(vectors, texts, text_embedding, config, token_valid=None, 
             alignments.append(None)
             continue
         try:
-            result = _line_loss(visual, letters, text_embedding, config,
-                                return_occupancy=True) if return_alignments else _line_loss(visual, letters, text_embedding, config)
-            cost, occupancy = result if return_alignments else (result, None)
+            if config.space_mode == 'optional':
+                cost, occupancy, skipped_spaces = _line_loss(
+                    visual, letters, text_embedding, config, return_occupancy=True,
+                    return_space_skip_count=True)
+                space_tokens += letters.count(' ')
+                space_skipped_expected += float(skipped_spaces.detach())
+            elif return_alignments:
+                cost, occupancy = _line_loss(visual, letters, text_embedding, config,
+                                             return_occupancy=True)
+            else:
+                cost = _line_loss(visual, letters, text_embedding, config)
+                occupancy = None
         except AlignmentInfeasible as exc:
             reasons[str(exc)] += 1
             costs.append(None)
@@ -106,6 +131,7 @@ def positive_dtw_loss(vectors, texts, text_embedding, config, token_valid=None, 
     loss = torch.stack(values).mean() if values else (vectors if token_valid is None else vectors[token_valid]).sum() * 0.
     _, _, reference_min, _ = resolved_negative_targets(config, text_embedding)
     stats = dict(evaluated=len(values), skipped=len(texts)-len(values), skip_reasons=dict(reasons),
+                 space_tokens=space_tokens, space_skipped_expected=space_skipped_expected,
                  dtw_sum=sum(float(v.detach()) for v in values),
                  positive_cost_min=min((float(v.detach()) for v in values), default=None),
                  positive_cost_max=max((float(v.detach()) for v in values), default=None),
@@ -127,9 +153,9 @@ def negative_dtw_margin_loss(vectors, texts, negative_texts, text_embedding, con
     negative_cost_min, negative_cost_max = float('inf'), float('-inf')
     reasons = Counter()
     for i, text in enumerate(texts):
-        letters = clean_letters(text)
+        letters = alignment_tokens(text, config)
         visual = vectors[i] if token_valid is None else vectors[i][token_valid[i]]
-        negatives = list(dict.fromkeys(''.join(clean_letters(t)) for t in negative_texts[i]))
+        negatives = list(dict.fromkeys(''.join(alignment_tokens(t, config)) for t in negative_texts[i]))
         negatives = [n for n in negatives if n and n != ''.join(letters)]
         if letters and negatives and len(visual):
             try:
@@ -203,7 +229,10 @@ def negative_sequence_objective(vectors, texts, negative_texts, text_embedding, 
         positive = positive_costs[i]
         if positive is None:
             continue
-        original = ''.join(clean_letters(text))
+        positive_tokens = alignment_tokens(text, config)
+        original = ''.join(positive_tokens)
+        original_letters = ''.join(clean_letters(text))
+        columns = letter_columns(positive_tokens)
         visual = vectors[i] if token_valid is None else vectors[i][token_valid[i]]
         entries = (negative_metadata[i] if negative_metadata is not None else None)
         if entries is not None and len(entries) != len(negative_texts[i]):
@@ -211,7 +240,11 @@ def negative_sequence_objective(vectors, texts, negative_texts, text_embedding, 
         candidates = []
         seen = set()
         for j, candidate in enumerate(negative_texts[i]):
-            candidate = ''.join(clean_letters(candidate))
+            candidate = ''.join(alignment_tokens(candidate, config))
+            if (config.space_mode == 'optional' and
+                    [k for k, token in enumerate(candidate) if token == ' '] !=
+                    [k for k, token in enumerate(original) if token == ' ']):
+                raise ValueError('Negative transcript must preserve positive space positions')
             if not candidate or candidate == original or candidate in seen:
                 reasons['empty_identical_or_duplicate'] += 1
                 continue
@@ -227,7 +260,8 @@ def negative_sequence_objective(vectors, texts, negative_texts, text_embedding, 
                 continue
             meta = entries[j] if entries is not None else {}
             ratio = meta.get('corruption_ratio',
-                             sum(a != b for a, b in zip(original, candidate)) / max(len(original), len(candidate)))
+                             sum(a != b for a, b in zip(original_letters, clean_letters(candidate))) /
+                             max(len(original_letters), len(clean_letters(candidate))))
             if not 0 <= ratio <= 1:
                 raise ValueError('Negative corruption_ratio must be within [0,1]')
             target = target_min + ratio * (target_max - target_min)
@@ -268,12 +302,13 @@ def negative_sequence_objective(vectors, texts, negative_texts, text_embedding, 
                 if meta.get('operation') != 'substitute' or not meta.get('changed_positions'):
                     continue
                 for column in meta['changed_positions']:
-                    if not 0 <= column < len(original) or len(candidate) != len(original):
+                    candidate_letters = ''.join(clean_letters(candidate))
+                    if not 0 <= column < len(original_letters) or len(candidate_letters) != len(original_letters):
                         continue
-                    letter = candidate[column]
-                    if letter == original[column] or letter not in lookup:
+                    letter = candidate_letters[column]
+                    if letter == original_letters[column] or letter not in lookup:
                         continue
-                    weights = occupancy[:, column]
+                    weights = occupancy[:, columns[column]]
                     probability = logits[:, lookup[letter]].exp().clamp(max=1-1e-6)
                     terms.append((weights * -torch.log1p(-probability)).sum() / weights.sum().clamp_min(1e-8))
             if terms:
@@ -331,17 +366,23 @@ def typed_negative_objective(vectors, texts, negative_texts, negative_metadata,
         positive = positive_costs[i]
         if positive is None:
             continue
+        positive_tokens = alignment_tokens(raw_text, config)
+        columns = letter_columns(positive_tokens)
         original = ''.join(clean_letters(raw_text))
         visual = vectors[i] if token_valid is None else vectors[i][token_valid[i]]
         if len(negative_texts[i]) != len(negative_metadata[i]):
             raise ValueError('Typed negative text/metadata length mismatch')
-        inventory = effective_alphabet(config, text_embedding, original)
+        inventory = effective_alphabet(config, text_embedding, positive_tokens)
         lookup = {char: index for index, char in enumerate(inventory)}
         logp = None
         strong_slot = 0
         for candidate, meta in zip(negative_texts[i], negative_metadata[i]):
+            candidate_tokens = alignment_tokens(candidate, config)
+            candidate_text = ''.join(candidate_tokens)
             candidate = ''.join(clean_letters(candidate))
-            if candidate != meta.get('text') or not candidate or candidate == original:
+            if (candidate_text != meta.get('text') or not candidate or candidate == original
+                    or [j for j, c in enumerate(candidate_tokens) if c == ' '] !=
+                       [j for j, c in enumerate(positive_tokens) if c == ' ']):
                 raise ValueError('Typed negative metadata/text must match a distinct normalized transcript')
             kind = meta.get('negative_type')
             if kind == 'strong_global':
@@ -350,7 +391,7 @@ def typed_negative_objective(vectors, texts, negative_texts, negative_metadata,
                     raise ValueError('Strong negative must change at least 70% of letter identities by position')
                 if config.strong_negative_weight == 0:
                     continue
-                energy = _line_loss(visual, list(candidate), text_embedding, config,
+                energy = _line_loss(visual, candidate_tokens, text_embedding, config,
                                     inventory_override=inventory)
                 ratio = changed / len(original)
                 target = target_min + ratio * (target_max - target_min)
@@ -383,7 +424,7 @@ def typed_negative_objective(vectors, texts, negative_texts, negative_metadata,
                     if candidate[j] not in lookup:
                         raise AlignmentInfeasible('unsupported_replacement_letter')
                     wrong_loss, wrong_probability, correct_probability = weighted_wrong_letter_unlikelihood(
-                        logp, occupancy[:, j], lookup[candidate[j]], lookup[original[j]])
+                        logp, occupancy[:, columns[j]], lookup[candidate[j]], lookup[original[j]])
                     terms['wrong'].append(wrong_loss)
                     stats['wrong_probability_sum'] += float(wrong_probability.detach())
                     stats['correct_probability_sum'] += float(correct_probability.detach())
@@ -394,7 +435,7 @@ def typed_negative_objective(vectors, texts, negative_texts, negative_metadata,
                     raise ValueError('Order negative must preserve normalized letter identities')
                 if config.order_negative_weight == 0:
                     continue
-                energy = _line_loss(visual, list(candidate), text_embedding, config,
+                energy = _line_loss(visual, candidate_tokens, text_embedding, config,
                                     inventory_override=inventory)
                 terms['order'].append(order_rejection_loss(positive, energy, config.order_margin))
                 stats['order_cost_sum'] += float(energy.detach())

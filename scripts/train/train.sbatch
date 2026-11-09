@@ -8,6 +8,7 @@
 #SBATCH --mem=96G
 #SBATCH --time=03-00:00:00
 #SBATCH --output=out/%x_%J.out
+#SBATCH --requeue
 
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ahmedmas@post.bgu.ac.il
@@ -22,6 +23,41 @@ echo "Job name: $SLURM_JOB_NAME"
 echo "Run name: $RUN_NAME"
 echo "Fusion mode: $FUSION_MODE"
 echo "Gated fusion: $USE_GATED_FUSION"
+
+# A preempted SLURM job restarts this script with the same arguments. Resume
+# the last complete (atomically written) epoch instead of attempting a fresh
+# run in the existing output directory.
+TRAIN_ARGS=("$@")
+RESTART_COUNT="${SLURM_RESTART_COUNT:-0}"
+if [[ ! "$RESTART_COUNT" =~ ^[0-9]+$ ]]; then
+    echo "Invalid SLURM_RESTART_COUNT: $RESTART_COUNT" >&2
+    exit 2
+fi
+echo "SLURM restart count: $RESTART_COUNT"
+if (( RESTART_COUNT > 0 )); then
+    HAS_RESUME=0
+    HAS_FINETUNE=0
+    for ARG in "${TRAIN_ARGS[@]}"; do
+        case "${ARG%%=*}" in
+            --resume) HAS_RESUME=1 ;;
+            --finetune) HAS_FINETUNE=1 ;;
+        esac
+    done
+    if (( ! HAS_RESUME )); then
+        if (( HAS_FINETUNE )); then
+            echo "Preempted fine-tuning requires an explicit resume command; refusing to restart from source weights." >&2
+            exit 2
+        fi
+        LATEST="Weights/$RUN_NAME/checkpoint_latest.pt"
+        if [[ -s "$LATEST" ]]; then
+            TRAIN_ARGS+=(--resume "$LATEST")
+            echo "SLURM restart: resuming $LATEST"
+        else
+            TRAIN_ARGS+=(--restart-after-preemption)
+            echo "SLURM restart: no complete checkpoint; retrying the first epoch"
+        fi
+    fi
+fi
 
 # --------------------------------------------------
 # Preserve the GPU assignment made by SLURM
@@ -95,4 +131,4 @@ exec python -m torch.distributed.run \
     --run-name "$RUN_NAME" \
     --fusion-mode "$FUSION_MODE" \
     --use-gated-fusion "$USE_GATED_FUSION" \
-    "$@"
+    "${TRAIN_ARGS[@]}"

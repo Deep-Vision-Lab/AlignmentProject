@@ -21,7 +21,7 @@ import numpy as np
 import torch
 from PIL import Image, ImageEnhance, ImageFilter
 from torch.utils.data import Dataset
-from text_embedding import ARABIC_LETTERS, clean_letters, read_side_text
+from text_embedding import ARABIC_LETTERS, clean_letters, read_side_text, restore_transcript_spaces
 from parameters import negatives_enabled
 
 
@@ -444,7 +444,8 @@ def prepare_image(path, image_size=(128, 1024), grayscale=True, crop='auto',
 
 class AlignmentDataset(Dataset):
     def __init__(self, root, dataset_type='auto', split=None, augment=False, paired=False,
-                 image_size=(128, 1024), grayscale=True, crop='auto', binarize=False):
+                 image_size=(128, 1024), grayscale=True, crop='auto', binarize=False,
+                 books=None):
         self.root = Path(root).expanduser().resolve()
         self.augment = bool(augment and split not in {'val', 'valid', 'test'})
         self.paired = bool(paired)
@@ -457,8 +458,16 @@ class AlignmentDataset(Dataset):
             self.root = self.root.parent
         if not manifest.exists() and (self.root / 'anchor_index.jsonl').exists():
             manifest = self.root / 'anchor_index.jsonl'
-        book_manifests = {book: self.root / f'Book{book}' / 'lines.jsonl' for book in ('A', 'B')}
+        selected_books = tuple(books) if books is not None else ('A', 'B')
+        if not selected_books or len(set(selected_books)) != len(selected_books) or any(
+                book not in {'A', 'B', 'C'} for book in selected_books):
+            raise ValueError('books must be a nonempty selection of A, B, C')
+        book_manifests = {book: self.root / f'Book{book}' / 'lines.jsonl' for book in selected_books}
         self.source_layout = 'book_lines' if all(path.is_file() for path in book_manifests.values()) else None
+        if books is not None and self.source_layout is None:
+            raise FileNotFoundError('Missing line manifest for selected books: ' + ', '.join(
+                str(path) for path in book_manifests.values() if not path.is_file()))
+        self.selected_books = selected_books if self.source_layout else None
         rows = []
         if manifest.exists():
             rows = [json.loads(s) for s in manifest.read_text(encoding='utf-8').splitlines() if s.strip()]
@@ -469,7 +478,7 @@ class AlignmentDataset(Dataset):
             raise ValueError(f'Unknown dataset_type {dataset_type}')
         self.dataset_type = dataset_type
         if self.source_layout and dataset_type != 'real':
-            raise ValueError('BookA/BookB line manifests require dataset_type=real')
+            raise ValueError('Book line manifests require dataset_type=real')
         if self.source_layout and paired:
             raise ValueError('ArabicData contains independent book lines, not paired line records')
         self.records = []
@@ -533,7 +542,8 @@ class AlignmentDataset(Dataset):
                                 equivalent_transcripts=[], group_id=page, bbox=None)
                     self.records.append(dict(sides=[side], sample_id=f'Book{book}:{line_id}',
                                              label=None, split=None, anchor_id='', book_id=book,
-                                             source_pairs=[str(o['pair_id']) for o in row.get('source_occurrences', [])]))
+                                             source_pairs=[str(o['pair_id']) for o in row.get('source_occurrences', [])
+                                                           if o.get('pair_id') is not None]))
         elif dataset_type == 'synthetic':
             for path in sorted((self.root / 'images').glob('img1_*.png')):
                 idx = path.stem.split('_', 1)[1]
@@ -666,6 +676,10 @@ class AlignmentDataset(Dataset):
                             equivalents=side.get('equivalent_transcripts', []),
                             curriculum_epochs=0 if self.evaluation_view else c.negative_curriculum_epochs,
                             return_metadata=True)
+                    if c.space_mode == 'optional':
+                        values = [restore_transcript_spaces(text, value) for value in values]
+                        for value, entry in zip(values, entries):
+                            entry['text'] = value
                 negatives.append(values); diagnostics.append(detail); metadata.append(entries)
             result.update(negative_texts=negatives, negative_stats=diagnostics,
                           negative_metadata=metadata)

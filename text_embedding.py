@@ -23,6 +23,36 @@ def clean_letters(text):
                     ((0x600,0x6ff),(0x750,0x77f),(0x8a0,0x8ff),(0xfb50,0xfdff),(0xfe70,0xfeff)))]
 
 
+def clean_alignment_tokens(text, include_spaces=False):
+    """Arabic letters in reading order, with optional single internal spaces.
+
+    Only transcript whitespace supplies boundaries. Punctuation and manuscript
+    white pixels never create guessed spaces. Padding remains a separate token.
+    """
+    if not include_spaces:
+        return clean_letters(text)
+    tokens, pending_space = [], False
+    for char in unicodedata.normalize('NFKC', str(text)):
+        if char.isspace():
+            pending_space = bool(tokens)
+        elif clean_letters(char):
+            if pending_space:
+                tokens.append(' ')
+            tokens.append(char)
+            pending_space = False
+    return tokens
+
+
+def restore_transcript_spaces(positive_text, candidate_letters):
+    """Keep annotated boundaries while replacing/reordering only letter slots."""
+    original = clean_alignment_tokens(positive_text, include_spaces=True)
+    candidate = clean_letters(candidate_letters)
+    if sum(token != ' ' for token in original) != len(candidate):
+        raise ValueError('Negative transcript must preserve normalized letter length')
+    iterator = iter(candidate)
+    return ''.join(' ' if token == ' ' else next(iterator) for token in original)
+
+
 def read_side_text(side):
     """Read a line transcript, including an ArabicData manifest fallback."""
     if side.get('text'):
@@ -32,8 +62,8 @@ def read_side_text(side):
     raise ValueError(f'Line has neither text file nor raw_text: {side.get("image")}')
 
 
-def fit_letter_prior(records, inventory=''):
-    """Laplace-smoothed counts from TRAIN records only; no evaluation transcript lookup."""
+def fit_letter_prior(records, inventory='', include_spaces=False):
+    """Laplace-smoothed TRAIN-token counts, including space only when requested."""
     from collections import Counter
     counts, seen = Counter(), set()
     for record in records:
@@ -42,9 +72,10 @@ def fit_letter_prior(records, inventory=''):
             # just as each ordinary text file does. Never try to open "None".
             key = side['text'] if side.get('text') else ('manifest', side['image'])
             if key not in seen:
-                counts.update(clean_letters(read_side_text(side)))
+                counts.update(clean_alignment_tokens(read_side_text(side), include_spaces))
                 seen.add(key)
-    vocabulary = list(dict.fromkeys(inventory or ARABIC_LETTERS + ''.join(sorted(counts))))
+    vocabulary = list(dict.fromkeys((' ' if include_spaces else '') +
+                                     (inventory or ARABIC_LETTERS + ''.join(sorted(counts)))))
     total = sum(counts[c] + 1 for c in vocabulary)
     return dict(vocabulary=vocabulary, prior=[(counts[c]+1)/total for c in vocabulary],
                 source='training-only Laplace(add-one)', transcript_files=len(seen),
