@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from dataloader import create_dataloaders
-from test_dataset import make_synthetic, make_manifest, make_book_lines, make_book_c
+from test_dataset import make_synthetic, make_manifest, make_book_lines, make_book_c, make_flat_books
 
 
 @pytest.mark.parametrize('ratios,counts', [((.8,.1,.1),(16,2,2)), ((.6,.2,.2),(12,4,4))])
@@ -72,3 +72,42 @@ def test_book_c_only_group_split_and_replay(tmp_path):
     replay = create_dataloaders(root, dataset_type='real', books=('C',), num_workers=0,
                                 split_ids=ids)
     assert [[r['sample_id'] for r in loader.dataset.records] for loader in replay] == list(ids.values())
+
+
+def test_flat_books_balance_both_books_and_keep_pages_disjoint(tmp_path):
+    root = make_flat_books(tmp_path / 'ArabicData2')
+    loaders = create_dataloaders(root, dataset_type='real', books=('A', 'B'),
+                                 num_workers=0, seed=42)
+    assert [len(loader.dataset) for loader in loaders] == [96, 12, 12]
+    for loader in loaders:
+        books = [record['book_id'] for record in loader.dataset.records]
+        assert books.count('A') == books.count('B')
+    groups = [{record['group_id'] for record in loader.dataset.records} for loader in loaders]
+    assert not (groups[0] & groups[1] or groups[0] & groups[2] or groups[1] & groups[2])
+    ids = {name: [record['sample_id'] for record in loader.dataset.records]
+           for name, loader in zip(('train', 'val', 'test'), loaders)}
+    replay = create_dataloaders(root, dataset_type='real', books=('A', 'B'),
+                                num_workers=0, seed=999, split_ids=ids)
+    assert [[record['sample_id'] for record in loader.dataset.records]
+            for loader in replay] == list(ids.values())
+    assert [loader.dataset.augment for loader in loaders] == [True, False, False]
+
+
+def test_flat_books_can_train_on_all_page_split_lines(tmp_path, monkeypatch):
+    from collections import Counter
+    from parameters import Config
+    from train import build_loaders, main
+
+    root = make_flat_books(tmp_path / 'ArabicData2')
+    loaders = build_loaders(root, Config(dataset_type='real', balance_books=False, num_workers=0),
+                            books=('A', 'B'))
+    assert [len(loader.dataset) for loader in loaders] == [120, 15, 15]
+    assert Counter(r['book_id'] for r in loaders[0].dataset.records) == {'A': 48, 'B': 72}
+    assert sum(len(loader.dataset) for loader in loaders) == 150
+
+    def check_flag(config):
+        assert config.balance_books is False
+        raise RuntimeError('parsed no-balance flag')
+    monkeypatch.setattr('train.validate_objective', check_flag)
+    with pytest.raises(RuntimeError, match='parsed no-balance flag'):
+        main(['--dataset', str(root), '--run-name', 'parse_only', '--no-balance-books'])

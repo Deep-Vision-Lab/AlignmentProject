@@ -16,6 +16,7 @@ class Config:
     test_ratio: float = .1
     split_mode: str = 'group'
     split_seed: int = 42
+    balance_books: bool = True  # False keeps every line in each page-safe split
     augmentation: bool = True
     window_width: int = 32
     window_stride: int = 16

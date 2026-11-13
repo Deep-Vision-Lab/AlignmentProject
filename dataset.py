@@ -7,6 +7,7 @@ Bridge items always retain the real/positive relationship (including its mask).
 """
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import math
@@ -463,10 +464,14 @@ class AlignmentDataset(Dataset):
                 book not in {'A', 'B', 'C'} for book in selected_books):
             raise ValueError('books must be a nonempty selection of A, B, C')
         book_manifests = {book: self.root / f'Book{book}' / 'lines.jsonl' for book in selected_books}
-        self.source_layout = 'book_lines' if all(path.is_file() for path in book_manifests.values()) else None
+        flat_indexes = {book: self.root / f'Book{book}' / 'align' / 'alignments.csv'
+                        for book in selected_books}
+        self.source_layout = ('book_lines' if all(path.is_file() for path in book_manifests.values())
+                              else 'book_flat' if all(path.is_file() for path in flat_indexes.values())
+                              else None)
         if books is not None and self.source_layout is None:
-            raise FileNotFoundError('Missing line manifest for selected books: ' + ', '.join(
-                str(path) for path in book_manifests.values() if not path.is_file()))
+            raise FileNotFoundError('Selected books need lines.jsonl or align/alignments.csv: ' +
+                                    ', '.join(f'Book{book}' for book in selected_books))
         self.selected_books = selected_books if self.source_layout else None
         rows = []
         if manifest.exists():
@@ -478,7 +483,7 @@ class AlignmentDataset(Dataset):
             raise ValueError(f'Unknown dataset_type {dataset_type}')
         self.dataset_type = dataset_type
         if self.source_layout and dataset_type != 'real':
-            raise ValueError('Book line manifests require dataset_type=real')
+            raise ValueError('Book line datasets require dataset_type=real')
         if self.source_layout and paired:
             raise ValueError('ArabicData contains independent book lines, not paired line records')
         self.records = []
@@ -521,7 +526,7 @@ class AlignmentDataset(Dataset):
                         equivalent_transcripts=side.get('equivalent_transcripts', []),
                         group_id=group, bbox=side.get('bbox'))
 
-        if self.source_layout:
+        if self.source_layout == 'book_lines':
             # ArabicData exports already-cropped physical lines. BoundingBoxes
             # contain subword annotations (some unverified), not a safe line crop.
             # Keep each whole exported image and the exact matching text file.
@@ -544,6 +549,34 @@ class AlignmentDataset(Dataset):
                                              label=None, split=None, anchor_id='', book_id=book,
                                              source_pairs=[str(o['pair_id']) for o in row.get('source_occurrences', [])
                                                            if o.get('pair_id') is not None]))
+        elif self.source_layout == 'book_flat':
+            # ArabicData2 has one full line image and transcript per numeric ID.
+            # Its CSV's original line-level splits cross pages, so use the page
+            # metadata only for our group-safe train/validation/test split.
+            for book, index_path in flat_indexes.items():
+                folder = self.root / f'Book{book}'
+                images = {path.stem: path for path in folder.glob('*.png')}
+                texts = {path.stem: path for path in folder.glob('*.txt')}
+                if not images or images.keys() != texts.keys():
+                    raise ValueError(f'{folder}: every line PNG needs a same-stem TXT')
+                pages = {}
+                with index_path.open(encoding='utf-8-sig', newline='') as stream:
+                    for row in csv.DictReader(stream):
+                        line = row['line'].strip()
+                        identity = (row['manuscript'].strip(), row['page'].strip())
+                        if not all(identity) or (line in pages and pages[line] != identity):
+                            raise ValueError(f'{index_path}: missing/conflicting page for line {line}')
+                        pages[line] = identity
+                if images.keys() != pages.keys():
+                    raise ValueError(f'{index_path}: CSV lines disagree with image/text pairs')
+                for line in sorted(images, key=lambda value: (0, int(value)) if value.isdigit() else (1, value)):
+                    manuscript, page = pages[line]
+                    side = dict(image=resolve(images[line].resolve()), text=resolve(texts[line].resolve()),
+                                raw_text=None, mask=None, equivalent_transcripts=[],
+                                group_id=f'book:{book}:{manuscript}:{page}', bbox=None)
+                    self.records.append(dict(sides=[side], sample_id=f'Book{book}:{line}',
+                                             label=None, split=None, anchor_id='', book_id=book,
+                                             source_pairs=[]))
         elif dataset_type == 'synthetic':
             for path in sorted((self.root / 'images').glob('img1_*.png')):
                 idx = path.stem.split('_', 1)[1]

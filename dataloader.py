@@ -31,7 +31,7 @@ def create_dataloaders(root, dataset_type='auto', train_ratio=.8, val_ratio=.1,
                        test_ratio=.1, split_mode='group', seed=42, batch_size=32,
                        num_workers=4, augment=True, *, split_ids=None, balance_books=True,
                        **dataset_options):
-    """Build group-safe splits; ArabicData takes equal A/B lines in each split.
+    """Build group-safe splits; book layouts take equal lines per selected book.
 
     Book balancing samples without replacement after splitting, so a line never
     crosses splits and a saved checkpoint can replay the exact selected IDs.
@@ -51,7 +51,8 @@ def create_dataloaders(root, dataset_type='auto', train_ratio=.8, val_ratio=.1,
         flat = [i for name in names for i in split_ids[name]]
         selected = set(flat)
         if (len(flat) != len(selected) or not selected <= set(by_id)
-                or (selected != set(by_id) and not (dataset.source_layout == 'book_lines' and balance_books))):
+                or (selected != set(by_id) and not (dataset.source_layout in {'book_lines', 'book_flat'}
+                                                   and balance_books))):
             raise ValueError('Saved split IDs disagree with dataset population')
         records = {name: [by_id[i] for i in split_ids[name]] for name in names}
     elif split_mode == 'predefined':
@@ -62,13 +63,23 @@ def create_dataloaders(root, dataset_type='auto', train_ratio=.8, val_ratio=.1,
     else:
         # Even random mode keeps repeated group IDs atomic. Random independent
         # line splitting must not separate the two sides of a synthetic sample.
-        groups = sorted({r['group_id'] for r in dataset.records})
-        random.Random(seed).shuffle(groups)
-        first, second = int(len(groups) * train_ratio), int(len(groups) * (train_ratio + val_ratio))
-        assigned = {g: name for name, gs in zip(names, (groups[:first], groups[first:second], groups[second:])) for g in gs}
+        if dataset.source_layout == 'book_flat':
+            # Split pages within each book before equal-line subsampling. A
+            # combined page shuffle can leave one split nearly book-empty.
+            group_pools = [{r['group_id'] for r in dataset.records if r['book_id'] == book}
+                           for book in dataset.selected_books]
+        else:
+            group_pools = [{r['group_id'] for r in dataset.records}]
+        assigned = {}
+        for index, pool in enumerate(group_pools):
+            groups = sorted(pool)
+            random.Random(seed + 1009 * index).shuffle(groups)
+            first, second = int(len(groups) * train_ratio), int(len(groups) * (train_ratio + val_ratio))
+            assigned.update({g: name for name, gs in zip(names, (groups[:first], groups[first:second], groups[second:]))
+                             for g in gs})
         for r in dataset.records:
             records[assigned[r['group_id']]].append(r)
-    if dataset.source_layout == 'book_lines' and balance_books and split_ids is None and len(dataset.selected_books) > 1:
+    if dataset.source_layout in {'book_lines', 'book_flat'} and balance_books and split_ids is None and len(dataset.selected_books) > 1:
         # Balance each split separately, not only the overall population. This
         # avoids a train/validation/test view dominated by either book.
         for index, name in enumerate(names):

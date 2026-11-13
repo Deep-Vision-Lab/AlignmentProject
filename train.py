@@ -145,6 +145,7 @@ def build_loaders(dataset, config, split_ids=None, books=None):
                               config.test_ratio, config.split_mode, config.split_seed,
                               config.batch_size, config.num_workers, config.augmentation,
                               split_ids=split_ids, paired=config.paired, books=books,
+                              balance_books=config.balance_books,
                               image_size=(config.image_height,config.image_width),
                               grayscale=config.grayscale, crop=config.crop, binarize=config.binarize)
     for loader in loaders[:2]:
@@ -599,11 +600,15 @@ def _print_dataset_summary(args, config, loaders, text_encoder):
         print(f'{name}:', flush=True)
         print(f'  samples: {len(loader.dataset)}', flush=True)
         print(f'  batches: {len(loader)}', flush=True)
-        if loader.dataset.source_layout == 'book_lines':
+        if loader.dataset.source_layout in {'book_lines', 'book_flat'}:
             by_book = Counter(record['book_id'] for record in loader.dataset.records)
             print(f'  books: {dict(sorted(by_book.items()))}', flush=True)
+    if train_loader.dataset.source_layout == 'book_flat':
+        print('ArabicData2 CSV line splits overlap pages; using page-safe group splits.', flush=True)
     print(f'Split mode: {config.split_mode}', flush=True)
     print(f'Split ratios: {config.train_ratio:.2f} / {config.val_ratio:.2f} / {config.test_ratio:.2f}', flush=True)
+    if train_loader.dataset.source_layout in {'book_lines', 'book_flat'}:
+        print(f'Balance books: {"ON" if config.balance_books else "OFF (all lines retained)"}', flush=True)
     print('Augmentation:', flush=True)
     print(f'  train: {"ON" if train_loader.dataset.augment else "OFF"}', flush=True)
     print(f'  validation: {"ON" if val_loader.dataset.augment else "OFF"}', flush=True)

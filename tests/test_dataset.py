@@ -79,6 +79,25 @@ def make_book_c(root, pages=12):
     return root
 
 
+def make_flat_books(root, pages=30):
+    """ArabicData2-style full-line PNG/TXT pairs with page metadata in CSV."""
+    for book, lines_per_page in (('A', 2), ('B', 3)):
+        folder = root / f'Book{book}'
+        (folder / 'align').mkdir(parents=True)
+        rows = ['line,manuscript,page,split']
+        line_id = 0
+        for page in range(pages):
+            for offset in range(lines_per_page):
+                line_id += 1
+                Image.new('L', (80, 32), 180).save(folder / f'{line_id}.png')
+                (folder / f'{line_id}.txt').write_text('سا لم', encoding='utf-8')
+                # Original line-level split labels cross pages; group mode
+                # must keep every page in exactly one new split.
+                rows.append(f'{line_id},manuscript-{book},p{page:02d},{("train", "validation", "test")[offset % 3]}')
+        (folder / 'align/alignments.csv').write_text('\n'.join(rows), encoding='utf-8')
+    return root
+
+
 def test_synthetic(tmp_path):
     root = make_synthetic(tmp_path / 'synthetic')
     ds = AlignmentDataset(root)
@@ -114,6 +133,19 @@ def test_book_c_selection_preserves_default_ab_population(tmp_path):
     assert len(selected) == 12
     assert {record['book_id'] for record in selected.records} == {'C'}
     assert selected[0]['text'] == 'اب'
+
+
+def test_flat_books_use_matching_files_and_page_groups(tmp_path):
+    root = make_flat_books(tmp_path / 'ArabicData2')
+    ds = AlignmentDataset(root, dataset_type='real', books=('A', 'B'))
+    assert ds.source_layout == 'book_flat' and len(ds) == 150
+    assert {r['book_id'] for r in ds.records} == {'A', 'B'}
+    assert len({r['group_id'] for r in ds.records}) == 60
+    assert ds[0]['text'] == 'سا لم'
+    assert ds[0]['image'].shape == (1, 128, 1024)
+    (root / 'BookA/1.txt').unlink()
+    with pytest.raises(ValueError, match='same-stem TXT'):
+        AlignmentDataset(root, dataset_type='real', books=('A', 'B'))
 
 
 @pytest.mark.parametrize('anchor_index', [False, True])
