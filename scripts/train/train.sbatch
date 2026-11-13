@@ -98,27 +98,45 @@ echo "========================================"
 
 nvidia-smi -L
 
-python - <<'PY'
+# CUDA may fail to initialize briefly on an allocated node even when nvidia-smi
+# can list its devices. Each attempt uses a fresh Python process and leaves
+# SLURM's CUDA_VISIBLE_DEVICES mapping untouched.
+GPU_PREFLIGHT_PASSED=0
+for ATTEMPT in 1 2 3; do
+    echo "CUDA pre-flight attempt $ATTEMPT/3 on ${SLURMD_NODENAME:-unknown-node}"
+    if python - <<'PY'
 import os
 import torch
 
 print("CUDA_VISIBLE_DEVICES:", os.environ.get("CUDA_VISIBLE_DEVICES"))
 print("PyTorch:", torch.__version__)
-print("CUDA available:", torch.cuda.is_available())
-print("CUDA device count:", torch.cuda.device_count())
-
-for i in range(torch.cuda.device_count()):
-    print(f"Logical GPU {i}: {torch.cuda.get_device_name(i)}")
-
-if not torch.cuda.is_available():
-    raise RuntimeError("CUDA is unavailable before torchrun")
-
+available = torch.cuda.is_available()
+print("CUDA available:", available)
+if not available:
+    raise RuntimeError("PyTorch cannot initialize CUDA on this allocated node")
+count = torch.cuda.device_count()
+print("CUDA device count:", count)
 expected = int(os.environ.get('GPUS', '2'))
-if torch.cuda.device_count() != expected:
+if count != expected:
     raise RuntimeError(
-        f"Expected exactly {expected} visible GPUs, got {torch.cuda.device_count()}"
+        f"Expected exactly {expected} visible GPUs, got {count}"
     )
+for i in range(count):
+    print(f"Logical GPU {i}: {torch.cuda.get_device_name(i)}")
+    # Force CUDA context creation; a device count alone is insufficient.
+    torch.empty(1, device=f'cuda:{i}').fill_(1.)
 PY
+    then
+        GPU_PREFLIGHT_PASSED=1
+        break
+    fi
+    if (( ATTEMPT < 3 )); then sleep 10; fi
+done
+
+if (( ! GPU_PREFLIGHT_PASSED )); then
+    echo "CUDA pre-flight failed on ${SLURMD_NODENAME:-unknown-node} after 3 attempts; training was not started." >&2
+    exit 1
+fi
 
 echo "GPU pre-flight: PASSED"
 

@@ -54,6 +54,24 @@ def test_invalid_concat_gate_fails_before_submission(tmp_path):
     assert 'concat + gated fusion is unsupported' in completed.stderr
 
 
+def test_offline_wrapper_can_exclude_cuda_failed_node(tmp_path):
+    fake_bin = tmp_path / 'bin'
+    fake_bin.mkdir()
+    sbatch = fake_bin / 'sbatch'
+    sbatch.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n')
+    sbatch.chmod(0o755)
+    uname = fake_bin / 'uname'
+    uname.write_text('#!/usr/bin/env bash\nprintf "Linux\\n"\n')
+    uname.chmod(0o755)
+    env = dict(os.environ, PATH=f'{fake_bin}:{os.environ["PATH"]}',
+               RUN_NAME='cuda_retry', SLURM_EXCLUDE='cs-4090-09')
+    completed = subprocess.run(['bash', 'scripts/train/train.sh', 'real'],
+                               cwd=ROOT, env=env, text=True, capture_output=True, check=True)
+    submitted = completed.stdout.splitlines()
+    assert '--exclude=cs-4090-09' in submitted
+    assert '--job-name=cuda_retry' in submitted
+
+
 def test_negative_environment_variable_is_rejected_instead_of_ignored():
     completed = subprocess.run(['bash', 'scripts/train/train.sh', 'real'],
                                cwd=ROOT, env=dict(os.environ, NEGATIVE_DTW_WEIGHT='0.5'),

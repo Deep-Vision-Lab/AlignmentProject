@@ -94,7 +94,13 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
         --device auto \
         "$@"
 else
-    sbatch \
+    # A node that fails CUDA initialization can be excluded for a retry
+    # without changing the model or training arguments.
+    SBATCH_OPTIONS=()
+    if [[ -n "${SLURM_EXCLUDE:-}" ]]; then
+        SBATCH_OPTIONS+=(--exclude="$SLURM_EXCLUDE")
+    fi
+    sbatch "${SBATCH_OPTIONS[@]}" \
         --job-name="$RUN_NAME" \
         --gpus="rtx_4090:$GPUS" \
         scripts/train/train.sbatch \
