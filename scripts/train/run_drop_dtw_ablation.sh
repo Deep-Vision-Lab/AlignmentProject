@@ -16,8 +16,12 @@ export RUN_NAME="${RUN_NAME:-drop_dtw_${MODE}_$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-Weights}"
 geometry=()
 objective=(--alignment-loss soft_dtw)
+default_batch_size=8
 if [[ "$MODE" == a || "$MODE" == c ]]; then
     geometry=(--preserve-aspect-ratio --variable-width-images --variable-length-windows)
+    # Variable-width lines can exceed 200 windows. Larger batches retain CNN
+    # activations for every window and can exhaust a 24 GB RTX 4090.
+    default_batch_size=2
 fi
 if [[ "$MODE" == b || "$MODE" == c ]]; then
     objective=(--alignment-loss soft_drop_dtw --enable-padding-drop --enable-space-drop
@@ -31,7 +35,7 @@ bash scripts/train/train.sh real \
     --split-mode group --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1 \
     --split-seed 42 --seed 42 --negative-seed 42 \
     --image-height 128 --image-width 1024 --window-width 32 --window-stride 16 \
-    --cnn-type resnet18 --transformer-type tiny --batch-size "${BATCH_SIZE:-8}" \
+    --cnn-type resnet18 --transformer-type tiny --batch-size "${BATCH_SIZE:-$default_batch_size}" \
     --dtw-cost-mode full_alphabet_nll --dtw-normalization aligned_mean \
     --space-mode optional --space-skip-penalty-ratio 1.0 \
     --negative-loss-type hybrid_typed --negative-count 4 --negative-dtw-weight 0 \

@@ -72,6 +72,27 @@ def test_offline_wrapper_can_exclude_cuda_failed_node(tmp_path):
     assert '--job-name=cuda_retry' in submitted
 
 
+def test_variable_width_preset_uses_memory_safe_batch_and_selected_books(tmp_path):
+    fake_bin = tmp_path / 'bin'
+    fake_bin.mkdir()
+    sbatch = fake_bin / 'sbatch'
+    sbatch.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n')
+    sbatch.chmod(0o755)
+    uname = fake_bin / 'uname'
+    uname.write_text('#!/usr/bin/env bash\nprintf "Linux\\n"\n')
+    uname.chmod(0o755)
+    env = dict(os.environ, PATH=f'{fake_bin}:{os.environ["PATH"]}',
+               DATASET_PATH=str(ROOT / 'DataSet' / 'ArabicData2'),
+               BOOKS='A,B', RUN_NAME='arabicdata2_drop_test')
+    env.pop('BATCH_SIZE', None)
+    submitted = subprocess.run(['bash', 'scripts/train/run_drop_dtw_ablation.sh', 'c'],
+                               cwd=ROOT, env=env, text=True, capture_output=True, check=True).stdout.splitlines()
+    assert submitted[submitted.index('--dataset') + 1] == env['DATASET_PATH']
+    assert submitted[submitted.index('--books') + 1] == 'A,B'
+    assert submitted[submitted.index('--batch-size') + 1] == '2'
+    assert submitted[submitted.index('--alignment-loss') + 1] == 'soft_drop_dtw'
+
+
 def test_negative_environment_variable_is_rejected_instead_of_ignored():
     completed = subprocess.run(['bash', 'scripts/train/train.sh', 'real'],
                                cwd=ROOT, env=dict(os.environ, NEGATIVE_DTW_WEIGHT='0.5'),
