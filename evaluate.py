@@ -768,8 +768,13 @@ def window_match_diagnostic_examples():
 
 def source_interval(physical,geometry,window_width,stride):
     x0,_,x1,_=geometry['crop']
-    return [max(x0,x0+physical*stride/geometry['scale_x']),
-            min(x1,x0+(physical*stride+window_width)/geometry['scale_x'])]
+    starts = geometry.get('window_starts')
+    start = starts[int(physical)] if starts is not None else physical * stride
+    real_width = geometry.get('real_width', geometry.get('model_size',
+                              [(x1-x0)*geometry['scale_x']])[0])
+    end = min(start+window_width, real_width)
+    return [max(x0,x0+start/geometry['scale_x']),
+            min(x1,x0+end/geometry['scale_x'])]
 
 
 def region_mask(regions,side,geometry,window_width,stride):
@@ -808,7 +813,9 @@ def evaluate_loss(checkpoint,dataset,split='test',device='cpu',max_batches=0):
     # The held-out view also needs deterministic corruptions when replaying a
     # checkpoint with a negative objective; build_loaders configures train/val.
     selected.negative_config = config
-    loader=DataLoader(selected,batch_size=config.batch_size,shuffle=False,num_workers=config.num_workers,collate_fn=collate_samples)
+    from functools import partial
+    loader=DataLoader(selected,batch_size=config.batch_size,shuffle=False,num_workers=config.num_workers,
+                      collate_fn=partial(collate_samples, variable_images=config.variable_width_images))
     stats=validate_one_epoch(model,text,loader,config,device,max_batches)
     return dict(split=split,checkpoint=str(checkpoint),epoch=saved['epoch'],metrics=stats,
                 split_manifest_sha256=saved['split_manifest_sha256'])
@@ -826,19 +833,27 @@ def evaluate_pair(checkpoint,paths,output,device='cpu',representation='fused',cr
     for side,path in enumerate(paths):
         # No transcript or alignment annotations enter this prediction path.
         image,tensor,geo=prepare_image(path,(config.image_height,config.image_width),config.grayscale,
-                                       crop_override or config.crop,bbox=line_bboxes[side],binarize=config.binarize)
+                                       crop_override or config.crop,bbox=line_bboxes[side],binarize=config.binarize,
+                                       preserve_aspect_ratio=config.preserve_aspect_ratio,
+                                       window_width=config.window_width if config.variable_length_windows else None,
+                                       window_stride=config.window_stride if config.variable_length_windows else None,
+                                       foreground_threshold=config.space_foreground_threshold)
         with Image.open(path) as source: original=source.convert('RGB')
         originals.append(original)
         original.save(output/f'line_{"ab"[side]}_original.png')
         image.save(output/f'line_{"ab"[side]}_model_input.png')
         with torch.no_grad():
-            bundle=model(tensor[None].to(device))
+            bundle=model([tensor.to(device)] if config.variable_length_windows else tensor[None].to(device),
+                         space_confidence=[geo['space_confidence']] if config.variable_length_windows else None)
         valid=bundle['token_valid'][0]
         validity.append(valid.cpu().numpy())
         full_physical.append(bundle['physical_window_indices'][0].cpu().numpy())
         features.append(bundle[representation][0][valid])
         physical.append(bundle['physical_window_indices'][0][valid].cpu().numpy())
         geometry.append(geo)
+        if geo['space_confidence'] is not None:
+            np.save(output/f'space_confidence_{side}.npy',np.asarray(geo['space_confidence']))
+            np.save(output/f'window_starts_{side}.npy',np.asarray(geo['window_starts']))
     word_extra={};word_pixels=None
     if options['decoder']=='word_dtw':
         from word_alignment import image_word_boundaries,load_vocabulary

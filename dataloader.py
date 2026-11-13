@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from functools import partial
 import math
 import random
 
@@ -12,12 +13,14 @@ from torch.utils.data import DataLoader
 from dataset import AlignmentDataset
 
 
-def collate_samples(samples):
+def collate_samples(samples, *, variable_images=False):
     for key in ('image', 'image2'):
         shapes = {tuple(s[key].shape) for s in samples if torch.is_tensor(s[key])}
-        if len(shapes) > 1:
+        if len(shapes) > 1 and not variable_images:
             raise ValueError('Variable image sizes require per-line processing; collation never silently pads images')
-    return {key: torch.stack(values) if all(torch.is_tensor(v) for v in values) else values
+    return {key: torch.stack(values) if all(torch.is_tensor(v) for v in values)
+            and not (variable_images and key in {'image', 'image2', 'windows', 'windows2',
+                                                  'window_valid_mask', 'window_valid_mask2'}) else values
             for key in samples[0] for values in [[s[key] for s in samples]]}
 
 
@@ -99,7 +102,8 @@ def create_dataloaders(root, dataset_type='auto', train_ratio=.8, val_ratio=.1,
         view.augment = bool(augment and name == 'train')
         view.evaluation_view = name != 'train'
         loader = DataLoader(view, batch_size=batch_size, shuffle=name == 'train' and len(view) > 0,
-                            num_workers=num_workers, collate_fn=collate_samples,
+                            num_workers=num_workers, collate_fn=partial(
+                                collate_samples, variable_images=dataset.preserve_aspect_ratio),
                             worker_init_fn=_seed_worker,
                             generator=torch.Generator().manual_seed(seed + index))
         loaders.append(loader)

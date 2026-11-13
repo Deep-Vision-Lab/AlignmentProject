@@ -400,7 +400,8 @@ def content_crop_bounds(image):
 
 
 def prepare_image(path, image_size=(128, 1024), grayscale=True, crop='auto',
-                  bbox=None, augment=False, binarize=False):
+                  bbox=None, augment=False, binarize=False, *, preserve_aspect_ratio=False,
+                  window_width=None, window_stride=None, foreground_threshold=.05):
     """Return prepared PIL, normalized tensor and invertible direct-resize geometry.
 
     auto: strict XML for native lines, explicit bbox if supplied, otherwise full
@@ -430,23 +431,57 @@ def prepare_image(path, image_size=(128, 1024), grayscale=True, crop='auto',
     if augment:
         image = scan_augment(image)
     h, w = map(int, image_size)
+    if preserve_aspect_ratio:
+        w = max(1, round((x1 - x0) * h / (y1 - y0)))
     image = image.resize((w, h), Image.Resampling.BILINEAR)
     if binarize:
         image = image.point(lambda p: 255 if p >= 180 else 0)
+    real_width = w
+    confidence = None
+    if window_width is not None:
+        from window_geometry import window_starts
+        if window_stride is None:
+            raise ValueError('window_stride is required with window_width')
+        gray = np.asarray(image.convert('L'), dtype=np.float32) / 255.
+        # Estimate paper tone from both border and dominant image tone. The
+        # absolute deviation handles dark-on-light and light-on-dark sources.
+        border = np.concatenate((gray[0], gray[-1], gray[:, 0], gray[:, -1]))
+        paper = float(np.median(border))
+        if abs(paper - .5) < .08:
+            paper = float(np.median(gray))
+        foreground = np.abs(gray - paper) > .18
+        if w < window_width:
+            from PIL import ImageOps
+            fill = int(round(paper * 255))
+            image = ImageOps.expand(image, border=(0, 0, window_width - w, 0), fill=fill)
+            w = window_width
+        starts = window_starts(w, window_width, window_stride, shift_last=preserve_aspect_ratio)
+        confidence = []
+        for start in starts:
+            end = min(start + window_width, real_width)
+            ratio = float(foreground[:, start:end].mean()) if end > start else 0.
+            confidence.append(max(0., 1. - ratio / foreground_threshold) ** 2)
+    else:
+        starts = None
     pixels = np.array(image, dtype=np.float32) / 255.
     pixels = pixels[..., None] if pixels.ndim == 2 else pixels
     tensor = torch.from_numpy(pixels).permute(2, 0, 1).contiguous()
     mean, std = ((.449,), (.226,)) if grayscale else ((.485, .456, .406), (.229, .224, .225))
     tensor = (tensor - tensor.new_tensor(mean)[:, None, None]) / tensor.new_tensor(std)[:, None, None]
     geometry = dict(source_size=list(source_size), crop=list(bounds), model_size=[w, h],
-                    scale_x=w / (x1 - x0), scale_y=h / (y1 - y0), padding=False)
+                    scale_x=real_width / (x1 - x0), scale_y=h / (y1 - y0),
+                    padding=w > real_width, real_width=real_width,
+                    artificial_pixel_columns=w-real_width, window_starts=starts,
+                    valid_windows=len(starts) if starts is not None else None,
+                    space_confidence=confidence)
     return image, tensor, geometry
 
 
 class AlignmentDataset(Dataset):
     def __init__(self, root, dataset_type='auto', split=None, augment=False, paired=False,
                  image_size=(128, 1024), grayscale=True, crop='auto', binarize=False,
-                 books=None):
+                 books=None, preserve_aspect_ratio=False, window_width=None,
+                 window_stride=None, space_foreground_threshold=.05):
         self.root = Path(root).expanduser().resolve()
         self.augment = bool(augment and split not in {'val', 'valid', 'test'})
         self.paired = bool(paired)
@@ -454,6 +489,11 @@ class AlignmentDataset(Dataset):
         self.negative_epoch = 0
         self.evaluation_view = False
         self.image_size, self.grayscale, self.crop, self.binarize = image_size, grayscale, crop, binarize
+        self.preserve_aspect_ratio = preserve_aspect_ratio
+        self.window_width, self.window_stride = window_width, window_stride
+        self.space_foreground_threshold = space_foreground_threshold
+        if self.preserve_aspect_ratio and (not self.window_width or not self.window_stride):
+            raise ValueError('Variable-width dataset requires window_width and window_stride')
         manifest = self.root if self.root.is_file() else self.root / 'dataset_manifest.jsonl'
         if self.root.is_file():
             self.root = self.root.parent
@@ -663,11 +703,21 @@ class AlignmentDataset(Dataset):
 
     def __getitem__(self, index):
         record = self.records[index]
-        images, texts, geometries, masks = [], [], [], []
+        images, texts, geometries, masks, window_tensors, window_masks = [], [], [], [], [], []
         for side in record['sides']:
             _, tensor, geometry = prepare_image(side['image'], self.image_size, self.grayscale,
-                                                self.crop, side['bbox'], self.augment, self.binarize)
+                                                self.crop, side['bbox'], self.augment, self.binarize,
+                                                preserve_aspect_ratio=self.preserve_aspect_ratio,
+                                                window_width=self.window_width, window_stride=self.window_stride,
+                                                foreground_threshold=self.space_foreground_threshold)
             images.append(tensor)
+            if self.preserve_aspect_ratio:
+                window_tensors.append(torch.stack([
+                    tensor[..., start:start+self.window_width] for start in geometry['window_starts']]))
+                window_masks.append(torch.ones(geometry['valid_windows'], dtype=torch.bool))
+            else:
+                window_tensors.append(None)
+                window_masks.append(None)
             texts.append(read_side_text(side))
             geometries.append(geometry)
             mask = None
@@ -676,14 +726,24 @@ class AlignmentDataset(Dataset):
                     if list(source.size) != geometry['source_size']:
                         raise ValueError(f'Mask/source size mismatch: {side["mask"]}')
                     pixels = np.array(source.convert('L').crop(geometry['crop']).resize(
-                        tuple(geometry['model_size']), Image.Resampling.NEAREST))
+                        (geometry['real_width'], geometry['model_size'][1]), Image.Resampling.NEAREST))
+                    if geometry['artificial_pixel_columns']:
+                        pixels = np.pad(pixels, ((0,0),(0,geometry['artificial_pixel_columns'])))
                 mask = torch.from_numpy((pixels >= 128).astype(np.float32))[None]
             masks.append(mask)
         result = dict(image=images[0], text=texts[0], image2=images[1] if len(images) == 2 else None,
                     text2=texts[1] if len(texts) == 2 else None, mask=masks[-1],
                     sample_id=record['sample_id'], group_id=record['group_id'], label=record['label'],
                     anchor_id=record['anchor_id'], book_id=record.get('book_id'), geometry=geometries,
-                    image_paths=[s['image'] for s in record['sides']])
+                    image_paths=[s['image'] for s in record['sides']],
+                    windows=window_tensors[0],
+                    windows2=window_tensors[1] if len(window_tensors) == 2 else None,
+                    window_valid_mask=window_masks[0],
+                    window_valid_mask2=window_masks[1] if len(window_masks) == 2 else None,
+                    padding_metadata=[dict(artificial_pixel_columns=g['artificial_pixel_columns'],
+                                           sequence_padding=0) for g in geometries],
+                    space_confidence=[g['space_confidence'] for g in geometries],
+                    valid_window_counts=[g['valid_windows'] for g in geometries])
         c = self.negative_config
         if c is not None and negatives_enabled(c):
             negatives, diagnostics, metadata = [], [], []

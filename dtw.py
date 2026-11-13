@@ -178,6 +178,112 @@ def soft_dtw(costs, gamma=.05, vertical_penalty=.05, horizontal_penalty=.30,
     return (value, occupancy) if return_occupancy else value
 
 
+def soft_drop_dtw(costs, background_confidence, *, valid_windows=None, gamma=.05,
+                  vertical_penalty=.05, horizontal_penalty=.30, position_prior=.15,
+                  disable_horizontal_when_feasible=True, space_drop_cost=.1,
+                  text_drop_cost=1., enable_space_drop=True,
+                  min_text_coverage=.9, enforce_coverage=True,
+                  space_columns=None, space_skip_penalty=0., return_details=False):
+    """Differentiable global transcript alignment with optional real-window drops.
+
+    Every non-space transcript column must be emitted by at least one match.
+    Invalid batch rows are *mandatory zero-cost PAD drops*: they are removed
+    before the recurrence, so neither their values nor gradients enter it.
+    The reported energy is expected match NLL plus expected real-window drop
+    penalty, divided by expected matched-cell mass. This is an evidence energy,
+    not the entropy-containing soft-path free energy. Optional transcript spaces
+    retain the existing zero-window space skip operation.
+    """
+    if costs.ndim != 2 or background_confidence.ndim != 1 or len(background_confidence) != len(costs):
+        raise ValueError('Require [T,L] costs and [T] background confidence')
+    if valid_windows is None:
+        valid = torch.ones(len(costs), device=costs.device, dtype=torch.bool)
+    else:
+        valid = torch.as_tensor(valid_windows, device=costs.device, dtype=torch.bool)
+        if valid.shape != (len(costs),):
+            raise ValueError('valid_windows must have one entry per cost row')
+    pad_count = int((~valid).sum())
+    raw = costs[valid].float()
+    background = background_confidence[valid].float()
+    if raw.numel() == 0 or not torch.isfinite(raw).all() or not torch.isfinite(background).all():
+        raise ValueError('Drop-DTW requires finite nonempty valid costs and confidence')
+    if (background < 0).any() or (background > 1).any():
+        raise ValueError('Background confidence must be in [0,1]')
+    if not math.isfinite(gamma) or gamma <= 0 or not 0 <= space_drop_cost < text_drop_cost:
+        raise ValueError('Invalid gamma or real-window drop costs')
+    spaces = torch.zeros(raw.shape[1], device=raw.device, dtype=torch.bool) if space_columns is None else torch.as_tensor(
+        space_columns, device=raw.device, dtype=torch.bool)
+    if spaces.shape != (raw.shape[1],):
+        raise ValueError('space_columns must match transcript length')
+    if spaces.any() and space_skip_penalty <= 0:
+        raise ValueError('Optional transcript-space skips require a positive penalty')
+    drop = (space_drop_cost + (text_drop_cost-space_drop_cost)*(1-background)
+            if enable_space_drop else torch.full_like(background, text_drop_cost))
+    outer_grad = torch.is_grad_enabled()
+    with torch.enable_grad():
+        if not raw.requires_grad:
+            raw = raw.detach().requires_grad_(True)
+        if not drop.requires_grad:
+            drop = drop.detach().requires_grad_(True)
+        total = _soft_drop_total(raw, drop, gamma, vertical_penalty, horizontal_penalty,
+                                 position_prior, disable_horizontal_when_feasible,
+                                 spaces, space_skip_penalty)
+        match_mass, drop_mass = torch.autograd.grad(
+            total, (raw, drop), create_graph=outer_grad, retain_graph=outer_grad)
+        matched = match_mass.sum()
+        if not torch.isfinite(total) or not torch.isfinite(match_mass).all() or matched <= 0:
+            raise FloatingPointError('Invalid Drop-DTW alignment or no transcript coverage')
+        foreground = 1-background
+        ink_mass = foreground.sum()
+        coverage = ((match_mass.sum(1).clamp(max=1) * foreground).sum() /
+                    ink_mass.clamp_min(1e-8)) if ink_mass > 1e-8 else raw.new_zeros(())
+        energy = ((match_mass*raw).sum() + (drop_mass*drop).sum()) / matched
+        if enforce_coverage:
+            energy = energy + text_drop_cost * F.relu(min_text_coverage-coverage)
+    if not outer_grad:
+        energy, match_mass, drop_mass, coverage = [x.detach() for x in
+                                                  (energy, match_mass, drop_mass, coverage)]
+    details = dict(matched_cells=matched.detach(), dropped_real=drop_mass.sum().detach(),
+                   dropped_pad=pad_count, text_coverage=coverage.detach(),
+                   real_windows=len(raw))
+    return (energy, match_mass, details) if return_details else energy
+
+
+def _soft_drop_total(raw, drop, gamma, vertical_penalty, horizontal_penalty,
+                     position_prior, disable_horizontal_when_feasible,
+                     spaces, space_skip_penalty):
+    cells = effective_costs(raw, position_prior)
+    t, l = cells.shape
+    horizontal = 1e4 if disable_horizontal_when_feasible and t >= l else horizontal_penalty
+    previous = previous2 = None
+    previous_start = previous2_start = 0
+    infinity = 1e6
+    for diagonal_index in range(t+l+1):
+        start = max(0, diagonal_index-l)
+        i = torch.arange(start, min(t, diagonal_index)+1, device=cells.device)
+        j = diagonal_index-i
+        missing = cells.new_full(i.shape, infinity)
+        up = left = diagonal = missing
+        if previous is not None:
+            ui = (i-1-previous_start).clamp(0,len(previous)-1)
+            li = (i-previous_start).clamp(0,len(previous)-1)
+            up = torch.where(i>0, previous[ui], missing)
+            left = torch.where(j>0, previous[li], missing)
+        if previous2 is not None:
+            di = (i-1-previous2_start).clamp(0,len(previous2)-1)
+            diagonal = torch.where((i>0)&(j>0),previous2[di],missing)
+        match = cells[(i-1).clamp_min(0).clamp_max(t-1),(j-1).clamp_min(0).clamp_max(l-1)] - gamma*torch.logsumexp(
+            -torch.stack((diagonal,up+vertical_penalty,left+horizontal))/gamma,dim=0)
+        match = torch.where((i>0)&(j>0),match,missing)
+        skipped_image = torch.where(i>0,up+drop[(i-1).clamp_min(0).clamp_max(t-1)],missing)
+        skipped_text = torch.where((j>0)&spaces[(j-1).clamp_min(0)],left+space_skip_penalty,missing)
+        current = -gamma*torch.logsumexp(-torch.stack((match,skipped_image,skipped_text))/gamma,dim=0)
+        current = torch.where((i==0)&(j==0),torch.zeros_like(current),current)
+        previous2,previous2_start = previous,previous_start
+        previous,previous_start = current,start
+    return previous[0]
+
+
 def _soft_dtw_total(raw_costs, gamma, vertical_penalty, horizontal_penalty,
                     position_prior, disable_horizontal_when_feasible,
                     space_columns=None, space_skip_penalty=None):

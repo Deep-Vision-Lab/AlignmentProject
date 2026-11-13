@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, fields, replace
+from functools import partial
 from collections import Counter
 from contextlib import nullcontext
 import hashlib
@@ -40,7 +41,8 @@ def build_model(config, initialize=True):
                           transformer_dropout=config.transformer_dropout, rtl=config.rtl,
                           fusion_mode=config.fusion_mode,
                           use_gated_fusion=config.use_gated_fusion,
-                          cnn_layers=config.cnn_layers)
+                          cnn_layers=config.cnn_layers,
+                          variable_length_windows=config.variable_length_windows)
 
 
 def resolve_device(device='auto', local_rank=0):
@@ -108,6 +110,9 @@ def _batch_postfix(stats, optimizer=None, gradients=None, device=None):
                   windows=_format_value(stats.get('mean_windows')), letters=_format_value(stats.get('mean_letters')))
     if stats.get('space_tokens'):
         values['spaceSkip'] = f'{100 * stats["space_skipped_expected"] / stats["space_tokens"]:.0f}%'
+    if stats.get('alignment_loss') == 'soft_drop_dtw' and stats['evaluated']:
+        values['inkCov'] = f'{100*stats["text_coverage_sum"]/stats["evaluated"]:.0f}%'
+        values['drop'] = f'{stats["dropped_real"]/stats["evaluated"]:.1f}'
     if stats.get('negative_loss_type') == 'hybrid_typed':
         values.update(sNeg=_format_value(stats['strong_cost_sum'] / stats['strong_count'] if stats['strong_count'] else None),
                       sLoss=_format_value(stats['strong_sum'] / stats['strong_count'] if stats['strong_count'] else None),
@@ -147,7 +152,11 @@ def build_loaders(dataset, config, split_ids=None, books=None):
                               split_ids=split_ids, paired=config.paired, books=books,
                               balance_books=config.balance_books,
                               image_size=(config.image_height,config.image_width),
-                              grayscale=config.grayscale, crop=config.crop, binarize=config.binarize)
+                              grayscale=config.grayscale, crop=config.crop, binarize=config.binarize,
+                              preserve_aspect_ratio=config.preserve_aspect_ratio,
+                              window_width=config.window_width if config.alignment_loss == 'soft_drop_dtw' or config.variable_length_windows else None,
+                              window_stride=config.window_stride if config.alignment_loss == 'soft_drop_dtw' or config.variable_length_windows else None,
+                              space_foreground_threshold=config.space_foreground_threshold)
     for loader in loaders[:2]:
         loader.dataset.negative_config = config if negatives_enabled(config) else None
     return loaders
@@ -155,10 +164,16 @@ def build_loaders(dataset, config, split_ids=None, books=None):
 
 def _batch_lines(batch, device):
     images, texts = batch['image'], list(batch['text'])
-    if torch.is_tensor(batch['image2']):
-        images = torch.cat((images,batch['image2']))
+    windows = batch.get('windows')
+    confidence = [sides[0] for sides in batch['space_confidence']]
+    if batch['image2'] is not None and (torch.is_tensor(batch['image2']) or
+                                       isinstance(batch['image2'], list) and any(torch.is_tensor(x) for x in batch['image2'])):
+        images = torch.cat((images,batch['image2'])) if torch.is_tensor(images) else images + batch['image2']
+        if isinstance(windows,list): windows = windows + batch['windows2']
         texts.extend(batch['text2'])
-    return images.to(device), texts
+        confidence.extend(sides[1] for sides in batch['space_confidence'])
+    return (images.to(device) if torch.is_tensor(images) else [x.to(device) for x in images]), texts, confidence, (
+        [x.to(device) for x in windows] if isinstance(windows,list) and all(torch.is_tensor(x) for x in windows) else None)
 
 
 def _embedding_diagnostics(output, texts, text_encoder):
@@ -214,6 +229,7 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
     totals = torch.zeros(27,dtype=torch.float32 if device.type == 'mps' else torch.float64,
                          device=device)
     typed_totals = torch.zeros(20, dtype=totals.dtype, device=device)
+    drop_totals = torch.zeros(3, dtype=totals.dtype, device=device)
     corruption, skip_reasons = Counter(), Counter()
     negative_cost_min, negative_cost_max = float('inf'), float('-inf')
     positive_cost_min, positive_cost_max = float('inf'), float('-inf')
@@ -233,7 +249,7 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
     for index,batch in enumerate(progress):
         if max_batches and index >= max_batches:
             break
-        images,texts = _batch_lines(batch,device)
+        images,texts,confidence,windows = _batch_lines(batch,device)
         negative_texts = negative_metadata = None
         if negatives_enabled(active_config):
             nested = batch.get('negative_texts')
@@ -242,7 +258,7 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
             negative_texts = [sides[0] for sides in nested]
             meta_nested = batch.get('negative_metadata')
             negative_metadata = [sides[0] for sides in meta_nested] if meta_nested is not None else None
-            if torch.is_tensor(batch['image2']):
+            if len(texts) > len(batch['text']):
                 negative_texts += [sides[1] for sides in nested]
                 if negative_metadata is not None:
                     negative_metadata += [sides[1] for sides in meta_nested]
@@ -265,7 +281,8 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                                           enabled=config.use_amp)
                            if device.type == 'cuda' else nullcontext())
             with amp_context:
-                output = model(images)
+                output = model(images, space_confidence=confidence if all(row is not None for row in confidence) else None,
+                               window_tensors=windows)
             loss,stats = compute_loss(output,texts,text_encoder,active_config, negative_texts=negative_texts,
                                      negative_metadata=negative_metadata,
                                      distributed_statistics=distributed,
@@ -302,6 +319,7 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                            negative_training_enabled=negatives_enabled(active_config),
                            negative_warmup=bool(negatives_enabled(config) and not negatives_enabled(active_config)),
                            negative_loss_type=config.negative_loss_type)
+        batch_stats['alignment_loss'] = config.alignment_loss
         progress.set_postfix(_batch_postfix(batch_stats, optimizer, gradients, device))
         if index == 0 and epoch in (None, 1) and rank == 0 and active_config.negative_dtw_weight and stats['ranking_candidates']:
             mean_target = stats['target_sum'] / stats['ranking_candidates']
@@ -356,10 +374,13 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
             stats['order_cost_sum'], stats['order_gap_sum'], stats['order_success'],
             stats['strong_slot_1_sum'], stats['strong_slot_1_count'],
             stats['strong_slot_2_sum'], stats['strong_slot_2_count']])
+        drop_totals += drop_totals.new_tensor([stats['dropped_real'], stats['matched_cells'],
+                                               stats['text_coverage_sum']])
     progress.close()
     if distributed:
         dist.all_reduce(totals)
         dist.all_reduce(typed_totals)
+        dist.all_reduce(drop_totals)
         details = [None] * dist.get_world_size()
         dist.all_gather_object(details, (dict(corruption), dict(skip_reasons),
                                          negative_cost_min, negative_cost_max,
@@ -393,6 +414,7 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
      changed_positions_count,order_sum,order_count,order_cost_sum,order_gap_sum,
      order_success,strong_slot_1_sum,strong_slot_1_count,strong_slot_2_sum,
      strong_slot_2_count) = typed_totals.tolist()
+    dropped_real, matched_cells, text_coverage_sum = drop_totals.tolist()
     positive = dtw_sum/n if n else None
     sigreg = sig_sum/tokens if tokens and config.sigreg_weight else None
     negative = neg_sum/ranked if ranked else None
@@ -447,6 +469,11 @@ def _run_epoch(model, text_encoder, loader, config, device, optimizer=None, max_
                 mean_letters=letters/n if n else None,gamma=config.dtw_gamma,
                 space_tokens=int(space_tokens), space_skipped_expected=space_skipped_expected,
                 space_skip_fraction=(space_skipped_expected/space_tokens if space_tokens else None),
+                alignment_loss=config.alignment_loss,
+                dropped_real_windows_expected=dropped_real,
+                dropped_real_fraction=(dropped_real/windows if windows else None),
+                matched_cells_expected=matched_cells,
+                matched_text_coverage=(text_coverage_sum/n if n else None),
                 population='explicit-batch-subset' if max_batches else 'full-split',
                 seconds=time.monotonic()-started)
     result.update(strong_neg_cost_mean=strong_cost_sum/strong_count if strong_count else None,
@@ -614,6 +641,13 @@ def _print_dataset_summary(args, config, loaders, text_encoder):
     print(f'  validation: {"ON" if val_loader.dataset.augment else "OFF"}', flush=True)
     print(f'  test: {"ON" if test_loader.dataset.augment else "OFF"}', flush=True)
     print(f'Image size: {config.image_height}x{config.image_width}', flush=True)
+    print(f'Aspect-ratio preserving: {config.preserve_aspect_ratio}; variable windows: {config.variable_length_windows}', flush=True)
+    print(f'Alignment loss: {config.alignment_loss}; PAD mandatory drop: {config.enable_padding_drop}', flush=True)
+    if config.alignment_loss == 'soft_drop_dtw':
+        print(f'Real SPACE/TEXT drop costs: {config.space_drop_cost} / {config.text_drop_cost}; '
+              f'space detection: {config.space_detection_mode}, threshold={config.space_foreground_threshold}', flush=True)
+        print(f'Minimum ink coverage: {config.min_positive_text_coverage} '
+              f'(constraint {"ON" if config.enable_positive_coverage_constraint else "OFF"})', flush=True)
     print(f'Window width: {config.window_width}', flush=True)
     print(f'Window stride: {config.window_stride}', flush=True)
     print(f'CNN type: {config.cnn_type}', flush=True)
@@ -698,6 +732,10 @@ def _print_epoch_summary(epoch, epochs, train_stats, val_stats, gradients, previ
     def value(item):
         return 'n/a' if item is None else f'{item:.4f}'
     def objective_details(stats):
+        if stats['alignment_loss'] == 'soft_drop_dtw':
+            print(f'  expected dropped real windows: {stats["dropped_real_windows_expected"]:.1f} '
+                  f'({100*stats["dropped_real_fraction"]:.1f}%); '
+                  f'ink coverage: {100*stats["matched_text_coverage"]:.1f}%', flush=True)
         if stats['space_tokens']:
             print(f'  transcript spaces: {stats["space_tokens"]}; expected skipped: '
                   f'{stats["space_skipped_expected"]:.1f} '
@@ -804,6 +842,8 @@ def main(argv=None, epoch_callback=None):
     parser.add_argument('--dataset',required=True)
     parser.add_argument('--run-name',required=True)
     parser.add_argument('--output-root',default='Weights')
+    parser.add_argument('--checkpoint-every',type=int,default=1,
+                        help='Save latest every N epochs (best is always saved); default 1 for preemption safety')
     parser.add_argument('--device',default='auto')
     parser.add_argument('--max-batches',type=int,default=0,help='Explicit smoke cap on BOTH passes; 0=full splits')
     parser.add_argument('--resume',help='New-format checkpoint; config must match (epochs may increase)')
@@ -865,7 +905,7 @@ def main(argv=None, epoch_callback=None):
     if books is not None and (not books or len(set(books)) != len(books) or any(
             book not in {'A', 'B', 'C'} for book in books)):
         raise ValueError('--books must list distinct books from A,B,C')
-    if args.max_batches < 0 or Path(args.run_name).name != args.run_name:
+    if args.max_batches < 0 or args.checkpoint_every < 1 or Path(args.run_name).name != args.run_name:
         raise ValueError('Use a simple run name and nonnegative smoke cap')
     rank,world,local_rank = [int(os.environ.get(k,d)) for k,d in [('RANK','0'),('WORLD_SIZE','1'),('LOCAL_RANK','0')]]
     if world > 1 and args.device == 'auto' and not torch.cuda.is_available():
@@ -947,7 +987,8 @@ def main(argv=None, epoch_callback=None):
     if world>1:
         sampler = DistributedSampler(train_loader.dataset,seed=config.seed,shuffle=True)
         train_loader = DataLoader(train_loader.dataset,batch_size=config.batch_size,sampler=sampler,
-                                  num_workers=config.num_workers,collate_fn=collate_samples)
+                                  num_workers=config.num_workers,collate_fn=partial(
+                                      collate_samples, variable_images=config.variable_width_images))
         model = DistributedDataParallel(model,device_ids=[device.index] if device.type=='cuda' else None)
     optimizer = torch.optim.Adam(model.parameters(),lr=config.learning_rate,weight_decay=config.weight_decay)
     if args.resume:
@@ -1037,6 +1078,7 @@ def main(argv=None, epoch_callback=None):
                           selected_books=list(books or ('A', 'B')) if loaders[0].dataset.source_layout else None,
                           source_split_manifest_sha256=saved.get('split_manifest_sha256') if saved else None,
                           negative_target_reference=target_reference)
+            kwargs['checkpoint_every'] = args.checkpoint_every
             objective_keys = (('positive_cost_mean', 'strong_neg_cost_mean', 'strong_neg_1_cost_mean',
                                'strong_neg_2_cost_mean', 'strong_neg_target_mean',
                                'strong_neg_target_success', 'strong_neg_loss',
@@ -1055,7 +1097,8 @@ def main(argv=None, epoch_callback=None):
                                'corruption', 'skip_reasons'))
             print('OBJECTIVE', json.dumps({phase: {key: stats[key] for key in objective_keys}
                   for phase, stats in [('train', train_stats), ('validation', val_stats)]}), flush=True)
-            save_checkpoint(output_dir/'checkpoint_latest.pt',model,optimizer,epoch,best,config,text,split_ids,**kwargs)
+            if epoch % args.checkpoint_every == 0 or epoch == config.epochs:
+                save_checkpoint(output_dir/'checkpoint_latest.pt',model,optimizer,epoch,best,config,text,split_ids,**kwargs)
             if improved: save_checkpoint(output_dir/'checkpoint_best.pt',model,optimizer,epoch,best,config,text,split_ids,**kwargs)
             _print_epoch_summary(epoch, config.epochs, train_stats, val_stats, entry['gradients'],
                                  previous_best,

@@ -7,6 +7,9 @@ class Config:
     dataset_type: str = 'auto'
     image_height: int = 128
     image_width: int = 1024
+    preserve_aspect_ratio: bool = False
+    variable_width_images: bool = False
+    variable_length_windows: bool = False
     grayscale: bool = True
     crop: str = 'auto'
     binarize: bool = False
@@ -20,6 +23,16 @@ class Config:
     augmentation: bool = True
     window_width: int = 32
     window_stride: int = 16
+    alignment_loss: str = 'soft_dtw'  # legacy or padding/space-aware soft_drop_dtw
+    enable_padding_drop: bool = False
+    padding_drop_cost: float = 0.0
+    enable_space_drop: bool = False
+    space_drop_cost: float = .1
+    text_drop_cost: float = 4.0  # above log(37)=3.61 in current fitted inventory; tune on validation
+    space_detection_mode: str = 'foreground_ratio'
+    space_foreground_threshold: float = .05
+    enable_positive_coverage_constraint: bool = False
+    min_positive_text_coverage: float = .9
     cnn_type: str = 'resnet18'
     cnn_pretrained: bool = True
     cnn_layers: int = 3  # simple-CNN depth only; ResNet18 stays fixed
@@ -37,6 +50,7 @@ class Config:
     text_vocab_size: int = 4096
     positive_dtw_weight: float = 1.0
     negative_dtw_weight: float = 0.0
+    enable_negative_samples: bool = True  # legacy weight/type settings still decide whether generation is active
     negative_margin: float = .20
     # Weight is the single enable switch: zero means no generation/alignment.
     negative_count: int = 3
@@ -96,6 +110,26 @@ class Config:
 
 def validate_objective(config):
     import math
+    if not config.enable_negative_samples and (config.negative_dtw_weight or
+            config.negative_loss_type == 'hybrid_typed' and
+            (config.strong_negative_weight or config.wrong_letter_weight or config.order_negative_weight)):
+        raise ValueError('Negative weights are active while enable_negative_samples=False')
+    if config.alignment_loss not in {'soft_dtw', 'soft_drop_dtw'}:
+        raise ValueError('alignment_loss must be soft_dtw or soft_drop_dtw')
+    if config.variable_width_images != config.preserve_aspect_ratio or config.variable_length_windows != config.variable_width_images:
+        raise ValueError('Aspect-ratio preservation, variable widths and variable windows must be enabled together')
+    if config.alignment_loss == 'soft_drop_dtw' and (config.alignment_objective != 'dtw' or config.dtw_normalization != 'aligned_mean'):
+        raise ValueError('soft_drop_dtw requires DTW and aligned_mean normalization')
+    if config.alignment_loss == 'soft_drop_dtw' and not config.enable_padding_drop:
+        raise ValueError('soft_drop_dtw requires explicit mandatory padding drops')
+    if config.padding_drop_cost != 0 or not all(math.isfinite(x) and x >= 0 for x in (config.space_drop_cost, config.text_drop_cost)):
+        raise ValueError('PAD cost must be zero and real-window drop costs finite and nonnegative')
+    if config.text_drop_cost <= config.space_drop_cost:
+        raise ValueError('text_drop_cost must exceed space_drop_cost')
+    if config.space_detection_mode != 'foreground_ratio' or not 0 < config.space_foreground_threshold < 1:
+        raise ValueError('Unsupported space detection mode or foreground threshold')
+    if not 0 <= config.min_positive_text_coverage <= 1:
+        raise ValueError('min_positive_text_coverage must be in [0,1]')
     if config.space_mode not in {'off', 'optional'}:
         raise ValueError('space_mode must be off or optional')
     if not math.isfinite(config.space_skip_penalty_ratio) or config.space_skip_penalty_ratio <= 0:
@@ -184,6 +218,8 @@ def validate_objective(config):
 
 
 def negatives_enabled(config):
+    if not config.enable_negative_samples:
+        return False
     if config.negative_loss_type == 'hybrid_typed':
         return bool(config.strong_negative_weight or config.wrong_letter_weight or config.order_negative_weight)
     return bool(config.negative_dtw_weight)

@@ -54,6 +54,11 @@ done
 RUN_NAME="${RUN_NAME:-${TYPE}_$(date +%Y%m%d_%H%M%S)}"
 FUSION_MODE="${FUSION_MODE:-concat}"
 USE_GATED_FUSION="${USE_GATED_FUSION:-0}"
+GPUS="${GPUS:-2}"
+if [[ ! "$GPUS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "GPUS must be a positive integer" >&2
+    exit 2
+fi
 
 if [[ "$FUSION_MODE" != concat && "$FUSION_MODE" != sum ]]; then
     echo "FUSION_MODE must be concat or sum" >&2
@@ -68,7 +73,7 @@ if [[ "$FUSION_MODE" == concat && "$USE_GATED_FUSION" == 1 ]]; then
     exit 2
 fi
 
-export FUSION_MODE USE_GATED_FUSION
+export FUSION_MODE USE_GATED_FUSION GPUS
 
 echo "========================================"
 echo "Training type : $TYPE"
@@ -91,6 +96,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 else
     sbatch \
         --job-name="$RUN_NAME" \
+        --gpus="rtx_4090:$GPUS" \
         scripts/train/train.sbatch \
         --dataset "$DATASET" \
         --dataset-type "$DATASET_TYPE" \

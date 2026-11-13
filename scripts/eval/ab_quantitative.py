@@ -140,7 +140,8 @@ def build_cohort(session, output, positive_count=300, negative_count=300, seed=4
 def extract_features(session, pairs, output, representation):
     """Use each verified indexed image once; feature cache contains no GT/text."""
     config = asdict(session.config)
-    sources = {name: file_hash(ROOT / name) for name in ('model.py', 'cnn_encoder.py', 'transformer_encoder.py', 'dataset.py')}
+    sources = {name: file_hash(ROOT / name) for name in ('model.py', 'cnn_encoder.py',
+                'transformer_encoder.py', 'dataset.py', 'window_geometry.py')}
     signature = q.identity(dict(checkpoint=session.checkpoint_sha256, config=config, sources=sources, device=str(session.device)))
     directory = Path(output) / 'features'; directory.mkdir(exist_ok=True)
     cache, prepared = {}, []
@@ -156,12 +157,20 @@ def extract_features(session, pairs, output, representation):
                         raise ValueError('Frozen feature cache provenance mismatch')
                 else:
                     _, tensor, geometry = prepare_image(canonical['image'], (session.config.image_height, session.config.image_width),
-                        session.config.grayscale, session.config.crop, augment=False, binarize=session.config.binarize)
-                    with torch.inference_mode(): value = session.model(tensor[None].to(session.device))
+                        session.config.grayscale, session.config.crop, augment=False, binarize=session.config.binarize,
+                        preserve_aspect_ratio=session.config.preserve_aspect_ratio,
+                        window_width=session.config.window_width if session.config.variable_length_windows else None,
+                        window_stride=session.config.window_stride if session.config.variable_length_windows else None,
+                        foreground_threshold=session.config.space_foreground_threshold)
+                    with torch.inference_mode(): value = session.model(
+                        [tensor.to(session.device)] if session.config.variable_length_windows else tensor[None].to(session.device),
+                        space_confidence=[geometry['space_confidence']] if session.config.variable_length_windows else None)
                     valid = value['token_valid'][0]
                     line = dict(signature=signature, image_sha256=image_sha, geometry=geometry,
                         features={r: value[r][0][valid].detach().float().cpu() for r in ('local', 'context', 'fused')},
                         physical=value['physical_window_indices'][0][valid].cpu().numpy())
+                    line['window_starts'] = value['window_starts'][0][valid].cpu().numpy()
+                    line['space_confidence'] = value['space_confidence'][0][valid].cpu().numpy()
                     if any(not torch.isfinite(f).all() for f in line['features'].values()):
                         raise ValueError('Nonfinite frozen image features')
                     temporary = path.with_suffix('.tmp'); torch.save(line, temporary); temporary.replace(path)

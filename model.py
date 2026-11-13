@@ -5,6 +5,7 @@ from torch.nn import functional as F
 
 from cnn_encoder import CNNEncoder
 from transformer_encoder import TransformerEncoder
+from window_geometry import window_starts
 
 
 def extract_windows(images, window_width=32, stride=16):
@@ -71,9 +72,10 @@ class AlignmentModel(nn.Module):
                  window_width=32, stride=16, pretrained_cnn=True, use_positional_encoding=False,
                  input_channels=1, local_dropout=.10, transformer_dropout=0., rtl=True,
                  fusion_mode='concat', use_gated_fusion=0, transformer_layers=0,
-                 transformer_heads=0, cnn_layers=3):
+                 transformer_heads=0, cnn_layers=3, variable_length_windows=False):
         super().__init__()
         self.window_width, self.stride, self.rtl = window_width, stride, rtl
+        self.variable_length_windows = variable_length_windows
         self.fusion_mode, self.use_gated_fusion = validate_fusion_config(fusion_mode, use_gated_fusion)
         self.cnn = CNNEncoder(cnn_type, embedding_dim, pretrained_cnn, input_channels,
                               local_dropout, num_layers=cnn_layers)
@@ -84,7 +86,51 @@ class AlignmentModel(nn.Module):
                                        self.fusion_mode, self.use_gated_fusion)
         self.fusion_norm = nn.LayerNorm(embedding_dim)
 
-    def forward(self, images, token_valid=None, valid_widths=None):
+    def forward(self, images, token_valid=None, valid_widths=None, space_confidence=None,
+                window_tensors=None):
+        if isinstance(images, (list, tuple)):
+            if not self.variable_length_windows:
+                raise ValueError('Ragged image batches require variable_length_windows')
+            if not images or token_valid is not None or valid_widths is not None:
+                raise ValueError('Ragged images carry their own exact valid-window lengths')
+            starts = [window_starts(x.shape[-1], self.window_width, self.stride, shift_last=True)
+                      for x in images]
+            if any(x.ndim != 3 or x.shape[-2] != images[0].shape[-2] for x in images):
+                raise ValueError('Ragged lines need [C,H,W] with a common encoder height')
+            if window_tensors is not None:
+                if len(window_tensors) != len(images) or any(
+                        tuple(w.shape) != (len(row), images[0].shape[0], images[0].shape[1], self.window_width)
+                        for w, row in zip(window_tensors, starts)):
+                    raise ValueError('Pre-extracted windows disagree with image/window geometry')
+                windows = torch.cat(window_tensors)
+            else:
+                windows = torch.cat([torch.stack([x[..., s:s+self.window_width] for s in row])
+                                     for x, row in zip(images, starts)])
+            # No artificial sequence enters the CNN, including its BatchNorm.
+            encoded = self.cnn(windows)
+            lengths = [len(row) for row in starts]
+            locals_ = list(encoded.split(lengths))
+            if self.rtl:
+                locals_ = [x.flip(0) for x in locals_]
+                starts = [list(reversed(row)) for row in starts]
+            local = torch.nn.utils.rnn.pad_sequence(locals_, batch_first=True)
+            valid = torch.arange(local.shape[1], device=local.device)[None] < torch.tensor(lengths, device=local.device)[:, None]
+            physical_rows = [torch.arange(n-1, -1, -1, device=local.device) if self.rtl
+                             else torch.arange(n, device=local.device) for n in lengths]
+            physical = torch.nn.utils.rnn.pad_sequence(physical_rows, batch_first=True, padding_value=-1)
+            starts_tensor = torch.nn.utils.rnn.pad_sequence(
+                [torch.tensor(row, device=local.device) for row in starts], batch_first=True, padding_value=-1)
+            if space_confidence is None:
+                confidence = local.new_zeros(valid.shape)
+            else:
+                if len(space_confidence) != len(images):
+                    raise ValueError('One space-confidence row is required per image')
+                rows = [torch.as_tensor(row, device=local.device, dtype=local.dtype) for row in space_confidence]
+                if any(len(row) != n for row, n in zip(rows, lengths)):
+                    raise ValueError('Space-confidence length must match real window count')
+                confidence = torch.nn.utils.rnn.pad_sequence(
+                    [row.flip(0) if self.rtl else row for row in rows], batch_first=True)
+            return self._finish(local, valid, physical, starts_tensor, confidence)
         windows = extract_windows(images, self.window_width, self.stride)
         b, t, c, h, w = windows.shape
         # One projection/dropout draw; the SAME local tensor feeds both branches.
@@ -109,10 +155,22 @@ class AlignmentModel(nn.Module):
         physical = physical.masked_fill(~valid, -1)
         if self.rtl:
             local, valid, physical = local.flip(1), valid.flip(1), physical.flip(1)
+        starts_tensor = physical.clamp_min(0) * self.stride
+        starts_tensor = starts_tensor.masked_fill(~valid, -1)
+        confidence = local.new_zeros(valid.shape) if space_confidence is None else torch.as_tensor(
+            space_confidence, device=local.device, dtype=local.dtype)
+        if confidence.shape != valid.shape:
+            raise ValueError('Space-confidence shape must match token validity')
+        if self.rtl and space_confidence is not None:
+            confidence = confidence.flip(1)
+        return self._finish(local, valid, physical, starts_tensor, confidence)
+
+    def _finish(self, local, valid, physical, starts_tensor, confidence):
         context = self.transformer(local, valid)
         fused, gate = self.fusion(local, context)
         pre_l2 = self.fusion_norm(fused)
         fused = F.normalize(pre_l2.float(), dim=-1)
         return dict(local=local, context=context, fused=fused, fused_pre_l2=pre_l2,
                     token_valid=valid, physical_window_indices=physical,
+                    window_starts=starts_tensor, space_confidence=confidence,
                     fusion_gate=gate, fusion_gate_stats=_gate_stats(gate[valid] if gate is not None else None))

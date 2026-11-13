@@ -364,9 +364,14 @@ class EvaluationSession:
             c = self.config
             _, tensor, geometry = prepare_image(side['image'], (c.image_height, c.image_width),
                                                 c.grayscale, c.crop, bbox=side.get('bbox'),
-                                                augment=False, binarize=c.binarize)
+                                                augment=False, binarize=c.binarize,
+                                                preserve_aspect_ratio=c.preserve_aspect_ratio,
+                                                window_width=c.window_width if c.variable_length_windows else None,
+                                                window_stride=c.window_stride if c.variable_length_windows else None,
+                                                foreground_threshold=c.space_foreground_threshold)
             with torch.no_grad():
-                output = self.model(tensor[None].to(self.device))
+                output = self.model([tensor.to(self.device)] if c.variable_length_windows else tensor[None].to(self.device),
+                                    space_confidence=[geometry['space_confidence']] if c.variable_length_windows else None)
             valid = output['token_valid'][0]
             features = {name: output[name][0][valid].detach().float().cpu() for name in REPRESENTATIONS}
             if any(not torch.isfinite(v).all() for v in features.values()):
@@ -374,6 +379,8 @@ class EvaluationSession:
             self.feature_cache[key] = dict(features=features, geometry=geometry,
                 token_valid=valid.cpu().numpy(), full_physical=output['physical_window_indices'][0].cpu().numpy(),
                 physical=output['physical_window_indices'][0][valid].cpu().numpy(),
+                window_starts=output['window_starts'][0][valid].cpu().numpy(),
+                space_confidence=output['space_confidence'][0][valid].cpu().numpy(),
                 logical=torch.arange(len(valid), device=valid.device)[valid].cpu().numpy())
         return self.feature_cache[key]
 
@@ -676,6 +683,15 @@ def arabic_data_pairs(root, records, negative_count=None, seed=42):
 
     unmatched = {}
     for side in books:
+        if not (root / 'Unalignedlines' / ('images' + side)).is_dir():
+            # Some book inventories (notably C) have indexed training lines but
+            # no manually supplied unaligned-pair catalog. Do not manufacture
+            # negative labels from those lines.
+            unmatched[side] = []
+            stats['unmatched_' + side] = 0
+            stats['eligible_unmatched_' + side] = 0
+            stats['missing_unmatched_inventory_' + side] = True
+            continue
         stems = inventory('Unalignedlines', side)
         stats['unmatched_' + side] = len(stems)
         unmatched[side] = [line for stem in stems if (line := read_line('Unalignedlines', side, stem)) is not None]
@@ -877,8 +893,12 @@ def indexing_sanity(result, config):
         assert np.array_equal(logical, np.flatnonzero(valid))
         assert np.array_equal(physical, full[valid]) and (physical >= 0).all()
         assert (full[~valid] == -1).all()
-        expected = np.arange(len(full))[::-1] if config.rtl else np.arange(len(full))
-        assert np.array_equal(full[valid], expected[valid]), 'RTL/physical identity mismatch'
+        if config.variable_length_windows:
+            expected = np.arange(int(valid.sum()))[::-1] if config.rtl else np.arange(int(valid.sum()))
+            assert np.array_equal(full[valid], expected), 'RTL/physical identity mismatch'
+        else:
+            expected = np.arange(len(full))[::-1] if config.rtl else np.arange(len(full))
+            assert np.array_equal(full[valid], expected[valid]), 'RTL/physical identity mismatch'
         for representation in REPRESENTATIONS:
             assert line['features'][representation].shape[0] == valid.sum()
         geometry = line['geometry']
@@ -890,8 +910,12 @@ def indexing_sanity(result, config):
             a, b = source_interval(int(p), geometry, config.window_width, config.window_stride)
             x0, _, x1, _ = geometry['crop']
             assert x0 <= a < b <= x1
-            expected_a = x0 + int(p)*config.window_stride/geometry['scale_x']
-            expected_b = min(x1, x0+(int(p)*config.window_stride+config.window_width)/geometry['scale_x'])
+            start = (geometry['window_starts'][int(p)] if geometry.get('window_starts') is not None
+                     else int(p)*config.window_stride)
+            expected_a = x0 + start/geometry['scale_x']
+            expected_b = min(x1, x0+min(start+config.window_width,
+                geometry.get('real_width', geometry.get('model_size',
+                    [(x1-x0)*geometry['scale_x']])[0]))/geometry['scale_x'])
             assert np.allclose([a, b], [expected_a, expected_b])
         rebuilt = region_mask(result['match']['regions'], side, geometry, config.window_width, config.window_stride)
         assert np.array_equal(rebuilt, result['masks'][side]), 'Mask/physical geometry mismatch'
@@ -1876,7 +1900,7 @@ def save_pair_artifacts(session, result, directory):
         for side, logp in enumerate(result['match']['log_probabilities']):
             np.save(directory / f'letter_log_probs_{side}.npy', logp)
     for side, name in enumerate(('a', 'b')):
-        for key in ('physical','logical','token_valid','full_physical'):
+        for key in ('physical','logical','token_valid','full_physical','window_starts','space_confidence'):
             np.save(directory / f'{name}_{key}.npy', result['lines'][side][key])
         np.save(directory / f'{name}_features.npy',result['lines'][side]['features'][result['representation']].numpy())
         Image.fromarray(result['masks'][side]).save(directory / f'line_{name}_mask.png')
@@ -1892,7 +1916,11 @@ def save_pair_artifacts(session, result, directory):
                 directory / f'line_{name}_ground_truth_overlay.png')
         c = session.config
         prepared, _, _ = prepare_image(record['image'], (c.image_height, c.image_width), c.grayscale,
-                                        c.crop, record.get('bbox'), False, c.binarize)
+                                        c.crop, record.get('bbox'), False, c.binarize,
+                                        preserve_aspect_ratio=c.preserve_aspect_ratio,
+                                        window_width=c.window_width if c.variable_length_windows else None,
+                                        window_stride=c.window_stride if c.variable_length_windows else None,
+                                        foreground_threshold=c.space_foreground_threshold)
         prepared.save(directory / f'line_{name}_model_input.png')
     rows = []
     c = session.config

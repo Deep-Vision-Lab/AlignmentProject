@@ -6,7 +6,7 @@ import torch.distributed as dist
 from torch.distributed.nn.functional import all_reduce
 from torch.nn import functional as F
 
-from dtw import letter_cost_matrix, soft_dtw, alphabet_log_probabilities
+from dtw import letter_cost_matrix, soft_dtw, soft_drop_dtw, alphabet_log_probabilities
 from text_embedding import ARABIC_LETTERS, clean_letters, clean_alignment_tokens
 
 
@@ -59,7 +59,7 @@ def resolved_negative_targets(config, text_embedding):
 
 def _line_loss(visual, letters, text_embedding, config, *, return_occupancy=False,
                return_space_skip_count=False,
-               inventory_override=None):
+               inventory_override=None, background_confidence=None):
     inventory = list(inventory_override) if inventory_override is not None else effective_alphabet(config, text_embedding, letters)
     lookup = {c: i for i, c in enumerate(inventory)}
     if any(c not in lookup for c in letters):
@@ -77,6 +77,29 @@ def _line_loss(visual, letters, text_embedding, config, *, return_occupancy=Fals
                               alphabet=text_embedding.encode(''.join(inventory)),
                               letter_ids=[lookup[c] for c in letters],
                               temperature=config.competition_temperature, mode=config.dtw_cost_mode)
+    if config.alignment_loss == 'soft_drop_dtw':
+        if background_confidence is None or len(background_confidence) != len(visual):
+            raise ValueError('Drop-DTW requires actual per-window background confidence')
+        if config.enable_positive_coverage_constraint and torch.as_tensor(
+                background_confidence).float().min() >= .999:
+            raise AlignmentInfeasible('blank_image_no_foreground')
+        result = soft_drop_dtw(
+            costs, background_confidence, gamma=config.dtw_gamma,
+            vertical_penalty=config.vertical_penalty, horizontal_penalty=config.horizontal_penalty,
+            position_prior=config.position_prior,
+            disable_horizontal_when_feasible=config.disable_horizontal_when_feasible,
+            space_drop_cost=config.space_drop_cost, text_drop_cost=config.text_drop_cost,
+            enable_space_drop=config.enable_space_drop,
+            min_text_coverage=config.min_positive_text_coverage,
+            enforce_coverage=config.enable_positive_coverage_constraint,
+            space_columns=[letter == ' ' for letter in letters] if config.space_mode == 'optional' else None,
+            space_skip_penalty=(config.space_skip_penalty_ratio * math.log(len(inventory))
+                                if config.space_mode == 'optional' else 0.),
+            return_details=return_occupancy or return_space_skip_count)
+        if return_occupancy or return_space_skip_count:
+            cost, occupancy, details = result
+            return (cost, occupancy, details) if return_space_skip_count else (cost, occupancy)
+        return result
     return soft_dtw(costs, config.dtw_gamma, config.vertical_penalty, config.horizontal_penalty,
                     config.position_prior, config.disable_horizontal_when_feasible,
                     normalization=config.dtw_normalization, return_occupancy=return_occupancy,
@@ -91,23 +114,33 @@ class AlignmentInfeasible(ValueError):
 
 
 def positive_dtw_loss(vectors, texts, text_embedding, config, token_valid=None, *, return_costs=False,
-                      return_alignments=False):
+                      return_alignments=False, background_confidence=None):
     if len(texts) != len(vectors):
         raise ValueError('One own transcript is required per image')
     values = []
     lengths = []
     costs, alignments, reasons = [], [], Counter()
     space_tokens, space_skipped_expected = 0, 0.
+    dropped_real = matched_cells = text_coverage = 0.
     for index, text in enumerate(texts):
         letters = alignment_tokens(text, config)
         visual = vectors[index] if token_valid is None else vectors[index][token_valid[index]]
+        confidence = (None if background_confidence is None else background_confidence[index]
+                      if token_valid is None else background_confidence[index][token_valid[index]])
         if not letters or len(visual) == 0:
             reasons['empty_transcript' if not letters else 'no_valid_windows'] += 1
             costs.append(None)
             alignments.append(None)
             continue
         try:
-            if config.space_mode == 'optional':
+            if config.alignment_loss == 'soft_drop_dtw':
+                cost, occupancy, details = _line_loss(
+                    visual, letters, text_embedding, config, return_occupancy=True,
+                    return_space_skip_count=True, background_confidence=confidence)
+                dropped_real += float(details['dropped_real'])
+                matched_cells += float(details['matched_cells'])
+                text_coverage += float(details['text_coverage'])
+            elif config.space_mode == 'optional':
                 cost, occupancy, skipped_spaces = _line_loss(
                     visual, letters, text_embedding, config, return_occupancy=True,
                     return_space_skip_count=True)
@@ -137,6 +170,8 @@ def positive_dtw_loss(vectors, texts, text_embedding, config, token_valid=None, 
                  positive_cost_max=max((float(v.detach()) for v in values), default=None),
                  positive_below_reference=sum(float(v.detach()) < reference_min for v in values),
                  lengths=lengths)
+    stats.update(dropped_real=dropped_real, matched_cells=matched_cells,
+                 text_coverage_sum=text_coverage)
     if return_alignments:
         return loss, stats, costs, alignments
     return (loss, stats, costs) if return_costs else (loss, stats)
@@ -209,7 +244,7 @@ def absolute_rejection_loss(energies, ratios, *, target_min, target_max, softnes
 
 def negative_sequence_objective(vectors, texts, negative_texts, text_embedding, config,
                                 token_valid=None, *, positive_costs, positive_alignments=None,
-                                negative_metadata=None):
+                                negative_metadata=None, background_confidence=None):
     """Per-line absolute rejection of lowest-energy negatives; old hinge is diagnostic/auxiliary.
 
     No candidate is assigned a visual-window label. The optional substitution
@@ -234,6 +269,9 @@ def negative_sequence_objective(vectors, texts, negative_texts, text_embedding, 
         original_letters = ''.join(clean_letters(text))
         columns = letter_columns(positive_tokens)
         visual = vectors[i] if token_valid is None else vectors[i][token_valid[i]]
+        confidence = (None if background_confidence is None else background_confidence[i]
+                      if token_valid is None else background_confidence[i][token_valid[i]])
+        drop_kw = {'background_confidence': confidence} if confidence is not None else {}
         entries = (negative_metadata[i] if negative_metadata is not None else None)
         if entries is not None and len(entries) != len(negative_texts[i]):
             raise ValueError('Negative metadata must match negative transcript count')
@@ -252,9 +290,11 @@ def negative_sequence_objective(vectors, texts, negative_texts, text_embedding, 
             try:
                 fixed_inventory = effective_alphabet(config, text_embedding, original)
                 energy = (_line_loss(visual, list(candidate), text_embedding, config,
-                                     inventory_override=fixed_inventory)
+                                     inventory_override=fixed_inventory,
+                                     **drop_kw)
                           if config.negative_loss_type == 'absolute' else
-                          _line_loss(visual, list(candidate), text_embedding, config))
+                          _line_loss(visual, list(candidate), text_embedding, config,
+                                     **drop_kw))
             except AlignmentInfeasible as exc:
                 reasons[str(exc)] += 1
                 continue
@@ -352,7 +392,7 @@ def negative_sequence_objective(vectors, texts, negative_texts, text_embedding, 
 
 def typed_negative_objective(vectors, texts, negative_texts, negative_metadata,
                              text_embedding, config, token_valid, positive_costs,
-                             positive_alignments=None):
+                             positive_alignments=None, background_confidence=None):
     """Three disjoint supervision channels; only strong identities get whole-line rejection."""
     if negative_texts is None or negative_metadata is None or len(negative_texts) != len(texts):
         raise ValueError('hybrid_typed requires per-line negatives and typed metadata')
@@ -370,6 +410,9 @@ def typed_negative_objective(vectors, texts, negative_texts, negative_metadata,
         columns = letter_columns(positive_tokens)
         original = ''.join(clean_letters(raw_text))
         visual = vectors[i] if token_valid is None else vectors[i][token_valid[i]]
+        confidence = (None if background_confidence is None else background_confidence[i]
+                      if token_valid is None else background_confidence[i][token_valid[i]])
+        drop_kw = {'background_confidence': confidence} if confidence is not None else {}
         if len(negative_texts[i]) != len(negative_metadata[i]):
             raise ValueError('Typed negative text/metadata length mismatch')
         inventory = effective_alphabet(config, text_embedding, positive_tokens)
@@ -392,7 +435,7 @@ def typed_negative_objective(vectors, texts, negative_texts, negative_metadata,
                 if config.strong_negative_weight == 0:
                     continue
                 energy = _line_loss(visual, candidate_tokens, text_embedding, config,
-                                    inventory_override=inventory)
+                                    inventory_override=inventory, **drop_kw)
                 ratio = changed / len(original)
                 target = target_min + ratio * (target_max - target_min)
                 terms['strong'].append(config.negative_softness * F.softplus(
@@ -436,7 +479,7 @@ def typed_negative_objective(vectors, texts, negative_texts, negative_metadata,
                 if config.order_negative_weight == 0:
                     continue
                 energy = _line_loss(visual, candidate_tokens, text_embedding, config,
-                                    inventory_override=inventory)
+                                    inventory_override=inventory, **drop_kw)
                 terms['order'].append(order_rejection_loss(positive, energy, config.order_margin))
                 stats['order_cost_sum'] += float(energy.detach())
                 stats['order_gap_sum'] += float((energy - positive).detach())
@@ -527,13 +570,16 @@ def sigreg_loss(embeddings, token_valid=None, *, sketch_dim=1024, num_knots=17,
 def compute_loss(output, texts, text_embedding, config, *, negative_texts=None, negative_metadata=None,
                  distributed_statistics=False, sketch_seed=None):
     vectors, valid = output['fused'], output['token_valid']
+    confidence = output.get('space_confidence')
     typed = config.negative_loss_type == 'hybrid_typed'
     if ((config.wrong_letter_unlikelihood_weight and config.negative_dtw_weight)
             or (typed and config.wrong_letter_weight)):
         positive, counts, costs, alignments = positive_dtw_loss(
-            vectors, texts, text_embedding, config, valid, return_alignments=True)
+            vectors, texts, text_embedding, config, valid, return_alignments=True,
+            background_confidence=confidence)
     else:
-        positive, counts, costs = positive_dtw_loss(vectors, texts, text_embedding, config, valid, return_costs=True)
+        positive, counts, costs = positive_dtw_loss(vectors, texts, text_embedding, config, valid,
+                                                   return_costs=True, background_confidence=confidence)
         alignments = None
     positive_for_gradient = positive
     global_evaluated = counts['evaluated']
@@ -565,13 +611,13 @@ def compute_loss(output, texts, text_embedding, config, *, negative_texts=None, 
     if typed and (config.strong_negative_weight or config.wrong_letter_weight or config.order_negative_weight):
         typed_losses, typed_stats = typed_negative_objective(
             vectors, texts, negative_texts, negative_metadata, text_embedding,
-            config, valid, costs, alignments)
+            config, valid, costs, alignments, background_confidence=confidence)
         ranking_aux = wrong_aux = negative
     elif config.negative_dtw_weight:
         negative, ranking_aux, wrong_aux, ranking = negative_sequence_objective(
             vectors, texts, negative_texts, text_embedding, config, valid,
             positive_costs=costs, positive_alignments=alignments,
-            negative_metadata=negative_metadata)
+            negative_metadata=negative_metadata, background_confidence=confidence)
     else:
         ranking_aux = wrong_aux = negative
     negative_for_gradient = negative

@@ -18,6 +18,7 @@ set -euo pipefail
 RUN_NAME="${SLURM_JOB_NAME}"
 FUSION_MODE="${FUSION_MODE:-concat}"
 USE_GATED_FUSION="${USE_GATED_FUSION:-0}"
+GPUS="${GPUS:-2}"
 
 echo "Job name: $SLURM_JOB_NAME"
 echo "Run name: $RUN_NAME"
@@ -112,9 +113,10 @@ for i in range(torch.cuda.device_count()):
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA is unavailable before torchrun")
 
-if torch.cuda.device_count() != 2:
+expected = int(os.environ.get('GPUS', '2'))
+if torch.cuda.device_count() != expected:
     raise RuntimeError(
-        f"Expected exactly 2 visible GPUs, got {torch.cuda.device_count()}"
+        f"Expected exactly {expected} visible GPUs, got {torch.cuda.device_count()}"
     )
 PY
 
@@ -126,7 +128,7 @@ echo "GPU pre-flight: PASSED"
 
 exec python -m torch.distributed.run \
     --standalone \
-    --nproc_per_node=2 \
+    --nproc_per_node="$GPUS" \
     train.py \
     --run-name "$RUN_NAME" \
     --fusion-mode "$FUSION_MODE" \
