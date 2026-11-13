@@ -38,7 +38,7 @@ zero-cost PAD transition but without allocating padded cost grids. The
 differentiable alignment occupancy is the gradient of the soft path free
 energy with respect to the cell NLL. Reported energy is
 
-`(expected matched NLL + expected real-window drop penalties) / expected matched-cell count`
+`(expected matched NLL + expected real-window drop penalties + expected transcript-space skip penalties) / expected matched-cell count`
 
 plus a positive ink-coverage shortfall penalty when enabled. This is an
 alignment-evidence score, **not** a calibrated probability or the raw soft-path

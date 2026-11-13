@@ -225,11 +225,15 @@ def soft_drop_dtw(costs, background_confidence, *, valid_windows=None, gamma=.05
             raw = raw.detach().requires_grad_(True)
         if not drop.requires_grad:
             drop = drop.detach().requires_grad_(True)
+        skip = raw.new_tensor(space_skip_penalty, requires_grad=True) if bool(spaces.any()) else None
         total = _soft_drop_total(raw, drop, gamma, vertical_penalty, horizontal_penalty,
                                  position_prior, disable_horizontal_when_feasible,
-                                 spaces, space_skip_penalty)
-        match_mass, drop_mass = torch.autograd.grad(
-            total, (raw, drop), create_graph=outer_grad, retain_graph=outer_grad)
+                                 spaces, skip if skip is not None else 0.)
+        derivatives = torch.autograd.grad(
+            total, (raw, drop, skip) if skip is not None else (raw, drop),
+            create_graph=outer_grad, retain_graph=outer_grad)
+        match_mass, drop_mass = derivatives[:2]
+        skip_mass = derivatives[2] if skip is not None else raw.new_zeros(())
         matched = match_mass.sum()
         if not torch.isfinite(total) or not torch.isfinite(match_mass).all() or matched <= 0:
             raise FloatingPointError('Invalid Drop-DTW alignment or no transcript coverage')
@@ -237,14 +241,16 @@ def soft_drop_dtw(costs, background_confidence, *, valid_windows=None, gamma=.05
         ink_mass = foreground.sum()
         coverage = ((match_mass.sum(1).clamp(max=1) * foreground).sum() /
                     ink_mass.clamp_min(1e-8)) if ink_mass > 1e-8 else raw.new_zeros(())
-        energy = ((match_mass*raw).sum() + (drop_mass*drop).sum()) / matched
+        energy = ((match_mass*raw).sum() + (drop_mass*drop).sum()
+                  + skip_mass*(skip if skip is not None else 0.)) / matched
         if enforce_coverage:
             energy = energy + text_drop_cost * F.relu(min_text_coverage-coverage)
     if not outer_grad:
-        energy, match_mass, drop_mass, coverage = [x.detach() for x in
-                                                  (energy, match_mass, drop_mass, coverage)]
+        energy, match_mass, drop_mass, coverage, skip_mass = [x.detach() for x in
+                                      (energy, match_mass, drop_mass, coverage, skip_mass)]
     details = dict(matched_cells=matched.detach(), dropped_real=drop_mass.sum().detach(),
                    dropped_pad=pad_count, text_coverage=coverage.detach(),
+                   skipped_transcript_spaces_expected=skip_mass.detach(),
                    real_windows=len(raw))
     return (energy, match_mass, details) if return_details else energy
 

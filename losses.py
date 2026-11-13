@@ -140,6 +140,8 @@ def positive_dtw_loss(vectors, texts, text_embedding, config, token_valid=None, 
                 dropped_real += float(details['dropped_real'])
                 matched_cells += float(details['matched_cells'])
                 text_coverage += float(details['text_coverage'])
+                space_tokens += letters.count(' ')
+                space_skipped_expected += float(details['skipped_transcript_spaces_expected'])
             elif config.space_mode == 'optional':
                 cost, occupancy, skipped_spaces = _line_loss(
                     visual, letters, text_embedding, config, return_occupancy=True,

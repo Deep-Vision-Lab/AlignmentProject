@@ -110,6 +110,19 @@ def test_match_preference_coverage_no_space_and_separated_regions():
     assert bad >= unconstrained
 
 
+def test_optional_transcript_space_skip_pays_its_penalty():
+    costs = torch.tensor([[.1, 9., 9.], [9., 9., .1]], requires_grad=True)
+    value, occupancy, info = soft_drop_dtw(
+        costs, torch.zeros(2), gamma=.01, position_prior=0,
+        space_columns=[False, True, False], space_skip_penalty=.6,
+        return_details=True)
+    assert float(info['skipped_transcript_spaces_expected']) > .99
+    assert float(occupancy[:, 1].sum()) < .01
+    assert .35 < float(value) < .45  # (.1 + .1 + .6) / two matched cells
+    value.backward()
+    assert costs.grad[:,1].abs().max() < .01
+
+
 def test_mixed_length_loss_and_bfloat16():
     c = _config()
     validate_objective(c)
